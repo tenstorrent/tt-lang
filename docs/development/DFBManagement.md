@@ -273,7 +273,9 @@ neither per-core DFB use metadata, allocation domains, nor reconfiguration
 scratch segments, the runtime applies the reference allocator's global minimum
 remaining interval to every logical core. The compile-time budget is always
 this device-wide minimum, so a per-core tensor on a core the operation does not
-launch on can still lower it.
+launch on can still lower it. Per-core limits taken from the reference allocator's pages assume that every
+device holds its lockstep L1 pages at the same addresses on the same logical
+cores as the reference device.
 The correctness invariant is that every surviving DFB access has one compatible
 descriptor on its launch core; conservative metadata preserves the
 whole-program descriptor behavior when this cannot be proved.

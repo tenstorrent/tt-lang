@@ -166,7 +166,8 @@ class _LoopExitLiveness:
     finishes, before its ``else`` suite. Unknown control flow is
     over-approximated: any loop may run zero times, an exception may leave a
     ``try`` or ``with`` body at any statement or a ``for`` loop at any
-    iteration, and a ``finally`` suite continues to every exit of its ``try``.
+    iteration, and a ``finally`` suite continues to every exit of its ``try``
+    whichever way it was entered.
     """
 
     def __init__(self):
@@ -207,12 +208,20 @@ class _LoopExitLiveness:
         return _read_names(node.iter) | head
 
     def _try(self, node, live_out: Set[str], jumps: _Jumps) -> Set[str]:
-        final_live = self.block(
-            node.finalbody,
-            live_out | jumps.break_live | jumps.continue_live | jumps.exception_live,
-            jumps,
-        )
-        final_jumps = jumps._replace(exception_live=jumps.exception_live | final_live)
+        final_live = set(live_out)
+        final_jumps = jumps
+        if node.finalbody:
+            final_live = self.block(
+                node.finalbody,
+                live_out
+                | jumps.break_live
+                | jumps.continue_live
+                | jumps.exception_live,
+                jumps,
+            )
+            final_jumps = jumps._replace(
+                exception_live=jumps.exception_live | final_live
+            )
         # Every matching ``except*`` handler runs, so each one continues into
         # the handlers after it.
         chains_handlers = not isinstance(node, ast.Try)
@@ -265,6 +274,11 @@ class _LoopExitLiveness:
             return live
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             self.block(node.body, set(), _Jumps())
+            # TODO(#1013 follow-up): `_read_names` counts a nested scope's own
+            # parameters and locals as reads of the enclosing names, so a
+            # later `lambda kind: ...` makes a loop target `kind` live and a
+            # loop over non-literal elements is rejected; subtract the nested
+            # scope's bindings here and in the `Assign` case below.
             return (live_out - {node.name}) | _read_names(node)
         if isinstance(node, ast.Break):
             return set(jumps.break_live)
@@ -301,6 +315,12 @@ def _mark_loop_targets_read_after(statements: List[ast.stmt]) -> None:
     loop body reads it, since those run at a point the analysis does not know.
     Unrolling substitutes the element into scopes inside the loop body, so they
     never read the name.
+
+    TODO(#1013 follow-up): a callback defined outside the loop and called
+    inside it reads the target at call time in Python but sees only the
+    post-loop binding here (or is rejected for non-literal elements), and a
+    callback defined inside the body binds its iteration's element at
+    definition time. Reject or model calls of such callbacks.
     """
     liveness = _LoopExitLiveness()
     liveness.block(statements, set(), _Jumps())
@@ -338,6 +358,22 @@ def _is_constant_structure(node: ast.expr) -> bool:
     if isinstance(node, (ast.Tuple, ast.List)):
         return all(_is_constant_structure(element) for element in node.elts)
     return False
+
+
+def _rebound_names(statements) -> Set[str]:
+    """Return names stored or deleted in ``statements`` outside nested scopes."""
+    names: Set[str] = set()
+    pending = list(statements)
+    while pending:
+        node = pending.pop()
+        if isinstance(node, _NESTED_SCOPES):
+            continue
+        if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)):
+            names.add(node.id)
+        elif isinstance(node, ast.ExceptHandler) and node.name is not None:
+            names.add(node.name)
+        pending.extend(ast.iter_child_nodes(node))
+    return names
 
 
 def _contains_loop_control(statements) -> bool:
@@ -427,6 +463,8 @@ class _SubstituteTransformer(ast.NodeTransformer):
         return ast.copy_location(element, transformed_node)
 
     def visit_For(self, node):
+        # Local names are renamed below; keep the source spelling for messages.
+        source_target_names = dict(_loop_target_paths(node.target))
         transformed_node = self.generic_visit(node)
         if not isinstance(transformed_node.iter, (ast.Tuple, ast.List)):
             return transformed_node
@@ -436,7 +474,26 @@ class _SubstituteTransformer(ast.NodeTransformer):
                 f"@ttl.operation {self.caller_name!r}: a loop over a captured "
                 "sequence cannot use break or continue"
             )
+        # Unrolling substitutes the element for every read of the target, so a
+        # store to the target inside the body would be bypassed by later reads.
+        renamed_to_source = {
+            name: source_target_names[path]
+            for path, name in _loop_target_paths(transformed_node.target)
+        }
+        rebound_targets = sorted(
+            renamed_to_source[name]
+            for name in _rebound_names(transformed_node.body) & set(renamed_to_source)
+        )
+        if rebound_targets:
+            raise ValueError(
+                f"@ttl.operation {self.caller_name!r}: loop target "
+                f"{rebound_targets[0]!r} in {self.callee_name!r} is rebound "
+                "inside its loop over a captured sequence"
+            )
         targets_read_after = getattr(transformed_node, _LOOP_TARGETS_READ_AFTER)
+        # TODO(#1013 follow-up): an empty sequence leaves an earlier binding of
+        # the target in place in Python; this rejects that program too because
+        # the liveness analysis does not track definite assignment.
         if targets_read_after and not transformed_node.iter.elts:
             raise ValueError(
                 f"@ttl.operation {self.caller_name!r}: a loop over an empty "
