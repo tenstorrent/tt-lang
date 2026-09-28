@@ -88,7 +88,8 @@ planRegions(ModuleOp module, const DFBLogicalIdentityAnalysis &identities,
     module.emitOpError("SRAM allocation mode must be uniform or per-node");
     return failure();
   }
-  if (allocationMode == "per-node" && !liveness.hasExactLaunchGrid()) {
+  if (allocationMode == "per-node" && !identities.getAssignments().empty() &&
+      !liveness.hasExactLaunchGrid()) {
     module.emitOpError(
         "per-node SRAM allocation requires an exact launch grid");
     return failure();
