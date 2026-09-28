@@ -307,7 +307,14 @@ def get_min_remaining_l1_for_device(
 def _get_remaining_l1_by_core_for_device(
     device, cores: set[tuple[int, int]]
 ) -> dict[tuple[int, int], int]:
-    """Return the lowest reported L1 limit for each logical worker core."""
+    """Return the lowest reported L1 limit for each logical worker core.
+
+    A mesh device reports only its reference allocator. The per-core limits
+    are exact for every device only if each device holds its L1 pages at the
+    same addresses on the same logical cores, as lockstep mesh allocations do.
+    """
+    # TODO: query per-device buffer pages once TT-Metal reports them for a
+    # mesh, and take the minimum over devices per logical core.
     _, remaining_bytes = _get_l1_remaining_bytes(device, cores)
     return remaining_bytes
 
