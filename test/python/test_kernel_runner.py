@@ -101,7 +101,11 @@ def test_reconfiguration_runtime_resources_without_plan_need_no_launch_configs()
 def test_reconfiguration_runtime_resources_with_plan_require_launch_configs(
     monkeypatch,
 ):
-    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    monkeypatch.setattr(
+        kernel_runner,
+        "_ensure_ttnn",
+        lambda: pytest.fail("launch configurations must be checked first"),
+    )
     config = PhysicalDFBConfig(0, 1, "bfloat16", 1, 2048, (32, 32))
     plan = DFBReconfigurationPlan(
         boundary_ordinals=(7,),
@@ -116,8 +120,11 @@ def test_reconfiguration_runtime_resources_with_plan_require_launch_configs(
         )
 
 
+@pytest.mark.parametrize(
+    "mismatch", ["storage_index", "dfb_index"], ids=["storage", "physical"]
+)
 def test_reconfiguration_runtime_resources_reject_mismatched_launch_config(
-    monkeypatch,
+    monkeypatch, mismatch
 ):
     monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
     config = PhysicalDFBConfig(0, 1, "bfloat16", 1, 2048, (32, 32), storage_index=4)
@@ -137,7 +144,7 @@ def test_reconfiguration_runtime_resources_reject_mismatched_launch_config(
             core_ranges=_FakeCoreRanges(),
             plan=plan,
             device=object(),
-            cb_configs=[replace(config, storage_index=5)],
+            cb_configs=[replace(config, **{mismatch: 5})],
         )
 
 
