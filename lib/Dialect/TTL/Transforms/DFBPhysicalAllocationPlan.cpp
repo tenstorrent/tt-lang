@@ -599,6 +599,18 @@ private:
                   lhs.declarations.front(), rhs.declarations.front());
       return;
     }
+    // A remote_uniform physical index has one descriptor over all of its
+    // nodes, so nodes cannot use different storage sources.
+    if (joinDFBAddressScopes(getDFBAddressScope(lhs),
+                             getDFBAddressScope(rhs)) ==
+            DFBAddressScope::RemoteUniform &&
+        lhs.tensorBacking != rhs.tensorBacking &&
+        !(lhs.launchDomain.known && lhs.launchDomain == rhs.launchDomain)) {
+      addEvidence(model, lhs, rhs, lhsIndex, rhsIndex,
+                  DFBConflictReason::StorageMismatch, std::nullopt,
+                  lhs.declarations.front(), rhs.declarations.front());
+      return;
+    }
     std::uint64_t physicalTileCount =
         cast<CircularBufferType>(lhs.type).getTotalElements();
     bool lhsInactive = lhs.launchDomain.known && lhs.launchDomain.nodes.empty();
