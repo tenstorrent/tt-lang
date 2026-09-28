@@ -2334,8 +2334,7 @@ def TTL_ResetAllDFBsOp
   let description = [{
     `ttl.reset_all_dfbs` has the synchronization and state-reset semantics of
     `ttl.reset_dfbs`, applied to every worker-local DFB allocated by the
-    program. It does not take DFB operands because the complete allocation set
-    is resolved after physical DFB indices are finalized.
+    program.
   }];
   let arguments = (ins TTL_SynchronizedDFBResetAttr:$reset);
   let assemblyFormat = "$reset attr-dict";

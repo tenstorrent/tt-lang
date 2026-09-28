@@ -224,11 +224,14 @@ default `LOCAL` scope permits different L1 addresses on different nodes. Use
 NoC address: the runtime then creates one descriptor at the same L1 address on
 every allocated node, allocates it before every local-scope descriptor so it
 costs no padding, and never splits it per core; a program whose remote-uniform
-and local storage do not fit fails at descriptor construction. This scope changes backing-storage placement only. It
-does not change the DFB protocol, physical-index reuse, capacity, or
-synchronization. A `remote_uniform` DFB cannot share backing storage with a
-different physical DFB index because that sharing would make its address depend
-on the other index's node domain.
+and local storage do not fit fails at descriptor construction. The scope does
+not change the DFB protocol, capacity, or synchronization. It restricts reuse
+in two ways: a `remote_uniform` DFB cannot share backing storage with a
+different physical DFB index, because that sharing would make its address
+depend on the other index's node domain, and a local tensor-backed DFB cannot
+share a physical index with a `remote_uniform` DFB, because the shared index
+takes the stricter scope, which the tensor's own shard addresses cannot
+provide.
 
 Operation tensors allocated per core bind each executing core's own shard
 address in its kernel descriptor, including the base address of a
@@ -547,9 +550,9 @@ DFB only at launch also receives storage.
 
 When `TT_METAL_ALLOCATOR_MODE_HYBRID` enables TT-Metal's hybrid allocator
 before device initialization, a program with a reconfiguration plan also backs
-at runtime the local storage that some epoch holds in scratch, even when that
-storage is not reconfigured; storage whose epochs are all tensor-backed keeps
-static descriptors for its other launch nodes. Each
+at runtime every local storage index that some epoch holds in scratch, even
+when it is not reconfigured. A storage index whose epochs are all tensor-backed
+keeps a static descriptor on any launch node that no epoch covers. Each
 core then receives one per-core arena that packs its local storage indices at
 TT-Metal's DRAM alignment (32 bytes on Wormhole, 64 bytes on Blackhole), the
 alignment static DFB placement uses, and configuration tensors are allocated

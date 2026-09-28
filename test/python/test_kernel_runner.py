@@ -116,6 +116,31 @@ def test_reconfiguration_runtime_resources_with_plan_require_launch_configs(
         )
 
 
+def test_reconfiguration_runtime_resources_reject_mismatched_launch_config(
+    monkeypatch,
+):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    config = PhysicalDFBConfig(0, 1, "bfloat16", 1, 2048, (32, 32), storage_index=4)
+    plan = DFBReconfigurationPlan(
+        boundary_ordinals=(7,),
+        dfb_epochs=(
+            (DFBConfigurationEpoch(None, config), DFBConfigurationEpoch(7, config)),
+        ),
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="launch DFB configuration 0 does not match the reconfiguration plan",
+    ):
+        kernel_runner.build_dfb_reconfiguration_runtime_resources(
+            tensors=[],
+            core_ranges=_FakeCoreRanges(),
+            plan=plan,
+            device=object(),
+            cb_configs=[replace(config, storage_index=5)],
+        )
+
+
 @pytest.fixture(autouse=True)
 def _lockstep_allocator_by_default(monkeypatch):
     # Hybrid-mode tests set the allocator mode explicitly; an exported setting
@@ -7470,6 +7495,37 @@ def test_remote_uniform_dfb_uses_one_descriptor_across_nodes(monkeypatch):
 
 # A per-core backing tensor binds each node to its own shard, which a
 # remote-uniform DFB allows only when every owner holds the same address.
+@pytest.mark.parametrize("tensor_index", [1, -1], ids=["past-end", "negative"])
+def test_remote_uniform_dfb_validates_backing_index(monkeypatch, tensor_index):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    tensor = _FakeTensor(
+        None, dtype=kernel_runner.format_name_to_ttnn_dtype("bfloat16")
+    )
+    config = PhysicalDFBConfig(
+        0,
+        1,
+        "bfloat16",
+        1,
+        2048,
+        (32, 32),
+        (
+            DFBStorageSegment(
+                nodes=((0, 0),), tensor_index=tensor_index, byte_size=2048
+            ),
+        ),
+        address_scope="remote_uniform",
+    )
+
+    with pytest.raises(
+        ValueError, match=r"DFB\[0\] tensor backing index .* is outside \[0, 1\)"
+    ):
+        kernel_runner.build_cb_descriptors(
+            tensors=[tensor],
+            cb_configs=[config],
+            core_ranges=_FakeExplicitCoreRanges((0, 0), (0, 0)),
+        )
+
+
 def test_remote_uniform_dfb_rejects_non_uniform_per_core_backing(monkeypatch):
     monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
     full_grid = _FakeExplicitCoreRanges((0, 0), (1, 0))

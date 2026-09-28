@@ -140,6 +140,8 @@ class _SubstituteTransformer(ast.NodeTransformer):
         self.dfb_parameter_occurrences = {
             name: f"{inline_suffix}:{name}" for name in dfb_parameter_names
         }
+        # Targets of unrolled loops that no later statement has reassigned.
+        self.unbound_loop_targets: Set[str] = set()
 
     def visit_FunctionDef(self, node):
         node.name = self.rename_map.get(node.name, node.name)
@@ -167,10 +169,22 @@ class _SubstituteTransformer(ast.NodeTransformer):
             )
             return ast.copy_location(replacement, node)
         if node.id not in self.rename_map:
+            self._check_unbound_loop_target(node.id, node.ctx)
             return node
         replacement = ast.Name(id=self.rename_map[node.id], ctx=node.ctx)
+        self._check_unbound_loop_target(replacement.id, node.ctx)
         _copy_dfb_source_occurrence(node, replacement)
         return ast.copy_location(replacement, node)
+
+    def _check_unbound_loop_target(self, name, context):
+        if isinstance(context, ast.Store):
+            self.unbound_loop_targets.discard(name)
+        elif name in self.unbound_loop_targets:
+            raise ValueError(
+                f"@ttl.operation {self.caller_name!r}: a loop over a captured "
+                f"sequence leaves its target unbound, so {name!r} cannot be "
+                "read after the loop"
+            )
 
     def visit_Subscript(self, node):
         transformed_node = self.generic_visit(node)
@@ -201,7 +215,9 @@ class _SubstituteTransformer(ast.NodeTransformer):
             if isinstance(name, ast.Name)
         }
         if _contains_loop_control(transformed_node.body) or any(
-            isinstance(name, ast.Name) and name.id in target_names
+            isinstance(name, ast.Name)
+            and isinstance(name.ctx, ast.Load)
+            and name.id in target_names
             for statement in transformed_node.orelse
             for name in ast.walk(statement)
         ):
@@ -231,6 +247,14 @@ class _SubstituteTransformer(ast.NodeTransformer):
                     unrolled_body.append(transformed_statement)
         # Without break, the else suite runs once after the last element.
         unrolled_body.extend(transformed_node.orelse)
+        self.unbound_loop_targets.update(
+            target_names.difference(
+                name.id
+                for statement in transformed_node.orelse
+                for name in ast.walk(statement)
+                if isinstance(name, ast.Name) and isinstance(name.ctx, ast.Store)
+            )
+        )
         return unrolled_body
 
     def _bind_loop_target(self, target, value, bindings):
