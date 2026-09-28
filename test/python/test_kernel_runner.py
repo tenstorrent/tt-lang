@@ -9947,3 +9947,37 @@ def test_sram_report_accounts_for_multiple_pages_per_node(capsys):
     )
     record = json.loads(capsys.readouterr().err.split("ttlang-sram-report: ", 1)[1])
     assert record["reserved_bytes_per_node"] == 128
+
+
+def test_sram_report_preserves_existing_positional_runtime_arguments(monkeypatch):
+    selected_models = []
+    monkeypatch.setattr(
+        kernel_runner,
+        "_get_compiler_l1_arena_bytes",
+        lambda configs, model, resets: selected_models.append(model) or None,
+    )
+    monkeypatch.setattr(kernel_runner, "_run_kernel_on_device_impl", lambda **kw: kw)
+    result = kernel_runner.run_kernel_on_device(
+        [],
+        [],
+        [],
+        object(),
+        None,
+        (),
+        None,
+        0,
+        0,
+        0,
+        0,
+        None,
+        None,
+        None,
+        None,
+        None,
+        "test_operation",
+        None,
+        None,
+        "metal-cb",
+    )
+    assert selected_models == ["metal-cb"]
+    assert result["device"] is None

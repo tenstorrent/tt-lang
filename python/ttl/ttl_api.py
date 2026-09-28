@@ -867,7 +867,6 @@ class CompiledTTNNKernel:
         device_domain=None,
         kernel_logical_selectors=None,
         operation_name="<anonymous>",
-        sram_allocation_report=False,
         runtime_resource_factory: Optional[
             Callable[..., ProgramRuntimeResources]
         ] = None,
@@ -875,6 +874,7 @@ class CompiledTTNNKernel:
         kernel_used_dfb_indices=None,
         kernel_local_tensor_indices=None,
         memory_model: Optional[str] = None,
+        sram_allocation_report=False,
     ):
         """
         Initialize with pre-compiled kernel artifacts.
@@ -1969,9 +1969,9 @@ def _compile_ttnn_kernel(
     device_domain=None,
     target_arch: Optional[str] = None,
     operation_name: str = "<anonymous>",
-    sram_allocation_report: bool = False,
     runtime_resource_factory: Optional[Callable[..., ProgramRuntimeResources]] = None,
     runtime_resource_cache: Optional[KernelRuntimeResourceCache] = None,
+    sram_allocation_report: bool = False,
 ):
     """
     Compile kernel to CompiledTTNNKernel for execution via ttnn.generic_op.

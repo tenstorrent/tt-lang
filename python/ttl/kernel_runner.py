@@ -4810,10 +4810,10 @@ def run_kernel_on_device(
     fabric_route_cache: Optional[_FabricRouteCache] = None,
     runtime_resource_factory: Optional[Callable[..., ProgramRuntimeResources]] = None,
     operation_name: str = "<anonymous>",
-    sram_allocation_report: bool = False,
     runtime_resource_cache: Optional[KernelRuntimeResourceCache] = None,
     device: Optional[Any] = None,
     memory_model: Optional[str] = None,
+    sram_allocation_report: bool = False,
 ) -> Any:
     """Execute a kernel, serializing use of persistent runtime resources."""
     if device_domain is not None and not isinstance(device_domain, DeviceDomain):
