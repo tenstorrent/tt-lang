@@ -2740,7 +2740,7 @@ buildDescriptors(ArrayRef<DFBPhysicalIndexAssignment> assignments,
           }
           LaunchNodeDomain nodeDomain;
           nodeDomain.nodes.insert(lifetime.node);
-          if (!lifetime.conservativeConfigurationEpochs.empty()) {
+          if (lifetime.conservativeConfigurationEpochsClassified) {
             for (std::optional<int64_t> ordinal :
                  lifetime.conservativeConfigurationEpochs) {
               if (failed(addConfiguration(candidate, ordinal, nodeDomain))) {
