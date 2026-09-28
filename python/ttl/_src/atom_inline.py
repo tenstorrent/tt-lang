@@ -193,11 +193,22 @@ class _SubstituteTransformer(ast.NodeTransformer):
         transformed_node = self.generic_visit(node)
         if not isinstance(transformed_node.iter, (ast.Tuple, ast.List)):
             return transformed_node
-        # Unrolling removes the loop that break, continue, and else refer to.
-        if transformed_node.orelse or _contains_loop_control(transformed_node.body):
+        # Unrolling removes the loop that break and continue refer to, and
+        # leaves the loop target unbound in the else suite.
+        target_names = {
+            name.id
+            for name in ast.walk(transformed_node.target)
+            if isinstance(name, ast.Name)
+        }
+        if _contains_loop_control(transformed_node.body) or any(
+            isinstance(name, ast.Name) and name.id in target_names
+            for statement in transformed_node.orelse
+            for name in ast.walk(statement)
+        ):
             raise ValueError(
                 f"@ttl.operation {self.caller_name!r}: a loop over a captured "
-                "sequence cannot use break, continue, or else"
+                "sequence cannot use break or continue, or read its target "
+                "in else"
             )
 
         unrolled_body = []
@@ -218,6 +229,8 @@ class _SubstituteTransformer(ast.NodeTransformer):
                     unrolled_body.extend(transformed_statement)
                 else:
                     unrolled_body.append(transformed_statement)
+        # Without break, the else suite runs once after the last element.
+        unrolled_body.extend(transformed_node.orelse)
         return unrolled_body
 
     def _bind_loop_target(self, target, value, bindings):

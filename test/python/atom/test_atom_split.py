@@ -868,27 +868,54 @@ def _make_loop_control_helper(loop_control):
 
         @ttl.operation()
         def coordinate_helper(core_x):
-            for _coordinate_x, _coordinate_y in coordinates:
+            for coordinate_x, _coordinate_y in coordinates:
                 pass
             else:
-                pass
+                if core_x == coordinate_x:
+                    pass
 
     return coordinate_helper
 
 
 @pytest.mark.parametrize("loop_control", ["break", "continue", "else"])
 def test_composition_rejects_loop_control_over_captured_sequence(loop_control):
-    """Unrolling a captured sequence cannot keep break, continue, or else."""
+    """Unrolling a captured sequence cannot keep break, continue, or a target read."""
     coordinate_helper = _make_loop_control_helper(loop_control)
 
     with pytest.raises(
         ValueError,
-        match="a loop over a captured sequence cannot use break, continue, or else",
+        match=(
+            "a loop over a captured sequence cannot use break or continue, or "
+            "read its target in else"
+        ),
     ):
 
         @ttl.operation(grid=(1, 1))
         def composed_coordinates(core_x):
             coordinate_helper(core_x)
+
+
+def test_composition_unrolls_captured_sequence_loop_else():
+    """An else suite without break runs once after the unrolled body."""
+    coordinates = ((1, 2), (3, 4))
+
+    @ttl.operation()
+    def coordinate_helper(core_x):
+        for coordinate_x, _coordinate_y in coordinates:
+            if core_x == coordinate_x:
+                ttl.call_extern_func("each.hpp", "each", kernel=ttl.KernelKind.COMPUTE)
+        else:
+            ttl.call_extern_func("after.hpp", "after", kernel=ttl.KernelKind.COMPUTE)
+
+    @ttl.operation(grid=(1, 1))
+    def composed_coordinates(core_x):
+        coordinate_helper(core_x)
+
+    source = composed_coordinates._spec.source
+    assert "for " not in source
+    assert source.count("'each'") == 2
+    assert source.count("'after'") == 1
+    assert source.index("core_x == 3") < source.index("'after'")
 
 
 def test_composition_folds_captured_sequence_subscript():
