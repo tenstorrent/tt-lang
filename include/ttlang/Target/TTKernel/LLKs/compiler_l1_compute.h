@@ -32,13 +32,17 @@ struct ComputeTileMetadata {
 template <uint32_t Format, uint32_t PageBytes, uint32_t TileHeight,
           uint32_t TileWidth, uint32_t PagesPerBlock, uint32_t BlockCount,
           uint32_t StorageCapacityPages, uint32_t PayloadOffset,
-          int32_t PayloadCommonArgIndex, bool DirectToDestination>
+          int32_t PayloadCommonArgIndex, bool DirectToDestination,
+          bool ReloadOwnedSequence = true>
 class Operand
     : public Buffer<PageBytes, PagesPerBlock, BlockCount, StorageCapacityPages,
-                    PayloadOffset, PayloadCommonArgIndex> {
+                    PayloadOffset, PayloadCommonArgIndex, ReloadOwnedSequence> {
 public:
-  using Buffer<PageBytes, PagesPerBlock, BlockCount, StorageCapacityPages,
-               PayloadOffset, PayloadCommonArgIndex>::Buffer;
+  using BufferBase =
+      Buffer<PageBytes, PagesPerBlock, BlockCount, StorageCapacityPages,
+             PayloadOffset, PayloadCommonArgIndex, ReloadOwnedSequence>;
+  using BufferBase::BufferBase;
+  explicit Operand(const BufferBase &buffer) : BufferBase(buffer) {}
   using TileMetadata = ComputeTileMetadata<Format, PageBytes, TileHeight,
                                            TileWidth, DirectToDestination>;
   static constexpr uint32_t format = TileMetadata::format;
@@ -62,11 +66,11 @@ template <uint32_t Format, uint32_t PageBytes, uint32_t TileHeight,
 class ComputeDFBDescriptor
     : public Operand<Format, PageBytes, TileHeight, TileWidth, PagesPerBlock,
                      BlockCount, StorageCapacityPages, PayloadOffset,
-                     PayloadCommonArgIndex, DirectToDestination> {
+                     PayloadCommonArgIndex, DirectToDestination, true> {
 public:
   using Operand<Format, PageBytes, TileHeight, TileWidth, PagesPerBlock,
                 BlockCount, StorageCapacityPages, PayloadOffset,
-                PayloadCommonArgIndex, DirectToDestination>::Operand;
+                PayloadCommonArgIndex, DirectToDestination, true>::Operand;
   /// Binds this descriptor to its compile-time allocation in the core arena.
   static ComputeDFBDescriptor bind() {
     return ComputeDFBDescriptor(target::arenaBase() + StateOffset);
@@ -139,6 +143,9 @@ inline void unary_bcast(Source source, uint32_t tile, uint32_t destination) {
 /// Configuration is processor-local and lasts for one kernel invocation.
 class ComputeContext {
   bool initialized = false;
+  uint64_t activeSourceAConfiguration = 0;
+  uint64_t activeSourceBConfiguration = 0;
+  uint64_t activeOutputConfiguration = 0;
   uint32_t sourceAFormat = 0;
   uint32_t sourceAUnpackFormat = 0;
   uint32_t sourceAPageWords = 0;
@@ -154,8 +161,34 @@ class ComputeContext {
   uint32_t outputHeight = 0;
   uint32_t outputWidth = 0;
 
+  template <typename SourceTile>
+  static constexpr uint64_t inputConfiguration() {
+    static_assert(SourceTile::format <= UINT8_MAX &&
+                  SourceTile::unpackFormat <= UINT8_MAX &&
+                  SourceTile::tensorShape.face_r_dim <= UINT8_MAX &&
+                  SourceTile::tensorShape.total_num_faces() <= UINT8_MAX);
+    return uint64_t{SourceTile::format} |
+           (uint64_t{SourceTile::unpackFormat} << 8) |
+           (uint64_t{SourceTile::pageWords} << 16) |
+           (uint64_t{SourceTile::tensorShape.face_r_dim} << 48) |
+           (uint64_t{SourceTile::tensorShape.total_num_faces()} << 56);
+  }
+
+  template <typename OutputTile>
+  static constexpr uint64_t outputConfiguration() {
+    static_assert(OutputTile::format <= UINT8_MAX &&
+                  OutputTile::tensorShape.total_row_dim() <= UINT8_MAX &&
+                  OutputTile::tensorShape.total_col_dim() <= UINT8_MAX);
+    return uint64_t{OutputTile::format} |
+           (uint64_t{OutputTile::pageWords} << 8) |
+           (uint64_t{OutputTile::tensorShape.total_row_dim()} << 40) |
+           (uint64_t{OutputTile::tensorShape.total_col_dim()} << 48);
+  }
+
   template <typename SourceATile, typename SourceBTile>
   void recordInputs() {
+    activeSourceAConfiguration = inputConfiguration<SourceATile>();
+    activeSourceBConfiguration = inputConfiguration<SourceBTile>();
     sourceAFormat = SourceATile::format;
     sourceAUnpackFormat = SourceATile::unpackFormat;
     sourceAPageWords = SourceATile::pageWords;
@@ -170,6 +203,7 @@ class ComputeContext {
 
   template <typename OutputTile>
   void recordOutput() {
+    activeOutputConfiguration = outputConfiguration<OutputTile>();
     outputFormat = OutputTile::format;
     outputPageWords = OutputTile::pageWords;
     outputHeight = OutputTile::tensorShape.total_row_dim();
@@ -233,6 +267,12 @@ class ComputeContext {
 
   template <typename SourceATile, typename SourceBTile, typename OutputTile>
   __attribute__((noinline)) void configureTiles() {
+    if (initialized &&
+        activeSourceAConfiguration == inputConfiguration<SourceATile>() &&
+        activeSourceBConfiguration == inputConfiguration<SourceBTile>() &&
+        activeOutputConfiguration == outputConfiguration<OutputTile>()) {
+      return;
+    }
     if (!initialized) {
       UNPACK((_llk_unpack_hw_configure_<DST_ACCUM_MODE>(
           SourceATile::format, SourceBTile::format, SourceATile::unpackFormat,
@@ -344,8 +384,9 @@ __attribute__((noinline)) inline void copyInitFormats() {
   MATH((ckernel::math::_configure_preserve_zero_flag_state_()));
 }
 template <uint32_t Format, uint32_t UnpackFormat, bool Direct>
-__attribute__((noinline)) inline void copyAtAddress(uint32_t address,
-                                                    uint32_t destination) {
+// Inlining exposes loop-invariant hardware addresses to the RISC compiler.
+__attribute__((always_inline)) inline void copyAtAddress(uint32_t address,
+                                                         uint32_t destination) {
   UNPACK((_llk_unpack_A_<ckernel::BroadcastType::NONE, false,
                          ckernel::EltwiseBinaryReuseDestType::NONE, Direct>(
       address, Format, UnpackFormat)));

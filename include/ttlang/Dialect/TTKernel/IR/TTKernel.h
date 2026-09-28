@@ -42,6 +42,9 @@ private:
 constexpr llvm::StringLiteral
     kExecutionCoreRangesAttrName("ttkernel.execution_core_ranges");
 
+/// Marks a DFB release whose payload accesses are already complete.
+constexpr llvm::StringLiteral kPayloadCompleteAttrName("payload_complete");
+
 /// Return whether enclosing `ttkernel.execution_core_ranges` attributes prove
 /// that two operations execute on disjoint worker cores. A nonnull `limit`
 /// must be a common ancestor and is excluded from the inspected metadata.

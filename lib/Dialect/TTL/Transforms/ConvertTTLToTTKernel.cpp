@@ -5,6 +5,7 @@
 #include "ttlang/Dialect/TTL/Passes.h" // IWYU pragma: keep
 
 #include "CommonRuntimeArgLayout.h"
+#include "DFBAcquireReleaseAnalysis.h"
 #include "DFBAllocationLimits.h"
 #include "FabricManagerLifetimeAnalysis.h"
 #include "PipeGraph.h"
@@ -48,6 +49,7 @@
 #include "ttlang/Dialect/Utils/ConversionUtils.h"
 #include "llvm/ADT/BitVector.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/Support/Casting.h"
@@ -56,6 +58,7 @@
 #include <cstdlib>
 #include <limits>
 #include <optional>
+#include <type_traits>
 #include <utility>
 #include <variant>
 
@@ -71,6 +74,14 @@ namespace ttk = mlir::tt::ttkernel;
 constexpr llvm::StringLiteral kExpandLinearizeIndexAttr =
     "ttlang.expand_linearize_index";
 // PipeGraph is defined in PipeGraph.h.
+
+struct DFBReleaseCompletionPlan {
+  llvm::DenseSet<Operation *> payloadCompleteReleases;
+
+  bool isPayloadComplete(Operation *release) const {
+    return payloadCompleteReleases.contains(release);
+  }
+};
 
 static bool usesCompilerL1(ModuleOp module) {
   auto memoryModel = module->getAttrOfType<StringAttr>(kMemoryModelAttrName);
@@ -625,9 +636,11 @@ static Value computeNumTiles(Operation *sourceOp, CircularBufferType dfbType,
 template <typename SourceOp, typename TargetOp, bool HasResult>
 struct CBOpLowering : OpConversionPattern<SourceOp> {
   CBOpLowering(const TypeConverter &typeConverter, MLIRContext *context,
-               const PipeTransportPlan &pipeTransportPlan)
+               const PipeTransportPlan &pipeTransportPlan,
+               const DFBReleaseCompletionPlan &releaseCompletionPlan)
       : OpConversionPattern<SourceOp>(typeConverter, context),
-        pipeTransportPlan(pipeTransportPlan) {}
+        pipeTransportPlan(pipeTransportPlan),
+        releaseCompletionPlan(releaseCompletionPlan) {}
 
   LogicalResult
   matchAndRewrite(SourceOp op, typename SourceOp::Adaptor adaptor,
@@ -664,7 +677,15 @@ struct CBOpLowering : OpConversionPattern<SourceOp> {
     }
 
     Value numTiles = computeNumTiles(op, *maybeDFBType, rewriter, loc);
-    TargetOp::create(rewriter, loc, *convertedCb, numTiles);
+    if constexpr (std::is_same_v<TargetOp, ttk::CBPushBackOp>) {
+      UnitAttr payloadComplete;
+      if (releaseCompletionPlan.isPayloadComplete(op.getOperation())) {
+        payloadComplete = rewriter.getUnitAttr();
+      }
+      TargetOp::create(rewriter, loc, *convertedCb, numTiles, payloadComplete);
+    } else {
+      TargetOp::create(rewriter, loc, *convertedCb, numTiles);
+    }
 
     if constexpr (HasResult) {
       auto viewCast = UnrealizedConversionCastOp::create(
@@ -678,6 +699,7 @@ struct CBOpLowering : OpConversionPattern<SourceOp> {
 
 private:
   const PipeTransportPlan &pipeTransportPlan;
+  const DFBReleaseCompletionPlan &releaseCompletionPlan;
 };
 
 using CBReserveLowering =
@@ -692,17 +714,20 @@ struct CBPopLowering : OpConversionPattern<CBPopOp> {
                 const PipeCapacityPlan &pipeCapacityPlan,
                 const PipeTransportPlan &pipeTransportPlan,
                 const PipeTransportSlotCounterMap &slotCounters,
-                const PipeResourcePlan &pipeResourcePlan)
+                const PipeResourcePlan &pipeResourcePlan,
+                const DFBReleaseCompletionPlan &releaseCompletionPlan)
       : OpConversionPattern(typeConverter, context),
         pipeCapacityPlan(pipeCapacityPlan),
         pipeTransportPlan(pipeTransportPlan), slotCounters(slotCounters),
-        pipeResourcePlan(pipeResourcePlan) {}
+        pipeResourcePlan(pipeResourcePlan),
+        releaseCompletionPlan(releaseCompletionPlan) {}
 
   LogicalResult
   matchAndRewrite(CBPopOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     return lowerCBPop(op, adaptor.getCb(), pipeCapacityPlan, pipeTransportPlan,
-                      slotCounters, pipeResourcePlan, rewriter);
+                      slotCounters, pipeResourcePlan,
+                      releaseCompletionPlan.isPayloadComplete(op), rewriter);
   }
 
 private:
@@ -710,6 +735,7 @@ private:
   const PipeTransportPlan &pipeTransportPlan;
   const PipeTransportSlotCounterMap &slotCounters;
   const PipeResourcePlan &pipeResourcePlan;
+  const DFBReleaseCompletionPlan &releaseCompletionPlan;
 };
 
 /// Trace back from a view value to the underlying TTKernel CB.
@@ -886,6 +912,110 @@ static std::optional<TransferKind> getTransferKindFromHandleType(Type t) {
     return std::nullopt;
   }
   return transferHandle.getKind();
+}
+
+static bool
+transferCompletesDFBTransaction(Operation *release, Operation *acquire,
+                                const DFBAcquireReleaseIndex &lifecycleIndex) {
+  if (release->getBlock() != acquire->getBlock()) {
+    return false;
+  }
+
+  const DFBTransactionRecord &transaction =
+      lifecycleIndex.getTransaction(acquire);
+  const DFBReleaseOwnership &ownership =
+      lifecycleIndex.getReleaseOwnership(release);
+  if (transaction.numTiles != ownership.numTiles) {
+    return false;
+  }
+
+  SmallVector<Operation *> ownedUses;
+  SmallVector<Operation *> acquisitions =
+      lifecycleIndex.getAcquisitions(transaction.kind);
+  collectDFBAcquireOwnedUses(makeDFBAcquireInterval(acquire, acquisitions),
+                             ownedUses);
+
+  CopyOp copy;
+  WaitOp wait;
+  for (Operation *use : ownedUses) {
+    if (auto candidate = dyn_cast<CopyOp>(use)) {
+      if (copy) {
+        return false;
+      }
+      copy = candidate;
+      continue;
+    }
+    if (auto candidate = dyn_cast<WaitOp>(use)) {
+      if (wait) {
+        return false;
+      }
+      wait = candidate;
+      continue;
+    }
+    return false;
+  }
+  if (!copy || !wait || copy->getBlock() != release->getBlock() ||
+      wait->getBlock() != release->getBlock() ||
+      wait->getNextNode() != release || !copy.getXf().hasOneUse() ||
+      wait.getXf() != copy.getXf()) {
+    return false;
+  }
+
+  std::optional<TransferKind> transferKind =
+      getTransferKindFromHandleType(copy.getXf().getType());
+  if (!transferKind) {
+    return false;
+  }
+
+  Value transferredStorage;
+  TransferKind expectedKind;
+  if (transaction.kind == DFBAcquireReleaseKind::Producer) {
+    transferredStorage = copy.getDst();
+    expectedKind = TransferKind::read;
+  } else {
+    transferredStorage = copy.getSrc();
+    expectedKind = TransferKind::write;
+  }
+  if (*transferKind != expectedKind) {
+    return false;
+  }
+
+  return transferredStorage == transaction.dfb ||
+         findCBAcquireOp(transferredStorage, copy.getOperation()) == acquire;
+}
+
+static LogicalResult
+buildDFBReleaseCompletionPlan(ModuleOp module, DFBReleaseCompletionPlan &plan) {
+  if (!usesCompilerL1(module)) {
+    return success();
+  }
+
+  for (func::FuncOp function : module.getOps<func::FuncOp>()) {
+    PlanningResult<std::unique_ptr<DFBAcquireReleaseIndex>> indexResult =
+        DFBAcquireReleaseIndex::create(function);
+    if (indexResult.isInvalidIR()) {
+      const PlanningDiagnostic &diagnostic = indexResult.getInvalidIR();
+      diagnostic.operation->emitError(diagnostic.message);
+      return failure();
+    }
+    assert(indexResult.isPlanned() &&
+           "DFB lifecycle indexing has no recoverable rejection");
+    std::unique_ptr<DFBAcquireReleaseIndex> lifecycleIndex =
+        std::move(indexResult).takePlan();
+
+    for (Operation *release : lifecycleIndex->getReleases()) {
+      ArrayRef<Operation *> intervalOwners =
+          lifecycleIndex->getReleaseIntervalOwners(release);
+      if (intervalOwners.size() != 1) {
+        continue;
+      }
+      if (transferCompletesDFBTransaction(release, intervalOwners.front(),
+                                          *lifecycleIndex)) {
+        plan.payloadCompleteReleases.insert(release);
+      }
+    }
+  }
+  return success();
 }
 
 /// Compute CTA index for a tensor function argument.
@@ -2821,6 +2951,11 @@ static LogicalResult lowerTTLOpsToTTKernel(
     return failure();
   }
 
+  DFBReleaseCompletionPlan releaseCompletionPlan;
+  if (failed(buildDFBReleaseCompletionPlan(mod, releaseCompletionPlan))) {
+    return failure();
+  }
+
   FabricRoutePlan fabricRoutePlan;
   if (failed(
           buildFabricRoutePlan(mod, transferIndex, *pipeGraphOrErr,
@@ -2943,7 +3078,7 @@ static LogicalResult lowerTTLOpsToTTKernel(
   patterns.add<WaitLowering>(typeConverter, &ctx,
                              pipeModulePlan.getCompletedPipeSendWaits());
   patterns.add<CBReserveLowering, CBPushLowering, CBWaitLowering>(
-      typeConverter, &ctx, pipeTransportPlan);
+      typeConverter, &ctx, pipeTransportPlan, releaseCompletionPlan);
   patterns.add<ResetDFBsLowering, ResetAllDFBsLowering>(
       typeConverter, &ctx, synchronizationLoweringPlan);
   patterns.add<DFBReconfigurationLowering>(typeConverter, &ctx,
@@ -2961,7 +3096,7 @@ static LogicalResult lowerTTLOpsToTTKernel(
                                    *userManagedPhysicalDFBIndices);
   patterns.add<CBPopLowering>(typeConverter, &ctx, pipeCapacityPlan,
                               pipeTransportPlan, transportSlotCounters,
-                              pipeResourcePlan);
+                              pipeResourcePlan, releaseCompletionPlan);
   populatePipeLoweringPatterns(patterns, typeConverter,
                                pipeModulePlan.getPipeNetIndex());
   populateFunctionOpInterfaceTypeConversionPattern(
