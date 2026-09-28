@@ -348,6 +348,22 @@ def _is_constant_structure(node: ast.expr) -> bool:
     return False
 
 
+def _rebound_names(statements) -> Set[str]:
+    """Return names stored or deleted in ``statements`` outside nested scopes."""
+    names: Set[str] = set()
+    pending = list(statements)
+    while pending:
+        node = pending.pop()
+        if isinstance(node, _NESTED_SCOPES):
+            continue
+        if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)):
+            names.add(node.id)
+        elif isinstance(node, ast.ExceptHandler) and node.name is not None:
+            names.add(node.name)
+        pending.extend(ast.iter_child_nodes(node))
+    return names
+
+
 def _contains_loop_control(statements) -> bool:
     """Return whether break or continue in ``statements`` targets their loop."""
     pending = list(statements)
@@ -435,6 +451,8 @@ class _SubstituteTransformer(ast.NodeTransformer):
         return ast.copy_location(element, transformed_node)
 
     def visit_For(self, node):
+        # Local names are renamed below; keep the source spelling for messages.
+        source_target_names = dict(_loop_target_paths(node.target))
         transformed_node = self.generic_visit(node)
         if not isinstance(transformed_node.iter, (ast.Tuple, ast.List)):
             return transformed_node
@@ -443,6 +461,22 @@ class _SubstituteTransformer(ast.NodeTransformer):
             raise ValueError(
                 f"@ttl.operation {self.caller_name!r}: a loop over a captured "
                 "sequence cannot use break or continue"
+            )
+        # Unrolling substitutes the element for every read of the target, so a
+        # store to the target inside the body would be bypassed by later reads.
+        renamed_to_source = {
+            name: source_target_names[path]
+            for path, name in _loop_target_paths(transformed_node.target)
+        }
+        rebound_targets = sorted(
+            renamed_to_source[name]
+            for name in _rebound_names(transformed_node.body) & set(renamed_to_source)
+        )
+        if rebound_targets:
+            raise ValueError(
+                f"@ttl.operation {self.caller_name!r}: loop target "
+                f"{rebound_targets[0]!r} in {self.callee_name!r} is rebound "
+                "inside its loop over a captured sequence"
             )
         targets_read_after = getattr(transformed_node, _LOOP_TARGETS_READ_AFTER)
         if targets_read_after and not transformed_node.iter.elts:
