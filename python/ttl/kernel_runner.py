@@ -4618,10 +4618,12 @@ def _validate_remote_uniform_tensor_backing(
             shard_addresses = _per_core_shard_addresses(
                 backing_tensor, f"DFB[{config.dfb_index}] backing tensor", None
             )
+            # Every owner core on every mesh device must share one address.
             owner_addresses = {
-                tuple(shard_addresses[node])
+                address
                 for node in segment.nodes
                 if node in shard_addresses
+                for address in shard_addresses[node]
             }
             if len(owner_addresses) > 1:
                 raise ValueError(

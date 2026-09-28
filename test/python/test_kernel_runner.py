@@ -101,7 +101,11 @@ def test_reconfiguration_runtime_resources_without_plan_need_no_launch_configs()
 def test_reconfiguration_runtime_resources_with_plan_require_launch_configs(
     monkeypatch,
 ):
-    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    monkeypatch.setattr(
+        kernel_runner,
+        "_ensure_ttnn",
+        lambda: pytest.fail("launch configurations must be checked first"),
+    )
     config = PhysicalDFBConfig(0, 1, "bfloat16", 1, 2048, (32, 32))
     plan = DFBReconfigurationPlan(
         boundary_ordinals=(7,),
@@ -116,8 +120,11 @@ def test_reconfiguration_runtime_resources_with_plan_require_launch_configs(
         )
 
 
+@pytest.mark.parametrize(
+    "mismatch", ["storage_index", "dfb_index"], ids=["storage", "physical"]
+)
 def test_reconfiguration_runtime_resources_reject_mismatched_launch_config(
-    monkeypatch,
+    monkeypatch, mismatch
 ):
     monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
     config = PhysicalDFBConfig(0, 1, "bfloat16", 1, 2048, (32, 32), storage_index=4)
@@ -137,7 +144,7 @@ def test_reconfiguration_runtime_resources_reject_mismatched_launch_config(
             core_ranges=_FakeCoreRanges(),
             plan=plan,
             device=object(),
-            cb_configs=[replace(config, storage_index=5)],
+            cb_configs=[replace(config, **{mismatch: 5})],
         )
 
 
@@ -7493,8 +7500,6 @@ def test_remote_uniform_dfb_uses_one_descriptor_across_nodes(monkeypatch):
     assert _descriptor_cores(descriptors_by_index[1]) == {(0, 0), (1, 0)}
 
 
-# A per-core backing tensor binds each node to its own shard, which a
-# remote-uniform DFB allows only when every owner holds the same address.
 @pytest.mark.parametrize("tensor_index", [1, -1], ids=["past-end", "negative"])
 def test_remote_uniform_dfb_validates_backing_index(monkeypatch, tensor_index):
     monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
@@ -7519,13 +7524,11 @@ def test_remote_uniform_dfb_validates_backing_index(monkeypatch, tensor_index):
     with pytest.raises(
         ValueError, match=r"DFB\[0\] tensor backing index .* is outside \[0, 1\)"
     ):
-        kernel_runner.build_cb_descriptors(
-            tensors=[tensor],
-            cb_configs=[config],
-            core_ranges=_FakeExplicitCoreRanges((0, 0), (0, 0)),
-        )
+        kernel_runner._validate_remote_uniform_tensor_backing([tensor], [config], None)
 
 
+# A per-core backing tensor binds each node to its own shard, which a
+# remote-uniform DFB allows only when every owner holds the same address.
 def test_remote_uniform_dfb_rejects_non_uniform_per_core_backing(monkeypatch):
     monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
     full_grid = _FakeExplicitCoreRanges((0, 0), (1, 0))
@@ -7565,6 +7568,41 @@ def test_remote_uniform_dfb_rejects_non_uniform_per_core_backing(monkeypatch):
             tensors=[tensor],
             cb_configs=[config],
             core_ranges=full_grid,
+        )
+
+
+# One owner core whose address differs between mesh devices is also non-uniform.
+def test_remote_uniform_dfb_rejects_per_core_backing_differing_across_devices(
+    monkeypatch,
+):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    tensor = _FakeTensor(
+        None, dtype=kernel_runner.format_name_to_ttnn_dtype("bfloat16")
+    )
+    monkeypatch.setattr(
+        kernel_runner, "_is_per_core_allocated", lambda candidate: candidate is tensor
+    )
+    monkeypatch.setattr(
+        kernel_runner,
+        "_per_core_shard_addresses",
+        lambda _tensor, _label, _mesh_coordinate: {(0, 0): [0x2300, 0x2400]},
+    )
+    config = PhysicalDFBConfig(
+        0,
+        1,
+        "bfloat16",
+        1,
+        2048,
+        (32, 32),
+        (DFBStorageSegment(nodes=((0, 0),), tensor_index=0, byte_size=2048),),
+        address_scope="remote_uniform",
+    )
+
+    with pytest.raises(ValueError, match="whose owner addresses differ"):
+        kernel_runner.build_cb_descriptors(
+            tensors=[tensor],
+            cb_configs=[config],
+            core_ranges=_FakeExplicitCoreRanges((0, 0), (0, 0)),
         )
 
 

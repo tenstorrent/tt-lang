@@ -103,6 +103,15 @@ class _NestedBindingCollector(ast.NodeVisitor):
         self.generic_visit(node)
 
 
+def _source_position(node: ast.AST):
+    return (
+        getattr(node, "lineno", None),
+        getattr(node, "col_offset", None),
+        getattr(node, "end_lineno", None),
+        getattr(node, "end_col_offset", None),
+    )
+
+
 def _contains_loop_control(statements) -> bool:
     """Return whether break or continue in ``statements`` targets their loop."""
     pending = list(statements)
@@ -131,8 +140,10 @@ class _SubstituteTransformer(ast.NodeTransformer):
         caller_name: str,
         dfb_parameter_names: Set[str],
         inline_suffix: str,
+        callee_root: ast.AST,
     ):
         self.bindings = bindings
+        self.callee_root = callee_root
         self.rename_map = rename_map
         self.callee_name = callee_name
         self.caller_name = caller_name
@@ -140,8 +151,6 @@ class _SubstituteTransformer(ast.NodeTransformer):
         self.dfb_parameter_occurrences = {
             name: f"{inline_suffix}:{name}" for name in dfb_parameter_names
         }
-        # Targets of unrolled loops that no later statement has reassigned.
-        self.unbound_loop_targets: Set[str] = set()
 
     def visit_FunctionDef(self, node):
         node.name = self.rename_map.get(node.name, node.name)
@@ -169,22 +178,28 @@ class _SubstituteTransformer(ast.NodeTransformer):
             )
             return ast.copy_location(replacement, node)
         if node.id not in self.rename_map:
-            self._check_unbound_loop_target(node.id, node.ctx)
             return node
         replacement = ast.Name(id=self.rename_map[node.id], ctx=node.ctx)
-        self._check_unbound_loop_target(replacement.id, node.ctx)
         _copy_dfb_source_occurrence(node, replacement)
         return ast.copy_location(replacement, node)
 
-    def _check_unbound_loop_target(self, name, context):
-        if isinstance(context, ast.Store):
-            self.unbound_loop_targets.discard(name)
-        elif name in self.unbound_loop_targets:
-            raise ValueError(
-                f"@ttl.operation {self.caller_name!r}: a loop over a captured "
-                f"sequence leaves its target unbound, so {name!r} cannot be "
-                "read after the loop"
-            )
+    def _target_used_outside_loop(self, node: ast.For) -> bool:
+        """Return whether the callee uses the loop's target names elsewhere."""
+        target_names = {
+            name.id for name in ast.walk(node.target) if isinstance(name, ast.Name)
+        }
+        loop_positions = {
+            _source_position(inner)
+            for part in (node.target, *node.body)
+            for inner in ast.walk(part)
+            if isinstance(inner, ast.Name)
+        }
+        return any(
+            isinstance(name, ast.Name)
+            and name.id in target_names
+            and _source_position(name) not in loop_positions
+            for name in ast.walk(self.callee_root)
+        )
 
     def visit_Subscript(self, node):
         transformed_node = self.generic_visit(node)
@@ -204,27 +219,21 @@ class _SubstituteTransformer(ast.NodeTransformer):
         return ast.copy_location(element, transformed_node)
 
     def visit_For(self, node):
+        target_used_outside_loop = self._target_used_outside_loop(node)
         transformed_node = self.generic_visit(node)
         if not isinstance(transformed_node.iter, (ast.Tuple, ast.List)):
             return transformed_node
-        # Unrolling removes the loop that break and continue refer to, and
-        # leaves the loop target unbound in the else suite.
-        target_names = {
-            name.id
-            for name in ast.walk(transformed_node.target)
-            if isinstance(name, ast.Name)
-        }
-        if _contains_loop_control(transformed_node.body) or any(
-            isinstance(name, ast.Name)
-            and isinstance(name.ctx, ast.Load)
-            and name.id in target_names
-            for statement in transformed_node.orelse
-            for name in ast.walk(statement)
-        ):
+        # Unrolling removes the loop that break and continue refer to.
+        if _contains_loop_control(transformed_node.body):
             raise ValueError(
                 f"@ttl.operation {self.caller_name!r}: a loop over a captured "
-                "sequence cannot use break or continue, or read its target "
-                "in else"
+                "sequence cannot use break or continue"
+            )
+        if target_used_outside_loop and not transformed_node.iter.elts:
+            raise ValueError(
+                f"@ttl.operation {self.caller_name!r}: a loop over an empty "
+                "captured sequence leaves its target unbound for code outside "
+                "the loop"
             )
 
         unrolled_body = []
@@ -238,6 +247,7 @@ class _SubstituteTransformer(ast.NodeTransformer):
                 self.caller_name,
                 set(),
                 self.inline_suffix,
+                self.callee_root,
             )
             for statement in transformed_node.body:
                 transformed_statement = loop_transformer.visit(copy.deepcopy(statement))
@@ -245,16 +255,27 @@ class _SubstituteTransformer(ast.NodeTransformer):
                     unrolled_body.extend(transformed_statement)
                 else:
                     unrolled_body.append(transformed_statement)
+        # As in Python, the target keeps the last element after the loop; code
+        # outside the loop that uses it needs that binding.
+        if target_used_outside_loop:
+            final_bindings = {}
+            self._bind_loop_target(
+                transformed_node.target,
+                transformed_node.iter.elts[-1],
+                final_bindings,
+            )
+            for name, value in final_bindings.items():
+                unrolled_body.append(
+                    ast.copy_location(
+                        ast.Assign(
+                            targets=[ast.Name(id=name, ctx=ast.Store())],
+                            value=copy.deepcopy(value),
+                        ),
+                        transformed_node,
+                    )
+                )
         # Without break, the else suite runs once after the last element.
         unrolled_body.extend(transformed_node.orelse)
-        self.unbound_loop_targets.update(
-            target_names.difference(
-                name.id
-                for statement in transformed_node.orelse
-                for name in ast.walk(statement)
-                if isinstance(name, ast.Name) and isinstance(name.ctx, ast.Store)
-            )
-        )
         return unrolled_body
 
     def _bind_loop_target(self, target, value, bindings):
@@ -687,6 +708,7 @@ def _expand_call(
         caller_name,
         set(spec.dfb_param_names),
         suffix,
+        spec.fn_ast,
     )
 
     result: List[ast.stmt] = []
