@@ -995,6 +995,102 @@ def test_composition_accepts_reused_captured_sequence_target_name():
         assert not re.search(r"^\s*kind\w* = ", source, re.MULTILINE)
 
 
+def test_composition_binds_captured_sequence_target_read_by_closure():
+    """A closure called after the loop reads the loop's last element."""
+    values = (1, 2, 3)
+
+    @ttl.operation()
+    def value_helper(core_x):
+        for value in range(2):
+            check = lambda: core_x == value
+        for value in values:
+            pass
+        if check():
+            ttl.call_extern_func("hit.hpp", "hit", kernel=ttl.KernelKind.COMPUTE)
+
+    source = _composed_source(value_helper)
+    assert re.search(r"value\w* = 3$", source, re.MULTILINE)
+
+
+def test_composition_accepts_captured_sequence_target_stored_before_read():
+    """A store after the loop hides the loop's element from later reads."""
+    kinds = (ttl.KernelKind.DATA_MOVEMENT, ttl.KernelKind.COMPUTE)
+
+    @ttl.operation()
+    def kind_helper(core_x):
+        for kind in kinds:
+            ttl.call_extern_func("each.hpp", "each", kernel=kind)
+        kind = ttl.KernelKind.COMPUTE
+        ttl.call_extern_func("last.hpp", "last", kernel=kind)
+
+    source = _composed_source(kind_helper)
+    assert not re.search(r"^\s*kind\w* = kinds", source, re.MULTILINE)
+
+
+def test_composition_binds_captured_sequence_target_deleted_after_loop():
+    """Deleting the target after the loop requires its binding."""
+    values = (1, 2, 3)
+
+    @ttl.operation()
+    def value_helper(core_x):
+        for value in values:
+            pass
+        del value
+
+    source = _composed_source(value_helper)
+    assert re.search(r"(value\w*) = 3\n\s*del \1$", source, re.MULTILINE)
+
+
+def test_composition_binds_captured_sequence_target_in_rebinding_enclosing_loop():
+    """An enclosing loop over the same name does not hide the inner binding."""
+    values = (1, 2, 3)
+
+    @ttl.operation()
+    def value_helper(core_x):
+        for value in range(2):
+            for value in values:
+                pass
+            if core_x == value:
+                ttl.call_extern_func("hit.hpp", "hit", kernel=ttl.KernelKind.COMPUTE)
+
+    source = _composed_source(value_helper)
+    assert re.search(r"(value\w*) = 3\n\s*if core_x == \1:", source)
+
+
+def test_composition_binds_captured_sequence_target_read_in_later_loop_else():
+    """A later loop that may run zero times leaves its else suite reading it."""
+    values = (1, 2, 3)
+
+    @ttl.operation()
+    def value_helper(core_x):
+        for value in values:
+            pass
+        for value in range(core_x):
+            pass
+        else:
+            if core_x == value:
+                ttl.call_extern_func("hit.hpp", "hit", kernel=ttl.KernelKind.COMPUTE)
+
+    source = _composed_source(value_helper)
+    assert re.search(r"value\w* = 3$", source, re.MULTILINE)
+
+
+def test_composition_binds_captured_sequence_target_read_in_later_loop_iter():
+    """A later loop's sequence expression reads the target before rebinding it."""
+    values = (1, 2, 3)
+
+    @ttl.operation()
+    def value_helper(core_x):
+        for value in values:
+            pass
+        for value in range(value):
+            if core_x == value:
+                ttl.call_extern_func("hit.hpp", "hit", kernel=ttl.KernelKind.COMPUTE)
+
+    source = _composed_source(value_helper)
+    assert re.search(r"value\w* = 3$", source, re.MULTILINE)
+
+
 def test_composition_binds_nested_captured_sequence_target_per_outer_element():
     """An inner loop over the outer target binds its last element per iteration."""
     rows = ((1, 2), (3, 4))
@@ -1051,7 +1147,7 @@ def test_composition_rejects_non_literal_captured_sequence_target_after_loop():
 
     with pytest.raises(
         ValueError,
-        match="loop target 'kind' is read after its loop over a captured sequence",
+        match="loop target 'kind' in 'kind_helper' is read after its loop",
     ):
         _composed_source(kind_helper)
 
