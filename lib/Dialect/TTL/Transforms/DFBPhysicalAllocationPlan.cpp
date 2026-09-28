@@ -583,10 +583,17 @@ private:
                   lhs.declarations.front(), rhs.declarations.front());
       return;
     }
-    // A shared physical index takes the stricter address scope, which tensor
-    // backing on the other DFB's nodes cannot provide.
-    if ((lhs.tensorBacking || rhs.tensorBacking) &&
-        getDFBAddressScope(lhs) != getDFBAddressScope(rhs)) {
+    // A shared physical index takes the stricter address scope, which local
+    // tensor backing cannot provide.
+    auto isLocalTensorBacked = [](const DFBLogicalLifecycle &logicalDFB) {
+      return logicalDFB.tensorBacking &&
+             getDFBAddressScope(logicalDFB) == DFBAddressScope::Local;
+    };
+    auto isRemoteUniform = [](const DFBLogicalLifecycle &logicalDFB) {
+      return getDFBAddressScope(logicalDFB) == DFBAddressScope::RemoteUniform;
+    };
+    if ((isLocalTensorBacked(lhs) && isRemoteUniform(rhs)) ||
+        (isLocalTensorBacked(rhs) && isRemoteUniform(lhs))) {
       addEvidence(model, lhs, rhs, lhsIndex, rhsIndex,
                   DFBConflictReason::StorageMismatch, std::nullopt,
                   lhs.declarations.front(), rhs.declarations.front());
