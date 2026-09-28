@@ -6399,6 +6399,16 @@ def test_build_generic_op_io_tensors_keeps_user_output_last():
     assert io_tensors[-1] is output
 
 
+def test_build_generic_op_io_tensors_retains_per_core_output():
+    inp = object()
+    per_core_output = _LocalTensorTestDouble("l1", "height", None, per_core=True)
+
+    io_tensors = kernel_runner.build_generic_op_io_tensors([inp, per_core_output], [])
+
+    assert io_tensors == [inp, per_core_output]
+    assert io_tensors[-1] is per_core_output
+
+
 def test_build_generic_op_io_tensors_requires_user_output():
     with pytest.raises(ValueError, match="kernel must have at least one output tensor"):
         kernel_runner.build_generic_op_io_tensors([], [object()])
