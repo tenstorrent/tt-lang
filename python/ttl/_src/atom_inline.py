@@ -112,76 +112,179 @@ def _loop_target_paths(target: ast.expr, path: Tuple[int, ...] = ()):
             yield from _loop_target_paths(element, path + (index,))
 
 
+_DEFERRED_SCOPES = (
+    ast.FunctionDef,
+    ast.AsyncFunctionDef,
+    ast.Lambda,
+    ast.GeneratorExp,
+)
+_TRY_STATEMENTS = (ast.Try, getattr(ast, "TryStar", ast.Try))
+
+
+def _read_names(node: Optional[ast.AST]) -> Set[str]:
+    if node is None:
+        return set()
+    return {
+        name.id
+        for name in ast.walk(node)
+        if isinstance(name, ast.Name) and isinstance(name.ctx, (ast.Load, ast.Del))
+    }
+
+
+def _stored_names(target: Optional[ast.expr]) -> Set[str]:
+    if isinstance(target, ast.Name):
+        return {target.id}
+    if isinstance(target, ast.Starred):
+        return _stored_names(target.value)
+    if isinstance(target, (ast.Tuple, ast.List)):
+        return set().union(*(_stored_names(element) for element in target.elts))
+    return set()
+
+
+class _LoopExitLiveness:
+    """Backward live-name analysis that records each ``For`` loop's exit.
+
+    A name is live at a point when some path from that point reads it before
+    storing it. The set recorded for a loop is the one live where the loop
+    finishes, before its ``else`` suite. Unknown control flow is
+    over-approximated: an exception may leave a ``try`` or ``with`` body at any
+    statement, and ``return`` and ``raise`` keep only the reads they make.
+    """
+
+    def __init__(self):
+        self.exit_live_by_loop: Dict[int, Set[str]] = {}
+        # An enclosing loop's iterations only grow a nested loop's live sets,
+        # so each loop resumes from its previous fixed point.
+        self.head_live_by_loop: Dict[int, Set[str]] = {}
+
+    def block(self, statements, live_out: Set[str], jumps) -> Set[str]:
+        live = set(live_out)
+        for statement in reversed(statements):
+            # jumps = (break target, continue target, exception target)
+            live = self._statement(statement, live, jumps) | jumps[2]
+        return live
+
+    def _loop(self, node, live_out: Set[str], jumps) -> Set[str]:
+        head = set(self.head_live_by_loop.get(id(node), ()))
+        while True:
+            exit_live = self.block(node.orelse, live_out, jumps)
+            body_live = self.block(node.body, head, (live_out, head, jumps[2]))
+            if isinstance(node, ast.While):
+                new_head = _read_names(node.test) | exit_live | body_live
+            else:
+                new_head = (
+                    exit_live
+                    | (body_live - _stored_names(node.target))
+                    | _read_names(node.target)
+                )
+            if new_head == head:
+                break
+            head = new_head
+        self.head_live_by_loop[id(node)] = head
+        if isinstance(node, ast.For):
+            self.exit_live_by_loop[id(node)] = exit_live
+        if isinstance(node, ast.While):
+            return head
+        return _read_names(node.iter) | head
+
+    def _statement(self, node, live_out: Set[str], jumps) -> Set[str]:
+        if isinstance(node, (ast.For, ast.AsyncFor, ast.While)):
+            return self._loop(node, live_out, jumps)
+        if isinstance(node, ast.If):
+            return (
+                _read_names(node.test)
+                | self.block(node.body, live_out, jumps)
+                | self.block(node.orelse, live_out, jumps)
+            )
+        if isinstance(node, (ast.With, ast.AsyncWith)):
+            # The context manager may suppress an exception from the body.
+            body_jumps = (jumps[0], jumps[1], jumps[2] | live_out)
+            stored: Set[str] = set()
+            reads: Set[str] = set()
+            for item in node.items:
+                stored |= _stored_names(item.optional_vars)
+                reads |= _read_names(item.context_expr)
+                reads |= _read_names(item.optional_vars)
+            return reads | (self.block(node.body, live_out, body_jumps) - stored)
+        if isinstance(node, _TRY_STATEMENTS):
+            final_live = self.block(node.finalbody, live_out, jumps)
+            final_jumps = (jumps[0], jumps[1], jumps[2] | final_live)
+            handler_live: Set[str] = set()
+            for handler in node.handlers:
+                handler_body_live = self.block(handler.body, final_live, final_jumps)
+                handler_live |= _read_names(handler.type)
+                handler_live |= handler_body_live - {handler.name}
+            orelse_live = self.block(node.orelse, final_live, final_jumps)
+            body_jumps = (jumps[0], jumps[1], final_jumps[2] | handler_live)
+            return (
+                self.block(node.body, orelse_live, body_jumps)
+                | handler_live
+                | final_live
+            )
+        if isinstance(node, getattr(ast, "Match", ())):
+            live = _read_names(node.subject) | live_out
+            for case in node.cases:
+                live |= _read_names(case.pattern) | _read_names(case.guard)
+                live |= self.block(case.body, live_out, jumps)
+            return live
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            self.block(node.body, set(), (set(), set(), set()))
+            return (live_out - {node.name}) | _read_names(node)
+        if isinstance(node, ast.Break):
+            return set(jumps[0])
+        if isinstance(node, ast.Continue):
+            return set(jumps[1])
+        if isinstance(node, (ast.Return, ast.Raise)):
+            return _read_names(node)
+        if isinstance(node, ast.Assign):
+            stored = set().union(*(_stored_names(target) for target in node.targets))
+            return (live_out - stored) | _read_names(node)
+        if isinstance(node, ast.AnnAssign):
+            stored = _stored_names(node.target) if node.value is not None else set()
+            return (
+                (live_out - stored) | _read_names(node.value) | _read_names(node.target)
+            )
+        if isinstance(node, ast.AugAssign):
+            return live_out | _stored_names(node.target) | _read_names(node)
+        if isinstance(node, ast.Delete):
+            deleted = set().union(*(_stored_names(target) for target in node.targets))
+            return (live_out - deleted) | _read_names(node)
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            return live_out - {
+                alias.asname or alias.name.split(".")[0] for alias in node.names
+            }
+        return live_out | _read_names(node)
+
+
 def _mark_loop_targets_read_after(statements: List[ast.stmt]) -> None:
     """Record on each ``For`` which target names code after it may read.
 
-    The mark maps each such name's position in the target to its source name.
-    A read counts unless it is inside the loop body, or inside the body of
-    another loop that rebinds the name and does not enclose this loop. Nodes
-    are compared by identity before renaming: renamed targets no longer match
-    their source names, and inlined helpers reuse source positions.
+    The mark maps each such name's position in the target to its name. A name
+    counts when it is live where the loop finishes, or when a nested function,
+    lambda, or generator reads it, since those run at a point the analysis does
+    not know.
     """
-    loops: List[Tuple[ast.For, Tuple[ast.For, ...]]] = []
-    reads_by_name: Dict[str, List[Tuple[ast.For, ...]]] = {}
-
-    def record_read(name: str, enclosing_loops: Tuple[ast.For, ...]) -> None:
-        reads_by_name.setdefault(name, []).append(enclosing_loops)
-
-    def visit(node: ast.AST, enclosing_loops: Tuple[ast.For, ...]) -> None:
-        if isinstance(node, ast.For):
-            loops.append((node, enclosing_loops))
-            visit(node.target, enclosing_loops)
-            visit(node.iter, enclosing_loops)
-            for statement in node.body:
-                visit(statement, enclosing_loops + (node,))
-            for statement in node.orelse:
-                visit(statement, enclosing_loops)
-            return
-        if isinstance(node, ast.AugAssign) and isinstance(node.target, ast.Name):
-            record_read(node.target.id, enclosing_loops)
-        elif isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Load, ast.Del)):
-            record_read(node.id, enclosing_loops)
-        for child in ast.iter_child_nodes(node):
-            visit(child, enclosing_loops)
-
+    liveness = _LoopExitLiveness()
+    liveness.block(statements, set(), (set(), set(), set()))
+    closure_reads: Set[str] = set()
     for statement in statements:
-        visit(statement, ())
-
-    target_names_by_loop = {
-        id(loop): {name for _, name in _loop_target_paths(loop.target)}
-        for loop, _ in loops
-    }
-
-    def reads_loop_value(
-        loop: ast.For,
-        ancestor_ids: Set[int],
-        name: str,
-        read_loops: Tuple[ast.For, ...],
-    ) -> bool:
-        for read_loop in read_loops:
-            if read_loop is loop:
-                return False
-            if (
-                id(read_loop) not in ancestor_ids
-                and name in target_names_by_loop[id(read_loop)]
-            ):
-                return False
-        return True
-
-    for loop, ancestors in loops:
-        ancestor_ids = {id(ancestor) for ancestor in ancestors}
-        setattr(
-            loop,
-            _LOOP_TARGETS_READ_AFTER,
-            {
-                path: name
-                for path, name in _loop_target_paths(loop.target)
-                if any(
-                    reads_loop_value(loop, ancestor_ids, name, read_loops)
-                    for read_loops in reads_by_name.get(name, ())
-                )
-            },
-        )
+        for scope in ast.walk(statement):
+            if isinstance(scope, _DEFERRED_SCOPES):
+                closure_reads |= _read_names(scope) - _nested_binding_names(scope)
+    for statement in statements:
+        for loop in ast.walk(statement):
+            if not isinstance(loop, ast.For):
+                continue
+            used_names = liveness.exit_live_by_loop[id(loop)] | closure_reads
+            setattr(
+                loop,
+                _LOOP_TARGETS_READ_AFTER,
+                {
+                    path: name
+                    for path, name in _loop_target_paths(loop.target)
+                    if name in used_names
+                },
+            )
 
 
 def _is_constant_structure(node: ast.expr) -> bool:
@@ -324,10 +427,10 @@ class _SubstituteTransformer(ast.NodeTransformer):
                 value = value.elts[index]
             if not _is_constant_structure(value):
                 raise ValueError(
-                    f"@ttl.operation {self.callee_name!r}: loop target "
-                    f"{source_name!r} is read after its loop over a captured "
-                    "sequence, which requires elements that are constants or "
-                    "tuples of constants"
+                    f"@ttl.operation {self.caller_name!r}: loop target "
+                    f"{source_name!r} in {self.callee_name!r} is read after its "
+                    "loop over a captured sequence, which requires literal "
+                    "elements"
                 )
             unrolled_body.append(
                 ast.copy_location(
