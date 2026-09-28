@@ -1118,7 +1118,7 @@ def test_composition_binds_captured_sequence_target_read_after_finally():
     def value_helper(core_x):
         try:
             try:
-                pass
+                raise RuntimeError()
             finally:
                 for value in values:
                     pass
@@ -1128,6 +1128,48 @@ def test_composition_binds_captured_sequence_target_read_after_finally():
 
     source = _composed_source(value_helper)
     assert re.search(r"value\w* = 3$", source, re.MULTILINE)
+
+
+def test_composition_binds_captured_sequence_target_read_after_continue():
+    """A continue through a finally suite reaches the loop head's reads."""
+    values = (1, 2, 3)
+
+    @ttl.operation()
+    def value_helper(core_x):
+        value = 0
+        for step in range(2):
+            if step == 1 and value == 3:
+                ttl.call_extern_func("hit.hpp", "hit", kernel=ttl.KernelKind.COMPUTE)
+            try:
+                if core_x == step:
+                    continue
+            finally:
+                for value in values:
+                    pass
+            value = 0
+
+    source = _composed_source(value_helper)
+    assert re.search(r"value\w* = 3$", source, re.MULTILINE)
+
+
+def test_composition_accepts_captured_sequence_target_stored_after_try():
+    """Without a finally suite, a try exits only to the statement after it."""
+    kinds = (ttl.KernelKind.DATA_MOVEMENT, ttl.KernelKind.COMPUTE)
+
+    @ttl.operation()
+    def kind_helper(core_x):
+        kind = ttl.KernelKind.COMPUTE
+        for step in range(core_x):
+            try:
+                for kind in kinds:
+                    ttl.call_extern_func("each.hpp", "each", kernel=kind)
+            except RuntimeError:
+                pass
+            kind = ttl.KernelKind.COMPUTE
+        ttl.call_extern_func("last.hpp", "last", kernel=kind)
+
+    source = _composed_source(kind_helper)
+    assert not re.search(r"^\s*kind\w* = kinds", source, re.MULTILINE)
 
 
 def test_composition_binds_captured_sequence_target_read_after_loop_exception():
@@ -1301,6 +1343,48 @@ def test_composition_rejects_incompatible_captured_sequence_target():
         @ttl.operation(grid=(1, 1))
         def composed_coordinates():
             coordinate_helper()
+
+
+def _make_rebinding_helper(rebinding):
+    kinds = (ttl.KernelKind.DATA_MOVEMENT, ttl.KernelKind.COMPUTE)
+    if rebinding == "assignment":
+
+        @ttl.operation()
+        def kind_helper(core_x):
+            for kind in kinds:
+                kind = ttl.KernelKind.COMPUTE
+                ttl.call_extern_func("each.hpp", "each", kernel=kind)
+
+    elif rebinding == "inner-loop":
+
+        @ttl.operation()
+        def kind_helper(core_x):
+            for kind in kinds:
+                for kind in range(2):
+                    pass
+                ttl.call_extern_func("each.hpp", "each", kernel=kind)
+
+    else:
+
+        @ttl.operation()
+        def kind_helper(core_x):
+            for kind in kinds:
+                ttl.call_extern_func("each.hpp", "each", kernel=kind)
+                del kind
+
+    return kind_helper
+
+
+@pytest.mark.parametrize("rebinding", ["assignment", "inner-loop", "delete"])
+def test_composition_rejects_rebound_captured_sequence_target(rebinding):
+    """A store to the target inside the body would be bypassed by later reads."""
+    kind_helper = _make_rebinding_helper(rebinding)
+
+    with pytest.raises(
+        ValueError,
+        match="loop target 'kind' in 'kind_helper' is rebound inside its loop",
+    ):
+        _composed_source(kind_helper)
 
 
 def test_repeated_composition_reuses_callee_logical_kernel():
