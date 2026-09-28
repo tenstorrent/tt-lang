@@ -15,6 +15,7 @@
 // CHECK: storeSynchronizationWord(&synchronizationState[arrivalWord], entryComplete);
 // CHECK: while (!participantsHaveState(synchronizationState, entryComplete)) {
 // CHECK: FORCE_INLINE void exit(volatile uint32_t tt_l1_ptr *synchronizationState) {
+// CHECK-NOT: storeSynchronizationWord(&synchronizationState[arrivalWord], 0);
 // CHECK: storeSynchronizationWord(&synchronizationState[arrivalWord], exitComplete);
 // CHECK-NEXT: while (loadSynchronizationWord(&synchronizationState[releaseWord]) !=
 // CHECK-NEXT: exitComplete) {
