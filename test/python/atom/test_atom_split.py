@@ -1091,6 +1091,63 @@ def test_composition_binds_captured_sequence_target_read_in_later_loop_iter():
     assert re.search(r"value\w* = 3$", source, re.MULTILINE)
 
 
+def test_composition_accepts_callbacks_in_captured_sequence_loop_body():
+    """Callbacks in the loop body get the element, not a post-loop binding."""
+    kinds = (ttl.KernelKind.DATA_MOVEMENT, ttl.KernelKind.COMPUTE)
+
+    @ttl.operation()
+    def kind_helper(core_x):
+        for kind in kinds:
+            launch = lambda: ttl.call_extern_func("each.hpp", "each", kernel=kind)
+            launch()
+
+            def launch_again():
+                ttl.call_extern_func("again.hpp", "again", kernel=kind)
+
+            launch_again()
+
+    source = _composed_source(kind_helper)
+    assert not re.search(r"^\s*kind\w* = ", source, re.MULTILINE)
+
+
+def test_composition_binds_captured_sequence_target_read_after_finally():
+    """A handler reached through a finally suite reads the loop in that suite."""
+    values = (1, 2, 3)
+
+    @ttl.operation()
+    def value_helper(core_x):
+        try:
+            try:
+                pass
+            finally:
+                for value in values:
+                    pass
+        except RuntimeError:
+            if core_x == value:
+                ttl.call_extern_func("hit.hpp", "hit", kernel=ttl.KernelKind.COMPUTE)
+
+    source = _composed_source(value_helper)
+    assert re.search(r"value\w* = 3$", source, re.MULTILINE)
+
+
+def test_composition_binds_captured_sequence_target_read_after_loop_exception():
+    """An exception from an enclosing loop's iteration keeps the target live."""
+    values = (1, 2, 3)
+
+    @ttl.operation()
+    def value_helper(core_x):
+        try:
+            for value in range(core_x):
+                for value in values:
+                    pass
+        except RuntimeError:
+            if core_x == value:
+                ttl.call_extern_func("hit.hpp", "hit", kernel=ttl.KernelKind.COMPUTE)
+
+    source = _composed_source(value_helper)
+    assert re.search(r"value\w* = 3$", source, re.MULTILINE)
+
+
 def test_composition_binds_nested_captured_sequence_target_per_outer_element():
     """An inner loop over the outer target binds its last element per iteration."""
     rows = ((1, 2), (3, 4))
