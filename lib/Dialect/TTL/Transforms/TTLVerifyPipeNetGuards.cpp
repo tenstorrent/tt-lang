@@ -66,6 +66,9 @@ namespace {
 
 constexpr std::size_t kMaxPipeScheduleDiagnosticNotes = 8;
 constexpr std::size_t kMaxPipeScheduleNodesPerLaunchNode = 4096;
+constexpr std::size_t kMaxExpandedPipeCopies = 4096;
+// Bounds verifier time: expansion clones every operation of a loop body.
+constexpr std::uint64_t kMaxExpandedOperations = 65536;
 
 //===----------------------------------------------------------------------===//
 // Module state collected before the analysis runs and updated during it.
@@ -2125,10 +2128,14 @@ bool loopHasIterationDependentPipeControl(
   return dependsOnInduction;
 }
 
+enum class ScheduleLoopExpansion { AllStaticLoops, IterationDependentLoops };
+
 /// Expand loop iterations only in the temporary schedule-analysis module.
-/// Concrete iterations preserve occurrence order. Large loops retain compact
-/// count analysis when their pipe-event control is iteration-invariant.
-LogicalResult expandStaticPipeScheduleLoops(ModuleOp module) {
+/// Concrete iterations preserve occurrence order. Returns false without a
+/// diagnostic when expanding every static loop exceeds a bound; with
+/// iteration-dependent loops only, exceeding a bound is an error.
+FailureOr<bool> expandStaticPipeScheduleLoops(ModuleOp module,
+                                              ScheduleLoopExpansion scope) {
   SymbolTableCollection symbolTables;
   llvm::DenseSet<Operation *> functionsWithPipeCopies =
       getFunctionsWithPipeCopies(module, symbolTables);
@@ -2145,6 +2152,7 @@ LogicalResult expandStaticPipeScheduleLoops(ModuleOp module) {
     (void)walkResult;
   });
 
+  uint64_t expandedOperations = 0;
   for (scf::ForOp loop : loops) {
     std::optional<uint64_t> tripCount =
         materializeStaticPipeScheduleLoopBounds(loop);
@@ -2156,6 +2164,11 @@ LogicalResult expandStaticPipeScheduleLoops(ModuleOp module) {
       loop.erase();
       continue;
     }
+    if (scope == ScheduleLoopExpansion::IterationDependentLoops &&
+        !loopHasIterationDependentPipeControl(loop, functionsWithPipeCopies,
+                                              symbolTables)) {
+      continue;
+    }
     uint64_t tripCountValue = *tripCount;
     size_t currentContributors = countPipeCopyContributors(
         module.getOperation(), functionsWithPipeCopies, symbolTables);
@@ -2163,30 +2176,35 @@ LogicalResult expandStaticPipeScheduleLoops(ModuleOp module) {
         loop.getOperation(), functionsWithPipeCopies, symbolTables);
     uint64_t additionalIterations = tripCountValue - 1;
     size_t remainingContributorCapacity =
-        currentContributors < kMaxPipeScheduleNodesPerLaunchNode
-            ? kMaxPipeScheduleNodesPerLaunchNode - currentContributors
+        currentContributors < kMaxExpandedPipeCopies
+            ? kMaxExpandedPipeCopies - currentContributors
             : 0;
+    uint64_t loopOperations = 0;
+    loop.getRegion().walk([&](Operation *) { ++loopOperations; });
     bool exceedsExpansionBound =
-        tripCountValue > kMaxPipeScheduleNodesPerLaunchNode ||
-        currentContributors > kMaxPipeScheduleNodesPerLaunchNode ||
+        tripCountValue > kMaxExpandedPipeCopies ||
+        currentContributors > kMaxExpandedPipeCopies ||
         (additionalIterations != 0 &&
          loopContributors >
-             remainingContributorCapacity / additionalIterations);
-    if (exceedsExpansionBound &&
-        !loopHasIterationDependentPipeControl(loop, functionsWithPipeCopies,
-                                              symbolTables)) {
-      continue;
-    }
+             remainingContributorCapacity / additionalIterations) ||
+        loopOperations * additionalIterations >
+            kMaxExpandedOperations - expandedOperations;
     if (exceedsExpansionBound) {
-      return loop.emitOpError() << "cannot expand the PipeNet schedule beyond "
-                                << kMaxPipeScheduleNodesPerLaunchNode;
+      if (scope == ScheduleLoopExpansion::AllStaticLoops) {
+        return false;
+      }
+      loop.emitOpError() << "cannot expand the PipeNet schedule beyond "
+                         << kMaxExpandedPipeCopies << " pipe copies and "
+                         << kMaxExpandedOperations << " cloned operations";
+      return failure();
     }
     if (failed(loopUnrollFull(loop))) {
-      return loop.emitOpError(
-          "failed to expand a static PipeNet schedule loop");
+      loop.emitOpError("failed to expand a static PipeNet schedule loop");
+      return failure();
     }
+    expandedOperations += loopOperations * additionalIterations;
   }
-  return success();
+  return true;
 }
 
 /// Reject control flow whose execution order cannot be represented by a
@@ -2504,8 +2522,8 @@ FailureOr<PipeScheduleTensorDestination> enumeratePipeScheduleTensorDestination(
       std::move(*startIndices)};
 }
 
-/// Return the receiver posts whose tensor-region destinations are disjoint
-/// under the rule pipe lowering applies. A destination that cannot be
+/// Return the receiver posts whose tensor-region destinations are disjoint by
+/// the PipeTensorRegions overlap rules. A destination that cannot be
 /// enumerated may alias every destination on its device.
 llvm::DenseSet<PipeScheduleNodeId>
 findDisjointTensorDestinationPosts(ArrayRef<PipeScheduleNode> nodes,
@@ -2553,9 +2571,9 @@ findDisjointTensorDestinationPosts(ArrayRef<PipeScheduleNode> nodes,
   return disjointPosts;
 }
 
-/// Return the send operations that pipe lowering emits without waiting for
-/// receiver posts. Lowering selects one protocol per send operation, so an
-/// operation qualifies only when every pipe it sends on qualifies.
+/// Return the send operations that omit receiver rendezvous. The protocol is
+/// selected per send operation, so an operation qualifies only when every pipe
+/// it sends on qualifies.
 llvm::DenseSet<Operation *> findNoRendezvousSendOps(
     ArrayRef<PipeScheduleNode> nodes,
     const llvm::MapVector<PipeIdentity, PipeOccurrences> &pipeOccurrences,
@@ -3215,10 +3233,23 @@ struct TTLVerifyPipeNetSchedulePass
       return;
     }
 
+    // Invariant loops keep compact count analysis together, so corresponding
+    // sender and receiver loops use the same form.
     OwningOpRef<ModuleOp> scheduleModule(module.clone());
-    if (failed(expandStaticPipeScheduleLoops(*scheduleModule))) {
+    FailureOr<bool> expandedAllLoops = expandStaticPipeScheduleLoops(
+        *scheduleModule, ScheduleLoopExpansion::AllStaticLoops);
+    if (failed(expandedAllLoops)) {
       signalPassFailure();
       return;
+    }
+    if (!*expandedAllLoops) {
+      scheduleModule = module.clone();
+      if (failed(expandStaticPipeScheduleLoops(
+              *scheduleModule,
+              ScheduleLoopExpansion::IterationDependentLoops))) {
+        signalPassFailure();
+        return;
+      }
     }
     PipeNetLaunchNodeDomainAnalysis scheduleLaunchNodeAnalysis(*scheduleModule);
     if (failed(validatePipeNetModule(*scheduleModule,

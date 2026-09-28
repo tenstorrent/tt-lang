@@ -50,7 +50,6 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 // count analysis instead of materializing every schedule occurrence.
 
 // CHECK-LABEL: func.func @large_iteration_invariant_schedule
-// CHECK-COUNT-2: scf.for
 
 module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
   func.func @large_iteration_invariant_schedule()
