@@ -2,7 +2,7 @@
 
 Benchmarks in this directory are executable Python modules. Each benchmark owns
 its operation-specific setup and imports only the small helpers in
-`benchmarks.common`.
+`benchmarks.common` and, when it reports device time, `benchmarks.device_timing`.
 
 Shared helpers:
 
@@ -13,6 +13,8 @@ Shared helpers:
   back-to-back, synchronize once, and report mean wall time. This matches the
   measurement convention from the closed benchmark-harness PR 661.
 - `write_csv`: write one benchmark result row.
+- `benchmarks.device_timing`: read TT-Metal's device-kernel duration from the
+  device profiler; `all_gather` uses it to compare collectives by device time.
 
 Add a benchmark by creating a package under `benchmarks/`, defining a
 module-level operation or workload, and exposing a `main()` with `argparse`.
