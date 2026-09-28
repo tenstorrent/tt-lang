@@ -135,7 +135,7 @@ The architecture-neutral placement API is declared in [`SRAMAllocator.h`](../../
 
 The runtime ownership interfaces are:
 
-- `tt::tt_metal::experimental::retained_buffer_view::create`: creates a bounded SRAM view, preserves uniform, range-lockstep, or per-core addressing, and retains its source allocation.
+- `tt::tt_metal::experimental::retained_buffer_view::create`: creates a bounded SRAM view, preserves uniform, range-lockstep, or per-core addressing, and retains its source allocation. Explicitly deallocating the source frees its SRAM and invalidates every view of it, so the owner releases views before their pool.
 - `ttnn::experimental::create_sharded_tensor_view`: applies a `TensorSpec` and tensor topology to that retained view.
 - `tt::tt_metal::experimental::program_preparation::prepare`: performs non-dispatch compilation and finalization and reports program-memory use.
 - `ttnn::experimental::prepare_generic_op`: exposes preparation for TT-Lang's generic operation descriptor.
