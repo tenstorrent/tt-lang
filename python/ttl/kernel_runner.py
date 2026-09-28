@@ -1898,11 +1898,38 @@ def _build_reconfiguration_descriptor_variants(
     return descriptor_variants
 
 
+def _per_core_tensor_address(
+    tensor_index: int,
+    owner_addresses: Dict[Tuple[int, int], int],
+    core_coordinate: Tuple[int, int],
+) -> int:
+    """Return the address an executing core binds for a per-core tensor.
+
+    An owner core binds its own shard's address. A core outside the shard grid
+    addresses the tensor remotely, which needs the one address every owner
+    holds, as a lockstep allocation provides.
+    """
+    address = owner_addresses.get(core_coordinate)
+    if address is not None:
+        return address
+    # TODO: TT-Metal's TensorAccessor derives every shard's address from one
+    # base address, so remote access needs a common owner address. Drop this
+    # requirement once TensorAccessor addresses per-core allocated shards
+    # individually.
+    distinct_addresses = set(owner_addresses.values())
+    if len(distinct_addresses) != 1:
+        raise ValueError(
+            f"per-core tensor {tensor_index} has no shard on executing core "
+            f"{core_coordinate}, and its owner addresses differ: "
+            f"{sorted(distinct_addresses)}"
+        )
+    return next(iter(distinct_addresses))
+
+
 def _validate_local_tensor_access(
     spec: KernelSpec, tensors: List[Any], kernel_ranges: Any
 ) -> None:
     """Require a local tensor shard on every core that executes the kernel."""
-    per_core_tensor_indices = []
     for tensor_index in spec.tensor_indices:
         if tensor_index < 0 or tensor_index >= len(tensors):
             tensor_kind = (
@@ -1913,16 +1940,6 @@ def _validate_local_tensor_access(
             raise ValueError(
                 f"{tensor_kind} index {tensor_index} is outside the tensor list"
             )
-        if _is_per_core_allocated(tensors[tensor_index]):
-            per_core_tensor_indices.append(tensor_index)
-    unsupported_tensor_indices = sorted(
-        set(per_core_tensor_indices) - set(spec.local_tensor_indices)
-    )
-    if unsupported_tensor_indices:
-        raise ValueError(
-            "per-core tensor indices require direct local access; unsupported "
-            f"indices {unsupported_tensor_indices}"
-        )
     if not spec.local_tensor_indices:
         return
 
@@ -2182,7 +2199,11 @@ def build_kernel_descriptors(
                     for core_coordinate in partition_coordinates:
                         tensor_addresses = tuple(
                             (
-                                per_core_tensor_addresses[tensor_index][core_coordinate]
+                                _per_core_tensor_address(
+                                    tensor_index,
+                                    per_core_tensor_addresses[tensor_index],
+                                    core_coordinate,
+                                )
                                 if tensor_index in per_core_indices
                                 else static_addresses[tensor_index]
                             )
