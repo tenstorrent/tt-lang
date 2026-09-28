@@ -781,6 +781,7 @@ private:
 static bool verifySRAMAllocationDomains() {
   using mlir::tt::ttl::SRAMAllocationDomainFailure;
   using mlir::tt::ttl::SRAMAllocationDomainProblem;
+  using mlir::tt::ttl::SRAMPlacementFailure;
   SRAMAllocationProblem large{{64, 128}, InterferenceGraph(2), 64, 64, 256};
   large.conflicts.addInterference(0, 1);
   SRAMAllocationProblem small{{32}, InterferenceGraph(1), 32, 32, 64};
@@ -792,7 +793,7 @@ static bool verifySRAMAllocationDomains() {
        {mlir::tt::ttl::kFirstFitDecreasingSRAMAllocator,
         mlir::tt::ttl::kBestFitDecreasingSRAMAllocator,
         mlir::tt::ttl::kMultiOrderDecreasingSRAMAllocator,
-        mlir::tt::ttl::kExactSRAMAllocator}) {
+        mlir::tt::ttl::kMinimumArenaSRAMAllocator}) {
     std::string reason;
     auto allocator = mlir::tt::ttl::createSRAMAllocator(
         strategy, {kUnlimitedSearchStates}, reason);
@@ -812,8 +813,8 @@ static bool verifySRAMAllocationDomains() {
                    << "\n";
       return false;
     }
-    std::optional<unsigned> failedRegion;
-    auto uniform = (*allocator)->allocate(large, failedRegion, reason);
+    SRAMPlacementFailure placementFailure;
+    auto uniform = (*allocator)->allocate(large, placementFailure);
     if (mlir::failed(uniform) ||
         uniform->arenaBytes != (*result)[0].arenaBytes) {
       return false;

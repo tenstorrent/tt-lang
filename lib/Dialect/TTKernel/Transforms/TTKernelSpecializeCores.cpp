@@ -227,7 +227,8 @@ struct TTKernelSpecializeCoresPass
     for (auto func : module.getOps<func::FuncOp>()) {
       bool requiresStorageBinding =
           independentStorage && func->hasAttr(ttk::ThreadTypeAttr::name);
-      if (!requiresStorageBinding && !functionRequiresCoreSpecialization(func)) {
+      if (!requiresStorageBinding &&
+          !functionRequiresCoreSpecialization(func)) {
         continue;
       }
       if (auto uses = SymbolTable::getSymbolUses(func, module);

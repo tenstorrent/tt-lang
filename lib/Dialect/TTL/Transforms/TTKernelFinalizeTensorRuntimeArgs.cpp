@@ -248,6 +248,7 @@ static LogicalResult finalizeFunction(func::FuncOp function) {
   }
   int64_t tensorCount = globalTensorIndices.size();
   BitVector liveTensorSlots(tensorCount);
+  BitVector localTensorSlots(tensorCount);
   SmallVector<CommonArgIndexUse> commonArgUses;
   SmallVector<TensorAccessorArgsIndexUse> tensorAccessorArgsUses;
   bool hasUnresolvedIndex = false;
@@ -257,10 +258,9 @@ static LogicalResult finalizeFunction(func::FuncOp function) {
         if (!isa<ttk::CBType>(get.getType())) {
           return WalkResult::advance();
         }
-        return failed(markCompilerSRAMTensorSlot(get, module, get.getArgIndex(),
-                                                 globalTensorIndices,
-                                                 liveTensorSlots,
-                                                 localTensorSlots))
+        return failed(markCompilerSRAMTensorSlot(
+                   get, module, get.getArgIndex(), globalTensorIndices,
+                   liveTensorSlots, localTensorSlots))
                    ? WalkResult::interrupt()
                    : WalkResult::advance();
       });
@@ -300,7 +300,6 @@ static LogicalResult finalizeFunction(func::FuncOp function) {
     return failure();
   }
 
-  BitVector localTensorSlots(tensorCount);
   WalkResult localWalk =
       function.walk([&](ttk::LocalTensorAccessorOp accessor) {
         FailureOr<int64_t> slot = getLocalTensorSlot(accessor, tensorCount);

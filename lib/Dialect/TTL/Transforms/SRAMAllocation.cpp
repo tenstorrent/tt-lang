@@ -392,8 +392,8 @@ planRegions(ModuleOp module, const DFBLogicalIdentityAnalysis &identities,
     }
     return failure();
   }
-  SRAMAllocationPlan result{std::move(plan), std::move(storage),
-                            *controlBytes, alignment, *controlBytes, {}};
+  SRAMAllocationPlan result{std::move(plan), std::move(storage), *controlBytes,
+                            alignment,       *controlBytes,      {}};
   for (auto [domainIndex, domain] : llvm::enumerate(*domains)) {
     result.arenaBytes = std::max(result.arenaBytes, domain.arenaBytes);
     if (allocationMode == "uniform") {
@@ -577,9 +577,9 @@ LogicalResult allocateSRAM(
   auto budget = getUsableDFBL1Bytes(
       module,
       budgetOverride ? std::optional<uint64_t>(budgetOverride) : std::nullopt);
-  FailureOr<SRAMAllocationPlan> maybePlan = planRegions(
-      module, identities, budget, reuseStorage, allocator, allocationMode,
-      liveness);
+  FailureOr<SRAMAllocationPlan> maybePlan =
+      planRegions(module, identities, budget, reuseStorage, allocator,
+                  allocationMode, liveness);
   if (failed(maybePlan)) {
     return failure();
   }
@@ -743,9 +743,10 @@ LogicalResult allocateSRAM(
         reportedDomains.push_back(layout.domain);
         SRAMAllocationPlan domainPlan = plan;
         domainPlan.arenaBytes = layout.arenaBytes;
-        llvm::erase_if(domainPlan.nodeLayouts, [&](const SRAMNodeLayout &entry) {
-          return entry.domain != layout.domain;
-        });
+        llvm::erase_if(domainPlan.nodeLayouts,
+                       [&](const SRAMNodeLayout &entry) {
+                         return entry.domain != layout.domain;
+                       });
         for (auto [ownerIndex, owner] : llvm::enumerate(domainPlan.storage)) {
           if (layout.payloadOffsets[ownerIndex]) {
             owner.offset = *layout.payloadOffsets[ownerIndex];

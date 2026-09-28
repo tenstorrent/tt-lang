@@ -37,6 +37,37 @@ def test_per_node_copy(device, dtype, allocator):
 
 
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "fp32"])
+def test_per_node_copy_to_independently_allocated_output(device, dtype):
+    expected = torch.randn(32, 32, dtype=dtype)
+    source = to_dram(expected, device)
+    shard_spec = ttnn.ShardSpec(
+        ttnn.CoreRangeSet({ttnn.CoreRange(ttnn.CoreCoord(0, 0), ttnn.CoreCoord(0, 0))}),
+        (32, 32),
+        ttnn.ShardOrientation.ROW_MAJOR,
+    )
+    memory_config = ttnn.MemoryConfig(
+        ttnn.TensorMemoryLayout.HEIGHT_SHARDED, ttnn.BufferType.L1, shard_spec
+    )
+    memory_config.experimental_set_per_core_allocation(True)
+    destination = ttnn.from_torch(
+        torch.zeros_like(expected),
+        dtype=ttnn.bfloat16 if dtype == torch.bfloat16 else ttnn.float32,
+        layout=ttnn.TILE_LAYOUT,
+        device=device,
+        memory_config=memory_config,
+    )
+    assert destination.is_per_core_allocated()
+    l1_copy(
+        source,
+        destination,
+        options="--ttl-memory-model=compiler-sram --ttl-sram-allocation-mode=per-node",
+    )
+    assert_allclose(
+        ttnn.to_torch(destination).float(), expected.float(), rtol=0, atol=0
+    )
+
+
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "fp32"])
 def test_per_node_mixed_extents(device, dtype, tmp_path):
     operation, pages, capacities, conflicts = _make_allocation_stress(
         tmp_path, ALLOCATION_SCHEDULES[0], (2, 2)

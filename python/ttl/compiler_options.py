@@ -65,7 +65,7 @@ def _make_parser() -> argparse.ArgumentParser:
         choices=("uniform", "per-node"),
         default=None,
         dest="sram_allocation_mode",
-        help="Select uniform or per-node SRAM layouts for compiler-l1; multicast receivers share a layout. Per-node mode requires Metal hybrid allocation before device initialization (default: uniform).",
+        help="Select uniform or per-node SRAM layouts for compiler-sram; multicast receivers share a layout. Per-node mode requires Metal hybrid allocation before device initialization (default: uniform).",
     )
     p.add_argument(
         "--ttl-sram-allocation-report",

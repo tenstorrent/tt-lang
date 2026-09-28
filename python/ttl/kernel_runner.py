@@ -4515,10 +4515,6 @@ def build_generic_op_io_tensors(
         + list(sram_node_arenas)
         + list(tensors)
     )
-    if not io_tensors:
-        raise ValueError(
-            "kernel must have at least one tensor that defines device dispatch"
-        )
     if len(io_tensors) < 2:
         io_tensors = [io_tensors[-1]] + io_tensors
     return io_tensors
@@ -5179,6 +5175,9 @@ def run_kernel_on_device(
     )
     for physical_index, config in enumerate(cb_configs):
         _validate_physical_dfb_config(config, physical_index)
+    sram_node_sizes = _validate_sram_node_domain_requirements(
+        cb_configs, kernel_specs, core_ranges
+    )
     compiler_l1_arena_bytes = _get_compiler_l1_arena_bytes(
         cb_configs, memory_model, sram_reconfiguration_resets
     )
@@ -5197,9 +5196,6 @@ def run_kernel_on_device(
                 "compiler-sram cannot combine with Metal DFB reconfiguration"
             )
         _validate_tensor_backing_aliases(tensors, cb_configs, compiler_sram=True)
-    sram_node_sizes = _validate_sram_node_domain_requirements(
-        cb_configs, kernel_specs, core_ranges
-    )
     arguments = {
         "kernel_specs": kernel_specs,
         "tensors": tensors,
