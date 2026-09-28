@@ -550,9 +550,9 @@ DFB only at launch also receives storage.
 
 When `TT_METAL_ALLOCATOR_MODE_HYBRID` enables TT-Metal's hybrid allocator
 before device initialization, a program with a reconfiguration plan also backs
-at runtime the local storage that some epoch holds in scratch, even when that
-storage is not reconfigured; storage whose epochs are all tensor-backed keeps
-static descriptors for its other launch nodes. Each
+at runtime every local storage index that some epoch holds in scratch, even
+when it is not reconfigured. A storage index whose epochs are all tensor-backed
+keeps a static descriptor on any launch node that no epoch covers. Each
 core then receives one per-core arena that packs its local storage indices at
 TT-Metal's DRAM alignment (32 bytes on Wormhole, 64 bytes on Blackhole), the
 alignment static DFB placement uses, and configuration tensors are allocated

@@ -2855,21 +2855,22 @@ def build_dfb_reconfiguration_runtime_resources(
     existing_backing_tensors: Optional[Dict[int, Any]] = None,
     existing_backing_allocation_bytes: Optional[Dict[int, int]] = None,
     device: Optional[Any] = None,
+    *,
     cb_configs: Optional[List[PhysicalDFBConfig]] = None,
 ) -> DFBReconfigurationRuntimeResources:
     """Build storage and configuration resources for DFB reconfiguration."""
     if plan is None:
         return DFBReconfigurationRuntimeResources([], {}, [], {}, device)
-
-    _ensure_ttnn()
-    if ttnn is None:
-        raise RuntimeError("ttnn is not available")
-    _validate_dfb_reconfiguration_plan(tensors, plan)
     if cb_configs is None:
         raise ValueError(
             "DFB reconfiguration runtime resources require the launch DFB "
             "configurations"
         )
+
+    _ensure_ttnn()
+    if ttnn is None:
+        raise RuntimeError("ttnn is not available")
+    _validate_dfb_reconfiguration_plan(tensors, plan)
     resource_device = device if device is not None else _first_device(tensors)
     reusable_backing_tensors = dict(existing_backing_tensors or {})
     reusable_backing_allocation_bytes = dict(existing_backing_allocation_bytes or {})
