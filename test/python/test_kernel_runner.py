@@ -2488,8 +2488,10 @@ def test_build_kernel_descriptors_binds_per_core_local_tensor_addresses(monkeypa
     assert [descriptor.core_ranges.num_cores() for descriptor in descriptors] == [1, 1]
 
 
-# A general tensor accessor cannot interpret independent per-core base addresses.
-def test_per_core_tensor_rejects_nonlocal_access(monkeypatch):
+# General tensor access binds each owner core's own shard address.
+def test_build_kernel_descriptors_binds_owner_addresses_for_general_access(
+    monkeypatch,
+):
     fake_ttnn = _local_tensor_test_environment()
     monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
     full_grid = _FakeExplicitCoreRanges((0, 0), (1, 0))
@@ -2502,13 +2504,94 @@ def test_per_core_tensor_rejects_nonlocal_access(monkeypatch):
         config=object(),
     )
 
-    with pytest.raises(ValueError, match="require direct local access"):
+    descriptors = kernel_runner.build_kernel_descriptors(
+        kernel_specs=[spec],
+        tensors=[tensor],
+        tensor_accessor_args=[],
+        core_ranges=full_grid,
+        grid_cols=2,
+        grid_rows=1,
+        num_cbs=0,
+        sram_mesh_coordinate=(0, 0),
+    )
+
+    assert [descriptor.common_runtime_args for descriptor in descriptors] == [
+        [0x2000],
+        [0x2100],
+    ]
+
+
+class _UniformPerCoreTensorTestDouble(_LocalTensorTestDouble):
+    @staticmethod
+    def experimental_per_core_buffer_address(device_coordinate, core):
+        return 0x2300
+
+
+# A core outside a per-core tensor's shard grid addresses it remotely, which
+# takes the one address every owner holds, as a lockstep allocation provides.
+def test_build_kernel_descriptors_resolves_uniform_per_core_tensor_remotely(
+    monkeypatch,
+):
+    fake_ttnn = _local_tensor_test_environment()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    full_grid = _FakeExplicitCoreRanges((0, 0), (2, 0))
+    tensor = _UniformPerCoreTensorTestDouble(
+        "l1", "height", _FakeExplicitCoreRanges((0, 0), (1, 0)), per_core=True
+    )
+    spec = kernel_runner.KernelSpec(
+        path="/tmp/kernel.cpp",
+        thread_type="noc",
+        tensor_indices=[0],
+        local_tensor_indices=[],
+        config=object(),
+    )
+
+    descriptors = kernel_runner.build_kernel_descriptors(
+        kernel_specs=[spec],
+        tensors=[tensor],
+        tensor_accessor_args=[],
+        core_ranges=full_grid,
+        grid_cols=3,
+        grid_rows=1,
+        num_cbs=0,
+        sram_mesh_coordinate=(0, 0),
+    )
+
+    assert [descriptor.common_runtime_args for descriptor in descriptors] == [[0x2300]]
+    assert [descriptor.core_ranges.num_cores() for descriptor in descriptors] == [3]
+
+
+# Remote addressing needs one owner address; differing owner addresses fail.
+def test_build_kernel_descriptors_rejects_non_uniform_per_core_tensor_remotely(
+    monkeypatch,
+):
+    fake_ttnn = _local_tensor_test_environment()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    full_grid = _FakeExplicitCoreRanges((0, 0), (2, 0))
+    tensor = _LocalTensorTestDouble(
+        "l1", "height", _FakeExplicitCoreRanges((0, 0), (1, 0)), per_core=True
+    )
+    spec = kernel_runner.KernelSpec(
+        path="/tmp/kernel.cpp",
+        thread_type="noc",
+        tensor_indices=[0],
+        local_tensor_indices=[],
+        config=object(),
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=(
+            r"per-core tensor 0 has no shard on executing core \(2, 0\), and "
+            r"its owner addresses differ"
+        ),
+    ):
         kernel_runner.build_kernel_descriptors(
             kernel_specs=[spec],
             tensors=[tensor],
             tensor_accessor_args=[],
             core_ranges=full_grid,
-            grid_cols=2,
+            grid_cols=3,
             grid_rows=1,
             num_cbs=0,
             sram_mesh_coordinate=(0, 0),
