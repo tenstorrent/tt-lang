@@ -6735,6 +6735,41 @@ def test_remote_uniform_dfb_rejects_non_uniform_per_core_backing(monkeypatch):
         )
 
 
+# One owner core whose address differs between mesh devices is also non-uniform.
+def test_remote_uniform_dfb_rejects_per_core_backing_differing_across_devices(
+    monkeypatch,
+):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    tensor = _FakeTensor(
+        None, dtype=kernel_runner.format_name_to_ttnn_dtype("bfloat16")
+    )
+    monkeypatch.setattr(
+        kernel_runner, "_is_per_core_allocated", lambda candidate: candidate is tensor
+    )
+    monkeypatch.setattr(
+        kernel_runner,
+        "_per_core_shard_addresses",
+        lambda _tensor, _label, _mesh_coordinate: {(0, 0): [0x2300, 0x2400]},
+    )
+    config = PhysicalDFBConfig(
+        0,
+        1,
+        "bfloat16",
+        1,
+        2048,
+        (32, 32),
+        (DFBStorageSegment(nodes=((0, 0),), tensor_index=0, byte_size=2048),),
+        address_scope="remote_uniform",
+    )
+
+    with pytest.raises(ValueError, match="whose owner addresses differ"):
+        kernel_runner.build_cb_descriptors(
+            tensors=[tensor],
+            cb_configs=[config],
+            core_ranges=_FakeExplicitCoreRanges((0, 0), (0, 0)),
+        )
+
+
 def test_remote_uniform_dfb_rejects_partitioned_storage_group(monkeypatch):
     monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
     full_grid = _FakeExplicitCoreRanges((0, 0), (1, 0))
