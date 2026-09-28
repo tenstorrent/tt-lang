@@ -250,4 +250,4 @@ if __name__ == "__main__":
     # Synchronized lifecycle operations require the Blackhole synchronization LLK.
     if ttnn.get_arch_name() == "blackhole":
         tests.append(str(directory / "test_compiler_l1_lifecycle.py"))
-    raise SystemExit(pytest.main([*tests, "-k", "not metal-cb", "-xq"]))
+    raise SystemExit(pytest.main([*tests, "-k", "not metal-cb", "-xq", "--tb=short"]))
