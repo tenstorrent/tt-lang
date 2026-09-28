@@ -681,6 +681,10 @@ public:
         getVolatileL1PtrOpaqueTypeName(elementWidth);
     auto elementType = emitc::OpaqueType::get(op.getContext(), elementTypeName);
 
+    // TODO: `TTKernelToCpp` adds no baseline API header for
+    // `ThreadType::Ethernet`, so an Ethernet kernel would emit this call
+    // undeclared; no TT-Lang pipeline emits Ethernet kernels today. Add the
+    // header requirement together with Ethernet kernel support.
     emitc::CallOpaqueOp::create(rewriter, loc, TypeRange{},
                                 "invalidate_l1_cache", ValueRange{});
     auto volatilePointer = emitc::CallOpaqueOp::create(
