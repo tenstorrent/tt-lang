@@ -989,7 +989,7 @@ void NocAsyncReadBarrierOp::getCanonicalizationPatterns(
           return success();
         }
       }
-      if (mlir::isa<NocAsyncReadOp, NocAsyncReadTileOp,
+      if (mlir::isa<NocAsyncReadOp, NocAsyncReadTileOp, NocAsyncReadTensorOp,
                     NocAsyncReadOnePacketSetStateOp,
                     NocAsyncReadOnePacketWithStateOp>(it) ||
           it->getNumRegions() > 0) {

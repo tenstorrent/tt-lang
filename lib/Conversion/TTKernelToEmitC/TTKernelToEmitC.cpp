@@ -2034,13 +2034,17 @@ private:
 };
 
 template <typename SourceOp>
-class TTKernelToEmitCNocAsyncTileRewriter
+class TTKernelToEmitCNocAsyncTensorAccessorRewriter
     : public OpConversionPattern<SourceOp> {
   static constexpr bool isRead =
-      std::is_same_v<SourceOp, ttkernel::NocAsyncReadTileOp>;
+      std::is_same_v<SourceOp, ttkernel::NocAsyncReadTileOp> ||
+      std::is_same_v<SourceOp, ttkernel::NocAsyncReadTensorOp>;
+  static constexpr bool hasExplicitSize =
+      std::is_same_v<SourceOp, ttkernel::NocAsyncReadTensorOp> ||
+      std::is_same_v<SourceOp, ttkernel::NocAsyncWriteTensorOp>;
 
 public:
-  TTKernelToEmitCNocAsyncTileRewriter(
+  TTKernelToEmitCNocAsyncTensorAccessorRewriter(
       TTKernelToEmitCTypeConverter &typeConverter, MLIRContext *ctx,
       TTKernelToEmitCConversionState &state)
       : OpConversionPattern<SourceOp>(typeConverter, ctx), state(state) {}
@@ -2049,26 +2053,42 @@ public:
   matchAndRewrite(SourceOp op, typename SourceOp::Adaptor adaptor,
                   ConversionPatternRewriter &rewriter) const final {
     FailureOr<std::string> nocName = ensureStaticNocDeclaration(
-        op.getOperation(), rewriter, adaptor.getNoc(), "tile async read/write",
-        state);
+        op.getOperation(), rewriter, adaptor.getNoc(),
+        "TensorAccessor async read/write", state);
     if (failed(nocName)) {
       return failure();
     }
 
-    SmallVector<Value, 4> operands;
+    SmallVector<Value, 5> operands;
     std::string callStr;
     if constexpr (isRead) {
-      operands.append({adaptor.getAddrGenStruct(), adaptor.getDstLocalL1Addr(),
-                       adaptor.getAddrGenStruct(), adaptor.getId()});
-      callStr = *nocName + ".async_read({}, CoreLocalMem<uint32_t>({}), "
-                           "{}.get_aligned_page_size(), "
-                           "{{.page_id = static_cast<uint32_t>({})}, {{});";
+      operands.append(
+          {adaptor.getAddrGenStruct(), adaptor.getDstLocalL1Addr()});
+      if constexpr (hasExplicitSize) {
+        operands.push_back(adaptor.getSize());
+        callStr = *nocName + ".async_read({}, CoreLocalMem<uint32_t>({}), "
+                             "{}, ";
+      } else {
+        operands.push_back(adaptor.getAddrGenStruct());
+        callStr = *nocName + ".async_read({}, CoreLocalMem<uint32_t>({}), "
+                             "{}.get_aligned_page_size(), ";
+      }
+      operands.push_back(adaptor.getId());
+      callStr += "{{.page_id = static_cast<uint32_t>({})}, {{});";
     } else {
-      operands.append({adaptor.getSrcLocalL1Addr(), adaptor.getAddrGenStruct(),
-                       adaptor.getAddrGenStruct(), adaptor.getId()});
-      callStr = *nocName + ".async_write(CoreLocalMem<uint32_t>({}), {}, "
-                           "{}.get_aligned_page_size(), {{} , "
-                           "{{.page_id = static_cast<uint32_t>({})});";
+      operands.append(
+          {adaptor.getSrcLocalL1Addr(), adaptor.getAddrGenStruct()});
+      if constexpr (hasExplicitSize) {
+        operands.push_back(adaptor.getSize());
+        callStr = *nocName + ".async_write(CoreLocalMem<uint32_t>({}), {}, "
+                             "{}, ";
+      } else {
+        operands.push_back(adaptor.getAddrGenStruct());
+        callStr = *nocName + ".async_write(CoreLocalMem<uint32_t>({}), {}, "
+                             "{}.get_aligned_page_size(), ";
+      }
+      operands.push_back(adaptor.getId());
+      callStr += "{{} , {{.page_id = static_cast<uint32_t>({})});";
     }
 
     rewriter.create<emitc::VerbatimOp>(op.getLoc(), callStr, operands);
@@ -3532,8 +3552,14 @@ public:
         .add<TTKernelToEmitCGetNocAddrRewriter,
              TTKernelToEmitCNocAtomicBarrierRewriter,
              TTKernelToEmitCNocWritesFlushedRewriter,
-             TTKernelToEmitCNocAsyncTileRewriter<ttkernel::NocAsyncReadTileOp>,
-             TTKernelToEmitCNocAsyncTileRewriter<ttkernel::NocAsyncWriteTileOp>,
+             TTKernelToEmitCNocAsyncTensorAccessorRewriter<
+                 ttkernel::NocAsyncReadTileOp>,
+             TTKernelToEmitCNocAsyncTensorAccessorRewriter<
+                 ttkernel::NocAsyncWriteTileOp>,
+             TTKernelToEmitCNocAsyncTensorAccessorRewriter<
+                 ttkernel::NocAsyncReadTensorOp>,
+             TTKernelToEmitCNocAsyncTensorAccessorRewriter<
+                 ttkernel::NocAsyncWriteTensorOp>,
              TTKernelToEmitCNocAsyncReadOnePacketSetStateRewriter,
              TTKernelToEmitCNocAsyncReadOnePacketWithStateRewriter,
              TTKernelToEmitCNocAsyncWriteOnePacketWithTridRewriter,

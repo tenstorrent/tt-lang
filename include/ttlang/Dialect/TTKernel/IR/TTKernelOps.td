@@ -3630,6 +3630,26 @@ def TTKernel_NocAsyncReadTileOp
     }];
 }
 
+def TTKernel_NocAsyncReadTensorOp
+    : TTKernel_NocReadCommandOp<"noc_async_read_tensor"> {
+    let summary = "Read a contiguous byte range from a tensor";
+    let description = [{
+      Initiates an asynchronous read beginning at one tensor page. The byte
+      range must remain physically contiguous in the page's bank.
+    }];
+
+    let arguments = (ins I32:$id,
+                         TTKernel_TensorAccessor:$addrGenStruct,
+                         I32:$dstLocalL1Addr,
+                         I32:$size,
+                         Optional<I8>:$noc);
+
+    let assemblyFormat = [{
+      `(` $id `,` $addrGenStruct `,` $dstLocalL1Addr `,` $size (`,` $noc^)? `)`
+          attr-dict `:` functional-type(operands, results)
+    }];
+}
+
 def TTKernel_NocAsyncReadOnePacketSetStateOp
     : TTKernel_NocReadCommandOp<"noc_async_read_one_packet_set_state",
                                 [AttrSizedOperandSegments]> {
@@ -3773,6 +3793,26 @@ def TTKernel_NocAsyncWriteTileOp
 
     let assemblyFormat = [{
       `(` $id `,` $addrGenStruct `,` $srcLocalL1Addr (`,` $noc^)? `)` attr-dict `:` functional-type(operands, results)
+    }];
+}
+
+def TTKernel_NocAsyncWriteTensorOp
+    : TTKernel_NocWriteCommandOp<"noc_async_write_tensor"> {
+    let summary = "Write a contiguous byte range to a tensor";
+    let description = [{
+      Initiates an asynchronous write beginning at one tensor page. The byte
+      range must remain physically contiguous in the page's bank.
+    }];
+
+    let arguments = (ins I32:$id,
+                         TTKernel_TensorAccessor:$addrGenStruct,
+                         I32:$srcLocalL1Addr,
+                         I32:$size,
+                         Optional<I8>:$noc);
+
+    let assemblyFormat = [{
+      `(` $id `,` $addrGenStruct `,` $srcLocalL1Addr `,` $size (`,` $noc^)? `)`
+          attr-dict `:` functional-type(operands, results)
     }];
 }
 
