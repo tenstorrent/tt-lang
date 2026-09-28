@@ -1757,7 +1757,13 @@ struct ResetAllDFBsLowering : OpConversionPattern<ResetAllDFBsOp> {
   LogicalResult
   matchAndRewrite(ResetAllDFBsOp op, OpAdaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    return lowerDFBReset(op, op.getReset(), plan.allDFBMask, plan, rewriter);
+    FailureOr<uint64_t> preservedMask =
+        getExpandedDFBMask(op.getPreservedDfbs(), op, plan);
+    if (failed(preservedMask)) {
+      return failure();
+    }
+    return lowerDFBReset(op, op.getReset(), plan.allDFBMask & ~*preservedMask,
+                         plan, rewriter);
   }
 
 private:
