@@ -3338,11 +3338,19 @@ def build_dfb_reconfiguration_runtime_resources(
                             f"DFB[{dfb_index}] storage has no L1 address for "
                             f"launch node {node}"
                         )
-                    address = (
-                        _DFB_RECONFIGURATION_PRESERVE_ADDRESS
-                        if addresses_by_core is None
-                        else addresses_by_core[node] + int(segment.byte_offset)
-                    )
+                    if addresses_by_core is None:
+                        # The preserve address keeps the descriptor's base on
+                        # the device; a byte offset cannot be applied to it.
+                        if int(segment.byte_offset) != 0:
+                            raise RuntimeError(
+                                f"DFB[{dfb_index}] static storage segment on "
+                                f"launch node {node} has byte offset "
+                                f"{segment.byte_offset}; static descriptor "
+                                "storage keeps its base address"
+                            )
+                        address = _DFB_RECONFIGURATION_PRESERVE_ADDRESS
+                    else:
+                        address = addresses_by_core[node] + int(segment.byte_offset)
                     records_by_core[node] = (
                         address,
                         allocation.total_size,
