@@ -111,7 +111,7 @@ argument separator (`--`). Available profiles are recorded in the stack manifest
 | `galaxy` | Blackhole Galaxy, unharvested single-tray torus | 32 |
 | `n150` | Wormhole N150 | 1 |
 | `n300` | Wormhole N300 | 2 |
-| `q1` | Quasar Q1 (runtime experiments; TT-Lang compiler support pending) | 1 |
+| `q1` | Quasar Q1 (experimental; runtime and compiler support pending) | 1 |
 
 These entries cover all 11 YAML descriptors shipped in the pinned emulator's
 `cluster_descriptors` directory. Harvesting disables a subset of chip resources;
@@ -131,13 +131,18 @@ workload; selecting a multi-device profile does not distribute a single-device
 program automatically. This option selects hardware for the
 emule backend; Python simulation uses its existing grid and memory options.
 
-Profile selection and workload support are separate. The `p150`, `p100`,
-`p150-harvested`, and `n150` profiles have passed device-open and representative
-TT-Lang execution checks. P300 has passed a two-device mesh-open check; this does
-not qualify collective operations. The remaining profiles have descriptor and
-launcher-setting checks and are available for experimentation. The current
-compiler supports Blackhole and Wormhole targets. Quasar Q1 requires additional
-TT-Lang compiler support before running TT-Lang kernels.
+Profile selection and workload support are separate. The 2026-09-28 smoke checks
+at checkout `6bdcb630` passed device opening, `examples/eltwise_add.py`, and
+`examples/compiler_only_external_call.py` on all ten Blackhole/Wormhole profiles.
+The examples execute on device 0, including on multi-device profiles. Separate
+mesh-opening checks passed for P300, P150x4, both P150x8 profiles, and N300.
+Galaxy testing covered device 0 only; full 32-device opening was skipped because
+its memory requirements exceeded the local Docker VM's memory. These checks do
+not qualify collective operations or distributed workloads.
+
+The pinned runtime currently rejects Q1 device opening: its 4 MiB worker L1
+exceeds the emulator memory pool's 2 MiB slot size. Q1 also requires TT-Lang
+compiler support; the current compiler supports Blackhole and Wormhole targets.
 
 Arguments belonging to the program follow `--`:
 

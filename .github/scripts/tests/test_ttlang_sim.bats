@@ -273,6 +273,8 @@ argv=--target=p150"
             p150x8-unharvested galaxy n150 n300 q1; do
             assert_output --partial "$target"
         done
+        assert_output --partial "Q1 is experimental: device opening is blocked"
+        assert_output --partial "TT-Lang compiler support is pending"
     done
 }
 

@@ -92,7 +92,8 @@ Select emulated hardware with --target=NAME (default: p150):
   p150, p100, p150-harvested, p300, p150x4, p150x8,
   p150x8-unharvested, galaxy, n150, n300, q1.
 These select bundled emulator profiles; workload support varies by target.
-Q1 requires compiler support that is not yet available in TT-Lang.
+Q1 is experimental: device opening is blocked by the pinned runtime's L1 layout,
+and TT-Lang compiler support is pending.
 Pass program arguments after --. Use --backend=python for Python simulation.
 EOF
             if [ "$#" -eq 0 ]; then
