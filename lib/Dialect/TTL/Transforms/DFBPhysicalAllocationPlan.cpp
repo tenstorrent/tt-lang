@@ -583,6 +583,15 @@ private:
                   lhs.declarations.front(), rhs.declarations.front());
       return;
     }
+    // A shared physical index takes the stricter address scope, which tensor
+    // backing on the other DFB's nodes cannot provide.
+    if ((lhs.tensorBacking || rhs.tensorBacking) &&
+        getDFBAddressScope(lhs) != getDFBAddressScope(rhs)) {
+      addEvidence(model, lhs, rhs, lhsIndex, rhsIndex,
+                  DFBConflictReason::StorageMismatch, std::nullopt,
+                  lhs.declarations.front(), rhs.declarations.front());
+      return;
+    }
     std::uint64_t physicalTileCount =
         cast<CircularBufferType>(lhs.type).getTotalElements();
     bool lhsInactive = lhs.launchDomain.known && lhs.launchDomain.nodes.empty();
@@ -2724,9 +2733,9 @@ buildDescriptors(ArrayRef<DFBPhysicalIndexAssignment> assignments,
           }
           LaunchNodeDomain nodeDomain;
           nodeDomain.nodes.insert(lifetime.node);
-          if (lifetime.conservativeConfigurationEpochs) {
+          if (!lifetime.conservativeConfigurationEpochs.empty()) {
             for (std::optional<int64_t> ordinal :
-                 *lifetime.conservativeConfigurationEpochs) {
+                 lifetime.conservativeConfigurationEpochs) {
               if (failed(addConfiguration(candidate, ordinal, nodeDomain))) {
                 return failure();
               }

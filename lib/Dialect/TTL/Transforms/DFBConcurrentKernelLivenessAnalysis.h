@@ -242,9 +242,9 @@ struct DFBPerNodeLifetime {
   bool terminalStateCanonical = false;
   SmallVector<DFBLifecycleEpoch, 0> epochs;
   /// Configurations that may contain state when lifecycle completion fails;
-  /// unset when the accesses were not classified into intervals.
-  std::optional<SmallVector<std::optional<int64_t>>>
-      conservativeConfigurationEpochs;
+  /// empty, which selects every configuration, when the accesses were not
+  /// classified into intervals.
+  SmallVector<std::optional<int64_t>> conservativeConfigurationEpochs;
   DFBLifecycleCompletionProof completionProof;
 };
 
