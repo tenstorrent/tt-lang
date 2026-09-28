@@ -1773,6 +1773,7 @@ std::optional<std::uint64_t> getMaximumPushesBetweenRestorations(
 bool warnUndrainedDFB(int64_t logicalId, ArrayRef<DFBTransaction> producers,
                       ArrayRef<DFBTransaction> consumers, LaunchNodeCoord coord,
                       std::uint64_t capacityBlocks, bool restoredAtNode,
+                      bool hasReconfiguration,
                       ArrayRef<OpaqueCallOp> externalCalls, Operation *bindSite,
                       const DFBProtocolDomainState &state,
                       DFBTransactionSequenceCache &sequenceCache) {
@@ -1800,11 +1801,16 @@ bool warnUndrainedDFB(int64_t logicalId, ArrayRef<DFBTransaction> producers,
       << "logical DFB " << logicalId << " is never popped on core_x=" << coord.x
       << ", core_y=" << coord.y << ", but its producer can push " << *pushed
       << " block(s) into capacity " << capacityBlocks
-      << " before a synchronized reset or reconfiguration restores it";
+      << (restoredAtNode
+              ? " before a synchronized reset or reconfiguration restores it"
+              : " during the launch");
   diagnostic.attachNote()
-      << "published blocks stay in the DFB until a pop or a reset or "
-         "reconfiguration that restores it, so the producer blocks once the "
-         "DFB is full";
+      << (restoredAtNode
+              ? "published blocks stay in the DFB until a pop or a reset or "
+                "reconfiguration that restores it, so the producer blocks once "
+                "the DFB is full"
+              : "published blocks stay in the DFB until a pop, so the "
+                "producer blocks once the DFB is full");
   auto *externalCall = llvm::find_if(externalCalls, [&](OpaqueCallOp call) {
     LaunchNodeDomain callDomain = state.getExternalCallDomain(call);
     const std::set<LaunchNodeCoord> *nodes = callDomain.getUpperBoundNodes();
@@ -1816,11 +1822,13 @@ bool warnUndrainedDFB(int64_t logicalId, ArrayRef<DFBTransaction> producers,
         << "this external call may perform protocol actions on the DFB that "
            "it does not declare";
   }
-  diagnostic.attachNote()
-      << "a reconfiguration restores a DFB only where the finalized "
-         "allocation reinstalls its descriptor, which requires a bounded "
-         "lifecycle; declare the DFB effects of external calls that access "
-         "it, or pop the published blocks";
+  if (hasReconfiguration) {
+    diagnostic.attachNote()
+        << "a reconfiguration restores a DFB only where the finalized "
+           "allocation reinstalls its descriptor, which requires a bounded "
+           "lifecycle; declare the DFB effects of external calls that access "
+           "it, or pop the published blocks";
+  }
   attachDeclarationNote(diagnostic, bindSite);
   return true;
 }
@@ -1859,9 +1867,12 @@ bool verifyDFBTransactions(
           return llvm::is_contained(
               discardModel.getRestoredLogicalIds(op, coord), logicalId);
         });
-        warnedUndrained = warnUndrainedDFB(
-            logicalId, producers, consumers, coord, capacityBlocks,
-            restoredAtNode, externalCalls, bindSite, state, sequenceCache);
+        bool hasReconfiguration =
+            llvm::any_of(barrierOps, llvm::IsaPred<DFBReconfigurationOp>);
+        warnedUndrained =
+            warnUndrainedDFB(logicalId, producers, consumers, coord,
+                             capacityBlocks, restoredAtNode, hasReconfiguration,
+                             externalCalls, bindSite, state, sequenceCache);
       }
       continue;
     }

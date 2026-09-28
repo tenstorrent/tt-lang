@@ -10,6 +10,7 @@
 # RUN: env TTLANG_COMPILE_ONLY=1 not %python %s wait-first 2>&1 | FileCheck %s --check-prefix=WAIT-FIRST
 # RUN: env TTLANG_COMPILE_ONLY=1 %python %s single-publish 2>&1 | FileCheck %s --check-prefix=SINGLE-PUBLISH
 # RUN: env TTLANG_COMPILE_ONLY=1 %python %s repeated-publish 2>&1 | FileCheck %s --check-prefix=REPEATED-PUBLISH
+# RUN: env TTLANG_COMPILE_ONLY=1 %python %s unrestored-publish 2>&1 | FileCheck %s --check-prefix=UNRESTORED-PUBLISH
 # RUN: env TTLANG_COMPILE_ONLY=1 %python %s generations 2>&1 | FileCheck %s --check-prefix=GENERATIONS
 # RUN: env TTLANG_COMPILE_ONLY=1 not %python %s growing-generations 2>&1 | FileCheck %s --check-prefix=GROWING-GENERATIONS
 
@@ -27,7 +28,13 @@
 # REPEATED-PUBLISH: warning: logical DFB {{[0-9]+}} is never popped on core_x=0, core_y=0, but its producer can push 4 block(s) into capacity 1 before a synchronized reset or reconfiguration restores it
 # REPEATED-PUBLISH: note: published blocks stay in the DFB until a pop or a reset or reconfiguration that restores it
 # REPEATED-PUBLISH: note: this external call may perform protocol actions on the DFB that it does not declare
+# REPEATED-PUBLISH-NOT: a reconfiguration restores a DFB
 # REPEATED-PUBLISH: COMPILED
+# UNRESTORED-PUBLISH: warning: logical DFB {{[0-9]+}} is never popped on core_x=0, core_y=0, but its producer can push 4 block(s) into capacity 1 during the launch
+# UNRESTORED-PUBLISH: note: published blocks stay in the DFB until a pop, so the producer blocks once the DFB is full
+# UNRESTORED-PUBLISH: note: this external call may perform protocol actions on the DFB that it does not declare
+# UNRESTORED-PUBLISH-NOT: a reconfiguration restores a DFB
+# UNRESTORED-PUBLISH: COMPILED
 # GENERATIONS-NOT: {{error|warning}}:
 # GENERATIONS: COMPILED
 # GROWING-GENERATIONS: error: logical DFB {{[0-9]+}} has transactions that cannot complete before a synchronized reset or reconfiguration on core_x=0, core_y=0
@@ -218,6 +225,41 @@ def make_waited_publications(publications):
     return waited_publications
 
 
+def make_unrestored_publications():
+    # The waited publications without a reset: nothing restores the DFB, so
+    # four publications block the reader during the launch.
+    compute_kernel, reader_kernel, writer_kernel = _participants()
+
+    @ttl.operation(grid=(1, 1))
+    def unrestored_publications(inp, out):
+        dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=1)
+
+        @ttl.compute(kernel=compute_kernel)
+        def compute():
+            for _ in range(4):
+                ttl.call_extern_func(
+                    RECONFIGURATION_HEADER,
+                    "wait_without_pop",
+                    template_args=[ttl.dfb_descriptor(dfb)],
+                    dfb_effects=[ttl.DFBEffect.wait(dfb, tiles=1)],
+                )
+            ttl.call_extern_func(
+                LIVENESS_HEADER, "retain_dfb_liveness", dfb_dependencies=[dfb]
+            )
+
+        @ttl.datamovement(kernel=reader_kernel)
+        def reader():
+            for index in range(4):
+                with dfb.reserve() as blk:
+                    ttl.copy(inp[0, index], blk).wait()
+
+        @ttl.datamovement(kernel=writer_kernel)
+        def writer():
+            pass
+
+    return unrestored_publications
+
+
 def make_generations(pushes_per_generation):
     # A generation loop with one reset per generation. The reader pushes into
     # `handoff` before the reset and the writer pops after it, so the block
@@ -273,6 +315,7 @@ FACTORIES = {
     "wait-first": make_wait_first,
     "single-publish": lambda: make_waited_publications(publications=1),
     "repeated-publish": lambda: make_waited_publications(publications=4),
+    "unrestored-publish": make_unrestored_publications,
     "generations": lambda: make_generations(pushes_per_generation=1),
     "growing-generations": lambda: make_generations(pushes_per_generation=2),
 }
