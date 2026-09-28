@@ -25,6 +25,8 @@ def _load_ttlang_test_utils(
     flat_nodes: list[str] | None = None,
     has_tt_device: bool = False,
     ttl_importable: bool = True,
+    emule_mode: bool = False,
+    simulator_mode: bool = False,
 ):
     """Import ttlang_test_utils under controlled device/config conditions.
 
@@ -38,9 +40,14 @@ def _load_ttlang_test_utils(
     # Env vars checked before the device-node probe must not leak in from the
     # CI runner. TTLANG_COMPILE_ONLY is set by the module as an import side
     # effect; delenv here so monkeypatch restores its absence on teardown.
+    monkeypatch.delenv("TT_METAL_EMULE_MODE", raising=False)
     monkeypatch.delenv("TT_METAL_SIMULATOR", raising=False)
     monkeypatch.delenv("TTLANG_HAS_DEVICE", raising=False)
     monkeypatch.delenv("TTLANG_COMPILE_ONLY", raising=False)
+    if emule_mode:
+        monkeypatch.setenv("TT_METAL_EMULE_MODE", "1")
+    if simulator_mode:
+        monkeypatch.setenv("TT_METAL_SIMULATOR", "1")
 
     if ttl_importable:
         fake_ttl = types.ModuleType("ttl")
@@ -160,6 +167,64 @@ def test_build_config_true_without_nodes_is_available(monkeypatch) -> None:
     # ttl.config fallback below the node check still applies.
     module = _load_ttlang_test_utils(monkeypatch, has_tt_device=True)
     assert module.is_hardware_available() is True
+
+
+@pytest.mark.parametrize("mode", ["emule_mode", "simulator_mode"])
+def test_simulated_mode_is_available_without_device_nodes(monkeypatch, mode) -> None:
+    module = _load_ttlang_test_utils(monkeypatch, has_tt_device=False, **{mode: True})
+    assert module.is_hardware_available() is True
+    assert "TTLANG_COMPILE_ONLY" not in os.environ
+
+
+@pytest.mark.parametrize("variable", ["TT_METAL_EMULE_MODE", "TT_METAL_SIMULATOR"])
+@pytest.mark.parametrize("value", [None, "", "1", "0"])
+def test_simulated_device_detection(monkeypatch, variable, value) -> None:
+    module = _load_ttlang_test_utils(monkeypatch)
+    if value is not None:
+        monkeypatch.setenv(variable, value)
+    assert module.is_simulated_device() is bool(value)
+
+
+@pytest.mark.parametrize("simulated", [False, True])
+def test_device_fixture_uses_shared_simulator_detection(monkeypatch, simulated) -> None:
+    utils = _load_ttlang_test_utils(monkeypatch)
+    monkeypatch.setattr(utils, "is_simulated_device", lambda: simulated)
+    monkeypatch.setitem(sys.modules, "ttlang_test_utils", utils)
+    monkeypatch.setattr(sys, "path", list(sys.path))
+
+    spec = importlib.util.spec_from_file_location(
+        "python_conftest_under_test", REPO_ROOT / "test" / "python" / "conftest.py"
+    )
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    monkeypatch.setattr(module, "_ttnn_available", True)
+    monkeypatch.setattr(module, "_hardware_available", True)
+
+    calls = []
+    device = object()
+    dispatch_config = object()
+
+    def open_device(**kwargs):
+        calls.append(kwargs)
+        return device
+
+    fake_ttnn = types.SimpleNamespace(
+        open_device=open_device,
+        close_device=lambda device: calls.append(device),
+        DispatchCoreType=types.SimpleNamespace(WORKER="worker"),
+        DispatchCoreConfig=lambda core_type: dispatch_config,
+    )
+    monkeypatch.setitem(sys.modules, "ttnn", fake_ttnn)
+    fixture = module.ttnn_device.__wrapped__()
+    assert next(fixture) is device
+    with pytest.raises(StopIteration):
+        next(fixture)
+    expected = {"device_id": 0}
+    if not simulated:
+        expected["dispatch_core_config"] = dispatch_config
+    assert calls == [expected, device]
 
 
 def test_no_nodes_and_ttl_unimportable_is_unavailable(monkeypatch) -> None:
