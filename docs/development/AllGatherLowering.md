@@ -25,8 +25,8 @@ which defines `DeviceDomain`, `TransferGraph`, and graph pipe nets, and the
 [computed DRAM tensor destinations](https://github.com/tenstorrent/tt-lang/blob/main/docs/development/PipeNets.md#computed-dram-tensor-destinations)
 of pipe receives. It adds no operation or class.
 
-An all-gather is a graph pipe net over the all-to-all relation whose receives
-write DRAM tensor slices:
+The remote-shard transfer of an all-gather is a graph pipe net over the
+all-to-all relation whose receives write DRAM tensor slices:
 
 ```python
 device_domain = ttl.DeviceDomain((D, 1))
@@ -63,7 +63,9 @@ def gather_shards(shard, gathered):
 ```
 
 Slot `pipe.source_device_index` of `gathered` receives that device's shard.
-The all-to-all relation has no self edges, so the local slot is not written.
+The all-to-all relation has no self edges, so the transfer does not write the
+local slot; an all-gather that needs the complete tensor also copies the local
+shard into its own slot.
 Node `(0, 0)` is the only endpoint of `gather_net`; every other launched node
 may serve as a forwarder.
 
@@ -116,7 +118,7 @@ fabric configuration sets the topology: under `FABRIC_1D_RING` the axis is a
 ring whose antipode stripe is split between the two directions, while under
 `FABRIC_2D` only torus configurations wrap, so the axis is a line.
 
-| Fabric | TT-Metal topology | Device time | Received per device | Per incoming link |
+| Fabric | TT-Metal topology | Device time | Receive bandwidth per device | Bandwidth per incoming link |
 | --- | --- | ---: | ---: | ---: |
 | 1D ring | ring | 332 us | 114 GB/s | 57 GB/s |
 | 2D | line | 494 us | 76 GB/s | 76 GB/s |
