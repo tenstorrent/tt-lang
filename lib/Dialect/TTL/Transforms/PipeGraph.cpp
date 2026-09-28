@@ -2005,6 +2005,7 @@ PipeGraph::proveReceiverProducerStreams(PipeGraphAnalysisState &analysisState) {
     LogicalResult result = success();
     llvm::DenseMap<Operation *, SmallVector<Operation *>> pushesByPost;
     bool pushOutsidePostContext = false;
+    bool pushWithoutPost = false;
     forEachReceiverDFBPhysicalStreamEvent(
         analysisState.pushesByPhysicalStream, receiverDFB,
         [&](CBPushOp pushOp) {
@@ -2108,13 +2109,17 @@ PipeGraph::proveReceiverProducerStreams(PipeGraphAnalysisState &analysisState) {
             // A push may execute without its post only when it finalizes a
             // reserve in its own context and advances one full DFB: the
             // lifecycle stays balanced and the write pointer returns to the
-            // slot the sender computes.
-            bool fullPushOfOwnReserve =
-                knownAndEqual(reserveContext, pushContext) &&
-                *maybePushedBlocks == physicalBlockCount;
-            if (!knownAndEqual(postContext, pushContext) &&
-                !fullPushOfOwnReserve) {
-              pushOutsidePostContext = true;
+            // slot the sender computes. Its advance is still not a pipe
+            // receive, so it cannot prove a pipe-only producer stream.
+            if (!knownAndEqual(postContext, pushContext)) {
+              bool fullPushOfOwnReserve =
+                  knownAndEqual(reserveContext, pushContext) &&
+                  *maybePushedBlocks == physicalBlockCount;
+              if (fullPushOfOwnReserve) {
+                pushWithoutPost = true;
+              } else {
+                pushOutsidePostContext = true;
+              }
             }
             if (!hasMatchingReceiveWaitBeforePush(
                     postOp, pushOp, analysisState.receiveWaitsByPost,
@@ -2169,6 +2174,9 @@ PipeGraph::proveReceiverProducerStreams(PipeGraphAnalysisState &analysisState) {
     if (pushOutsidePostContext) {
       rejectBoth("push does not execute in the control context of its "
                  "receiver post");
+    }
+    if (pushWithoutPost) {
+      rejectPipeOnly("push can execute without its receiver post");
     }
     if (pipeOnlyValid) {
       node.hasProvenPipeOnlyProducerStream = true;
