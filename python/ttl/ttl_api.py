@@ -12,6 +12,7 @@ import functools
 import inspect
 import os
 import random
+import re
 import sys
 import threading
 import weakref
@@ -24,11 +25,25 @@ from typing import Any, Callable, Dict, List, Mapping, Optional, Union
 ttnn = None  # Lazy-loaded on first access via _ensure_ttnn()
 
 
+def _mlir_location_prefix(location) -> str:
+    """Return the `"file":line:col: ` prefix of an MLIR location, or ""."""
+    match = re.search(r'"([^"]+)":(\d+):(\d+)', str(location))
+    return f'"{match[1]}":{match[2]}:{match[3]}: ' if match else ""
+
+
 def _forward_mlir_warning(diagnostic):
-    """Print MLIR warnings while preserving the existing error handler."""
+    """Print MLIR warnings with their notes and source context, while
+    preserving the existing error handler."""
     if diagnostic.severity != DiagnosticSeverity.WARNING:
         return False
-    print(f"warning: {diagnostic}", file=sys.stderr)
+    lines = [
+        f"warning: {_mlir_location_prefix(diagnostic.location)}{diagnostic.message}"
+    ]
+    lines.extend(
+        f"note: {_mlir_location_prefix(note.location)}{note.message}"
+        for note in diagnostic.notes
+    )
+    print(format_mlir_error("\n".join(lines), label="warning"), file=sys.stderr)
     return True
 
 
@@ -3546,6 +3561,7 @@ def _lower_program_to_kernel(
             pipeline_passes.append("func.func(ttl-schedule-operations)")
         pipeline_passes.append("func.func(ttl-annotate-cb-associations)")
         pipeline_passes.append("ttl-verify-dfb-spsc")
+        pipeline_passes.append("ttl-verify-dfb-lifecycle")
         pipeline_passes.append("ttl-erase-pipenet-scopes")
         if l1_budget_override > 0:
             pipeline_passes.append(

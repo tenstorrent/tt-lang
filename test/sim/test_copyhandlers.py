@@ -24,7 +24,7 @@ from test_utils import (
 from sim import ttnn
 from sim.context import set_current_kernel_type
 from sim.copy import copy
-from sim.dfb import Block, DataflowBuffer
+from sim.dfb import Block, BlockAcquisition, DataflowBuffer
 from sim.copyhandlers import (
     BlockToPipeHandler,
     BlockToTensorHandler,
@@ -634,14 +634,21 @@ class TestRowMajorCopyValidation:
         """Copying a row-major block into a tiled tensor raises ValueError."""
 
         tiled_dst = Tensor(torch.zeros(32, 32, dtype=torch.float32))
+        row_major_tensor = Tensor(
+            torch.zeros(32, 32, dtype=torch.float32), ROW_MAJOR_LAYOUT
+        )
         rm_dfb = DataflowBuffer(
-            likeness_tensor=Tensor(
-                torch.zeros(32, 32, dtype=torch.float32), ROW_MAJOR_LAYOUT
-            ),
+            likeness_tensor=row_major_tensor,
             shape=(32, 32),
             block_count=2,
         )
-        blk = rm_dfb.reserve()
+        blk = Block(
+            row_major_tensor,
+            shape=(32, 32),
+            acquisition=BlockAcquisition.WAIT,
+            kernel_type=KernelKind.DATA_MOVEMENT,
+            dfb=rm_dfb,
+        )
         handler = BlockToTensorHandler()
         with pytest.raises(ValueError, match="Layout mismatch"):
             handler.validate(blk, tiled_dst)
