@@ -116,6 +116,31 @@ def test_reconfiguration_runtime_resources_with_plan_require_launch_configs(
         )
 
 
+def test_reconfiguration_runtime_resources_reject_mismatched_launch_config(
+    monkeypatch,
+):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    config = PhysicalDFBConfig(0, 1, "bfloat16", 1, 2048, (32, 32), storage_index=4)
+    plan = DFBReconfigurationPlan(
+        boundary_ordinals=(7,),
+        dfb_epochs=(
+            (DFBConfigurationEpoch(None, config), DFBConfigurationEpoch(7, config)),
+        ),
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="launch DFB configuration 0 does not match the reconfiguration plan",
+    ):
+        kernel_runner.build_dfb_reconfiguration_runtime_resources(
+            tensors=[],
+            core_ranges=_FakeCoreRanges(),
+            plan=plan,
+            device=object(),
+            cb_configs=[replace(config, storage_index=5)],
+        )
+
+
 @pytest.fixture(autouse=True)
 def _lockstep_allocator_by_default(monkeypatch):
     # Hybrid-mode tests set the allocator mode explicitly; an exported setting

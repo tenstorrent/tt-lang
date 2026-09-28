@@ -2977,6 +2977,14 @@ def build_dfb_reconfiguration_runtime_resources(
         )
     for dfb_index, config in enumerate(cb_configs):
         storage_index = storage_index_by_dfb[dfb_index]
+        if (
+            config.dfb_index != dfb_index
+            or _physical_dfb_storage_index(config) != storage_index
+        ):
+            raise ValueError(
+                f"launch DFB configuration {dfb_index} does not match the "
+                "reconfiguration plan's physical or storage index"
+            )
         if storage_index not in runtime_backed_storage_indices:
             continue
         allocation = _get_dfb_allocation(config)
