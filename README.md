@@ -40,6 +40,10 @@ TT-Lang bridges this gap through progressive disclosure: simple kernels require 
 
 ## 2. Quick Start
 
+The compiler-backed Docker simulator runs TT-Lang kernels through tt-emule
+without Tenstorrent hardware. Its environment installation and execution are
+described in [Getting started with Docker simulation](docs/sphinx/simulator-getting-started.md).
+
 ### 2.1 Install from PyPI
 
 We provide two tt-lang packages: the [tt-lang](https://pypi.org/project/tt-lang/) package includes the tt-lang compiler, Tenstorrent hardware support and depends on the `ttnn`, `pytorch` and several smaller python packages, while [tt-lang-sim](https://pypi.org/project/tt-lang-sim/) includes only the functional simulator (no compiler or hardware support) and does not depend on `ttnn`.

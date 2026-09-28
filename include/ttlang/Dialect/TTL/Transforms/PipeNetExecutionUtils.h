@@ -35,26 +35,52 @@ enum class PipeNetRecordSelection { Source, Destination };
 
 /// A loop that executes one PipeNet callback for each matching record.
 struct PipeNetRecordLoop {
+  PipeNetRecordLoop() = default;
+  PipeNetRecordLoop(
+      PipeNetRecordsAttr records, PipeNetRecordSelection selection,
+      std::map<std::pair<LaunchExecutionLocation, std::uint64_t>, std::uint64_t>
+          indirectInductionValues = {})
+      : records(records), selection(selection),
+        indirectInductionValues(std::move(indirectInductionValues)) {}
+
   PipeNetRecordsAttr records;
-  PipeNetRecordSelection selection;
-  /// Empty when the loop induction value is the original record index.
+  PipeNetRecordSelection selection = PipeNetRecordSelection::Source;
+  /// Explicit entries for loops without a compact induction rule.
   std::map<std::pair<LaunchExecutionLocation, std::uint64_t>, std::uint64_t>
       indirectInductionValues;
+  /// Node pipes visited per induction value when the record index determines
+  /// the induction value directly.
+  std::uint64_t inductionValueStride = 1;
+  /// Present when a closed-form graph computes endpoint-local induction values
+  /// from each selected record instead of retaining a per-record map.
+  PipeMappingAttr closedFormMapping;
+  /// Whether one loop iteration selects the node pipe at the current node.
+  bool usesMatchingNodeCoordinates = false;
 };
 
 /// Return the loop induction value that selects `recordIndex` at `location`.
 std::optional<std::uint64_t>
 getPipeNetRecordLoopInductionValue(const PipeNetRecordLoop &recordLoop,
                                    const LaunchExecutionLocation &location,
-                                   std::uint64_t recordIndex);
+                                   std::uint64_t recordIndex,
+                                   PipeRecordAttr selectedRecord = {});
 
 /// The record selected by one active PipeNet callback loop.
 struct ActivePipeNetRecord {
+  /// Callback loop whose current iteration selected this record.
   Operation *loopOp = nullptr;
+  /// Global concrete-record index within the loop's PipeNet records.
   std::uint64_t recordIndex = 0;
+  /// Concrete record retained because graph callback indices are mapping-local.
+  PipeRecordAttr record;
 };
 
 /// Return the active record selected by `loopOp`, if present.
+std::optional<ActivePipeNetRecord>
+getActivePipeNetRecord(ArrayRef<ActivePipeNetRecord> activeRecords,
+                       Operation *loopOp);
+
+/// Return the index of the active record selected by `loopOp`, if present.
 std::optional<std::uint64_t>
 getActivePipeNetRecordIndex(ArrayRef<ActivePipeNetRecord> activeRecords,
                             Operation *loopOp);

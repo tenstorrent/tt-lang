@@ -93,6 +93,8 @@ jobs:
               with:
                   key: Linux-ttlang-build
                   max-size: 200M
+                  save: ${{ github.ref == 'refs/heads/main' }}
+                  evict-old-files: job
 
             - name: Build tt-lang
               run: |

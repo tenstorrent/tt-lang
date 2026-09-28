@@ -30,12 +30,16 @@ jobs:
       - name: Checkout tt-lang (without submodules)
         uses: actions/checkout@v6
 
-      - name: Extract submodule SHAs for cache keys
+      - name: Compute toolchain cache key
         id: submodule-shas
         run: |
           LLVM_SHA=$(git ls-tree HEAD third-party/llvm-project | awk '{print substr($3,1,7)}')
           TTMETAL_SHA=$(git ls-tree HEAD third-party/tt-metal | awk '{print substr($3,1,7)}')
-          CACHE_KEY="Linux-toolchain_llvm-${LLVM_SHA}_ttmetal-${TTMETAL_SHA}"
+          # The patches in third-party/patches are applied to the tt-metal source
+          # at configure time, so they change what the toolchain is built from
+          # just as a submodule bump does.
+          PATCHES_SHA=$(git ls-tree HEAD third-party/patches | awk '{print substr($3,1,7)}')
+          CACHE_KEY="Linux-toolchain_llvm-${LLVM_SHA}_ttmetal-${TTMETAL_SHA}_patches-${PATCHES_SHA}"
           echo "cache-key=$CACHE_KEY" >> "$GITHUB_OUTPUT"
           echo "Cache key: $CACHE_KEY"
 

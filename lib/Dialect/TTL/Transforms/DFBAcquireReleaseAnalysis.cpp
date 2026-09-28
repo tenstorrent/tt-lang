@@ -98,7 +98,8 @@ static bool isLifecycleOrIdentityOnlyOp(Operation *operation) {
 }
 
 static bool isTensorSlotPropagationOnlyOp(Operation *operation) {
-  return isa<AttachCBOp, UnrealizedConversionCastOp, scf::YieldOp>(operation);
+  return isa<AttachCBOp, UnrealizedConversionCastOp, scf::YieldOp>(operation) ||
+         getSingletonDimensionShapeViewSource(operation);
 }
 
 static bool isTensorSlotViewUseOp(Operation *operation) {

@@ -25,6 +25,7 @@
 #include "llvm/ADT/SmallVector.h"
 
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <string>
 
@@ -54,6 +55,141 @@ struct SelectedPipeRecords {
 /// `ttl.select_pipe_dst`, and the pipe block argument of
 /// `ttl.pipenet_foreach_src` or `ttl.pipenet_foreach_dst`.
 FailureOr<SelectedPipeRecords> getSelectedPipeRecords(Value pipe);
+
+/// Dynamic logical-device indices for one transfer-graph edge.
+struct TransferGraphEdgeIndexValues {
+  Value edgeOrdinal;
+  Value sourceDeviceIndex;
+  Value destinationDeviceIndex;
+};
+
+/// Verify one component coordinate against its declared extent.
+LogicalResult
+verifyComponentCoordinates(DeviceDomainComponentAttr component,
+                           DenseI64ArrayAttr coordinate,
+                           llvm::function_ref<InFlightDiagnostic()> emitError,
+                           StringRef context, bool allowUpperBound = false);
+
+/// Verify that every coordinate in `deviceRef` belongs to `domain`.
+LogicalResult
+verifyDeviceRefInDomain(DeviceDomainAttr domain, DeviceRefAttr deviceRef,
+                        llvm::function_ref<InFlightDiagnostic()> emitError,
+                        StringRef context, bool allowUpperBound = false);
+
+/// Verify a transfer edge and its source/destination relation in `domain`.
+LogicalResult
+verifyTransferEdgeInDomain(DeviceDomainAttr domain, TransferEdgeAttr edge,
+                           llvm::function_ref<InFlightDiagnostic()> emitError,
+                           StringRef context);
+
+/// How lowering enumerates the edges incident to one logical device.
+enum class IncidentEdgeIteration {
+  /// Closed-form arithmetic maps an incident ordinal to its graph ordinal, so
+  /// the callback loop runs once per incident edge.
+  ClosedForm,
+  /// A scan over every graph edge selects the incident ones by predicate, so
+  /// the callback loop runs once per graph edge and its body is conditional.
+  Filtered,
+};
+
+/// Abstract semantics for one verified transfer graph.
+class TransferGraph {
+public:
+  TransferGraph(DeviceDomainAttr domain, TransferGraphKind kind,
+                StringAttr componentName, DictionaryAttr properties)
+      : domain(domain), kind(kind), componentName(componentName),
+        properties(properties) {}
+  virtual ~TransferGraph() = default;
+
+  DeviceDomainAttr getDomain() const { return domain; }
+  TransferGraphKind getKind() const { return kind; }
+  StringAttr getComponentName() const { return componentName; }
+  DictionaryAttr getProperties() const { return properties; }
+
+  /// Verify the properties and nonempty relation owned by this graph kind.
+  virtual LogicalResult
+  verify(llvm::function_ref<InFlightDiagnostic()> emitError) const = 0;
+
+  /// Enumerate graph edges in deterministic callback iteration order.
+  virtual void
+  forEachEdge(llvm::function_ref<void(TransferEdgeAttr)> callback) const = 0;
+
+  /// Return the number of graph edges without constructing node-pipe records.
+  virtual FailureOr<std::uint64_t> getEdgeCount() const = 0;
+
+  /// Report how lowering must enumerate edges incident to one device.
+  virtual IncidentEdgeIteration getIncidentEdgeIteration() const {
+    return IncidentEdgeIteration::ClosedForm;
+  }
+
+  /// Build the number of edges incident to one dynamic logical device.
+  /// Implemented by `ClosedForm` relations.
+  virtual Value buildIncidentEdgeCount(OpBuilder &builder, Location loc,
+                                       Value deviceIndex, PipeRole role) const;
+
+  /// Build one incident edge and its global graph ordinal.
+  /// Implemented by `ClosedForm` relations.
+  virtual TransferGraphEdgeIndexValues
+  buildIncidentEdgeIndexValues(OpBuilder &builder, Location loc,
+                               Value deviceIndex, Value incidentEdgeIndex,
+                               PipeRole role) const;
+
+  /// Return an edge's endpoint-local ordinal in static enumeration order.
+  /// Implemented by `ClosedForm` relations.
+  virtual std::uint64_t getIncidentEdgeOrdinal(TransferEdgeAttr edge,
+                                               PipeRole role) const;
+
+  /// Build the predicate selecting edges incident to `deviceIndex` in `role`.
+  /// Implemented by `Filtered` relations.
+  virtual Value buildEdgeIncidence(OpBuilder &builder, Location loc,
+                                   Value deviceIndex, Value edgeOrdinal,
+                                   PipeRole role) const;
+
+  /// Build the endpoint indices of one graph edge ordinal.
+  /// Implemented by `Filtered` relations.
+  virtual TransferGraphEdgeIndexValues
+  buildEdgeIndexValues(OpBuilder &builder, Location loc,
+                       Value edgeOrdinal) const;
+
+  /// Return graph edges in deterministic callback iteration order.
+  SmallVector<TransferEdgeAttr> getEdges() const;
+
+protected:
+  /// Verify that the graph edge count is nonzero and index-representable.
+  LogicalResult verifyNonemptyEdgeCount(
+      llvm::function_ref<InFlightDiagnostic()> emitError) const;
+
+private:
+  DeviceDomainAttr domain;
+  TransferGraphKind kind;
+  StringAttr componentName;
+  DictionaryAttr properties;
+};
+
+/// Create the graph specialization selected by `graph.kind`.
+std::unique_ptr<TransferGraph> createTransferGraph(TransferGraphAttr graph);
+
+/// Create a graph specialization while an attribute is being verified.
+std::unique_ptr<TransferGraph> createTransferGraph(DeviceDomainAttr domain,
+                                                   TransferGraphKind kind,
+                                                   StringAttr componentName,
+                                                   DictionaryAttr properties);
+
+/// Return the number of concrete transfers without constructing one record for
+/// every graph edge and node pipe.
+FailureOr<std::uint64_t> getPipeRecordCount(PipeNetRecordsAttr records);
+
+/// Enumerate declared node-pipe records without repeating them per graph edge.
+void forEachNodePipeRecord(PipeNetRecordsAttr records,
+                           llvm::function_ref<void(PipeRecordAttr)> callback);
+
+/// Return the first declared node-pipe record without enumerating graph edges.
+FailureOr<PipeRecordAttr> getFirstNodePipeRecord(PipeNetRecordsAttr records);
+
+/// Enumerate concrete transfers without storing all records at once.
+void forEachPipeRecord(
+    PipeNetRecordsAttr records,
+    llvm::function_ref<void(std::uint64_t, PipeRecordAttr)> callback);
 
 /// Return the row-major index of `device` in `domain`.
 inline int64_t getLogicalDeviceIndex(DeviceDomainAttr domain,
@@ -200,16 +336,40 @@ inline mlir::Value traceUnrealizedCasts(mlir::Value value) {
   return value;
 }
 
+/// Return the source of a static tensor expand/collapse that only inserts or
+/// removes singleton dimensions without changing element type or encoding.
+mlir::Value getSingletonDimensionShapeViewSource(mlir::Operation *operation);
+
+/// Return the input of an identity cast or a one-to-one CB conversion bridge.
+/// Tensor-to-tensor reinterpretations are not DFB shape views: those must use
+/// the checked expand/collapse operations above.
+mlir::Value getDFBConversionCastSource(mlir::Operation *operation);
+
+/// Trace conversion bridges and checked singleton-dimension tensor views.
+inline mlir::Value traceDFBShapeViews(mlir::Value value) {
+  while (true) {
+    mlir::Operation *definition = value.getDefiningOp();
+    mlir::Value source = getDFBConversionCastSource(definition);
+    if (!source) {
+      source = getSingletonDimensionShapeViewSource(definition);
+    }
+    if (!source) {
+      return value;
+    }
+    value = source;
+  }
+}
+
 /// Trace a tensor value through view-preserving operations to its DFB acquire.
 ///
-/// Casts, DFB associations, slices, and extracts preserve the acquired storage
-/// identity and may occur in any order. Other tensor operations terminate the
-/// search because their results do not necessarily alias the acquired slot.
-/// Returns null when the chain does not end at `ttl.cb_wait` or
+/// Casts, singleton shape views, DFB associations, slices, and extracts
+/// preserve the acquired storage identity and may occur in any order. Other
+/// operations terminate the search because their results may not alias the
+/// acquired slot. Returns null when the chain does not end at `ttl.cb_wait` or
 /// `ttl.cb_reserve`.
 inline mlir::Operation *findCBAcquireOp(mlir::Value tensor) {
   while (true) {
-    tensor = traceUnrealizedCasts(tensor);
+    tensor = traceDFBShapeViews(tensor);
     if (auto attach = tensor.getDefiningOp<AttachCBOp>()) {
       tensor = attach.getTensor();
       continue;
@@ -266,7 +426,7 @@ inline bool isInactiveGuardedDFBYield(mlir::Value value) {
 inline mlir::Operation *findCBAcquireOp(mlir::Value tensor,
                                         mlir::Operation *use) {
   while (true) {
-    tensor = traceUnrealizedCasts(tensor);
+    tensor = traceDFBShapeViews(tensor);
     if (auto attach = tensor.getDefiningOp<AttachCBOp>()) {
       tensor = attach.getTensor();
       continue;
@@ -468,7 +628,17 @@ inline bool isCBAcquireView(mlir::Value tensor) {
 
 /// Return the circular buffer attached to `tensor`, or null if none.
 inline mlir::Value getAttachedCB(mlir::Value tensor) {
-  tensor = traceUnrealizedCasts(tensor);
+  tensor = traceDFBShapeViews(tensor);
+  // After CB lowering, shape views and slices may terminate at a materialized
+  // TTKernel handle rather than a TTL acquire operation.
+  if (mlir::isa<mlir::tt::ttkernel::CBType>(tensor.getType())) {
+    return tensor;
+  }
+  if (mlir::isa_and_nonnull<mlir::tensor::ExpandShapeOp,
+                            mlir::tensor::CollapseShapeOp>(
+          tensor.getDefiningOp())) {
+    return {};
+  }
   if (auto slice = tensor.getDefiningOp<mlir::tensor::ExtractSliceOp>()) {
     return getAttachedCB(slice.getSource());
   }

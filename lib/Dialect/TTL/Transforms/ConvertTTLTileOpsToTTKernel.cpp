@@ -105,9 +105,8 @@ static Value lookupCBByIndex(Value src, Operation *funcOp) {
     tensor = slice.getSource();
   }
 
-  // Trace through unrealized conversion casts.
-  // After cb_wait lowering, the tensor is an unrealized_cast(ttkernel.cb).
-  tensor = traceUnrealizedCasts(tensor);
+  // Shape views can wrap the conversion bridge from a lowered cb_wait.
+  tensor = traceDFBShapeViews(tensor);
 
   // If we traced to a ttkernel.cb, return it directly.
   if (llvm::isa<ttkernel::CBType>(tensor.getType())) {

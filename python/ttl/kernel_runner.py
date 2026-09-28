@@ -3923,6 +3923,40 @@ def _iter_device_domain_coordinates(device_domain, mesh_program_placements=None)
         yield mesh_coordinate, list(mesh_coordinate)
 
 
+def _validate_device_domain_mesh_compatibility(
+    device_domain, mesh_program_placements, mesh_device
+) -> None:
+    """Reject coordinates that cannot name devices in the active mesh."""
+    mesh_shape = getattr(mesh_device, "shape", None)
+    if mesh_shape is None:
+        return
+
+    mesh_extent = tuple(int(dimension) for dimension in mesh_shape)
+    domain_extent = device_domain.flattened_extent
+    if len(domain_extent) != len(mesh_extent):
+        raise ValueError(
+            f"device_domain flattened rank {len(domain_extent)} must match active "
+            f"mesh rank {len(mesh_extent)}"
+        )
+
+    if mesh_program_placements is None:
+        if any(
+            domain_dimension > mesh_dimension
+            for domain_dimension, mesh_dimension in zip(domain_extent, mesh_extent)
+        ):
+            raise ValueError(
+                f"device_domain extent {domain_extent} must fit inside active mesh "
+                f"extent {mesh_extent}"
+            )
+        return
+
+    normalize_mesh_program_placements(
+        mesh_program_placements,
+        extent=mesh_extent,
+        extent_name="active mesh",
+    )
+
+
 def build_device_mesh_program_descriptor(
     program_descriptors: Dict[tuple, Any],
 ) -> Any:
@@ -4033,15 +4067,19 @@ def _run_kernel_on_device_impl(
         operation_name: User-facing operation name for callback diagnostics.
         runtime_resource_cache: Optional cache owning persistent PipeNet, DFB
             reconfiguration, and declarative runtime resources.
-        device: Optional explicit resource device. Defaults to the first input
-            tensor's device.
-
     Returns:
         Result from ttnn.generic_op (typically None or output tensor).
     """
     _ensure_ttnn()
     if ttnn is None:
         raise RuntimeError("ttnn is not available")
+
+    mesh_device = None
+    if device_domain is not None:
+        mesh_device = device if device is not None else _first_device(tensors)
+        _validate_device_domain_mesh_compatibility(
+            device_domain, mesh_program_placements, mesh_device
+        )
 
     if runtime_resource_cache is not None:
         _release_portable_runtime_resources_impl(runtime_resource_cache)
@@ -4179,7 +4217,6 @@ def _run_kernel_on_device_impl(
         return program_descriptor
 
     if device_domain is not None:
-        mesh_device = device if device is not None else _first_device(tensors)
         fabric_routes = kernel_fabric_routes or [[] for _ in kernel_specs]
         external_fabric_connections = (
             resource_plan.fabric_connections if resource_plan is not None else ()

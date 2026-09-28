@@ -411,26 +411,31 @@ the toolchain with `fail-on-cache-miss: true` and bakes it into the IRD image.
 Dispatching `call-build-docker.yml` separately resolves the same cache scopes
 and rebuilds too.
 
-Confirm the cache exists first; the key uses seven-character submodule SHAs:
+Confirm the cache exists first; the key uses seven-character IDs, the two
+submodule gitlink commits and the tree of `third-party/patches`:
 
 ```bash
 gh api "repos/tenstorrent/tt-lang/actions/caches?per_page=100" \
   --jq '.actions_caches[] | select(.key | startswith("Linux-toolchain")) | "\(.ref)  \(.key)"'
 ```
 
-Look for `Linux-toolchain_llvm-<llvm7>_ttmetal-<ttmetal7>` at
-`ref=refs/heads/main` matching the uplifted submodules, then push the tag.
+Look for `Linux-toolchain_llvm-<llvm7>_ttmetal-<ttmetal7>_patches-<patches7>`
+at `ref=refs/heads/main` matching the uplifted submodules, then push the tag.
 
 ### CI: toolchain cache and Docker images
 
-CI uses two caching layers that must be rebuilt when submodule SHAs change:
+CI uses two caching layers that must be rebuilt when what the toolchain is
+built from changes:
 
 1. **GitHub Actions toolchain cache** -- a cached LLVM + tt-metal build keyed
-   by the LLVM and tt-metal submodule SHAs
-   (`Linux-toolchain_llvm-<sha>_ttmetal-<sha>`). When an uplift changes either
-   SHA, the cache key changes and the
-   `call-build-toolchain.yml` workflow automatically builds and caches a new
-   toolchain.
+   by the LLVM and tt-metal submodule SHAs together with the tree hash of
+   `third-party/patches`
+   (`Linux-toolchain_llvm-<sha>_ttmetal-<sha>_patches-<tree>`). When an uplift
+   changes either SHA, or a patch is added, edited or removed, the cache key
+   changes and the `call-build-toolchain.yml` workflow automatically builds and
+   caches a new toolchain. The patches belong in the key because
+   `BuildTTMetal` applies them to the tt-metal source at configure time, so a
+   patch change alters the built toolchain exactly as a submodule bump does.
 
 2. **Docker images** -- `ird` and `dist` container images at GHCR, tagged by
    `.github/containers/get-version-tag.sh` (see [Docker tag scheme](#docker-tag-scheme)).

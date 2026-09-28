@@ -31,7 +31,8 @@ namespace mlir::tt::ttl {
 class PipeTransferIndex;
 
 /// One logical device route used by `sourceNodes` in a kernel function.
-/// `routeIndex` identifies the connection within `localDevice`.
+/// `routeIndex` selects this route's target metadata; host binding separately
+/// maps that route to a shared physical connection slot.
 struct FabricRoute {
   DeviceRefAttr localDevice;
   DeviceRefAttr remoteDevice;
@@ -77,12 +78,12 @@ struct FabricManagerIntervalPlan {
   std::optional<SmallVector<LaunchNodeCoord>> launchNodes;
 };
 
-/// Fabric routes and transfer associations derived before PipeNet lowering.
+/// Fabric routes and transfer associations derived before transport emission.
 struct FabricRoutePlan {
   /// Routes grouped by the kernel function that submits each transfer.
   llvm::MapVector<func::FuncOp, FunctionFabricRoutePlan> routesByFunction;
-  /// Connection indices in selected-record order. Static operations have one
-  /// entry.
+  /// Logical route indices in selected-record order. Static operations have
+  /// one entry.
   llvm::MapVector<Operation *, SmallVector<std::size_t>> routeIndices;
   /// Non-overlapping connection ownership intervals.
   SmallVector<FabricRuntimeIntervalPlan> runtimeIntervals;

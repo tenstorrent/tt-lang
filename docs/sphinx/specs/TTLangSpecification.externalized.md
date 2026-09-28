@@ -55,6 +55,7 @@
 | 0.19 | 06/15/2026 | Unified-body `ttl.operation` with thread assignment and composition; add multi-kernel operation with explicit kernels |
 | 0.20 | 06/23/2026 | Add `ttl.exp` hardware flags and scaled exponential canonicalization |
 | 0.21 | 09/03/2026 | Add `ttl.read_index`, `ttl.wait_any`, dataflow-buffer allocation groups, waited-block replacement, external-call inspection contracts, byte-counted DFB and PipeNet transfers, logical device domains, sparse mesh program placement, multidevice PipeNets, and per-node PipeNet destination counts |
+| 0.22 | 09/28/2026 | Clarify DFB copy acquisition roles and held-block aliasing, restrict exponential iterations to a complete tile, and correct example dtypes and hardware terminology |
 
 
 ## Introduction
@@ -198,7 +199,7 @@ If tensor has a row-major layout the shape unit is a scalar element. For the TT-
 
 Shape determines the shape of a *block* returned by one of the *acquisition functions*: `wait` and `reserve`. The size of a block in L1 memory is determined by shape, shape unit and data type. For example, for a block with shape `(2, 2, 4, 1)`, shape unit of a tile (32 by 32 scalar elements) and BF16 data type (2 bytes), its size in L1 will be `2 * 2 * (4 * 32) * (1 * 32) * 2 = 32768` bytes. The block count determines the total size of L1 memory allocated for a dataflow buffer. This size is a product of a block size and block count. For the most common case block count defaults to 2 to support double buffering. With double buffered dataflow buffer one thread can write to a block while another is reading from a block thus enabling the pipelining. For the example above, this means there will be a total of 32768 bytes of L1 memory allocated for the dataflow buffer.
 
-A dataflow buffer is constructed in the scope of an operation function but its object functions run on threads. Acquisition functions can be used with Python `with` statement, which will automatically release acquired blocks at the end of the `with` scope. Alternatively, if acquisition functions are used without the `with` the user must explicitly call a corresponding release function on the acquired block: `pop` for `wait` and `push` for `reserve`.
+A dataflow buffer is constructed in the scope of an operation function but its object functions run on threads. Acquisition functions can be used with Python `with` statement, which will automatically release acquired blocks at the end of the `with` scope. Alternatively, if acquisition functions are used without the `with` the user must explicitly call a corresponding release function on the acquired block: `pop` for `wait` and `push` for `reserve`. A block must be released before its dataflow buffer is acquired again with the same acquisition function in a nested scope, such as a loop body: an acquisition returns the buffer's current front or write block, so a block held across a further acquisition would alias it. The compiler rejects a block that is still used or released after such an acquisition.
 
 #### Dataflow buffer example
 
@@ -404,6 +405,8 @@ A *tensor slice* is a view into a TT-NN tensor defined in terms of a dimension s
 
 The `ttl.copy` function expresses data movement between a source and destination. Copies between blocks and tensor slices, or from a block to a pipe, return a *transfer handle*. Waiting on the handle completes the transfer and makes its associated source or destination block safe to access. A copy from a pipe to a block posts a receive and returns a *receive request*. The `ttl.copy` function executes on a data movement thread.
 
+A tensor-to-dataflow-buffer copy or Pipe receive writes a block acquired from `reserve()`. A dataflow-buffer-to-tensor copy reads a block acquired from `wait()`. A Pipe send may read either kind of block; a reserve-acquired send must still be consumed by another kernel through `wait()`, and the spec examples send from `wait()` blocks. To keep a produced block in a tensor as well, publish it and copy it to the tensor from a `wait()`-acquired block of a second dataflow buffer.
+
 
 ### Selecting among completed receives
 
@@ -504,6 +507,11 @@ TT-Lang includes ability to print information to the standard output for debuggi
 
 | Term | Description |
 | :---- | :---- |
+| *NoC* | Network on chip connecting device processors and memory. |
+| *L1* | Worker-local SRAM; each worker core has a separate address space. |
+| *LLK* | Low-level kernel interface controlling unpack, math, and pack engines. |
+| *RISC* | Controller processor executing a transfer or compute-engine instruction stream. |
+| *BF16 / FP32* | BFloat16 and 32-bit floating-point encodings. |
 | *Domain specific language (DSL)* | A language based on a constrained subset of the host language, Python in the case of TT-Lang. |
 | *Operation function* | A Python function, decorated with `ttl.operation`, that encapsulates an operation written in TT-Lang and can be used as a TT-NN operation. Its body describes the work of all the operation's threads. |
 | *Composed operation* | An operation called from the body of another operation. It is expanded in place when the calling operation is defined. |
@@ -569,7 +577,7 @@ TT-Lang includes ability to print information to the standard output for debuggi
 | `ttl.BlockExpr.__abs__(self) -> ttl.BlockExpr`<br><br>`ttl.math.abs(expr: ttl.BlockExpr) -> ttl.BlockExpr` | Absolute value. Example: `abs(a)`, `ttl.math.abs(a)`. |
 | `ttl.BlockExpr.__neg__(self) -> ttl.BlockExpr`<br><br>`ttl.math.neg(expr: ttl.BlockExpr) -> ttl.BlockExpr` | Negation. Example: `-a`, `ttl.math.neg(a)`. |
 | `ttl.BlockExpr.__pow__(self, exponent: ttl.NaturalInt) -> ttl.BlockExpr`<br><br>`ttl.math.pow(expr: ttl.BlockExpr, exponent: ttl.NaturalInt) -> ttl.BlockExpr` | Power with scalar unsigned integer exponent. Example; `a ** 2`, `ttl.math.pow(a, 2)`. |
-| `ttl.math.exp(expr: ttl.BlockExpr, *, approx: bool = False, scale: Optional[float] = None, skip_clamp_check: bool = False, iterations: ttl.PositiveInt = 8) -> ttl.BlockExpr` | Natural base exponential. Computes `e^x` by default. When `scale` is provided, computes `e^(scale * x)`. |
+| `ttl.math.exp(expr: ttl.BlockExpr, *, approx: bool = False, scale: Optional[float] = None, skip_clamp_check: bool = False, iterations: Literal[8] = 8) -> ttl.BlockExpr` | Natural base exponential. Computes `e^x` by default. When `scale` is provided, computes `e^(scale * x)`. |
 | `ttl.math.exp2(expr: ttl.BlockExpr) -> ttl.BlockExpr` | Base 2 exponential (`2^x`) |
 | `ttl.math.expm1(expr: ttl.BlockExpr) -> ttl.BlockExpr` | Natural base exponential minus one (`ttl.math.exp(x) - 1`) |
 | `ttl.math.log(expr: ttl.BlockExpr) -> ttl.BlockExpr` | Natural logarithm |
@@ -585,8 +593,9 @@ flag enables approximate exponential evaluation. The `scale` argument applies
 a compile-time scalar multiplier before the exponential. The
 `skip_clamp_check` flag disables clamping of very negative inputs in
 approximate mode. This is faster, but inputs below approximately `-88.5` can
-produce incorrect negative outputs. The `iterations` argument controls the
-number of SFPU lane iterations and defaults to 8.
+produce incorrect negative outputs. The `iterations` argument is retained for
+hardware API parity, but only 8 is supported because this count evaluates one
+complete TT-Lang tile. Other values are rejected before kernel lowering.
 
 ### Trigonometric unary math functions
 

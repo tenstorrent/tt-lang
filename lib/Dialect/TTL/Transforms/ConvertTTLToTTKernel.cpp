@@ -703,6 +703,7 @@ private:
 /// Traverses ViewLikeOpInterface ops (CBReserveOp, CBWaitOp) and casts.
 static FailureOr<Value> getCBFromView(Value v) {
   while (v) {
+    v = traceDFBShapeViews(v);
     if (llvm::isa<ttk::CBType>(v.getType())) {
       return v;
     }
@@ -712,16 +713,14 @@ static FailureOr<Value> getCBFromView(Value v) {
       break;
     }
 
-    if (auto viewLike = llvm::dyn_cast<ViewLikeOpInterface>(def)) {
-      v = viewLike.getViewSource();
+    if (isa<tensor::ExpandShapeOp, tensor::CollapseShapeOp>(def)) {
+      v = getSingletonDimensionShapeViewSource(def);
       continue;
     }
 
-    if (auto cast = llvm::dyn_cast<UnrealizedConversionCastOp>(def)) {
-      if (cast.getInputs().size() == 1) {
-        v = cast.getInputs()[0];
-        continue;
-      }
+    if (auto viewLike = llvm::dyn_cast<ViewLikeOpInterface>(def)) {
+      v = viewLike.getViewSource();
+      continue;
     }
 
     if (auto cast = llvm::dyn_cast<tensor::CastOp>(def)) {
@@ -2077,7 +2076,7 @@ struct FuncKernelFinalize : OpRewritePattern<FuncOp> {
             ttk::ArgSpecAttr::get(op.getContext(),
                                   /*rtArgs=*/ArrayRef<ttk::ArgAttr>{},
                                   /*ctArgs=*/ctArgSpecs);
-        op->setAttr("ttkernel.arg_spec", argSpecAttr);
+        op->setAttr(ttk::ArgSpecAttr::name, argSpecAttr);
       }
 
       // Only erase arguments that are now unused after conversion. If any are
@@ -2429,10 +2428,13 @@ struct RawElementWriteLowering : OpConversionPattern<RawElementWriteOp> {
 //===----------------------------------------------------------------------===//
 
 /// Phase 1: Lower TTL ops (bind_cb, copy, wait, cb ops, store) to TTKernel.
-static LogicalResult lowerTTLOpsToTTKernel(
-    ModuleOp mod, MLIRContext &ctx, TTLToTTKernelTypeConverter &typeConverter,
-    StringRef passName, bool pipeComputedAddresses, bool pipeCapacitySync,
-    bool pipeGlobalSemaphoresOnly, std::optional<uint64_t> l1BudgetOverride) {
+static LogicalResult
+lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
+                      TTLToTTKernelTypeConverter &typeConverter,
+                      StringRef passName, bool pipeComputedAddresses,
+                      bool pipeCapacitySync, bool pipeGlobalSemaphoresOnly,
+                      const GraphPipeNetForeachPlans &graphForeachPlans,
+                      std::optional<uint64_t> l1BudgetOverride) {
   ConversionTarget target(ctx);
   target.addIllegalDialect<tt::ttl::TTLDialect>();
   target.addLegalDialect<affine::AffineDialect, arith::ArithDialect,
@@ -2489,7 +2491,7 @@ static LogicalResult lowerTTLOpsToTTKernel(
   // Preserve the generated record-selection regions so pipe graph ordering
   // does not mistake them for independent user control flow.
   PipeForeachLoweringInfo foreachLoweringInfo;
-  lowerPipeNetForeachOps(mod, foreachLoweringInfo);
+  lowerPipeNetForeachOps(mod, foreachLoweringInfo, graphForeachPlans);
 
   // Validate explicit transfer IR and resolve every high-level pipe copy before
   // expansion mutates the values used by the analysis.
@@ -2786,15 +2788,16 @@ removeStructuralTTLOps(ModuleOp mod, MLIRContext &ctx,
 static void removeTensorDataflowOps(func::FuncOp func) {
   SmallVector<Operation *> deadOps;
   func.walk([&](Operation *op) {
-    if (mlir::isa<tensor::ExtractOp, tensor::ExtractSliceOp, tensor::EmptyOp>(
-            op) &&
-        op->use_empty()) {
+    if (mlir::isa<tensor::ExtractOp, tensor::ExtractSliceOp, tensor::EmptyOp,
+                  tensor::ExpandShapeOp, tensor::CollapseShapeOp>(op)) {
       deadOps.push_back(op);
     }
   });
-  // Erase innermost-first to avoid dangling uses.
+  // Users precede their definitions so a dead view chain is removed together.
   for (auto *op : llvm::reverse(deadOps)) {
-    op->erase();
+    if (op->use_empty()) {
+      op->erase();
+    }
   }
 }
 
@@ -2907,6 +2910,39 @@ static void expandDstSections(ModuleOp mod) {
 // TTLConvertTTLToTTKernelPass
 //===----------------------------------------------------------------------===//
 
+static LogicalResult validateDFBShapeViews(ModuleOp module) {
+  WalkResult result = module.walk([&](Operation *operation) {
+    if (auto cast = dyn_cast<UnrealizedConversionCastOp>(operation)) {
+      bool hasBlockInput = llvm::any_of(cast.getInputs(), [](Value source) {
+        return getAttachedCB(source) || isCBAcquireView(source);
+      });
+      if (hasBlockInput && !getDFBConversionCastSource(operation)) {
+        operation->emitOpError(
+            "DFB views cannot use tensor reinterpretation casts; use checked "
+            "singleton-dimension expand_shape or collapse_shape operations");
+        return WalkResult::interrupt();
+      }
+      return WalkResult::advance();
+    }
+    if (!isa<tensor::ExpandShapeOp, tensor::CollapseShapeOp>(operation)) {
+      return WalkResult::advance();
+    }
+    Value source = operation->getOperand(0);
+    auto sourceType = dyn_cast<RankedTensorType>(source.getType());
+    bool isBlockView =
+        (sourceType && isa<ttcore::TileType>(sourceType.getElementType())) ||
+        getAttachedCB(source) || isCBAcquireView(source);
+    if (isBlockView && !getSingletonDimensionShapeViewSource(operation)) {
+      operation->emitOpError(
+          "block shape views require static shapes, identical element types "
+          "and encodings, and singleton-dimension insertion or removal");
+      return WalkResult::interrupt();
+    }
+    return WalkResult::advance();
+  });
+  return failure(result.wasInterrupted());
+}
+
 static LogicalResult
 validateTileOperationsForTarget(ModuleOp module,
                                 const ComputeTargetEnvironment &target) {
@@ -2935,6 +2971,10 @@ struct TTLConvertTTLToTTKernelPass
     ModuleOp mod = getOperation();
     TTLToTTKernelTypeConverter typeConverter;
 
+    if (failed(validateDFBShapeViews(mod))) {
+      signalPassFailure();
+      return;
+    }
     if (failed(validateSynchronizedDFBResetTarget(mod))) {
       signalPassFailure();
       return;
@@ -2960,6 +3000,13 @@ struct TTLConvertTTLToTTKernelPass
       return;
     }
 
+    FailureOr<GraphPipeNetForeachPlans> graphForeachPlans =
+        buildGraphPipeNetForeachPlans(mod);
+    if (failed(graphForeachPlans)) {
+      signalPassFailure();
+      return;
+    }
+
     // Phase 0: Expand DstSectionOp into four TTL sync ops. This inlines the
     // DstSectionOp body and inserts acquire/commit/wait/release around it,
     // with stores reordered to the pack phase (after wait).
@@ -2968,7 +3015,7 @@ struct TTLConvertTTLToTTKernelPass
     // Phase 1: Lower TTL ops to TTKernel (bind_cb, copy, wait, cb ops, store)
     if (failed(lowerTTLOpsToTTKernel(
             mod, ctx, typeConverter, getName(), pipeComputedAddresses,
-            pipeCapacitySync, pipeGlobalSemaphoresOnly,
+            pipeCapacitySync, pipeGlobalSemaphoresOnly, *graphForeachPlans,
             l1BudgetOverride == 0
                 ? std::nullopt
                 : std::optional<uint64_t>(l1BudgetOverride)))) {

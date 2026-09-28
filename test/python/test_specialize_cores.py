@@ -2,43 +2,17 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""End-to-end test for the per-core specialization path.
+"""Tests for core-specialized kernel compilation and execution.
 
-Per-core specialization is opt-in via the compiler option `specialize_cores`
-(enable with `--ttl-specialize-cores`; disabled by default). It is a single
-module pass (`ttkernel-specialize-cores`) run at the TTKernel level right
-before EmitC: for each kernel whose conditional or loop bounds depend on a core
-coordinate it emits one clone per launch coordinate, replacing the coordinate
-reads with constants and tagging each clone with `ttl.core_coord`. The runtime
-bridge (`_compile_ttnn_kernel`) turns each `ttl.core_coord` into a per-kernel
-core range for dispatch.
-
-Op bodies are built by `_make_matmul_op` / `_make_branch_swap_op` so default
-and specialized runs get distinct op objects (and compilation caches) without
-duplicating the kernel source. Env-var-dependent emit-runner tests call the
-factory again for a fresh cache, because the key does not include
-`TTLANG_EMIT_RUNNER` / `TTLANG_COMPILE_ONLY`.
-
-Coverage:
-  * matmul: addresses through the coordinate but never branches, so
-    specialization skips cloning. Checks torch PCC, match vs unspecialized,
-    and final MLIR has no `ttl.core_coord` / `_c<x>_<y>` clones.
-  * branch_swap: reader branches on `core_x` to swap columns, so the reader is
-    cloned per core. Checks torch PCC, match vs unspecialized, and that clones
-    cover the launch grid (MLIR-only clone/fold checks live in
-    `test/ttlang/Dialect/TTKernel/Transforms/specialize_cores.mlir`).
-  * coordinate_loop_copy: reader and writer loop bounds depend on `core_x`.
-    Checks bf16/fp32 exact results and per-core clones for both kernels.
-  * emit_runner_no_crash: `TTLANG_EMIT_RUNNER` must not IndexError when
-    kernels are cloned (per-clone tensor indices / core ranges).
-  * emit_runner_executes: emitted runner, run cold, reproduces the swap
-    (per-kernel core ranges and NOC roles baked into the template).
-  * subset_dfb: an extra DFB is reserved and waited only on column-0 cores.
-    Specialization folds that use away on the other cores; the kernel still
-    runs on device. Clone `ttl.used_dfb_indices` values are checked against a
-    fixture with fixed indices (column-0 keeps 0 and 1; column-1 keeps 0). The
-    pass itself is covered by
-    `test/ttlang/Dialect/TTKernel/Transforms/specialize_cores_dfb_use_elision.mlir`.
+Coverage includes:
+  * A matmul that uses core coordinates only for addressing remains uncloned
+    and matches both Torch and unspecialized execution.
+  * Coordinate-dependent branches and loop bounds specialize per core and
+    preserve BF16 and FP32 results.
+  * A DFB used by only a subset of cores retains the correct per-core metadata
+    and executes correctly.
+  * An emitted runner executes from a cold cache for BF16 and FP32 tensors in
+    DRAM and L1, with equivalent specialized kernels sharing descriptors.
 """
 
 import os
@@ -54,8 +28,8 @@ import ttl
 import ttl.dialects.ttl as ttl_dialect
 import ttl.ttl_api as ttl_api
 from ttl.ir import Context, Module
-from ttlang_test_utils import assert_pcc, to_dram
-from utils.correctness import assert_allclose
+from ttlang_test_utils import to_dram, to_l1
+from utils.correctness import assert_allclose, assert_pcc
 
 TILE_SIZE = 32
 
@@ -160,8 +134,8 @@ def test_specialize_cores_matmul_matches_reference(device, monkeypatch, tmp_path
     spec_result = ttnn.to_torch(out_spec)
 
     # Numerical correctness vs torch, and equivalence to the default path.
-    assert_pcc(expected, spec_result, threshold=0.999)
-    assert_pcc(default_result, spec_result, threshold=0.999)
+    assert_pcc(expected.float(), spec_result.float(), threshold=0.999)
+    assert_pcc(default_result.float(), spec_result.float(), threshold=0.999)
 
     # These kernels address through the coordinate but never branch on it, so
     # specialization must leave them un-cloned.
@@ -226,6 +200,58 @@ def _make_swap_inputs(device):
     return a, expected
 
 
+def _make_branch_broadcast_op():
+    """Build an operation whose reader depends on x but not y."""
+
+    @ttl.operation(grid=(GRID_X, GRID_Y))
+    def branch_broadcast(input_tensor, output_tensor):
+        input_dfb = ttl.make_dataflow_buffer_like(
+            input_tensor, shape=(1, 1), block_count=2
+        )
+        output_dfb = ttl.make_dataflow_buffer_like(
+            output_tensor, shape=(1, 1), block_count=2
+        )
+
+        @ttl.compute()
+        def compute_fn():
+            with input_dfb.wait() as input_tile, output_dfb.reserve() as output_block:
+                output_block.store(input_tile)
+
+        @ttl.datamovement()
+        def dm_read():
+            node_x, _node_y = ttl.node(dims=2)
+            with input_dfb.reserve() as input_block:
+                if node_x == 0:
+                    ttl.copy(input_tensor[0, 1], input_block).wait()
+                else:
+                    ttl.copy(input_tensor[0, 0], input_block).wait()
+
+        @ttl.datamovement()
+        def dm_write():
+            node_x, node_y = ttl.node(dims=2)
+            with output_dfb.wait() as output_block:
+                ttl.copy(output_block, output_tensor[node_y, node_x]).wait()
+
+    return branch_broadcast
+
+
+def _make_broadcast_inputs(device, dtype, to_device):
+    """Create input and expected output for the x-dependent reader branch."""
+
+    tensor_shape = (GRID_Y * TILE_SIZE, GRID_X * TILE_SIZE)
+    input_host = torch.randn(tensor_shape, dtype=dtype)
+    first_tile_row = input_host[:TILE_SIZE]
+    expected_tile_row = torch.cat(
+        (
+            first_tile_row[:, TILE_SIZE:],
+            first_tile_row[:, :TILE_SIZE],
+        ),
+        dim=1,
+    )
+    expected = expected_tile_row.repeat(GRID_Y, 1).contiguous()
+    return to_device(input_host, device), expected
+
+
 def _assert_reader_cloned(final_mlir_path):
     """Confirm the branching reader was cloned once per core.
 
@@ -269,8 +295,8 @@ def test_specialize_cores_branch_matches_reference(device, monkeypatch, tmp_path
     spec_result = ttnn.to_torch(out_spec)
 
     # Numerical correctness vs torch, and equivalence to the default path.
-    assert_pcc(expected, spec_result)
-    assert_pcc(default_result, spec_result)
+    assert_pcc(expected.float(), spec_result.float())
+    assert_pcc(default_result.float(), spec_result.float())
 
     # The reader branches on core_x, so it must be cloned once per core.
     _assert_reader_cloned(str(final_mlir))
@@ -448,7 +474,7 @@ def test_specialize_cores_subset_dfb_runs_on_device(device):
 
     subset_dfb_specialized(a, extra, out, options="--ttl-specialize-cores")
 
-    assert_pcc(expected, ttnn.to_torch(out))
+    assert_pcc(expected.float(), ttnn.to_torch(out).float())
 
 
 def test_specialize_cores_emit_runner_no_crash(device, monkeypatch, tmp_path):
@@ -469,29 +495,42 @@ def test_specialize_cores_emit_runner_no_crash(device, monkeypatch, tmp_path):
     assert runner_path.exists(), "no runner emitted"
 
 
-def test_specialize_cores_emit_runner_executes(device, monkeypatch, tmp_path):
-    """The emitted runner, run standalone on a cold cache, must reproduce the swap.
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "fp32"])
+@pytest.mark.parametrize("to_device", [to_dram, to_l1], ids=["dram", "l1"])
+def test_specialize_cores_emit_runner_executes(
+    device, monkeypatch, tmp_path, dtype, to_device
+):
+    """Reader clones with identical code share descriptors during first execution.
 
-    Compile-only so the op never executes and warms the program cache; otherwise
-    the runner's custom_program_hash could reuse a cached in-process program and
-    mask a template bug. The emitted runner must carry per-kernel core ranges
-    and NOC roles so clones dispatch correctly when built cold.
+    For each x coordinate, the y=0 and y=1 clones select the same branch and
+    generate identical C++. Compile-only avoids warming the program cache before
+    the emitted runner executes.
     """
     import importlib.util
 
     monkeypatch.setenv("TTLANG_COMPILE_ONLY", "1")
     runner_path = tmp_path / "runner.py"
     monkeypatch.setenv("TTLANG_EMIT_RUNNER", str(runner_path))
-    a, expected = _make_swap_inputs(device)
-    out = to_dram(torch.zeros_like(expected), device)
-    _make_branch_swap_op()(a, out, options="--ttl-specialize-cores")
+    a, expected = _make_broadcast_inputs(device, dtype, to_device)
+    out = to_device(torch.zeros_like(expected), device)
+    _make_branch_broadcast_op()(a, out, options="--ttl-specialize-cores")
 
     spec = importlib.util.spec_from_file_location("emitted_runner", str(runner_path))
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    # Compute and writer cover the whole grid. The two reader descriptors each
+    # cover both y coordinates for one x-dependent branch result.
+    assert len(module.KERNEL_PATHS) == 4
+    specialized_ranges = [
+        ranges for ranges in module.KERNEL_CORE_RANGES if ranges is not None
+    ]
+    assert {tuple(ranges) for ranges in specialized_ranges} == {
+        (((0, 0), (0, 0)), ((0, 1), (0, 1))),
+        (((1, 0), (1, 0)), ((1, 1), (1, 1))),
+    }
     monkeypatch.delenv("TTLANG_COMPILE_ONLY", raising=False)
     module.run([a, out], device=device)
-    assert_pcc(expected, ttnn.to_torch(out))
+    assert_pcc(expected.float(), ttnn.to_torch(out).float())
 
 
 if __name__ == "__main__":
@@ -518,7 +557,7 @@ if __name__ == "__main__":
         matmul_specialized(a, b, out, options="--ttl-specialize-cores")
 
         result = ttnn.to_torch(out)
-        assert_pcc(expected, result, threshold=0.999)
+        assert_pcc(expected.float(), result.float(), threshold=0.999)
         _assert_not_cloned(final_mlir)
         print(f"OK: specialized result matches torch reference (no clones).")
         print(f"Final MLIR written to {final_mlir}")

@@ -3237,6 +3237,55 @@ def test_device_domain_rejects_invalid_mesh_program_placement(
         )
 
 
+@pytest.mark.parametrize(
+    ("device_domain", "placements", "message"),
+    [
+        (DeviceDomain((2,)), None, "flattened rank 1 must match active mesh rank 2"),
+        (DeviceDomain((1, 3)), None, "must fit inside active mesh extent"),
+        (
+            DeviceDomain((4, 8)),
+            [(0, 2)],
+            "mesh program placement must be inside the active mesh",
+        ),
+    ],
+    ids=("rank", "full-domain-extent", "explicit-placement-extent"),
+)
+def test_device_domain_rejects_incompatible_active_mesh(
+    monkeypatch, device_domain, placements, message
+):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+
+    with pytest.raises(ValueError, match=message):
+        kernel_runner.run_kernel_on_device(
+            kernel_specs=[],
+            tensors=[_FakeTensor(_FakeMeshDevice())],
+            cb_configs=[],
+            core_ranges=_FakeCoreRanges(),
+            device_domain=device_domain,
+            mesh_program_placements=placements,
+        )
+
+
+def test_device_domain_explicit_placement_may_select_active_mesh_subset(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    monkeypatch.setattr(
+        kernel_runner, "get_min_remaining_l1_for_device", lambda _device: 0
+    )
+
+    result = kernel_runner.run_kernel_on_device(
+        kernel_specs=[],
+        tensors=[_FakeTensor(_FakeMeshDevice())],
+        cb_configs=[],
+        core_ranges=_FakeCoreRanges(),
+        device_domain=DeviceDomain((4, 8)),
+        mesh_program_placements=[(0, 1)],
+    )
+
+    assert len(result["program"].mesh_programs) == 1
+    mesh_range, _program = result["program"].mesh_programs[0]
+    assert mesh_range.start.coords == (0, 1)
+
+
 def test_routing_plane_runtime_args_are_dense_per_device(monkeypatch):
     fake_ttnn = _FakeTTNN()
     monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
@@ -3519,6 +3568,7 @@ def test_routing_plane_rejects_nonadjacent_neighbor_exchange(monkeypatch):
 
     assert fake_ttnn.fabric_setup_calls == []
     assert program.semaphores == []
+    assert all(not kernel.runtime_args for kernel in program.kernels)
 
 
 def test_routing_plane_rejects_one_dimensional_route_across_axes(monkeypatch):
@@ -3912,6 +3962,53 @@ def test_routing_plane_reuses_link_for_noninterfering_manager_intervals(monkeypa
     )
 
     assert [call[2] for call in fake_ttnn.fabric_setup_calls] == [[0], [0]]
+
+
+def test_routing_plane_separates_managers_across_worker_nodes(monkeypatch):
+    fake_ttnn = _FakeTTNN()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    program = _make_fake_fabric_program(1)
+    program.kernels[0].core_ranges = _make_fake_core_ranges((1, 0))
+    route = kernel_runner.FabricRouteSpec((0, 0), (0, 1), ((0, 0), (1, 0)), 0)
+
+    kernel_runner.configure_routing_plane_runtime_args(
+        program_descriptor=program,
+        kernel_fabric_routes=[[route]],
+        kernel_fabric_runtime_arg_base_common_indices=[0],
+        kernel_fabric_manager_intervals=[(_fabric_manager_interval("distributed"),)],
+        mesh_device=_FakeMeshDevice(),
+        device_coordinates=(0, 0),
+        grid_cols=2,
+        grid_rows=1,
+    )
+
+    # TT-Metal permits only one worker to own a forwarding channel at a time.
+    assert [call[2] for call in fake_ttnn.fabric_setup_calls] == [[0], [1]]
+
+
+def test_routing_plane_rejects_cross_worker_link_overcommit(monkeypatch):
+    fake_ttnn = _FakeTTNN()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    program = _make_fake_fabric_program(1)
+    program.kernels[0].core_ranges = _make_fake_core_ranges((2, 0))
+    route = kernel_runner.FabricRouteSpec((0, 0), (0, 1), ((0, 0), (1, 0), (2, 0)), 0)
+
+    with pytest.raises(ValueError, match="cannot assign distinct forwarding links"):
+        kernel_runner.configure_routing_plane_runtime_args(
+            program_descriptor=program,
+            kernel_fabric_routes=[[route]],
+            kernel_fabric_runtime_arg_base_common_indices=[0],
+            kernel_fabric_manager_intervals=[
+                (_fabric_manager_interval("distributed"),)
+            ],
+            mesh_device=_FakeMeshDevice(),
+            device_coordinates=(0, 0),
+            grid_cols=3,
+            grid_rows=1,
+        )
+
+    assert fake_ttnn.fabric_setup_calls == []
+    assert program.semaphores == []
 
 
 def test_routing_plane_separates_interfering_manager_intervals(monkeypatch):

@@ -30,7 +30,7 @@ python my_kernel.py --no-ttl-maximize-dst
 | `--ttl-reuse-user-dfbs` / `--no-ttl-reuse-user-dfbs` | enabled | Reuse physical DFB indices and compiler-managed storage when concurrent-kernel liveness proves that compatible lifetimes do not overlap. Disabling compacts provisional user indices without introducing user-DFB sharing and assigns each physical descriptor separate storage. |
 | `--ttl-dfb-exact-coloring-search-limit N` | `1000000` | Examine at most `N` states during deterministic exact DFB allocation when order-dependent first-fit prevents acceptance or exceeds the provisional threshold after a conservative PipeNet reservation. This bounds compile time; reaching the limit reports an inconclusive result only when authoritative acceptance requires the search result. |
 | `--ttl-unsafe-assume-dfb-allocation-groups` / `--no-ttl-unsafe-assume-dfb-allocation-groups` | disabled | Trust explicit `allocation_group=` handoffs that the compiler cannot prove. Accepted groups emit warnings and `ttl.assumed_dfb_allocation_groups` metadata. Descriptor, storage, static configuration, capacity, and L1 checks remain enforced. |
-| `--ttl-specialize-cores` / `--no-ttl-specialize-cores` | disabled | Clone each TTKernel function whose structured branch or loop control depends on a core coordinate once per launch coordinate (`ttkernel-specialize-cores`), replacing `my_logical_x_` / `my_logical_y_` with constants and tagging clones with `ttl.core_coord` for per-core dispatch. Opt-in. |
+| `--ttl-specialize-cores` / `--no-ttl-specialize-cores` | disabled | Create one TTKernel function per launch coordinate when its branches, loops, or compile-time table lookups depend on logical core coordinates. Each function receives constant coordinates, allowing later compiler passes to remove unreachable code and unused table entries. `ttl.core_coord` identifies the function's runtime dispatch coordinate. Specialized functions with identical generated C++ and runtime metadata share one runtime descriptor. Opt-in. |
 
 **f32 accumulation precision:** `dst` keeps the accumulator in the DST register
 but feeds it back through SRCA on each step, which truncates to tf32 (10-bit
@@ -376,28 +376,46 @@ ttlang-opt input.mlir -p 'ttl-dump-cb-flow-graph{output="/tmp/cb_graph.json"}'
 
 #### `ttkernel-specialize-cores`
 
-Clone TTKernel functions whose control flow depends on a core coordinate once
-per launch coordinate. Requires a module-level `ttl.launch_grid` attribute (an
-i64 array of length 2 with positive entries). Missing or malformed
-`ttl.launch_grid` is a hard error. A valid single-core grid (product <= 1)
-skips specialization.
+Create one TTKernel function per launch coordinate when its behavior depends on
+the logical core coordinate. The pass requires a module-level `ttl.launch_grid`
+attribute: an i64 array of length two with positive entries. Missing or
+malformed extents are errors. A single-core grid requires no specialization.
 
-Any structured region branch selector, repetition condition, or loop bound
-derived from `ttkernel.my_logical_x_` / `ttkernel.my_logical_y_` triggers
-cloning. Covered SCF operations include `scf.if`, `scf.index_switch`,
-`scf.for`, and `scf.while`.
-Functions with symbol uses (for example `func.call` targets) are left
-unspecialized with a warning so erasing the original does not leave dangling
-`SymbolRefAttr`s; unrelated functions in the module are still specialized.
-Each clone replaces coordinate reads with `arith.constant`s and is tagged with
-`ttl.core_coord` for runtime dispatch. Downstream `canonicalize` / `cse` fold
-the now-constant conditions and loop bounds. Static local PipeNet record loops
-are then fully unrolled so record-table lookups can fold to constants.
+A function is specialized when a branch condition, loop condition or bound, or
+index passed to `ttkernel.experimental.constant_table_lookup` depends on
+`ttkernel.my_logical_x_` or `ttkernel.my_logical_y_`. The lookup operation reads
+one value from a compile-time table; a coordinate-dependent index may select a
+different value on each core. Supported control-flow operations include
+`scf.if`, `scf.index_switch`, `scf.for`, and `scf.while`.
+
+A function referenced by another symbol, such as a `func.call` target, cannot
+be replaced without also selecting a coordinate-specific callee at each use.
+The pass leaves that function unchanged, emits a warning, and continues with
+independent functions. Each specialized function replaces coordinate reads
+with `arith.constant`s and records its dispatch coordinate in `ttl.core_coord`.
+Downstream `canonicalize` and `cse` remove unreachable control flow and fold
+table lookups. Static local PipeNet callback loops are then fully unrolled so
+each iteration's table lookup can also become constant.
+
 `ttkernel-annotate-dfb-use` then records surviving DFB compile-time arguments,
 synchronized resets, and external-call dependencies on each specialized
 function. Debug prints of a DFB remain only on cores that still have a
 non-print use of that DFB; a print whose DFB was folded away is dropped rather
 than keeping the descriptor alive for debugging.
+
+Before TTNN program construction, the Python kernel builder lowers the module
+to EmitC once and compares the generated C++ and runtime metadata of specialized
+functions. Matching functions share one kernel descriptor whose core range is
+the union of their `ttl.core_coord` values. Different code, runtime arguments,
+tensor and DFB use, compute configuration, or fabric metadata retain separate
+descriptors.
+
+For example, consider a reader on a `2x2` launch grid whose only
+coordinate-dependent branch tests `x`. Specialization creates one reader
+function per coordinate, but both `x=0` functions generate the same code and
+both `x=1` functions generate the same code. The Python kernel builder emits
+two reader descriptors: one for `{(0,0), (0,1)}` and one for `{(1,0), (1,1)}`.
+Unmodified compute and writer functions retain their whole-grid descriptors.
 
 This pass is off by default. Enable it through the pipeline option
 `specialize-cores` (Python: `--ttl-specialize-cores`), which runs the

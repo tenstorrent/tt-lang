@@ -33,6 +33,16 @@ static PipeTransferKind getPipeTransferKind(PipeTransferContract contract) {
                                         : PipeTransferKind::PointToPoint;
 }
 
+// Return the common transfer contract guaranteed by a verified record set.
+static FailureOr<PipeTransferContract>
+getPipeTransferContractForRecords(PipeNetRecordsAttr records) {
+  FailureOr<PipeRecordAttr> firstRecord = getFirstNodePipeRecord(records);
+  if (failed(firstRecord)) {
+    return failure();
+  }
+  return getPipeTransferContract(*firstRecord);
+}
+
 /// Return the contract shared by every possible value of a pipe operand.
 ///
 /// Create and selected-pipe operations preserve an explicit collective
@@ -46,12 +56,10 @@ getPipeTransferContractForPipeValue(ValueOriginAnalysis &analysis, Value pipe) {
           return getPipeTransferContract(createPipe);
         }
         if (auto selectedSrc = origin.getDefiningOp<SelectPipeSrcOp>()) {
-          return getPipeTransferContract(
-              selectedSrc.getRecords().getPipes().front());
+          return getPipeTransferContractForRecords(selectedSrc.getRecords());
         }
         if (auto selectedDst = origin.getDefiningOp<SelectPipeDstOp>()) {
-          return getPipeTransferContract(
-              selectedDst.getRecords().getPipes().front());
+          return getPipeTransferContractForRecords(selectedDst.getRecords());
         }
         if (isa<BlockArgument>(origin) && isa<PipeType>(origin.getType())) {
           return cast<PipeType>(origin.getType()).hasMultipleReceivers()
@@ -179,10 +187,10 @@ collectDeferredStaticPipeKeys(ModuleOp module, ValueOriginAnalysis &analysis) {
       result = failure();
       return;
     }
-    for (PipeRecordAttr record : maybeRecords->records.getPipes()) {
+    forEachNodePipeRecord(maybeRecords->records, [&](PipeRecordAttr record) {
       deferredStaticPipeKeys.insert(
           getPipeKey(record, maybeRecords->records.getPipeNetId()));
-    }
+    });
   });
   if (failed(result)) {
     return failure();

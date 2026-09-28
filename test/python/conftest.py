@@ -43,10 +43,10 @@ pytest_plugins = ("hardware_pytest_plugin",)
 
 from ttlang_test_utils import (
     is_hardware_available,
+    is_simulated_device,
     is_ttnn_available,
     pin_xdist_worker_to_device,
 )
-
 
 pin_xdist_worker_to_device()
 
@@ -107,7 +107,7 @@ def ttnn_device():
         _ttnn_import_failed = True
         raise
 
-    if os.environ.get("TT_METAL_SIMULATOR"):
+    if is_simulated_device():
         device = ttnn.open_device(device_id=0)
     else:
         dispatch_core_config = ttnn.DispatchCoreConfig(ttnn.DispatchCoreType.WORKER)

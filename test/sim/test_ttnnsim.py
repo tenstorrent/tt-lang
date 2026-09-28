@@ -2472,11 +2472,40 @@ def test_a_created_tensor_is_stored_padded() -> None:
     assert result.to_torch().sum().item() == 15
 
 
+_GOLDEN_DTYPE_CASES = (
+    pytest.param(ttnn.bfloat16, id="bfloat16"),
+    pytest.param(ttnn.float16, id="float16"),
+    pytest.param(ttnn.float32, id="float32"),
+    pytest.param(ttnn.bfloat8_b, id="bfloat8_b"),
+    pytest.param(torch.uint8, id="uint8"),
+    pytest.param(torch.uint16, id="uint16"),
+    pytest.param(torch.uint32, id="uint32"),
+    pytest.param(torch.int8, id="int8"),
+    pytest.param(torch.int32, id="int32"),
+)
+
+
 @requires_ttnn
-def test_a_created_tensor_takes_the_dtype_the_call_asked_for() -> None:
-    """The golden discards the dtype, so the wrapper records it instead."""
-    assert ttnn.ones([32, 32], dtype=ttnn.bfloat16).dtype == ttnn.bfloat16
-    # Said nothing about the dtype, so the result keeps the golden's.
+@pytest.mark.parametrize("dtype", _GOLDEN_DTYPE_CASES)
+def test_a_created_tensor_takes_the_dtype_the_call_asked_for(dtype) -> None:
+    """A real ttnn golden receives its dtype while the simulator preserves it."""
+    assert ttnn.ones([32, 32], dtype=dtype).dtype == dtype
+
+
+@requires_ttnn
+@pytest.mark.parametrize("dtype", _GOLDEN_DTYPE_CASES)
+def test_a_derived_tensor_takes_the_dtype_the_call_asked_for(dtype) -> None:
+    """Dtype translation also applies to goldens run on logical tensor data."""
+    operand = ttnn.from_torch(torch.zeros(3, 5), layout=ttnn.TILE_LAYOUT)
+
+    result = ttnn.full_like(operand, 1, dtype=dtype)
+
+    assert result.dtype == dtype
+
+
+@requires_ttnn
+def test_a_created_tensor_uses_the_golden_default_dtype() -> None:
+    """An omitted dtype leaves the result at the golden function's default."""
     assert ttnn.ones([32, 32]).dtype == torch.float32
 
 

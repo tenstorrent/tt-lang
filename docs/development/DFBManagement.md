@@ -128,7 +128,7 @@ convert-ttl-to-ttkernel            (Module) Lower to TTKernel dialect
 ttkernel-insert-inits              (Module) Insert hardware init calls
   ... L1 accumulation, cleanup ...
 ttkernel-specialize-cores          (Module, optional) Clone coordinate-dependent kernels
-canonicalize, cse                  (Module, after specialization) Resolve coordinate-dependent control flow
+canonicalize, cse                  (Module, after specialization) Fold coordinate-dependent control and table lookups
 ttkernel-batch-static-pipenet-receives
                                     (FuncOp) Post proven initial receives before waiting
 ttkernel-unroll-static-pipenet-record-loops
@@ -146,6 +146,9 @@ batching](PipeReceiveBatching.md), record-loop unrolling,
 cleanup, and tensor runtime-argument finalization run in both modes. Finalization
 follows record-loop cleanup so eliminated uses cannot retain obsolete arguments;
 annotation then records only surviving DFB uses on each clone's launch node.
+The Python kernel builder combines specialized clones only when their generated
+C++ and complete runtime descriptor metadata match, then dispatches the shared
+descriptor to the union of their recorded launch coordinates.
 
 The C++ TTL-to-TTKernel pipeline, standalone specialization pipeline, and
 Python compiler use the same record-cleanup builder. Python selects the

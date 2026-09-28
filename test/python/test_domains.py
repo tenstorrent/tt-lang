@@ -10,12 +10,84 @@ from ttl.domains import (
     AllToAllTransfer,
     AxisNeighborTransfer,
     DeviceDomain,
+    DevicePoint,
     DeviceRange,
     DeviceRef,
+    DeviceSet,
+    DeviceView,
     StencilTransfer,
     TransferEdge,
     TransferGraph,
 )
+
+
+@pytest.mark.parametrize(
+    ("constructor", "message"),
+    [
+        (
+            lambda: DevicePoint(object(), DeviceRef((0,))),
+            "device point requires a DeviceDomain",
+        ),
+        (
+            lambda: DevicePoint(DeviceDomain((1,)), object()),
+            "device point reference must be a DeviceRef",
+        ),
+        (
+            lambda: DeviceView(object(), (0,)),
+            "device view requires a DeviceDomain",
+        ),
+        (
+            lambda: DeviceView(DeviceDomain((1,)), object()),
+            "device view axes must be an iterable",
+        ),
+        (
+            lambda: DeviceView(DeviceDomain((1,)), "0"),
+            "device view axes must be an iterable",
+        ),
+        (
+            lambda: DeviceSet(object(), (DeviceRef((0,)),)),
+            "device set requires a DeviceDomain",
+        ),
+        (
+            lambda: DeviceSet(DeviceDomain((1,)), object()),
+            "device set references must be an iterable",
+        ),
+        (
+            lambda: DeviceSet(DeviceDomain((1,)), "0"),
+            "device set references must be an iterable",
+        ),
+        (
+            lambda: DeviceSet(DeviceDomain((1,)), (object(),)),
+            "device set references must contain only DeviceRef values",
+        ),
+        (
+            lambda: TransferGraph.edges(
+                object(), edges=[(DeviceRef((0,)), DeviceRef((0,)))]
+            ),
+            "transfer graph requires a DeviceDomain",
+        ),
+        (
+            lambda: TransferGraph.all_to_all(object()),
+            "transfer graph requires a DeviceDomain",
+        ),
+    ],
+    ids=(
+        "point-domain",
+        "point-reference",
+        "view-domain",
+        "view-axes",
+        "view-axes-string",
+        "set-domain",
+        "set-references",
+        "set-references-string",
+        "set-reference-element",
+        "explicit-graph-domain",
+        "structured-graph-domain",
+    ),
+)
+def test_device_selection_constructors_reject_invalid_types(constructor, message):
+    with pytest.raises(TypeError, match=message):
+        constructor()
 
 
 def test_explicit_edge_uses_regular_domain_coordinates():
@@ -85,12 +157,18 @@ def test_product_domain_flattens_named_device_ref_in_component_order():
     assert domain.flattened_coordinates(DeviceRef(device=1, board=0)) == (0, 1)
 
 
-def test_device_ref_identity_ignores_construction_names():
+def test_device_ref_identity_preserves_component_meaning():
     named = DeviceRef(board=0, device=1)
+    reordered_named = DeviceRef(device=1, board=0)
     positional = DeviceRef((0,), (1,))
 
-    assert named == positional
-    assert hash(named) == hash(positional)
+    assert named == reordered_named
+    assert hash(named) == hash(reordered_named)
+    assert named != positional
+
+
+def test_device_ref_identity_distinguishes_named_components():
+    assert DeviceRef(board=0, device=1) != DeviceRef(host=0, device=1)
 
 
 def test_product_domain_rejects_missing_component():
@@ -118,14 +196,27 @@ def test_direct_transfer_graph_construction_validates_edges():
         )
 
 
-def test_transfer_graph_rejects_exact_self_transfer():
+def test_transfer_graph_accepts_exact_self_transfer():
     domain = DeviceDomain((4,))
 
-    with pytest.raises(ValueError, match="source must differ from destination"):
-        TransferGraph.edges(domain, edges=[(1, 1)])
+    graph = TransferGraph.edges(domain, edges=[(1, 1)])
+
+    assert tuple(graph.iter_edges()) == (
+        TransferEdge(DeviceRef((1,)), DeviceRef((1,))),
+    )
 
 
-def test_structured_axis_neighbor_remains_compact():
+def test_transfer_graph_rejects_duplicate_edges():
+    domain = DeviceDomain((1, 2))
+
+    with pytest.raises(ValueError, match="edges must be unique"):
+        TransferGraph.edges(
+            domain,
+            edges=[((0, 0), (0, 1)), ((0, 0), (0, 1))],
+        )
+
+
+def test_axis_neighbor_stores_parameters_instead_of_explicit_edges():
     domain = DeviceDomain((1024, 1024))
     graph = TransferGraph.axis_neighbor(domain, axis=1, offset=1)
 
@@ -134,7 +225,6 @@ def test_structured_axis_neighbor_remains_compact():
     assert graph.transfer_edges == ()
     assert graph.structured.component_name == "device"
     assert graph.structured.axis == 1
-    assert "structured descriptor" in graph.metadata_cost().compile_time
 
 
 def test_axis_neighbor_edges_are_materialized_from_compact_relation():

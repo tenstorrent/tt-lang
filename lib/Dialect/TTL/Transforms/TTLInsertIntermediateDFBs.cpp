@@ -152,7 +152,8 @@ static void applyComputeMaterializationPlan(
   for (MaterializedOutput &output : materializedOutputs) {
     output.reserve =
         CBReserveOp::create(builder, producerCompute.getLoc(),
-                            output.tensorType, output.bind.getResult());
+                            output.tensorType, output.bind.getResult(),
+                            /*num_tiles=*/nullptr);
     Value init = tensor::EmptyOp::create(builder, producerCompute.getLoc(),
                                          output.tensorType.getShape(),
                                          output.tensorType.getElementType());

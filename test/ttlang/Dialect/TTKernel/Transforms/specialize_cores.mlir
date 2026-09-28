@@ -5,8 +5,8 @@
 // level. It clones kernels whose structured branch or loop control depends on
 // core coordinates, replaces coordinate reads with constants, and tags each
 // clone with `ttl.core_coord`. Downstream canonicalization resolves the
-// coordinate-dependent control flow. Coordinate-only data uses remain in one
-// whole-grid kernel.
+// coordinate-dependent control flow. Coordinate data uses that do not index
+// immutable tables remain in one whole-grid kernel.
 
 // -- Test 1: coordinate used only as data -> no branch, no specialization. ----
 // The coordinates feed an addi that reaches the return (a data use) and drive
@@ -144,6 +144,36 @@ module attributes {ttl.launch_grid = [1 : i64, 2 : i64]} {
       scf.yield %c9 : index
     }
     return %r : index
+  }
+}
+
+// -----
+
+// Coordinate-indexed tables require specialization.
+// A constant-table lookup selects worker-specific metadata even when its result
+// does not control a region. Specialization preserves one table entry in each
+// per-core clone; canonicalization then replaces the lookup with that entry.
+
+// CHECK-NOT:   func.func @ktable_data()
+// CHECK-LABEL: func.func @ktable_data_c0_0
+// CHECK-SAME:    ttl.core_coord = {{\[\[}}0, 0]]
+// CHECK:         ttkernel.experimental.constant_table_lookup
+// CHECK-LABEL: func.func @ktable_data_c0_1
+// CHECK-SAME:    ttl.core_coord = {{\[\[}}0, 1]]
+// CHECK:         ttkernel.experimental.constant_table_lookup
+
+// FOLDED-LABEL: func.func @ktable_data_c0_0
+// FOLDED-NEXT:    %[[FIRST:.*]] = arith.constant 17 : index
+// FOLDED-NEXT:    return %[[FIRST]] : index
+// FOLDED-LABEL: func.func @ktable_data_c0_1
+// FOLDED-NEXT:    %[[SECOND:.*]] = arith.constant 29 : index
+// FOLDED-NEXT:    return %[[SECOND]] : index
+
+module attributes {ttl.launch_grid = [1 : i64, 2 : i64]} {
+  func.func @ktable_data() -> index {
+    %core_y = "ttkernel.my_logical_y_"() : () -> index
+    %value = ttkernel.experimental.constant_table_lookup %core_y, [17, 29] : index
+    return %value : index
   }
 }
 
@@ -427,5 +457,48 @@ module attributes {ttl.launch_grid = [1 : i64, 2 : i64]} {
       scf.yield %c9 : index
     }
     return %r : index
+  }
+}
+
+// -----
+
+// -- Test 10: specialization applies per function. ----------------------------
+// The reader branches on core_x, so it is cloned per coordinate and the
+// original is erased. The compute kernel uses coordinates only as data and
+// remains whole-grid. Each occupies a different processor.
+
+// CHECK-NOT:   func.func @mixed_reader()
+// CHECK-LABEL: func.func @mixed_reader_c0_0
+// CHECK-SAME:    ttl.core_coord = {{\[\[}}0, 0]]
+// CHECK-NOT:     my_logical_x_
+// CHECK-LABEL: func.func @mixed_reader_c1_0
+// CHECK-SAME:    ttl.core_coord = {{\[\[}}1, 0]]
+// CHECK-LABEL: func.func @mixed_compute
+// CHECK-NOT:     ttl.core_coord
+// CHECK:         my_logical_x_
+
+module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
+  func.func @mixed_reader() -> index attributes {
+      ttl.kernel_thread = #ttkernel.thread<noc>,
+      ttl.noc_index = 0 : i32} {
+    %c0 = arith.constant 0 : index
+    %c3 = arith.constant 3 : index
+    %c5 = arith.constant 5 : index
+    %x = "ttkernel.my_logical_x_"() : () -> index
+    %pred = arith.cmpi eq, %x, %c0 : index
+    %r = scf.if %pred -> (index) {
+      scf.yield %c3 : index
+    } else {
+      scf.yield %c5 : index
+    }
+    return %r : index
+  }
+
+  func.func @mixed_compute() -> index attributes {
+      ttl.kernel_thread = #ttkernel.thread<compute>} {
+    %x = "ttkernel.my_logical_x_"() : () -> index
+    %y = "ttkernel.my_logical_y_"() : () -> index
+    %s = arith.addi %x, %y : index
+    return %s : index
   }
 }

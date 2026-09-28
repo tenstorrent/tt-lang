@@ -5,15 +5,16 @@
 //===----------------------------------------------------------------------===//
 //
 // Per-core specialization of TTKernel functions. Coordinate-dependent control
-// flow is identified through MLIR backward slices and control-flow value
-// origins. Each clone substitutes its assigned coordinates so subsequent
-// canonicalization can simplify branches and loop bounds.
+// flow and constant-table indices are identified through MLIR backward slices
+// and control-flow value origins. Each clone substitutes its assigned
+// coordinates so subsequent canonicalization can simplify the affected IR.
 //
 //===----------------------------------------------------------------------===//
 
 #include "ttlang/Analysis/ValueOriginAnalysis.h"
 #include "ttlang/Dialect/TTKernel/IR/TTKernel.h"
 #include "ttlang/Dialect/TTKernel/IR/TTKernelOps.h"
+#include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/Passes.h"
 
 #include "mlir/Analysis/SliceAnalysis.h"
@@ -38,14 +39,6 @@ namespace mlir::tt::ttl {
 #include "ttlang/Dialect/TTL/Passes.h.inc"
 
 namespace {
-
-// Attribute names. These are part of the frontend / runtime contract and keep
-// the `ttl.` prefix even though this pass runs at the TTKernel level:
-// `ttl.launch_grid` (the launch extent) is set on the module by the Python
-// frontend, and `ttl.core_coord` is read back by the ttnn runtime bridge for
-// dispatch.
-constexpr llvm::StringLiteral LaunchGridAttrName = "ttl.launch_grid";
-constexpr llvm::StringLiteral CoreCoordAttrName = "ttl.core_coord";
 
 /// Parse the launch extent from an i64 array attribute into (gridX, gridY).
 ///
@@ -146,14 +139,23 @@ regionBranchDependsOnCore(RegionBranchOpInterface branch,
   return false;
 }
 
-// Return whether any structured branch or loop in `function` requires per-core
-// specialization, sharing one origin analysis across its control-flow checks.
-static bool functionControlFlowDependsOnCore(func::FuncOp function) {
+// Return whether coordinate substitution can simplify control flow or an
+// immutable table in `function`, sharing one origin analysis across all uses.
+static bool functionRequiresCoreSpecialization(func::FuncOp function) {
   ValueOriginAnalysis originAnalysis(function);
-  auto result = function.walk([&](RegionBranchOpInterface branch) {
-    return regionBranchDependsOnCore(branch, originAnalysis)
-               ? WalkResult::interrupt()
-               : WalkResult::advance();
+  auto result = function.walk([&](Operation *operation) {
+    if (auto branch = dyn_cast<RegionBranchOpInterface>(operation);
+        branch && regionBranchDependsOnCore(branch, originAnalysis)) {
+      return WalkResult::interrupt();
+    }
+    if (auto lookup = dyn_cast<ttk::ConstantTableLookupOp>(operation)) {
+      llvm::DenseSet<Value> visitedValues;
+      if (valueDependsOnCore(lookup.getIndex(), originAnalysis,
+                             visitedValues)) {
+        return WalkResult::interrupt();
+      }
+    }
+    return WalkResult::advance();
   });
   return result.wasInterrupted();
 }
@@ -186,7 +188,7 @@ static void emitCoreClone(func::FuncOp func, int64_t x, int64_t y,
   replaceCoordReads<ttk::MyLogicalYOp>(clone, y);
 
   clone->setAttr(
-      CoreCoordAttrName,
+      kCoreCoordAttrName,
       moduleBuilder.getArrayAttr({moduleBuilder.getI64ArrayAttr({x, y})}));
   moduleBuilder.insert(clone);
 }
@@ -196,16 +198,16 @@ struct TTKernelSpecializeCoresPass
   void runOnOperation() override {
     ModuleOp module = getOperation();
 
-    auto gridAttr = module->getAttrOfType<ArrayAttr>(LaunchGridAttrName);
+    auto gridAttr = module->getAttrOfType<ArrayAttr>(kLaunchGridAttrName);
     if (!gridAttr) {
-      module.emitOpError() << "requires a `" << LaunchGridAttrName
+      module.emitOpError() << "requires a `" << kLaunchGridAttrName
                            << "` module attribute";
       signalPassFailure();
       return;
     }
     FailureOr<std::pair<int64_t, int64_t>> grid = readGrid(gridAttr);
     if (failed(grid)) {
-      module.emitOpError() << "`" << LaunchGridAttrName
+      module.emitOpError() << "`" << kLaunchGridAttrName
                            << "` must be a length-2 array of positive i64 "
                               "extents";
       signalPassFailure();
@@ -224,7 +226,7 @@ struct TTKernelSpecializeCoresPass
     // functions still get specialized.
     SmallVector<func::FuncOp> targets;
     for (auto func : module.getOps<func::FuncOp>()) {
-      if (!functionControlFlowDependsOnCore(func)) {
+      if (!functionRequiresCoreSpecialization(func)) {
         continue;
       }
       if (auto uses = SymbolTable::getSymbolUses(func, module);
