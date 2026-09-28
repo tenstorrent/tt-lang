@@ -3645,6 +3645,13 @@ mlir::LogicalResult mlir::tt::ttl::ResetDFBsOp::verify() {
   return success();
 }
 
+mlir::LogicalResult mlir::tt::ttl::ResetAllDFBsOp::verify() {
+  if (hasDuplicateDFBs(getPreservedDfbs())) {
+    return emitOpError("preserved DFBs must be distinct");
+  }
+  return success();
+}
+
 static llvm::SmallVector<mlir::Value> getTemplateDFBOperandsByKind(
     mlir::tt::ttl::OpaqueCallOp call,
     mlir::tt::ttl::ExternalTemplateArgKind selectedKind) {
