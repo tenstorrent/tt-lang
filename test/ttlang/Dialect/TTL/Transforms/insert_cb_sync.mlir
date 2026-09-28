@@ -2215,3 +2215,46 @@ func.func @read_index_scalar_escapes_guard()
   %next = arith.addi %index, %zero : index
   func.return
 }
+
+// -----
+
+// Consecutive waits that the coalescer merges share the stated pops as one
+// merged release, so a merged block without uses receives no inserted pop.
+
+// CHECK-LABEL: func.func @compute_unused_merged_waits
+// CHECK: %[[DFB:.*]] = ttl.bind_cb
+// CHECK-NEXT: %{{.*}} = ttl.cb_wait %[[DFB]]
+// CHECK-NEXT: %{{.*}} = ttl.cb_wait %[[DFB]]
+// CHECK-NEXT: ttl.cb_pop %[[DFB]]
+// CHECK-NEXT: ttl.cb_pop %[[DFB]]
+// CHECK-NEXT: return
+func.func @compute_unused_merged_waits()
+    attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+  %dfb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %first = ttl.cb_wait %dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %second = ttl.cb_wait %dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  ttl.cb_pop %dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  ttl.cb_pop %dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  func.return
+}
+
+// -----
+
+// The same holds for merged reservations in a data-movement kernel.
+
+// CHECK-LABEL: func.func @data_movement_unused_merged_reservations
+// CHECK: %[[DFB:.*]] = ttl.bind_cb
+// CHECK-NEXT: %{{.*}} = ttl.cb_reserve %[[DFB]]
+// CHECK-NEXT: %{{.*}} = ttl.cb_reserve %[[DFB]]
+// CHECK-NEXT: ttl.cb_push %[[DFB]]
+// CHECK-NEXT: ttl.cb_push %[[DFB]]
+// CHECK-NEXT: return
+func.func @data_movement_unused_merged_reservations()
+    attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+  %dfb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %first = ttl.cb_reserve %dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %second = ttl.cb_reserve %dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  ttl.cb_push %dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  ttl.cb_push %dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  func.return
+}

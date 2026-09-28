@@ -928,8 +928,7 @@ static PlanningResult<GuardedLocalReleaseInfo> analyzeGuardedLocalReleases(
 // merges with others is a slice of one multi-block acquisition. The DFB
 // pointer names the first slice, so every access to the first block is
 // correct; a later block is addressed through its offset only by a pipe
-// receive into its view. The group's releases, one per member, become the
-// merged release, so a block without uses needs no release of its own.
+// receive into its view.
 static std::optional<PlanningDiagnostic>
 checkCoalescedDataMovementBlock(DFBAcquireInterval interval,
                                 const CoalescedAcquireGroup &group,
@@ -992,17 +991,20 @@ static PlanningResult<SmallVector<MissingReleasePlan>> planMissingReleases(
         getKernelThreadType(acquire->getParentOfType<func::FuncOp>()) !=
         ttkernel::ThreadType::Compute;
     Operation *localBoundary = findLocalKindBoundary(interval);
+    bool unused = last == acquire;
     std::optional<CoalescedAcquireGroup> coalescedGroup =
-        dataMovement ? findCoalescedAcquireGroup(acquire) : std::nullopt;
-    bool unusedCoalescedBlock = false;
-    if (coalescedGroup) {
+        dataMovement || unused ? findCoalescedAcquireGroup(acquire)
+                               : std::nullopt;
+    // The group's releases, one per member, become the merged release, so a
+    // merged block without uses needs no release of its own.
+    bool unusedCoalescedBlock = coalescedGroup && unused;
+    if (dataMovement && coalescedGroup) {
       if (std::optional<PlanningDiagnostic> rejected =
               checkCoalescedDataMovementBlock(interval, *coalescedGroup,
                                               effectName)) {
         return PlanningResult<SmallVector<MissingReleasePlan>>::invalidIR(
             rejected->operation, rejected->message);
       }
-      unusedCoalescedBlock = last == acquire;
     } else if (dataMovement && localBoundary &&
                !hasReleaseBefore(interval, localBoundary)) {
       // Direct uses after the next acquisition in the acquiring block belong

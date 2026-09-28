@@ -1351,9 +1351,9 @@ names the first slice, so every access to the first merged block is correct,
 but only a pipe receive addresses a later slice through its block offset:
 element accesses, copies, and sends through the pointer reach the first slot.
 A later merged reservation may therefore be written only by pipe receives into
-its own view, and a later merged wait may not be read at all. A merged block
-without uses needs no release of its own, because the group's releases, one
-per member, become the merged release. The decision is taken before the
+its own view, and a later merged wait may not be read at all. In any kernel, a
+merged block without uses needs no release of its own, because the group's
+releases, one per member, become the merged release. The decision is taken before the
 coalescer runs from the same plan the coalescer applies, so it depends on the
 releases the program states; held reservations whose releases the pass would
 insert are treated as unmerged. Compute kernels may hold several blocks
