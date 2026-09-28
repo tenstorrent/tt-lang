@@ -13,7 +13,7 @@ python my_kernel.py --no-ttl-maximize-dst
 | Flag | Default | Description |
 |---|---|---|
 | `--ttl-memory-model {metal-cb,compiler-sram}` | `metal-cb` | Select Metal DFB descriptors or experimental compiler-owned SRAM byte allocation. Unsupported operations in `compiler-sram` are errors. |
-| `--ttl-sram-allocation-mode {uniform,per-node}` | `uniform` | Use one SRAM layout for all worker nodes or independently reserve layouts for nodes outside shared multicast receiver domains. Per-node mode requires an exact launch grid and TT-Metal hybrid allocation enabled before device initialization. |
+| `--ttl-sram-allocation-mode {uniform,per-node}` | `uniform` | Use one SRAM layout for all worker nodes or independently reserve layouts for nodes outside shared multicast receiver domains. Per-node DFB placement requires an exact launch grid. TT-Metal hybrid allocation must be enabled before device initialization. |
 | `--ttl-sram-allocation-report` / `--no-ttl-sram-allocation-report` | disabled | Emit JSON allocation and runtime arena reservation records to stderr for `compiler-sram`. |
 | `--ttl-sram-allocation-strategy {multi-order-decreasing,first-fit-decreasing,best-fit-decreasing,minimum-arena}` | `multi-order-decreasing` | Select the payload placement strategy for `compiler-sram`. |
 | `--ttl-sram-minimum-arena-search-limit N` | `1000000` | Bound examined subset sums and partial placements in `minimum-arena`; exhaustion is inconclusive. |
@@ -264,7 +264,7 @@ ttlang-opt input.mlir -p 'func.func(ttl-insert-intermediate-dfbs{enable=false})'
 
 #### `ttl-finalize-dfb-indices`
 
-`sram-allocation-mode=per-node` requires an exact launch grid. The compiler specializes kernels by worker node and records destination-node addresses for PipeNet receivers. The runtime reserves one arena per independent node or shared multicast receiver domain. TT-Metal hybrid allocation must be enabled before device initialization.
+Per-node DFB placement requires an exact launch grid. The compiler specializes kernels by worker node and records destination-node addresses for PipeNet receivers. The runtime reserves one arena per independent node or shared multicast receiver domain. TT-Metal hybrid allocation must be enabled before device initialization.
 
 `sram-allocation-report=true` emits a JSON compiler record to stderr. The [SRAM allocation report](https://github.com/tenstorrent/tt-lang/blob/main/docs/development/SRAMAllocation.md#allocation-report) defines its fields and the runtime reservation record.
 

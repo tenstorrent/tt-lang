@@ -133,7 +133,7 @@ SRAMAllocator::allocateDomains(
 
 ### Per-Node Allocation Domains
 
-`--ttl-sram-allocation-mode=per-node` requires an exact launch grid. The compiler groups multicast receivers that must use the same destination address; groups that share a node become one domain. Other nodes can have separate payload layouts. Every domain retains the same control-record offsets, while payloads proven inactive on a domain are omitted. The compiler then calls `allocateDomains` once with the complete set of domain requests.
+Per-node DFB placement requires an exact launch grid. The compiler groups multicast receivers that must use the same destination address; groups that share a node become one domain. Other nodes can have separate payload layouts. Every domain retains the same control-record offsets, while payloads proven inactive on a domain are omitted. The compiler then calls `allocateDomains` once with the complete set of domain requests.
 
 Tensor backing with independently addressed payloads requires local access on each executing node. Access that requires a common address across nodes retains uniform allocation.
 

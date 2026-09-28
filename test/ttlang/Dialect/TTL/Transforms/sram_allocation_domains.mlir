@@ -1,6 +1,6 @@
 // Per-node allocation omits inactive payloads; uniform allocation retains one layout.
-// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{memory-model=compiler-l1 sram-allocation-mode=uniform})' | FileCheck %s --check-prefix=UNIFORM
-// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{memory-model=compiler-l1 sram-allocation-mode=per-node})' | FileCheck %s --check-prefix=INDEPENDENT
+// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{memory-model=compiler-sram sram-allocation-mode=uniform})' | FileCheck %s --check-prefix=UNIFORM
+// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{memory-model=compiler-sram sram-allocation-mode=per-node})' | FileCheck %s --check-prefix=INDEPENDENT
 
 // UNIFORM: ttl.l1_arena_bytes = 32832 : i64
 // UNIFORM-NOT: sram_node_layouts

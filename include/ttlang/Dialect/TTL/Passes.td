@@ -1082,12 +1082,13 @@ def TTLFinalizeDFBIndices
     concurrent-kernel storage conflict graph; unknown completion prohibits reuse.
     The complete plan is validated before mutation. Runtime metadata supplies
     state and payload offsets within allocator-owned SRAM arenas. Uniform mode
-    uses one layout on all participating worker nodes. Per-core mode requires an
-    exact launch grid and omits payloads proven inactive on each node. Multicast
-    receivers share one layout to preserve equal destination addresses. Control
-    offsets remain common to all layouts. A greedy budget failure does not prove
-    infeasibility. Unsupported storage forms are errors; this mode never falls
-    back to Metal descriptors. `reuse-user-dfbs=false` disables payload aliasing.
+    uses one layout on all participating worker nodes. Per-node DFB placement
+    requires an exact launch grid and omits payloads proven inactive on each
+    node. Multicast receivers share one layout to preserve equal destination
+    addresses. Control offsets remain common to all layouts. A greedy budget
+    failure does not prove infeasibility. Unsupported storage forms are errors;
+    this mode never falls back to Metal descriptors. `reuse-user-dfbs=false`
+    disables payload aliasing.
     `sram-allocation-report` emits validated per-domain allocation facts before
     IR mutation and does not change placement or report hardware reservations.
 
