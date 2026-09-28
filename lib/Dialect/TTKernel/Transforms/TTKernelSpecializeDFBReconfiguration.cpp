@@ -93,6 +93,12 @@ storageSegmentContainsCore(DictionaryAttr segment,
   return false;
 }
 
+// TODO: validate `ttl.dfb_reconfiguration_plan` once in a module verifier.
+// The readers below assume the compiler-produced shape: a mistyped
+// `storage_segments`, an empty `configurations` array or a non-integer
+// `entry_reconfiguration` reads as absent and selects a uniform or initial
+// configuration instead of reporting malformed metadata. The host parser
+// (`_extract_dfb_reconfiguration_plan`) rejects such plans before dispatch.
 static FailureOr<bool>
 configurationAppliesToCore(DictionaryAttr configuration,
                            CoreCoordinate coreCoordinate) {
