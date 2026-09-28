@@ -12,6 +12,7 @@ split-time error paths for ambiguous kernel ownership and the basic
 compute/data-movement routing."""
 
 import ast
+import re
 import copy
 import inspect
 import textwrap
@@ -846,55 +847,6 @@ def test_composition_expands_captured_sequence_loop(coordinates):
     assert "core_y == 4" in source
 
 
-def _make_loop_control_helper(loop_control):
-    coordinates = ((1, 2), (3, 4))
-    if loop_control == "break":
-
-        @ttl.operation()
-        def coordinate_helper(core_x):
-            for coordinate_x, _coordinate_y in coordinates:
-                if core_x == coordinate_x:
-                    break
-
-    elif loop_control == "continue":
-
-        @ttl.operation()
-        def coordinate_helper(core_x):
-            for coordinate_x, _coordinate_y in coordinates:
-                if core_x == coordinate_x:
-                    continue
-
-    else:
-
-        @ttl.operation()
-        def coordinate_helper(core_x):
-            for coordinate_x, _coordinate_y in coordinates:
-                pass
-            else:
-                if core_x == coordinate_x:
-                    pass
-
-    return coordinate_helper
-
-
-@pytest.mark.parametrize("loop_control", ["break", "continue", "else"])
-def test_composition_rejects_loop_control_over_captured_sequence(loop_control):
-    """Unrolling a captured sequence cannot keep break, continue, or a target read."""
-    coordinate_helper = _make_loop_control_helper(loop_control)
-
-    with pytest.raises(
-        ValueError,
-        match=(
-            "a loop over a captured sequence cannot use break or continue, or "
-            "read its target in else"
-        ),
-    ):
-
-        @ttl.operation(grid=(1, 1))
-        def composed_coordinates(core_x):
-            coordinate_helper(core_x)
-
-
 def test_composition_unrolls_captured_sequence_loop_else():
     """An else suite without break runs once after the unrolled body."""
     coordinates = ((1, 2), (3, 4))
@@ -918,44 +870,114 @@ def test_composition_unrolls_captured_sequence_loop_else():
     assert source.index("core_x == 3") < source.index("'after'")
 
 
-def test_composition_rejects_captured_sequence_target_read_after_loop():
-    """Unrolling leaves the loop target unbound after the loop."""
+def _make_loop_control_helper(loop_control):
     coordinates = ((1, 2), (3, 4))
+    if loop_control == "break":
 
-    @ttl.operation()
-    def coordinate_helper(core_x):
-        for coordinate_x, _coordinate_y in coordinates:
-            pass
-        if core_x == coordinate_x:
-            ttl.call_extern_func("last.hpp", "last", kernel=ttl.KernelKind.COMPUTE)
+        @ttl.operation()
+        def coordinate_helper(core_x):
+            for coordinate_x, _coordinate_y in coordinates:
+                if core_x == coordinate_x:
+                    break
 
-    with pytest.raises(ValueError, match="cannot be read after the loop"):
+    else:
+
+        @ttl.operation()
+        def coordinate_helper(core_x):
+            for coordinate_x, _coordinate_y in coordinates:
+                if core_x == coordinate_x:
+                    continue
+
+    return coordinate_helper
+
+
+@pytest.mark.parametrize("loop_control", ["break", "continue"])
+def test_composition_rejects_loop_control_over_captured_sequence(loop_control):
+    """Unrolling a captured sequence removes the loop that break and continue use."""
+    coordinate_helper = _make_loop_control_helper(loop_control)
+
+    with pytest.raises(
+        ValueError,
+        match="a loop over a captured sequence cannot use break or continue",
+    ):
 
         @ttl.operation(grid=(1, 1))
         def composed_coordinates(core_x):
             coordinate_helper(core_x)
 
 
-def test_composition_allows_captured_sequence_target_assignment_in_else():
-    """An else suite may assign a name that the loop target also uses."""
+def _composed_source(helper):
+    @ttl.operation(grid=(1, 1))
+    def composed_coordinates(core_x):
+        helper(core_x)
+
+    source = composed_coordinates._spec.source
+    compile(source, "<operation>", "exec")
+    return source
+
+
+def test_composition_binds_captured_sequence_target_after_loop():
+    """Code after the unrolled loop sees the last element, as in Python."""
     coordinates = ((1, 2), (3, 4))
 
     @ttl.operation()
     def coordinate_helper(core_x):
         for coordinate_x, _coordinate_y in coordinates:
             pass
-        else:
-            coordinate_x = 7
+        coordinate_x += 1
         if core_x == coordinate_x:
             ttl.call_extern_func("last.hpp", "last", kernel=ttl.KernelKind.COMPUTE)
 
-    @ttl.operation(grid=(1, 1))
-    def composed_coordinates(core_x):
-        coordinate_helper(core_x)
+    source = _composed_source(coordinate_helper)
+    assert re.search(r"coordinate_x\w* = 3\n", source)
+    assert re.search(r"_coordinate_y\w* = 4\n", source)
 
-    source = composed_coordinates._spec.source
-    compile(source, "<operation>", "exec")
-    assert "= 7" in source
+
+def test_composition_rebinds_captured_sequence_target_in_enclosing_loop():
+    """A read in a later iteration sees the target the unrolled loop assigned."""
+    coordinates = ((1, 2), (3, 4))
+
+    @ttl.operation()
+    def coordinate_helper(core_x):
+        coordinate_x = 0
+        for _iteration in range(2):
+            if core_x == coordinate_x:
+                ttl.call_extern_func("hit.hpp", "hit", kernel=ttl.KernelKind.COMPUTE)
+            for coordinate_x, _coordinate_y in coordinates:
+                pass
+
+    source = _composed_source(coordinate_helper)
+    loop_body = source.split("for _iteration", 1)[1]
+    assert re.search(r"coordinate_x\w* = 3\n", loop_body)
+
+
+def test_composition_keeps_body_only_captured_sequence_target_unassigned():
+    """A target used only in the loop body gets no binding after the loop."""
+    coordinates = ((1, 2), (3, 4))
+
+    @ttl.operation()
+    def coordinate_helper(core_x):
+        for coordinate_x, _coordinate_y in coordinates:
+            if core_x == coordinate_x:
+                ttl.call_extern_func("each.hpp", "each", kernel=ttl.KernelKind.COMPUTE)
+
+    source = _composed_source(coordinate_helper)
+    assert "coordinate_x" not in source
+
+
+def test_composition_rejects_empty_captured_sequence_target_use_after_loop():
+    """An empty captured sequence leaves the target unbound after the loop."""
+    coordinates = ()
+
+    @ttl.operation()
+    def coordinate_helper(core_x):
+        for coordinate_x in coordinates:
+            pass
+        if core_x == coordinate_x:
+            ttl.call_extern_func("last.hpp", "last", kernel=ttl.KernelKind.COMPUTE)
+
+    with pytest.raises(ValueError, match="empty captured sequence leaves its target"):
+        _composed_source(coordinate_helper)
 
 
 def test_composition_folds_captured_sequence_subscript():
