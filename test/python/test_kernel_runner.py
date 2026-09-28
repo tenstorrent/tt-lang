@@ -6402,11 +6402,19 @@ def test_build_generic_op_io_tensors_keeps_user_output_last():
 def test_build_generic_op_io_tensors_retains_per_core_output():
     inp = object()
     per_core_output = _LocalTensorTestDouble("l1", "height", None, per_core=True)
+    arena = object()
 
     io_tensors = kernel_runner.build_generic_op_io_tensors([inp, per_core_output], [])
 
     assert io_tensors == [inp, per_core_output]
     assert io_tensors[-1] is per_core_output
+    assert kernel_runner.build_generic_op_io_tensors([per_core_output], []) == [
+        per_core_output,
+        per_core_output,
+    ]
+    assert kernel_runner.build_generic_op_io_tensors(
+        [per_core_output], [], sram_node_arenas=[arena]
+    ) == [arena, per_core_output]
 
 
 def test_build_generic_op_io_tensors_requires_user_output():

@@ -215,7 +215,7 @@ if __name__ == "__main__":
     directory = Path(__file__).parent
     tests = [
         str(Path(__file__)),
-        str(directory / "pipe/test_compiler_l1_pipenet.py"),
+        str(directory / "pipe/test_compiler_sram_pipenet.py"),
         f"{directory / 'test_external_dfb_reuse.py'}::test_compiler_sram_external_composition_exceeds_metal_index_limit",
     ]
     for test_name in (
