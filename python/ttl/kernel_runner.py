@@ -4451,7 +4451,9 @@ def _validate_remote_uniform_tensor_backing(
         for segment in config.storage_segments:
             if not segment.is_tensor_backed:
                 continue
-            backing_tensor = tensors[segment.tensor_index]
+            backing_tensor = _validate_tensor_backed_dfb_binding(
+                tensors, config, segment
+            )
             if not _is_per_core_allocated(backing_tensor):
                 continue
             shard_addresses = _per_core_shard_addresses(
