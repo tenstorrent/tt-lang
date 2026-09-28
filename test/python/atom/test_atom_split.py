@@ -1345,6 +1345,48 @@ def test_composition_rejects_incompatible_captured_sequence_target():
             coordinate_helper()
 
 
+def _make_rebinding_helper(rebinding):
+    kinds = (ttl.KernelKind.DATA_MOVEMENT, ttl.KernelKind.COMPUTE)
+    if rebinding == "assignment":
+
+        @ttl.operation()
+        def kind_helper(core_x):
+            for kind in kinds:
+                kind = ttl.KernelKind.COMPUTE
+                ttl.call_extern_func("each.hpp", "each", kernel=kind)
+
+    elif rebinding == "inner-loop":
+
+        @ttl.operation()
+        def kind_helper(core_x):
+            for kind in kinds:
+                for kind in range(2):
+                    pass
+                ttl.call_extern_func("each.hpp", "each", kernel=kind)
+
+    else:
+
+        @ttl.operation()
+        def kind_helper(core_x):
+            for kind in kinds:
+                ttl.call_extern_func("each.hpp", "each", kernel=kind)
+                del kind
+
+    return kind_helper
+
+
+@pytest.mark.parametrize("rebinding", ["assignment", "inner-loop", "delete"])
+def test_composition_rejects_rebound_captured_sequence_target(rebinding):
+    """A store to the target inside the body would be bypassed by later reads."""
+    kind_helper = _make_rebinding_helper(rebinding)
+
+    with pytest.raises(
+        ValueError,
+        match="loop target 'kind' in 'kind_helper' is rebound inside its loop",
+    ):
+        _composed_source(kind_helper)
+
+
 def test_repeated_composition_reuses_callee_logical_kernel():
     """Sequential calls to one helper share its declared logical kernel."""
     reader = Kernel(KernelKind.DATA_MOVEMENT)
