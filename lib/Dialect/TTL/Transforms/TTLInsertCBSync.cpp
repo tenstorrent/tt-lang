@@ -1178,6 +1178,10 @@ static PlanningResult<SmallVector<MissingReleasePlan>> planMissingReleases(
         continue;
       }
 
+      if (unusedCoalescedBlock) {
+        continue;
+      }
+
       if (!guardedUseInfo.getPlan().hasNonLocalUse) {
         if (!localReleaseInfo.getPlan().releases.empty()) {
           continue;

@@ -2261,6 +2261,30 @@ func.func @data_movement_unused_merged_reservations()
 
 // -----
 
+// The same holds for merged reservations acquired under a condition.
+
+// CHECK-LABEL: func.func @data_movement_guarded_unused_merged_reservations
+// CHECK: %[[DFB:.*]] = ttl.bind_cb
+// CHECK: scf.if
+// CHECK-NEXT: %{{.*}} = ttl.cb_reserve %[[DFB]]
+// CHECK-NEXT: %{{.*}} = ttl.cb_reserve %[[DFB]]
+// CHECK-NEXT: ttl.cb_push %[[DFB]]
+// CHECK-NEXT: ttl.cb_push %[[DFB]]
+// CHECK-NEXT: }
+func.func @data_movement_guarded_unused_merged_reservations(%cond: i1)
+    attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+  %dfb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  scf.if %cond {
+    %first = ttl.cb_reserve %dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    %second = ttl.cb_reserve %dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.cb_push %dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    ttl.cb_push %dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  }
+  func.return
+}
+
+// -----
+
 // A release after a later reservation of the DFB belongs to that reservation,
 // so an unused reservation followed by one with its own push is not merged
 // with it and receives its own push.
