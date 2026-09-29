@@ -187,6 +187,11 @@ def _validate_physical_dfb_config(
                 f"DFB[{config.dfb_index}] storage segment {segment_position} "
                 "has no launch nodes"
             )
+        if not segment.is_tensor_backed and segment.byte_offset != 0:
+            raise ValueError(
+                f"DFB[{config.dfb_index}] local storage segment "
+                f"{segment_position} has byte offset {segment.byte_offset}"
+            )
         for node in segment.nodes:
             if node in seen_nodes:
                 raise ValueError(
@@ -3068,6 +3073,11 @@ def build_dfb_reconfiguration_runtime_resources(
             tensor_addresses_by_identity[tensor_identity] = addresses_by_core
         allocation_bytes = reusable_backing_allocation_bytes[dfb_index]
         required_bytes_by_core = required_bytes_by_core_by_storage[storage_index]
+        uniform_required_bytes = (
+            max(required_bytes_by_core.values())
+            if storage_index in remote_uniform_storage_indices
+            else None
+        )
         for core, required_bytes in required_bytes_by_core.items():
             if core not in addresses_by_core:
                 continue
@@ -3076,10 +3086,15 @@ def build_dfb_reconfiguration_runtime_resources(
                     f"storage[{storage_index}] PipeNet backing is smaller than "
                     f"its {required_bytes}-byte reconfiguration requirement"
                 )
+            backing_bytes = (
+                uniform_required_bytes
+                if uniform_required_bytes is not None
+                else required_bytes
+            )
             storage_core = (storage_index, core)
             previous = backing_by_storage_and_core.get(storage_core)
             if previous is not None and (
-                previous[0] is not existing_tensor or previous[1] != required_bytes
+                previous[0] is not existing_tensor or previous[1] != backing_bytes
             ):
                 raise ValueError(
                     f"storage[{storage_index}] has conflicting PipeNet backing "
@@ -3087,7 +3102,7 @@ def build_dfb_reconfiguration_runtime_resources(
                 )
             backing_by_storage_and_core[storage_core] = (
                 existing_tensor,
-                required_bytes,
+                backing_bytes,
                 0,
             )
 
