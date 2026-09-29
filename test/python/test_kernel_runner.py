@@ -7,6 +7,7 @@
 from collections import defaultdict
 from dataclasses import FrozenInstanceError, replace
 import gc
+import inspect
 import os
 from pathlib import Path
 import re
@@ -2915,11 +2916,12 @@ def test_reconfiguration_static_storage_rejects_segment_offset(monkeypatch):
     )
 
     with pytest.raises(RuntimeError, match=r"static storage segment .* byte offset 64"):
-        kernel_runner.build_dfb_reconfiguration_runtime_resources(
+        _build_reconfiguration_resources(
             tensors=[],
             core_ranges=_FakeExplicitCoreRanges((0, 0), (1, 0)),
             plan=plan,
             device=device,
+            cb_configs=[config],
         )
 
 
@@ -3434,6 +3436,18 @@ def test_reconfiguration_shares_sufficient_pipe_backing(monkeypatch):
 
 # A reused PipeNet backing covers only its shard cores; a core that needs
 # reconfiguration scratch without a shard gets separate scratch there.
+def _build_reconfiguration_resources(**kwargs):
+    """Call build_dfb_reconfiguration_runtime_resources with the launch DFB
+    configurations when the runtime requires them (runtime-backed storage), and
+    without them where the parameter does not exist."""
+    parameters = inspect.signature(
+        kernel_runner.build_dfb_reconfiguration_runtime_resources
+    ).parameters
+    if "cb_configs" not in parameters:
+        kwargs.pop("cb_configs", None)
+    return kernel_runner.build_dfb_reconfiguration_runtime_resources(**kwargs)
+
+
 def test_reconfiguration_allocates_scratch_where_pipe_backing_has_no_shard(
     monkeypatch,
 ):
@@ -3450,7 +3464,7 @@ def test_reconfiguration_allocates_scratch_where_pipe_backing_has_no_shard(
     scratch_tensor = _FakeTensor(device, address=0xC000)
     scratch_allocations = []
 
-    def allocate_scratch(core_ranges, num_bytes, _device):
+    def allocate_scratch(core_ranges, num_bytes, _device, **_kwargs):
         scratch_allocations.append((core_ranges, num_bytes))
         return scratch_tensor
 
@@ -3476,13 +3490,14 @@ def test_reconfiguration_allocates_scratch_where_pipe_backing_has_no_shard(
         ),
     )
 
-    resources = kernel_runner.build_dfb_reconfiguration_runtime_resources(
+    resources = _build_reconfiguration_resources(
         tensors=[],
         core_ranges=_FakeExplicitCoreRanges((0, 0), (1, 0)),
         plan=plan,
         existing_backing_tensors={0: backing_tensor},
         existing_backing_allocation_bytes={0: 2048},
         device=device,
+        cb_configs=[config],
     )
 
     assert len(scratch_allocations) == 1
