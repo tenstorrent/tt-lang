@@ -2693,9 +2693,10 @@ void verifyPipeScheduleCycles(ModuleOp module, ModuleState &state) {
     FailureOr<SmallVector<DeviceRefAttr>> maybeDevices =
         enumerateDeviceDomain(scheduleDeviceDomain);
     if (failed(maybeDevices)) {
-      module.emitOpError(
-          "cannot enumerate the logical-device domain for PipeNet schedule "
-          "verification");
+      module.emitOpError()
+          << "PipeNet schedule verification supports logical-device domains "
+             "of at most "
+          << kMaxEnumeratedDeviceDomainSize << " devices";
       state.sawError = true;
       return;
     }

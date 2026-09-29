@@ -105,8 +105,12 @@ struct ActivePipeNetExecution {
   std::optional<std::uint64_t> countDivisor = 1;
 };
 
+/// Largest logical-device domain that PipeNet analyses enumerate.
+constexpr std::uint64_t kMaxEnumeratedDeviceDomainSize = 1ULL << 20;
+
 /// Enumerate every member of a logical-device domain in row-major component
-/// and axis order. Return failure when the domain size exceeds size_t.
+/// and axis order. Return failure when the domain has more than
+/// `kMaxEnumeratedDeviceDomainSize` devices.
 FailureOr<SmallVector<DeviceRefAttr>>
 enumerateDeviceDomain(DeviceDomainAttr deviceDomain);
 

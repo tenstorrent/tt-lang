@@ -9,8 +9,6 @@
 #include "llvm/ADT/ScopeExit.h"
 #include "llvm/Support/CheckedArithmetic.h"
 
-#include <limits>
-
 namespace mlir::tt::ttl {
 
 FailureOr<SmallVector<DeviceRefAttr>>
@@ -21,9 +19,7 @@ enumerateDeviceDomain(DeviceDomainAttr deviceDomain) {
     for (int64_t extent : component.getExtent().asArrayRef()) {
       std::optional<std::uint64_t> nextCount = llvm::checkedMulUnsigned(
           deviceCount, static_cast<std::uint64_t>(extent));
-      if (!nextCount ||
-          *nextCount > static_cast<std::uint64_t>(
-                           std::numeric_limits<std::size_t>::max())) {
+      if (!nextCount || *nextCount > kMaxEnumeratedDeviceDomainSize) {
         return failure();
       }
       deviceCount = *nextCount;

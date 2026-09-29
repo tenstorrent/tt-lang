@@ -967,7 +967,8 @@ def TTLVerifyPipeNetSchedule
     Multi-block regions that contribute pipe events, recursive calls
     containing pipe events, and schedules with more than 4096 pipe events at
     one launch node are rejected because the verifier cannot construct a
-    correct bounded event graph.
+    correct bounded event graph. Logical-device domains with more than
+    1048576 devices are rejected before their devices are enumerated.
 
     The pass also constructs the same-thread wait-for graph. Program-order
     edges connect consecutive events on one launched node. Protocol edges
