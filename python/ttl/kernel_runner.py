@@ -2709,7 +2709,9 @@ def _runtime_resource_compatibility_key(
         )
     tensor_address_key = []
     if dfb_reconfiguration_plan is not None:
-        _validate_dfb_reconfiguration_plan(tensors, dfb_reconfiguration_plan)
+        _validate_dfb_reconfiguration_plan(
+            tensors, dfb_reconfiguration_plan, cb_configs
+        )
         tensor_indices = sorted(
             {
                 segment.tensor_index
@@ -2898,7 +2900,7 @@ def build_dfb_reconfiguration_runtime_resources(
     if ttnn is None:
         raise RuntimeError("ttnn is not available")
     _validate_remote_uniform_storage_sources(cb_configs)
-    _validate_dfb_reconfiguration_plan(tensors, plan)
+    _validate_dfb_reconfiguration_plan(tensors, plan, cb_configs)
     resource_device = device if device is not None else _first_device(tensors)
     reusable_backing_tensors = dict(existing_backing_tensors or {})
     reusable_backing_allocation_bytes = dict(existing_backing_allocation_bytes or {})
@@ -4267,20 +4269,30 @@ def _validate_remote_uniform_storage_sources(
     configs: Iterable[PhysicalDFBConfig],
 ) -> None:
     """Reject active tensor and scratch sources for one remote-uniform storage."""
-    sources_by_storage = {}
-    remote_uniform_storage_indices = set()
+    source_entries = []
     for config in configs:
         if not config.storage_segments and config.allocation_nodes == ():
             continue
         storage_index = _physical_dfb_storage_index(config)
-        sources = sources_by_storage.setdefault(storage_index, set())
+        remote_uniform = config.address_scope == DFBAddressScope.REMOTE_UNIFORM
         if config.storage_segments:
-            sources.update(
-                segment.is_tensor_backed for segment in config.storage_segments
+            source_entries.extend(
+                (storage_index, segment.is_tensor_backed, remote_uniform)
+                for segment in config.storage_segments
             )
         else:
-            sources.add(False)
-        if config.address_scope == DFBAddressScope.REMOTE_UNIFORM:
+            source_entries.append((storage_index, False, remote_uniform))
+    _reject_mixed_remote_uniform_sources(source_entries)
+
+
+def _reject_mixed_remote_uniform_sources(
+    source_entries: Iterable[Tuple[int, bool, bool]],
+) -> None:
+    sources_by_storage = {}
+    remote_uniform_storage_indices = set()
+    for storage_index, tensor_backed, remote_uniform in source_entries:
+        sources_by_storage.setdefault(storage_index, set()).add(tensor_backed)
+        if remote_uniform:
             remote_uniform_storage_indices.add(storage_index)
     for storage_index in sorted(remote_uniform_storage_indices):
         if len(sources_by_storage[storage_index]) > 1:
@@ -4602,7 +4614,9 @@ def _build_dfb_descriptors(
 
 
 def _validate_dfb_reconfiguration_plan(
-    tensors: List[Any], plan: DFBReconfigurationPlan
+    tensors: List[Any],
+    plan: DFBReconfigurationPlan,
+    cb_configs: Optional[List[PhysicalDFBConfig]] = None,
 ) -> None:
     """Validate every configuration before allocating runtime resources."""
     boundary_ordinals = plan.boundary_ordinals
@@ -4673,10 +4687,46 @@ def _validate_dfb_reconfiguration_plan(
             tensors, current_tensor_configurations.values()
         )
 
-    active_configurations = {}
+    active_sources_by_dfb_node: Dict[
+        Tuple[int, Optional[Tuple[int, int]]], Tuple[int, bool, bool]
+    ] = {}
+
+    def apply_sources(config: PhysicalDFBConfig) -> None:
+        dfb_index = config.dfb_index
+        storage_index = _physical_dfb_storage_index(config)
+        remote_uniform = config.address_scope == DFBAddressScope.REMOTE_UNIFORM
+        if config.storage_segments:
+            for segment in config.storage_segments:
+                for node in segment.nodes:
+                    active_sources_by_dfb_node[(dfb_index, node)] = (
+                        storage_index,
+                        segment.is_tensor_backed,
+                        remote_uniform,
+                    )
+        elif config.allocation_nodes is None:
+            for dfb_node in tuple(active_sources_by_dfb_node):
+                if dfb_node[0] == dfb_index:
+                    del active_sources_by_dfb_node[dfb_node]
+            active_sources_by_dfb_node[(dfb_index, None)] = (
+                storage_index,
+                False,
+                remote_uniform,
+            )
+        else:
+            for node in config.allocation_nodes:
+                active_sources_by_dfb_node[(dfb_index, node)] = (
+                    storage_index,
+                    False,
+                    remote_uniform,
+                )
+
+    if cb_configs is not None:
+        for config in cb_configs:
+            apply_sources(config)
     for boundary_ordinal in (None, *boundary_ordinals):
-        active_configurations.update(configurations_by_entry[boundary_ordinal])
-        _validate_remote_uniform_storage_sources(active_configurations.values())
+        for config in configurations_by_entry[boundary_ordinal].values():
+            apply_sources(config)
+        _reject_mixed_remote_uniform_sources(active_sources_by_dfb_node.values())
 
 
 def _validate_remote_uniform_tensor_backing(
@@ -4771,6 +4821,10 @@ def build_cb_descriptors(
     if ttnn is None:
         raise RuntimeError("ttnn is not available")
     _validate_remote_uniform_storage_sources(cb_configs)
+    if dfb_reconfiguration_plan is not None:
+        _validate_dfb_reconfiguration_plan(
+            tensors, dfb_reconfiguration_plan, cb_configs
+        )
     _validate_remote_uniform_tensor_backing(
         tensors, cb_configs, dfb_reconfiguration_plan
     )
