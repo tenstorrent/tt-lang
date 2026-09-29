@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: (c) 2026 Tenstorrent AI ULC
 // SPDX-License-Identifier: Apache-2.0
 
-#include "CompilerL1Allocator.h"
+#include "SRAMAllocator.h"
 
 #include "llvm/Support/raw_ostream.h"
 
@@ -11,48 +11,46 @@
 
 namespace {
 
-using mlir::tt::ttl::CompilerL1AllocationProblem;
-using mlir::tt::ttl::CompilerL1AllocationSolution;
-using mlir::tt::ttl::CompilerL1Allocator;
-using mlir::tt::ttl::solveCompilerL1Allocation;
+using mlir::tt::ttl::InterferenceGraph;
+using mlir::tt::ttl::SRAMAllocationProblem;
+using mlir::tt::ttl::SRAMAllocationSolution;
+using mlir::tt::ttl::SRAMAllocator;
 using mlir::tt::ttl::SRAMPlacementFailure;
 using mlir::tt::ttl::SRAMPlacementFailureKind;
 
-class FixedSolutionAllocator final : public CompilerL1Allocator {
+class FixedSolutionAllocator final : public SRAMAllocator {
 public:
-  explicit FixedSolutionAllocator(CompilerL1AllocationSolution solution)
+  explicit FixedSolutionAllocator(SRAMAllocationSolution solution)
       : solution(std::move(solution)) {}
 
   llvm::StringRef getName() const override { return "test-fixed"; }
 
 private:
-  mlir::FailureOr<CompilerL1AllocationSolution>
-  allocate(const CompilerL1AllocationProblem &, std::string &) const override {
+  mlir::FailureOr<SRAMAllocationSolution>
+  allocateImpl(const SRAMAllocationProblem &, std::string &) const override {
     return solution;
   }
 
-  CompilerL1AllocationSolution solution;
+  SRAMAllocationSolution solution;
 };
 
-CompilerL1AllocationProblem makeProblem() {
-  CompilerL1AllocationProblem problem;
+SRAMAllocationProblem makeProblem() {
+  SRAMAllocationProblem problem;
   problem.regionBytes = {64, 64};
-  problem.conflicts = {llvm::BitVector(2), llvm::BitVector(2)};
-  problem.conflicts[0].set(1);
-  problem.conflicts[1].set(0);
+  problem.conflicts = InterferenceGraph(2);
+  problem.conflicts.addInterference(0, 1);
   problem.alignmentBytes = 64;
   problem.payloadBaseOffset = 64;
   problem.budgetBytes = 256;
   return problem;
 }
 
-bool rejects(CompilerL1AllocationProblem problem,
-             CompilerL1AllocationSolution solution,
+bool rejects(SRAMAllocationProblem problem, SRAMAllocationSolution solution,
              SRAMPlacementFailureKind expectedKind,
              llvm::StringRef expectedReason) {
   FixedSolutionAllocator allocator(std::move(solution));
   SRAMPlacementFailure detail;
-  if (mlir::succeeded(solveCompilerL1Allocation(allocator, problem, detail)) ||
+  if (mlir::succeeded(allocator.allocate(problem, detail)) ||
       detail.kind != expectedKind || detail.reason != expectedReason) {
     llvm::errs() << "allocator contract rejected wrong outcome: "
                  << detail.reason << "\n";
@@ -64,8 +62,10 @@ bool rejects(CompilerL1AllocationProblem problem,
 } // namespace
 
 int main() {
-  CompilerL1AllocationProblem problem = makeProblem();
-  if (!rejects(problem, {{64}, 128}, SRAMPlacementFailureKind::InvalidSolution,
+  SRAMAllocationProblem problem = makeProblem();
+  if (!rejects({}, {{}, 0}, SRAMPlacementFailureKind::InvalidProblem,
+               "allocation alignment must be a nonzero power of two") ||
+      !rejects(problem, {{64}, 128}, SRAMPlacementFailureKind::InvalidSolution,
                "allocator returned the wrong number of offsets") ||
       !rejects(problem, {{65, 128}, 192},
                SRAMPlacementFailureKind::InvalidSolution,
@@ -75,7 +75,7 @@ int main() {
                "allocator overlapped conflicting payload regions") ||
       !rejects(problem, {{64, 256}, 320},
                SRAMPlacementFailureKind::BudgetExceeded,
-               "placement exceeds L1 budget 256 bytes") ||
+               "placement exceeds SRAM budget 256 bytes") ||
       !rejects(problem, {{64, 128}, 128},
                SRAMPlacementFailureKind::InvalidSolution,
                "allocator returned an incorrect arena high-water mark") ||
@@ -84,12 +84,12 @@ int main() {
                "placed interval overflowed the address range")) {
     return 1;
   }
-  problem.conflicts[1].reset(0);
+  problem.conflicts = InterferenceGraph(1);
   if (!rejects(problem, {{64, 128}, 192},
                SRAMPlacementFailureKind::InvalidProblem,
-               "conflict matrix is not symmetric")) {
+               "conflict graph size does not match the region count")) {
     return 1;
   }
-  llvm::outs() << "allocator_contract_cases=7\n";
+  llvm::outs() << "allocator_contract_cases=8\n";
   return 0;
 }

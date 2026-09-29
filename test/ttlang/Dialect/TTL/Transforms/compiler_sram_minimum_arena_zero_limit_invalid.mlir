@@ -1,10 +1,10 @@
-// Verifies that an unknown SRAM allocation strategy is rejected in both memory models.
-// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{memory-model=compiler-sram sram-allocation-strategy=unknown})' --verify-diagnostics
-// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{memory-model=metal-cb sram-allocation-strategy=unknown})' --verify-diagnostics
+// Verifies both memory models reject a zero minimum-arena search limit.
+// RUN: ttlang-opt %s --verify-diagnostics --split-input-file -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{memory-model=compiler-sram sram-allocation-strategy=minimum-arena sram-minimum-arena-search-limit=0})'
+// RUN: ttlang-opt %s --verify-diagnostics --split-input-file -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{memory-model=metal-cb sram-allocation-strategy=minimum-arena sram-minimum-arena-search-limit=0})'
 
-// expected-error @below {{unknown compiler-sram allocation strategy 'unknown'; expected multi-order-decreasing, first-fit-decreasing, best-fit-decreasing, or minimum-arena}}
-module attributes {ttl.launch_grid = [1, 1]} {
-  func.func @unknown_strategy()
+// expected-error @below {{'builtin.module' op minimum-arena search limit must be positive}}
+module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blackhole>} {
+  func.func @zero_limit()
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
                   ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement>,
                   ttl.noc_index = 0 : i32} {

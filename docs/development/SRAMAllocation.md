@@ -104,114 +104,74 @@ Possible launch domains use the same rules as exact domains and remain conservat
 
 ## Placement Interface and Algorithms
 
-Placement uses a reusable C++ allocator library independent of MLIR and target-specific code. Storage-owner construction produces one allocator region for each owner with a compiler-owned payload. Tensor-backed owners consume control records but add no allocator regions. The immutable allocation problem contains each payload extent, a symmetric conflict matrix, target alignment, the payload base after all control records, and the SRAM budget. An allocator returns one byte offset per allocator region and the payload high-water mark.
+Placement uses a reusable C++ allocator API. The caller converts storage owners, conflicts, target alignment, and capacity into an immutable allocation problem; strategies do not inspect IR. Each owner with a compiler-owned payload contributes one allocator region. Tensor-backed owners consume control records but add no allocator regions. A solution contains one byte offset per allocator region and the payload high-water mark.
 
 Every allocator result passes the same validation before IR mutation. Validation requires the correct offset count, target alignment, offsets at or above the payload base, intervals within the SRAM budget, disjoint intervals for every conflict, and an exact payload high-water mark. Allocation policy cannot weaken these invariants. The caller maps the returned offsets to storage owners and computes the arena size as the maximum of the control-section end and the payload high-water mark.
 
 ### C++ Allocator Contract
 
-The interface is declared in [CompilerL1Allocator.h](../../lib/Dialect/TTL/Transforms/CompilerL1Allocator.h). Its input, output, and failure fields are:
-
-| Type | Fields and meaning |
-| --- | --- |
-| `CompilerL1AllocationProblem` | `regionBytes`: aligned, nonzero payload extents; `conflicts`: symmetric matrix of pairs that must not overlap; `alignmentBytes`: target alignment; `payloadBaseOffset`: first usable payload byte after control records; `budgetBytes`: usable SRAM capacity. |
-| `CompilerL1AllocationSolution` | `offsets`: one arena-relative byte offset per input region; `arenaBytes`: exact maximum payload end, or zero for empty input. |
-| `SRAMPlacementFailure` | `kind`: invalid problem, strategy failure, invalid solution, or exhausted budget; `regionIndex`: optional failing region; `reason`: diagnostic text. |
-
-Strategies implement the following C++ contract:
+The reusable placement API is declared in [SRAMAllocator.h](../../lib/Dialect/TTL/Transforms/SRAMAllocator.h). The caller builds a `SRAMAllocationProblem` with aligned, nonzero `regionBytes`, an `InterferenceGraph` whose edges prohibit overlap, `alignmentBytes`, the first usable `payloadBaseOffset`, and the total `budgetBytes`. The conflict graph is symmetric with no self-edges. Region indices are stable and map to storage owners in the caller.
 
 ```cpp
-namespace mlir::tt::ttl {
+FailureOr<std::unique_ptr<SRAMAllocator>> createSRAMAllocator(
+    llvm::StringRef name, const SRAMAllocatorOptions &options,
+    std::string &failureReason);
 
-class CompilerL1Allocator {
-public:
-  virtual ~CompilerL1Allocator() = default;
-  virtual llvm::StringRef getName() const = 0;
-
-private:
-  friend FailureOr<CompilerL1AllocationSolution>
-  solveCompilerL1Allocation(const CompilerL1Allocator &allocator,
-                            const CompilerL1AllocationProblem &problem,
-                            SRAMPlacementFailure &failureDetail);
-
-  virtual FailureOr<CompilerL1AllocationSolution>
-  allocate(const CompilerL1AllocationProblem &problem,
-           std::string &failureReason) const = 0;
-};
-
-FailureOr<std::unique_ptr<CompilerL1Allocator>>
-createCompilerL1Allocator(llvm::StringRef name, std::string &failureReason);
-
-FailureOr<CompilerL1AllocationSolution> solveCompilerL1Allocation(
-    const CompilerL1Allocator &allocator,
-    const CompilerL1AllocationProblem &problem,
-    SRAMPlacementFailure &failureDetail);
-
-} // namespace mlir::tt::ttl
+FailureOr<SRAMAllocationSolution> SRAMAllocator::allocate(
+    const SRAMAllocationProblem &problem,
+    SRAMPlacementFailure &failureDetail) const;
 ```
 
-`regionBytes[i]` is the nonzero, aligned extent of allocator region `i`. The caller retains the mapping from allocator-region indices to compiler-owned storage-owner indices. `conflicts` is a square, symmetric bit matrix with a clear diagonal. `payloadBaseOffset` is aligned and does not exceed `budgetBytes`. The problem is immutable after construction. Region order defines deterministic equal-size ordering.
+`SRAMAllocatorOptions::minimumArenaSearchLimit` is positive and bounds the exact strategy; the factory rejects zero. A solution contains one arena-relative byte offset per region and `arenaBytes`, the maximum payload end (zero for no regions). `allocate` validates the immutable problem, calls the strategy, and validates its solution before the caller changes IR. Validation checks offset count, alignment, budget, conflict disjointness, and the exact high-water mark. On failure, `SRAMPlacementFailure` reports the category, reason, and optional region index. A strategy implements `getName()` and private `allocateImpl()`; the factory gives it a stable option name. All strategies share the same input and validation contract.
 
-`solveCompilerL1Allocation` is the only caller of the private strategy method. It validates the problem, invokes the selected strategy, and validates the solution. On success, `offsets` has one entry per allocator region and `arenaBytes` is the exact maximum payload end, or zero when no allocator regions exist. On failure, `failureDetail.reason` contains diagnostic text and `failureDetail.regionIndex` identifies an allocator region only when the error applies to one region. The allocator layer does not emit diagnostics or modify IR.
-
-`createCompilerL1Allocator` maps stable compiler-option names to implementations. A new implementation derives from `CompilerL1Allocator`, implements `getName()` and `allocate()`, and registers its name in the factory. It cannot change conflict construction or bypass common validation.
-
-| Strategy | Gap selection | Use |
+| Strategy | Selection | Guarantee |
 | --- | --- | --- |
-| `first-fit-decreasing` | Lowest aligned legal offset | Default deterministic low-address placement. |
-| `best-fit-decreasing` | Finite legal gap with the least unused space; lower offset resolves ties | Reduces fragmentation when differently sized lifetimes leave reusable gaps. |
+| `multi-order-decreasing` (default) | Run stable and degree-aware first-fit; retain the smaller arena, using stable placement on a tie. | Never larger than stable first-fit for the same problem. |
+| `first-fit-decreasing` | Place larger regions first at the lowest aligned legal offset. | Deterministic feasible placement when it fits. |
+| `best-fit-decreasing` | Place larger regions first in the finite legal gap with the least unused space. | Deterministic feasible placement when it fits. |
+| `minimum-arena` | Enumerate relevant aligned offsets with bounded branch-and-bound search. | Proves the minimum or reports infeasibility or an exhausted search limit. |
 
-Both strategies place larger regions first because large extents fit in fewer gaps. Storage-owner order resolves equal-size ties. Both are greedy heuristics and can produce different arena sizes; neither proves optimality.
-
-```text
-allocateDecreasing(problem, gapSelection):
-    placementOrder = stableSort(problem.regions, decreasing extent)
-    placed = empty list
-
-    for region in placementOrder:
-        blockers = placed regions that conflict with region
-        blockers = sort(blockers, increasing payload start)
-        offset = selectOffset(problem, region, blockers, gapSelection)
-        record offset for region
-        append region to placed
-
-    arenaBytes = maximum payload end, or zero for an empty problem
-    return offsets and arenaBytes
-```
-
-First-fit selects an offset as follows:
+All greedy strategies sort by decreasing extent; stable region order resolves remaining ties. For each region, the allocator sorts already placed conflicting intervals by address. First-fit chooses the first gap that fits. Best-fit chooses the finite fitting gap with the least unused space, resolving ties by lower address; if none exists, it appends the region. The scan advances beyond overlapping blockers, so each new interval avoids every conflicting interval. Nonconflicting regions may share an address.
 
 ```text
-selectFirstFit(problem, region, blockers):
-    candidate = problem.payloadBase
-    for blocker in blockers:
-        if [candidate, candidate + region.extent) ends before blocker:
-            return candidate
-        if candidate lies before blocker.end:
-            candidate = roundUp(blocker.end, problem.alignment)
-    return candidate
+placeGreedy(problem, order, gapSelection):
+    placed = []
+    for region in order:
+        blockers = sort(placed regions that conflict with region, by offset)
+        gaps = aligned free intervals between blockers
+        offset = choose first fitting gap or smallest fitting finite gap
+        if no finite gap fits: offset = aligned end of blockers
+        record offset and append region to placed
+    return offsets and maximum payload end
 ```
 
-Best-fit evaluates every finite gap before the unbounded space after the final blocker:
+Degree-aware order resolves equal extents by decreasing conflict count. Running both orders retains first-fit's deterministic result whenever the arena sizes tie.
 
 ```text
-selectBestFit(problem, region, blockers):
-    candidate = problem.payloadBase
-    best = none
-    for blocker in blockers:
-        if [candidate, candidate + region.extent) ends before blocker:
-            unused = blocker.start - candidate - region.extent
-            best = minimum(best, (unused, candidate))
-        if candidate lies before blocker.end:
-            candidate = roundUp(blocker.end, problem.alignment)
-    return best.offset if best exists, otherwise candidate
+placeMultiOrder(problem):
+    stable = placeGreedy(problem, decreasing extent then region index, first-fit)
+    degreeAware = placeGreedy(problem, decreasing extent then conflict count, first-fit)
+    return degreeAware if its arena is smaller, otherwise stable
 ```
 
-For each new region, either selection scans gaps between sorted blockers and advances beyond every blocker that intersects the current candidate. The selected interval therefore overlaps no conflicting interval. Applying this argument in placement order proves disjoint storage for every conflict edge. All other overlap is authorized by the lifetime analysis.
+Minimum-arena search separates disconnected conflict components. They have no mutual disjointness requirement, so their placements overlay at the same payload base and the total minimum is the largest component minimum. A greedy placement supplies an upper bound; a weighted conflict clique supplies a lower bound. An optimal placement can be shifted left until each nonzero offset touches the end of a conflicting interval. Thus candidate offsets are subset sums of aligned region extents, not every address. The search visits candidates in deterministic order, rejects overlaps and results above the current best, and stops when the lower bound is reached.
 
-For `P` compiler-owned storage owners, placement takes `O(P^2 log P)` time after conflict construction and uses `O(P)` placement storage. Conflict adjacency for `N` logical DFBs uses `O(N^2)` bits. A budget failure reports that the selected strategy failed; it does not claim that no feasible placement exists.
+```text
+placeMinimumArena(problem, workLimit):
+    greedy = better of first-fit and best-fit
+    for component in connectedComponents(problem.conflicts):
+        lower = weightedCliqueBound(component)
+        upper = greedy component placement if it fits the budget
+        candidates = aligned subset sums of component extents below upper or budget
+        search placements over candidates, pruning conflicts and results above upper
+        if workLimit is exhausted: report inconclusive with the work count
+        if no placement fits: report proven budget infeasibility
+        retain the minimum component placement
+    overlay component placements at payloadBaseOffset
+    return offsets and maximum component payload end
+```
 
-The allocator interface contains no MLIR operations, DFB identities, architecture identities, tensor identities, or target branches. It receives normalized alignment and budget values through the allocation problem. Adding a strategy requires an implementation of the placement interface and a stable factory name. Conflict construction, storage-owner mapping, target queries, validation, metadata emission, and runtime allocation remain unchanged.
+Greedy placement takes `O(P^2 log P)` time for `P` compiler-owned regions; multi-order repeats it twice. The exact search can take exponential time, so its candidate-generation and partial-placement work share one explicit limit. Exhausting that limit is not a proof of infeasibility, even if a greedy placement fits. The allocator uses normalized byte requirements; target alignment and capacity enter through the problem, while MLIR diagnostics, storage-owner mapping, and runtime allocation remain in the caller.
 
 ## Reset and Reconfiguration
 
@@ -332,15 +292,15 @@ Uniform allocation reserves the largest required arena on every participating wo
 Storage efficiency comes from six decisions:
 
 1. Completion-aware conflicts permit payload overlap across sequential lifetimes, formats, and reconfiguration epochs.
-2. Both allocation strategies search aligned gaps instead of using a monotonic offset.
-3. Payloads are ordered by decreasing size to reduce fragmentation from early small placements.
+2. Greedy strategies search aligned gaps; the default compares two placement orders and retains the smaller arena.
+3. Payloads are ordered by decreasing size so large extents have more legal offsets available.
 4. Allocation groups share one payload envelope and one control record after the shared validator proves ownership transfer.
 5. Tensor-backed payloads remain in their existing L1 tensors and consume no duplicate arena payload storage.
 6. The arena uses one runtime argument, independent of logical DFB count.
 
 The fixed control cost is `roundUp(8 * S, A)` for `S` storage owners. For 96 ungrouped one-page BF16 DFBs, simultaneous lifetimes require 196,608 payload bytes and 768 control bytes before final arena alignment. If all 96 lifetimes are sequential, they reuse one 2,048-byte payload range and retain 768 control bytes. The control records are then 27% of the 2,816 bytes before final alignment. A validated allocation group reduces both payload envelopes and control records because its members explicitly transfer ownership. Further reduction would require inferring state ownership transfer without an allocation group or packing independently written producer and consumer state, which would weaken the ownership contract or require atomic updates.
 
-Monotonic allocation with explicit execution-phase overlays was considered. It cannot reuse an aligned gap between active allocations and requires explicit phase boundaries. TT-Lang instead uses its completion-aware conflict graph and searches reusable gaps, which permits overlap within a phase and across different extents. Best-fit addresses fragmentation without exponential search. An exact or bounded-search strategy can use the same allocator interface if measurements justify its compile-time cost.
+The bounded `minimum-arena` strategy measures the gap between the selected greedy placement and the proven optimum for small problems. Its exhaustive search may cost substantially more compilation time; the default multi-order strategy retains the first-fit result unless the second order reduces the arena.
 
 ## Implemented Contract
 
@@ -368,7 +328,7 @@ Monotonic allocation with explicit execution-phase overlays was considered. It c
 | Tensor-backed storage | 46 Blackhole BF16/FP32 device cases cover compiler-owned and tensor-backed storage, height/width/block sharding, shard orientation, byte offsets, replacement, and repeated execution. |
 | Allocation groups | Four Blackhole BF16/FP32 device cases cover shared-state handoff and different member capacities. |
 | Local PipeNet | 46 Blackhole BF16/FP32 device cases cover DRAM/SRAM tensors, transfer protocols, reset and reconfiguration, repeated invocation, typed external calls, and receiver indices above the Metal descriptor limit; Wormhole support is compile-only. |
-| Allocation | 20,888 compile-only generated placements covering both strategies, conflicts, alignment, reuse enabled and disabled, determinism, and exact budget boundaries; a focused fragmented graph verifies distinct strategy results |
+| Allocation | An independent oracle checks 5,184 four-region cases and 160 larger cases; default placement has 99.69% aggregate efficiency and 71.42% worst-case efficiency against the proven minimum. Another 2,432 compile-only placements cover both target alignments, reuse modes, and all strategies. Eight contract cases reject invalid inputs and results. Forty-eight Blackhole device cases cover BF16/FP32, DRAM/SRAM, repeated calls, and 96 simultaneous or reusable DFBs. |
 | Wormhole | N150 device correctness for 424 sub-tile cases and 12 native/external 70-DFB compositions; local PipeNet remains compile-only, and reset/reconfiguration is rejected. |
 | Runtime placement and resources | Runtime-unit evidence for one-device and device-domain descriptors, replicated mesh placement, lockstep arena binding, external fabric bindings, PipeNet resource composition, resource lifetimes, and program hashes; 18 Blackhole device-correctness cases for typed external calls with semaphores, runtime arguments, defines, repeated invocations, BF16/FP32, DRAM/SRAM, generic/specialized kernels, and both memory models |
 | Invalid contracts | Compiler diagnostics for malformed metadata, unsupported transactions and tile forms, unknown external effects, numeric external DFB indices, storage ownership, and budget overflow |

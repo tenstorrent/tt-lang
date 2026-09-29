@@ -3606,6 +3606,8 @@ def _lower_program_to_kernel(
             f"memory-model={compiler_options.memory_model} "
             "sram-allocation-strategy="
             f"{compiler_options.sram_allocation_strategy} "
+            "sram-minimum-arena-search-limit="
+            f"{compiler_options.sram_minimum_arena_search_limit} "
             f"reuse-user-dfbs={reuse_user_dfbs_flag} "
             "unsafe-assume-allocation-groups="
             f"{unsafe_assume_allocation_groups_flag} "
