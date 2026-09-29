@@ -89,6 +89,7 @@ func.func @preserve_unresolved_index(%index: index)
 // A typed external call retains tensor backing without a direct DFB argument.
 // CHECK-LABEL: func.func @preserve_opaque_call_tensor_backing
 // CHECK-SAME: ttl.crta_indices = [7 : i32]
+// CHECK-SAME: ttl.local_tensor_indices = [7 : i32]
 // CHECK: ttkernel.opaque_call "consume" template_args [#ttkernel.dfb_descriptor<0, 1, 1, 2048>]
 module attributes {ttl.memory_model = "compiler-sram", ttl.dfb_allocations = [
   {storage_segments = [{tensor_backing = #ttl.tensor_backing<tensor_index = 7, byte_offset = 0, byte_size = 2048>}]}
@@ -97,6 +98,25 @@ module attributes {ttl.memory_model = "compiler-sram", ttl.dfb_allocations = [
       attributes {ttl.crta_indices = [3, 7],
                   ttl.kernel_thread = #ttkernel.thread<noc>} {
     ttkernel.opaque_call "consume" template_args [#ttkernel.dfb_descriptor<0, 1, 1, 2048>] () {dfb_resource_indices = array<i32: 0>, header = "consume.hpp"} : () -> ()
+    return
+  }
+}
+
+// -----
+
+// Direct DFB access retains its tensor backing as local storage.
+// CHECK-LABEL: func.func @preserve_local_dfb_tensor_backing
+// CHECK-SAME: ttl.crta_indices = [7 : i32]
+// CHECK-SAME: ttl.local_tensor_indices = [7 : i32]
+module attributes {ttl.memory_model = "compiler-sram", ttl.dfb_allocations = [
+  {storage_segments = [{tensor_backing = #ttl.tensor_backing<tensor_index = 7, byte_offset = 0, byte_size = 2048>}]}
+]} {
+  func.func @preserve_local_dfb_tensor_backing()
+      attributes {ttl.crta_indices = [3, 7],
+                  ttl.kernel_thread = #ttkernel.thread<compute>} {
+    %dfb = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<0, !ttcore.tile<32x32, bf16>>
+    %one = arith.constant 1 : i32
+    ttkernel.cb_wait_front(%dfb, %one) : (!ttkernel.cb<0, !ttcore.tile<32x32, bf16>>, i32) -> ()
     return
   }
 }

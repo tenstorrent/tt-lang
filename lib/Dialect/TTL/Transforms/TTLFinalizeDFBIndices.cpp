@@ -302,6 +302,13 @@ struct TTLFinalizeDFBIndicesPass
       signalPassFailure();
       return;
     }
+    if (sramAllocationMode != "uniform" &&
+        *selectedModel != DFBMemoryModel::CompilerSRAM) {
+      moduleOp.emitOpError(
+          "per-node SRAM allocation requires memory-model=compiler-sram");
+      signalPassFailure();
+      return;
+    }
     std::string strategyFailure;
     SRAMAllocatorOptions allocatorOptions{sramMinimumArenaSearchLimit};
     FailureOr<std::unique_ptr<SRAMAllocator>> sramAllocator =
@@ -360,9 +367,9 @@ struct TTLFinalizeDFBIndicesPass
       SmallVector<DFBAssumedAllocationGroup> assumedAllocationGroups;
       if (failed(allocateSRAM(
               moduleOp, logicalIdentityAnalysis, l1BudgetOverride,
-              reuseUserDFBs, **sramAllocator, sramAllocationReport, liveness,
-              staticConfigurationConflicts, unsafeAssumeAllocationGroups,
-              assumedAllocationGroups))) {
+              reuseUserDFBs, **sramAllocator, sramAllocationReport,
+              sramAllocationMode, liveness, staticConfigurationConflicts,
+              unsafeAssumeAllocationGroups, assumedAllocationGroups))) {
         signalPassFailure();
         return;
       }

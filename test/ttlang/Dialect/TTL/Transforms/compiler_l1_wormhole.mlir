@@ -1,5 +1,6 @@
 // Verifies compiler-managed allocation with Wormhole alignment and no lifecycle boundary.
 // RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{memory-model=compiler-sram})' | FileCheck %s
+// RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{memory-model=compiler-sram sram-allocation-mode=per-node})' | FileCheck %s
 // RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{memory-model=compiler-sram sram-allocation-strategy=best-fit-decreasing})' | FileCheck %s
 
 // CHECK-LABEL: module attributes {ttl.dfb_allocations = [

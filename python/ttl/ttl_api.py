@@ -93,6 +93,9 @@ from .dataflow_buffer import (
     PhysicalDFBConfig,
     SRAMBackingHandoff,
     SRAMReconfigurationReset,
+    SRAMNodeLayout,
+    SRAMReceiverLocation,
+    SRAMReceiverTarget,
     get_cb_count,
 )
 from .domains import DeviceDomain
@@ -875,6 +878,7 @@ class CompiledTTNNKernel:
         kernel_local_tensor_indices=None,
         memory_model: Optional[str] = None,
         sram_allocation_report=False,
+        kernel_sram_receiver_targets=None,
     ):
         """
         Initialize with pre-compiled kernel artifacts.
@@ -899,7 +903,7 @@ class CompiledTTNNKernel:
             kernel_line_offsets: Dict mapping kernel name to line offset
             num_pipe_sync_semaphores: Number of pipe synchronization
                 semaphores used by this kernel
-            pipe_sram_scratch_bytes: Per-core SRAM scratch bytes used by
+            pipe_sram_scratch_bytes: Per-node SRAM scratch bytes used by
                 PipeNet metadata.
             num_pipe_global_semaphores: Number of GlobalSemaphore-backed
                 PipeNet counters used by this kernel.
@@ -956,6 +960,9 @@ class CompiledTTNNKernel:
         self.num_dfb_resets = num_dfb_resets
         self.pipe_sram_scratch_bytes = pipe_sram_scratch_bytes
         self.num_pipe_global_semaphores = num_pipe_global_semaphores
+        self.kernel_sram_receiver_targets = kernel_sram_receiver_targets or [
+            [] for _ in kernel_paths
+        ]
         self.kernel_pipe_computed_address_dfb_indices = (
             kernel_pipe_computed_address_dfb_indices or [[] for _ in kernel_paths]
         )
@@ -1054,6 +1061,7 @@ class CompiledTTNNKernel:
                 tensor_indices=tensor_indices,
                 config=config,
                 compiler_include_paths=self.opaque_include_paths,
+                sram_receiver_targets=self.kernel_sram_receiver_targets[kernel_idx],
                 pipe_computed_address_dfb_indices=self.kernel_pipe_computed_address_dfb_indices[
                     kernel_idx
                 ],
@@ -2149,6 +2157,7 @@ def _compile_ttnn_kernel(
     kernel_configs = []
     kernel_arg_specs = []
     kernel_pipe_computed_address_dfb_indices = []
+    kernel_sram_receiver_targets = []
     kernel_used_dfb_indices = []
     kernel_tensor_indices = []
     kernel_local_tensor_indices = []
@@ -2173,6 +2182,30 @@ def _compile_ttnn_kernel(
         kernel_paths.append((kernel_path, thread_type.value))
         kernel_pipe_computed_address_dfb_indices.append(
             list(descriptor_metadata.pipe_computed_address_dfb_indices)
+        )
+        target_attr = _lookup_kernel_func_op(module, name).attributes.get(
+            "ttl.sram_receiver_targets", None
+        )
+        kernel_sram_receiver_targets.append(
+            []
+            if target_attr is None
+            else [
+                SRAMReceiverTarget(
+                    dfb_index=int(DictAttr(target)["dfb_index"]),
+                    node=tuple(DenseI64ArrayAttr(DictAttr(target)["node"])),
+                    device=tuple(DenseI64ArrayAttr(DictAttr(target)["device"])),
+                    receivers=tuple(
+                        SRAMReceiverLocation(
+                            node=tuple(DenseI64ArrayAttr(DictAttr(receiver)["node"])),
+                            device=tuple(
+                                DenseI64ArrayAttr(DictAttr(receiver)["device"])
+                            ),
+                        )
+                        for receiver in ArrayAttr(DictAttr(target)["receivers"])
+                    ),
+                )
+                for target in ArrayAttr(target_attr)
+            ]
         )
         kernel_used_dfb_indices.append(
             None
@@ -2268,6 +2301,7 @@ def _compile_ttnn_kernel(
         num_pipe_global_semaphores=num_pipe_global_semaphores,
         opaque_include_paths=opaque_include_paths or [],
         kernel_pipe_computed_address_dfb_indices=kernel_pipe_computed_address_dfb_indices,
+        kernel_sram_receiver_targets=kernel_sram_receiver_targets,
         kernel_fabric_routes=kernel_fabric_routes,
         kernel_fabric_runtime_arg_base_common_indices=(
             kernel_fabric_runtime_arg_base_common_indices
@@ -2299,6 +2333,7 @@ def _compile_ttnn_kernel(
                 tensor_indices=tensor_indices,
                 config=kernel_configs[kernel_idx],
                 compiler_include_paths=opaque_include_paths or [],
+                sram_receiver_targets=kernel_sram_receiver_targets[kernel_idx],
                 pipe_computed_address_dfb_indices=kernel_pipe_computed_address_dfb_indices[
                     kernel_idx
                 ],
@@ -2753,6 +2788,18 @@ def _parse_physical_dfb_config(entry, *, dfb_index: int, context: str):
         l1_payload_offset=l1_payload_offset,
         l1_allocation_bytes=l1_allocation_bytes,
         storage_capacity_pages=storage_capacity_pages,
+        sram_node_layouts=tuple(
+            SRAMNodeLayout(
+                node=tuple(int(value) for value in layout["node"]),
+                payload_offset=int(layout["payload_offset"]),
+                payload_present=bool(layout["payload_present"].value),
+                arena_bytes=int(layout["arena_bytes"]),
+                domain=int(layout["domain"]),
+            )
+            for layout in (
+                entry["sram_node_layouts"] if "sram_node_layouts" in entry else ()
+            )
+        ),
     )
 
 
@@ -2902,7 +2949,7 @@ def _extract_dfb_reset_count(module) -> int:
 
 
 def _extract_pipe_sram_scratch_bytes(module) -> int:
-    """Read the per-core SRAM scratch bytes selected by pipe lowering."""
+    """Read the per-node SRAM scratch bytes selected by pipe lowering."""
     attr = module.operation.attributes.get(_ttl_ir.PIPE_SRAM_SCRATCH_BYTES_ATTR, None)
     if attr is None:
         return 0
@@ -3610,6 +3657,7 @@ def _lower_program_to_kernel(
             "func.func(ttl-coalesce-dfb-acquires)",
             "ttl-finalize-dfb-indices{"
             f"memory-model={compiler_options.memory_model} "
+            f"sram-allocation-mode={compiler_options.sram_allocation_mode} "
             f"sram-allocation-report={str(compiler_options.sram_allocation_report).lower()} "
             "sram-allocation-strategy="
             f"{compiler_options.sram_allocation_strategy} "
@@ -3693,9 +3741,11 @@ def _lower_program_to_kernel(
             "canonicalize",
             "cse",
         ]
-        # Both registered pipelines share record cleanup and finalize only
-        # the runtime arguments that survive it, matching the C++ pipeline.
-        if compiler_options.specialize_cores:
+        specialize_cores = (
+            compiler_options.specialize_cores
+            or compiler_options.sram_allocation_mode == "per-node"
+        )
+        if specialize_cores:
             pipeline_passes.append("ttkernel-specialize-and-annotate-dfb-use")
         else:
             pipeline_passes.append("ttkernel-cleanup-and-finalize-runtime-args")

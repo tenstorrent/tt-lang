@@ -1,0 +1,304 @@
+# SPDX-FileCopyrightText: (c) 2026 Tenstorrent AI ULC
+# SPDX-License-Identifier: Apache-2.0
+# REQUIRES: ttnn, tt-device
+# RUN: env TT_METAL_ALLOCATOR_MODE_HYBRID=1 TTLANG_COMPILER_OPTIONS=--ttl-sram-allocation-mode=per-node %python %s
+# Verify independent SRAM allocation in a process configured before device opening.
+
+import json
+from pathlib import Path
+
+import pytest
+import torch
+import ttl
+from ttlang_test_utils import to_dram, to_l1
+from utils.correctness import assert_allclose, assert_pcc
+from test_compiler_l1 import l1_copy, _make_allocation_stress, ALLOCATION_SCHEDULES
+from test_external_tensor_accessor import _get_local_tensor_accessor_copy
+from pipe.test_tensor_backed_computed_address import _make_tensor_backed_receiver
+
+import ttnn
+
+pytestmark = pytest.mark.requires_device
+
+
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "fp32"])
+@pytest.mark.parametrize("allocator", [to_dram, to_l1], ids=["dram", "sram"])
+def test_per_node_copy(device, dtype, allocator):
+    expected = torch.randn(32, 32, dtype=dtype)
+    source = allocator(expected, device)
+    destination = allocator(torch.zeros_like(expected), device)
+    for invocation in range(2):
+        l1_copy(
+            source,
+            destination,
+            options="--ttl-memory-model=compiler-sram --ttl-sram-allocation-mode=per-node",
+        )
+        assert_allclose(
+            ttnn.to_torch(destination).float(), expected.float(), rtol=0, atol=0
+        )
+
+
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "fp32"])
+def test_per_node_copy_to_independently_allocated_output(device, dtype):
+    expected = torch.randn(32, 32, dtype=dtype)
+    shard_spec = ttnn.ShardSpec(
+        ttnn.CoreRangeSet({ttnn.CoreRange(ttnn.CoreCoord(0, 0), ttnn.CoreCoord(0, 0))}),
+        (32, 32),
+        ttnn.ShardOrientation.ROW_MAJOR,
+    )
+    source_config = ttnn.MemoryConfig(
+        ttnn.TensorMemoryLayout.HEIGHT_SHARDED, ttnn.BufferType.L1, shard_spec
+    )
+    source = ttnn.from_torch(
+        expected,
+        dtype=ttnn.bfloat16 if dtype == torch.bfloat16 else ttnn.float32,
+        layout=ttnn.TILE_LAYOUT,
+        device=device,
+        memory_config=source_config,
+    )
+    memory_config = ttnn.MemoryConfig(
+        ttnn.TensorMemoryLayout.HEIGHT_SHARDED, ttnn.BufferType.L1, shard_spec
+    )
+    memory_config.experimental_set_per_core_allocation(True)
+    destination = ttnn.from_torch(
+        torch.zeros_like(expected),
+        dtype=ttnn.bfloat16 if dtype == torch.bfloat16 else ttnn.float32,
+        layout=ttnn.TILE_LAYOUT,
+        device=device,
+        memory_config=memory_config,
+    )
+    assert destination.is_per_core_allocated()
+    operation = _get_local_tensor_accessor_copy(
+        expected.numel() * expected.element_size()
+    )
+    result = operation(
+        source,
+        destination,
+        options="--ttl-memory-model=compiler-sram --ttl-sram-allocation-mode=per-node",
+    )
+    assert result.is_per_core_allocated()
+    device_coordinate = ttnn.MeshCoordinate((0, 0))
+    core_coordinate = ttnn.CoreCoord(0, 0)
+    assert result.experimental_per_core_buffer_address(
+        device_coordinate, core_coordinate
+    ) == destination.experimental_per_core_buffer_address(
+        device_coordinate, core_coordinate
+    )
+    assert_allclose(
+        ttnn.to_torch(destination).float(), expected.float(), rtol=0, atol=0
+    )
+
+
+# A per-node PipeNet receiver must use its destination tensor shard address.
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "fp32"])
+@pytest.mark.parametrize(
+    "shard_layout",
+    [
+        ttnn.TensorMemoryLayout.HEIGHT_SHARDED,
+        ttnn.TensorMemoryLayout.WIDTH_SHARDED,
+        ttnn.TensorMemoryLayout.BLOCK_SHARDED,
+    ],
+    ids=["height", "width", "block"],
+)
+@pytest.mark.parametrize("tile_offset", [0, 1], ids=["base", "offset"])
+def test_per_node_tensor_backed_pipe_receiver(device, dtype, shard_layout, tile_offset):
+    expected = torch.arange(32 * 32, dtype=torch.float32).reshape(32, 32)
+    expected = expected.remainder(17) - 8
+    source = to_dram(expected.to(dtype), device)
+    shard_spec = ttnn.ShardSpec(
+        ttnn.CoreRangeSet({ttnn.CoreRange(ttnn.CoreCoord(0, 0), ttnn.CoreCoord(0, 0))}),
+        (32, 3 * 32),
+        ttnn.ShardOrientation.ROW_MAJOR,
+    )
+    memory_config = ttnn.MemoryConfig(shard_layout, ttnn.BufferType.L1, shard_spec)
+    memory_config.experimental_set_per_core_allocation(True)
+    destination = ttnn.from_torch(
+        torch.zeros(32, 3 * 32, dtype=dtype),
+        dtype=ttnn.bfloat16 if dtype == torch.bfloat16 else ttnn.float32,
+        layout=ttnn.TILE_LAYOUT,
+        device=device,
+        memory_config=memory_config,
+    )
+    page_size = int(destination.get_tile().get_tile_size(destination.dtype))
+
+    operation = _make_tensor_backed_receiver(tile_offset * page_size)
+    expected_output = torch.zeros(32, 3 * 32)
+    expected_output[:, tile_offset * 32 : (tile_offset + 1) * 32] = expected
+    for _invocation in range(2):
+        operation(
+            source,
+            destination,
+            options=(
+                "--ttl-memory-model=compiler-sram "
+                "--ttl-sram-allocation-mode=per-node "
+                "--ttl-pipe-computed-addresses"
+            ),
+        )
+        assert_allclose(
+            ttnn.to_torch(destination).float(), expected_output, rtol=0, atol=0
+        )
+
+
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "fp32"])
+def test_per_node_mixed_extents(device, dtype, tmp_path):
+    operation, pages, capacities, conflicts = _make_allocation_stress(
+        tmp_path, ALLOCATION_SCHEDULES[0], (2, 2)
+    )
+    expected = torch.randn(sum(pages) * 4 * 32, 32, dtype=dtype)
+    source = to_dram(expected, device)
+    destination = to_dram(torch.zeros_like(expected), device)
+    operation(
+        source,
+        destination,
+        options="--ttl-memory-model=compiler-sram --ttl-sram-allocation-mode=per-node",
+    )
+    assert_allclose(
+        ttnn.to_torch(destination).float(), expected.float(), rtol=0, atol=0
+    )
+
+
+@ttl.operation(grid=(2, 1))
+def uneven_core_copy(source, destination):
+    large = ttl.make_dataflow_buffer_like(source, shape=(1, 1), block_count=16)
+    small = ttl.make_dataflow_buffer_like(source, shape=(1, 1), block_count=1)
+
+    @ttl.compute()
+    def compute():
+        pass
+
+    @ttl.datamovement()
+    def unused_transfer():
+        pass
+
+    @ttl.datamovement()
+    def transfer():
+        column, row = ttl.node(dims=2)
+        if column == 0:
+            with large.reserve() as block:
+                ttl.copy(source[0, 0], block).wait()
+            with large.wait() as block:
+                ttl.copy(block, destination[0, 0]).wait()
+        else:
+            with small.reserve() as block:
+                ttl.copy(source[1, 0], block).wait()
+            with small.wait() as block:
+                ttl.copy(block, destination[1, 0]).wait()
+
+
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "fp32"])
+@pytest.mark.parametrize("allocator", [to_dram, to_l1], ids=["dram", "sram"])
+def test_per_node_uneven_reservation(device, dtype, allocator, monkeypatch, capfd):
+    import ttl.kernel_runner as runner
+
+    expected = torch.randn(64, 32, dtype=dtype)
+    source = allocator(expected, device)
+    destination = allocator(torch.zeros_like(expected), device)
+    allocate_storage = runner._allocate_l1_sharded_storage_tensor
+    allocations = []
+
+    def retain_allocation(core_ranges, num_bytes, current_device, **kwargs):
+        arena = allocate_storage(core_ranges, num_bytes, current_device, **kwargs)
+        allocations.append((arena, num_bytes, core_ranges.num_cores()))
+        return arena
+
+    monkeypatch.setattr(
+        runner, "_allocate_l1_sharded_storage_tensor", retain_allocation
+    )
+    # Explicit options take precedence over the process-wide test mode.
+    monkeypatch.delenv("TTLANG_COMPILER_OPTIONS", raising=False)
+    totals = {}
+    for mode in ("uniform", "per-node"):
+        allocations.clear()
+        destination = allocator(torch.zeros_like(expected), device)
+        capfd.readouterr()
+        uneven_core_copy(
+            source,
+            destination,
+            options=f"--ttl-memory-model=compiler-sram --ttl-sram-allocation-mode={mode} --ttl-sram-allocation-report",
+        )
+        assert_allclose(
+            ttnn.to_torch(destination).float(), expected.float(), rtol=0, atol=0
+        )
+        reports = [
+            json.loads(line.split("ttlang-sram-report: ", 1)[1])
+            for line in capfd.readouterr().err.splitlines()
+            if line.startswith("ttlang-sram-report: ")
+        ]
+        runtime_reports = [record for record in reports if record["phase"] == "runtime"]
+        compiler_reports = [
+            record for record in reports if record["phase"] == "compiler"
+        ]
+        totals[mode] = sum(
+            record["reserved_bytes_on_reference_device"] for record in runtime_reports
+        )
+        assert totals[mode] == sum(
+            num_bytes * cores for arena, num_bytes, cores in allocations
+        )
+        assert len(compiler_reports) == len(runtime_reports) == len(allocations)
+        if mode == "per-node":
+            assert len(allocations) == 2
+            assert all(arena.is_per_core_allocated() for arena, _, _ in allocations)
+            assert len({num_bytes for _, num_bytes, _ in allocations}) == 2
+    # The second core requires one tile instead of the first core's 16 tiles.
+    assert (
+        totals["uniform"] - totals["per-node"] == 15 * 32 * 32 * expected.element_size()
+    )
+
+
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "fp32"])
+@pytest.mark.parametrize("allocator", [to_dram, to_l1], ids=["dram", "sram"])
+def test_per_node_receiver_order_is_deterministic(
+    device, dtype, allocator, monkeypatch, tmp_path
+):
+    from pipe.test_compiler_sram_pipenet import compiler_sram_pipe_matmul
+
+    lhs_host = torch.randn(64, 64, dtype=dtype)
+    rhs_host = torch.randn(64, 64, dtype=dtype)
+    lhs = allocator(lhs_host, device)
+    rhs = allocator(rhs_host, device)
+    final_ir = tmp_path / "receivers.mlir"
+    monkeypatch.setenv("TTLANG_FINAL_MLIR", str(final_ir))
+    layouts = []
+    for compilation in range(3):
+        operation = ttl.operation(grid=(2, 2))(compiler_sram_pipe_matmul.__wrapped__)
+        output = allocator(torch.zeros_like(lhs_host), device)
+        operation(
+            lhs,
+            rhs,
+            output,
+            options="--ttl-memory-model=compiler-sram --ttl-sram-allocation-mode=per-node",
+        )
+        assert_pcc(
+            lhs_host.float() @ rhs_host.float(),
+            ttnn.to_torch(output).float(),
+            threshold=0.999 if dtype == torch.bfloat16 else 0.99999,
+        )
+        targets = tuple(
+            line.strip()
+            for line in final_ir.read_text().splitlines()
+            if "ttl.sram_receiver_targets" in line
+        )
+        assert targets and max(line.count("dfb_index") for line in targets) >= 2
+        layouts.append(targets)
+    assert layouts[0] == layouts[1] == layouts[2]
+
+
+if __name__ == "__main__":
+    directory = Path(__file__).parent
+    tests = [
+        str(Path(__file__)),
+        str(directory / "pipe/test_compiler_sram_pipenet.py"),
+        f"{directory / 'test_external_dfb_reuse.py'}::test_compiler_sram_external_composition_exceeds_metal_index_limit",
+    ]
+    for test_name in (
+        "test_l1_rms_normalization",
+        "test_l1_gated_mlp_residual",
+        "test_l1_attention",
+        "test_l1_expert_merge",
+        "test_l1_compute_above_descriptor_limit",
+    ):
+        tests.append(f"{directory / 'test_compiler_l1_compute.py'}::{test_name}")
+    # Synchronized lifecycle operations require the Blackhole synchronization LLK.
+    if ttnn.get_arch_name() == "blackhole":
+        tests.append(str(directory / "test_compiler_l1_lifecycle.py"))
+    raise SystemExit(pytest.main([*tests, "-k", "not metal-cb", "-xq", "--tb=short"]))

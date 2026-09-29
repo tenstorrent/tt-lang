@@ -502,3 +502,18 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
     return %s : index
   }
 }
+
+// -----
+
+// The pipeline serializes the launch grid as a dense i64 array.
+// CHECK-LABEL: func.func @dense_grid_c0_0
+// CHECK-SAME: ttl.core_coord = {{\[\[}}0, 0]]
+// CHECK-LABEL: func.func @dense_grid_c1_0
+// CHECK-SAME: ttl.core_coord = {{\[\[}}1, 0]]
+module attributes {ttl.launch_grid = array<i64: 2, 1>,
+                   ttl.sram_allocation_mode = "per-node"} {
+  func.func @dense_grid() attributes {
+      ttkernel.thread = #ttkernel.thread<noc>} {
+    return
+  }
+}

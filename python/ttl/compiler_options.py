@@ -61,6 +61,13 @@ def _make_parser() -> argparse.ArgumentParser:
         help="Select Metal DFB allocation or experimental compiler-owned SRAM storage (default: metal-cb).",
     )
     p.add_argument(
+        "--ttl-sram-allocation-mode",
+        choices=("uniform", "per-node"),
+        default=None,
+        dest="sram_allocation_mode",
+        help="Select uniform or per-node SRAM layouts for compiler-sram; multicast receivers share a layout. Per-node mode requires Metal hybrid allocation before device initialization (default: uniform).",
+    )
+    p.add_argument(
         "--ttl-sram-allocation-report",
         default=None,
         dest="sram_allocation_report",
@@ -240,7 +247,7 @@ def _make_parser() -> argparse.ArgumentParser:
         default=None,
         dest="l1_budget",
         type=int,
-        help="Override the per-core L1 allocation budget in bytes used by DFB "
+        help="Override the per-node L1 allocation budget in bytes used by DFB "
         "allocation, synchronized reset and reconfiguration state, PipeNet "
         "resources, and final combined validation (default: auto-detect from "
         "device, or "
@@ -315,6 +322,7 @@ class CompilerOptions:
     dfb_exact_coloring_search_limit: int = 1_000_000
     specialize_cores: bool = False
     l1_budget: int = dataclasses.field(default=0, compare=False, hash=False)
+    sram_allocation_mode: str = "uniform"
 
     # Fields that were explicitly provided (not defaulted). Excluded from
     # equality and hashing so two instances with the same bool values are
@@ -327,6 +335,10 @@ class CompilerOptions:
         """Validate options that can be constructed without argparse."""
         if self.memory_model not in ("metal-cb", "compiler-sram"):
             raise ValueError(f"Invalid memory model {self.memory_model!r}")
+        if self.sram_allocation_mode not in ("uniform", "per-node"):
+            raise ValueError(
+                f"Invalid SRAM allocation mode {self.sram_allocation_mode!r}"
+            )
         if self.sram_allocation_strategy not in _SRAM_ALLOCATION_STRATEGIES:
             raise ValueError(
                 "Invalid SRAM allocation strategy "

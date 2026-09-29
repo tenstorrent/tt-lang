@@ -141,7 +141,7 @@ def TTLFormPipeTransports
     bound; the pass selects a smaller group when the loop trip count or L1
     capacity requires it. Ineligible loops retain scalar transfer IR. After
     PipeNet lowering chooses exact resources, `convert-ttl-to-ttkernel`
-    validates the authoritative combined per-core allocation.
+    validates the authoritative combined per-node allocation.
   }];
 
   let options = [
@@ -149,7 +149,7 @@ def TTLFormPipeTransports
            "Maximum logical transfers per group. 0 selects automatically; "
            "1 disables grouping.">,
     Option<"l1BudgetOverride", "l1-budget-override", "uint32_t", "0",
-           "Override the combined per-core L1 budget in bytes for "
+           "Override the combined per-node SRAM budget in bytes for "
            "transport selection.">
   ];
 
@@ -352,13 +352,13 @@ def TTLConvertTTLToTTKernel
 
     The pass validates finalized DFB backing plus the exact PipeNet and
     synchronized-reset scratch and DFB reconfiguration state against the
-    selected per-core L1 budget before lowering the operations.
+    selected per-node SRAM budget before lowering the operations.
 
     PipeNet IR must first pass `ttl-verify-pipenet-guards` and
     `ttl-verify-pipenet-schedule`. Those passes establish endpoint containment,
     exact launch-node domains, and single-block event regions required by
     protocol planning. After planning, this pass validates the authoritative
-    per-core L1 footprint: target-aligned finalized DFB allocations,
+    per-node SRAM footprint: target-aligned finalized DFB allocations,
     synchronized-reset state, reconfiguration tensors, PipeNet scratch, and
     GlobalSemaphore allocations.
   }];
@@ -385,7 +385,7 @@ def TTLConvertTTLToTTKernel
            "in GlobalSemaphore storage, leaving local hardware semaphore ids "
            "available to the application.">,
     Option<"l1BudgetOverride", "l1-budget-override", "uint32_t", "0",
-           "Override the per-core L1 budget used for finalized DFB and "
+           "Override the per-node SRAM budget used for finalized DFB and "
            "scratch validation. 0 selects the target budget.">
   ];
 
@@ -1081,16 +1081,16 @@ def TTLFinalizeDFBIndices
     records. The selected SRAM allocation strategy places payloads over the
     concurrent-kernel storage conflict graph; unknown completion prohibits reuse.
     The complete plan is validated before mutation. Runtime metadata supplies
-    state and payload offsets within one allocator-owned SRAM arena. The arena
-    high-water mark includes alignment and state. A greedy budget failure does
-    not prove that a feasible placement is impossible. Unsupported storage forms
-    and PipeNet transfers are diagnosed; this mode never falls back to Metal descriptors.
-    `reuse-user-dfbs=false` disables payload aliasing in this mode.
-    `sram-allocation-report` emits a schema-versioned JSON record to stderr
-    after allocation validation and before IR mutation. It reports storage
-    owners, tensor references, reused ranges, lifetime and conflict evidence,
-    and planned per-node arena bytes. It does not report hardware reservations
-    or change allocation. The option is inactive for `metal-cb`.
+    state and payload offsets within allocator-owned SRAM arenas. Uniform mode
+    uses one layout on all participating worker nodes. Per-node DFB placement
+    requires an exact launch grid and omits payloads proven inactive on each
+    node. Multicast receivers share one layout to preserve equal destination
+    addresses. Control offsets remain common to all layouts. A greedy budget
+    failure does not prove infeasibility. Unsupported storage forms are errors;
+    this mode never falls back to Metal descriptors. `reuse-user-dfbs=false`
+    disables payload aliasing.
+    `sram-allocation-report` emits validated per-domain allocation facts before
+    IR mutation and does not change placement or report hardware reservations.
 
     User-declared DFBs enter this pass with module-wide logical `dfb_id`
     attributes. Compiler-created DFB declarations receive unique logical IDs.
@@ -1266,6 +1266,8 @@ def TTLFinalizeDFBIndices
     Option<"reuseUserDFBs", "reuse-user-dfbs", "bool", "true",
            "Reuse physical DFB indices and compiler-managed storage for "
            "lifetimes proven not to overlap across concurrent kernels.">,
+    Option<"sramAllocationMode", "sram-allocation-mode", "std::string",
+           "\"uniform\"", "SRAM allocation domains: uniform or per-node">,
     Option<"sramAllocationReport", "sram-allocation-report", "bool", "false",
            "Emit a versioned JSON report of compiler-managed SRAM ownership, "
            "reuse, conflicts, and planned arena bytes.">,
@@ -1287,14 +1289,14 @@ def TTLFinalizeDFBIndices
            "Maximum states examined by exact DFB allocation before reporting "
            "an inconclusive result.">,
     Option<"l1BudgetOverride", "l1-budget-override", "uint32_t", "0",
-           "Override the per-core L1 budget used by DFB allocation and "
+           "Override the per-node L1 budget used by DFB allocation and "
            "conservative PipeNet reservation. 0 selects the target budget.">
   ];
 }
 
 def TTLValidateCBBudget
     : Pass<"ttl-validate-cb-budget", "::mlir::ModuleOp"> {
-  let summary = "Validate total DFB allocation fits within per-core L1 budget";
+  let summary = "Validate total DFB allocation fits within per-node SRAM budget";
   let description = [{
     Module-level pass that runs after `ttl-finalize-dfb-indices`, before
     `convert-ttl-to-ttkernel`. For `compiler-sram`, it validates the finalized
@@ -1304,7 +1306,7 @@ def TTLValidateCBBudget
     static backing-store size per compiler-selected DFB storage index on each
     launch node, allocator-rounded synchronized-reset state, and one
     target-aligned configuration tensor per synchronized reconfiguration
-    boundary, then compares the maximum node result against a per-core L1
+    boundary, then compares the maximum node result against a per-node SRAM
     budget. Tensor-backed DFB storage is excluded because the tensor allocator
     owns that allocation. Unknown allocation domains conservatively contribute
     to every launch node; missing residency metadata uses the global descriptor
@@ -1325,7 +1327,7 @@ def TTLValidateCBBudget
     L1 budget is taken from the module's TTCore system descriptor and
     default device when present (`ChipDescAttr::getUsableL1Size()` for the
     selected chip). When the module has no system descriptor, the pass uses
-    the same static per-core DFB region limit as Wormhole and Blackhole
+    the same static per-node DFB region limit as Wormhole and Blackhole
     (total L1 minus reserved kernel space).
 
     This is a static DFB and fixed-state check. After exact PipeNet planning,
@@ -1521,6 +1523,11 @@ def TTKernelSpecializeCores
     constant-table entries reachable on each core. The runtime uses
     `ttl.core_coord` to dispatch each clone to its assigned core.
 
+    Compiler-managed per-node SRAM requires specialization of every kernel,
+    including kernels without coordinate-dependent control flow. This binds
+    each kernel to one finalized node arena layout. Referenced kernels are rejected
+    before cloning in that mode.
+
     Functions with symbol uses remain unspecialized because replacing them
     would require rewriting their references. The pass emits a warning for
     each such function and continues specializing independent functions.
@@ -1653,9 +1660,11 @@ def TTKernelAnnotateDFBUse
     Runs after per-core specialization and canonicalization.
     For each `ttkernel.thread` function, records the
     sorted DFB allocation indices reached through surviving
-    `ttkernel.get_compile_time_arg_val` operations below
-    `ttl.base_cta_index` and `dfb_resource_indices` metadata on surviving
-    `ttkernel.opaque_call` operations in `ttl.used_dfb_indices`. The metadata
+    `ttkernel.get_compile_time_arg_val` operations below the finalized
+    `ttl.dfb_allocations` count and `dfb_resource_indices` metadata on
+    surviving `ttkernel.opaque_call` operations in `ttl.used_dfb_indices`.
+    Without finalized allocation metadata, the pass uses
+    `ttl.base_cta_index`. The metadata
     preserves resource requirements after lowering replaces DFB operands with
     static values. Helpers stay in the call-graph analysis so their uses
     propagate to kernel entries.
@@ -1695,8 +1704,9 @@ def TTKernelFinalizeTensorRuntimeArgs
     `ttl.crta_indices` retains the corresponding global tensor indices.
 
     The pass also records the surviving tensors used to construct
-    `LocalTensorAccessor` values in `ttl.local_tensor_indices`. The runtime uses
-    this metadata to require local tensor shards on every executing core.
+    `LocalTensorAccessor` values or back locally accessed compiler-managed DFBs
+    in `ttl.local_tensor_indices`. The runtime uses this metadata to require
+    local tensor shards on every executing core.
 
     Dynamic common-argument indices represented by
     `ttkernel.experimental.constant_table_lookup` are rewritten with the same

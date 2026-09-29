@@ -291,6 +291,35 @@ CircularBuffer = DataflowBuffer
 
 
 @dataclass(frozen=True)
+class SRAMReceiverLocation:
+    """One destination node and logical device for a computed PipeNet address."""
+
+    node: Tuple[int, int]
+    device: Tuple[int, ...] = ()
+
+
+@dataclass(frozen=True)
+class SRAMReceiverTarget:
+    """A sender runtime argument and every destination that consumes its base."""
+
+    dfb_index: int
+    node: Tuple[int, int]
+    device: Tuple[int, ...] = ()
+    receivers: Tuple[SRAMReceiverLocation, ...] = ()
+
+
+@dataclass(frozen=True)
+class SRAMNodeLayout:
+    """One node's payload placement and total arena reservation requirement."""
+
+    node: Tuple[int, int]
+    payload_offset: int
+    payload_present: bool
+    arena_bytes: int
+    domain: int
+
+
+@dataclass(frozen=True)
 class SRAMBackingHandoff:
     """A DFB backing change on one launch node at a synchronized reset."""
 
@@ -335,6 +364,7 @@ class PhysicalDFBConfig:
     l1_payload_offset: Optional[int] = None
     l1_allocation_bytes: Optional[int] = None
     storage_capacity_pages: Optional[int] = None
+    sram_node_layouts: Tuple[SRAMNodeLayout, ...] = ()
 
 
 @dataclass(frozen=True)

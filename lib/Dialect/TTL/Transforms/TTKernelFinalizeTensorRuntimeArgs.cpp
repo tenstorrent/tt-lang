@@ -212,7 +212,8 @@ static FailureOr<int64_t> getCompilerSRAMTensorIndex(ModuleOp module,
 static LogicalResult
 markCompilerSRAMTensorSlot(Operation *use, ModuleOp module, int64_t dfbIndex,
                            ArrayRef<int64_t> globalTensorIndices,
-                           BitVector &liveTensorSlots) {
+                           BitVector &liveTensorSlots,
+                           BitVector &localTensorSlots) {
   FailureOr<int64_t> tensorIndex = getCompilerSRAMTensorIndex(module, dfbIndex);
   if (failed(tensorIndex)) {
     use->emitOpError("has invalid compiler-sram tensor-backing metadata");
@@ -228,7 +229,9 @@ markCompilerSRAMTensorSlot(Operation *use, ModuleOp module, int64_t dfbIndex,
         << " which is absent from the kernel's common tensor arguments";
     return failure();
   }
-  liveTensorSlots.set(std::distance(globalTensorIndices.begin(), slot));
+  size_t tensorSlot = std::distance(globalTensorIndices.begin(), slot);
+  liveTensorSlots.set(tensorSlot);
+  localTensorSlots.set(tensorSlot);
   return success();
 }
 
@@ -245,6 +248,7 @@ static LogicalResult finalizeFunction(func::FuncOp function) {
   }
   int64_t tensorCount = globalTensorIndices.size();
   BitVector liveTensorSlots(tensorCount);
+  BitVector localTensorSlots(tensorCount);
   SmallVector<CommonArgIndexUse> commonArgUses;
   SmallVector<TensorAccessorArgsIndexUse> tensorAccessorArgsUses;
   bool hasUnresolvedIndex = false;
@@ -254,9 +258,9 @@ static LogicalResult finalizeFunction(func::FuncOp function) {
         if (!isa<ttk::CBType>(get.getType())) {
           return WalkResult::advance();
         }
-        return failed(markCompilerSRAMTensorSlot(get, module, get.getArgIndex(),
-                                                 globalTensorIndices,
-                                                 liveTensorSlots))
+        return failed(markCompilerSRAMTensorSlot(
+                   get, module, get.getArgIndex(), globalTensorIndices,
+                   liveTensorSlots, localTensorSlots))
                    ? WalkResult::interrupt()
                    : WalkResult::advance();
       });
@@ -276,7 +280,8 @@ static LogicalResult finalizeFunction(func::FuncOp function) {
     }
     for (int32_t dfbIndex : *resourceIndices) {
       if (failed(markCompilerSRAMTensorSlot(
-              call, module, dfbIndex, globalTensorIndices, liveTensorSlots))) {
+              call, module, dfbIndex, globalTensorIndices, liveTensorSlots,
+              localTensorSlots))) {
         return WalkResult::interrupt();
       }
     }
@@ -295,7 +300,6 @@ static LogicalResult finalizeFunction(func::FuncOp function) {
     return failure();
   }
 
-  BitVector localTensorSlots(tensorCount);
   WalkResult localWalk =
       function.walk([&](ttk::LocalTensorAccessorOp accessor) {
         FailureOr<int64_t> slot = getLocalTensorSlot(accessor, tensorCount);
