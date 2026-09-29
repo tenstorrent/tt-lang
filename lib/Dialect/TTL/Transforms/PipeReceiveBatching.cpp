@@ -116,7 +116,7 @@ void annotateInitialPipeReceiveBatches(
       for (PipeReceiverEndpointId endpointId : receiver.writerEndpoints) {
         const PipeReceiverEndpoint &endpoint =
             graph.getPipeReceiverEndpoint(endpointId);
-        const auto &sequence = endpoint.addressSequence;
+        const auto &sequence = endpoint.getDFBDestination().addressSequence;
         if (endpoint.postOp != post || sequence.executionCount != 1 ||
             !sequence.recurrence ||
             graph.getPipeTransferNode(endpoint.transferNode).blockSpan != 1 ||

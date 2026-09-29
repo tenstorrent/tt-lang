@@ -185,6 +185,40 @@ def test_external_fabric_manager_can_select_pipe_source_kernel(monkeypatch):
     assert interval.claim == manager.identity
 
 
+def test_external_fabric_manager_can_select_canonical_data_movement(monkeypatch):
+    """A claim on the canonical data-movement kernel reaches NCRISC."""
+    monkeypatch.setenv("TTLANG_COMPILE_ONLY", "1")
+    manager = ttl.FabricManagerClaim(
+        "external_ncrisc", kernel=ttl.KernelKind.DATA_MOVEMENT
+    )
+
+    @ttl.operation(grid=(1, 1))
+    def external_ncrisc_manager(inp):
+        ttl.call_extern_func(
+            HEADER,
+            "open_and_close",
+            kernel=ttl.KernelKind.DATA_MOVEMENT,
+            fabric_manager_effects=(manager.scoped(),),
+        )
+
+    external_ncrisc_manager(
+        ttnn.from_torch(
+            torch.zeros((32, 32), dtype=torch.bfloat16),
+            dtype=ttnn.bfloat16,
+            layout=ttnn.TILE_LAYOUT,
+        )
+    )
+
+    selected_spec = next(
+        spec
+        for spec in _kernel_specs(_compiled_kernel(external_ncrisc_manager))
+        if spec.logical_kernel == ttl.KernelKind.DATA_MOVEMENT
+    )
+    assert "__ncrisc_" in selected_spec.path
+    assert len(selected_spec.fabric_manager_intervals) == 1
+    assert selected_spec.fabric_manager_intervals[0].claim == manager.identity
+
+
 def test_scoped_external_managers_retain_conditional_launch_domain(monkeypatch):
     """Sequential coordinator calls can reuse one physical manager."""
     monkeypatch.setenv("TTLANG_COMPILE_ONLY", "1")

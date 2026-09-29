@@ -70,6 +70,9 @@ public:
   /// Return whether `op` uses routing-plane fabric synchronization.
   bool usesFabricProtocol(Operation *op) const;
 
+  /// Return whether `op` uses fabric without receiver readiness.
+  bool usesNoRendezvousProtocol(Operation *op) const;
+
 private:
   friend FailureOr<PipeModulePlan>
   buildPipeModulePlan(ModuleOp, ValueOriginAnalysis &,
@@ -78,6 +81,7 @@ private:
 
   llvm::SmallPtrSet<Operation *, 16> capacityTransferOps;
   llvm::SmallPtrSet<Operation *, 16> fabricTransferOps;
+  llvm::SmallPtrSet<Operation *, 16> noRendezvousTransferOps;
 };
 
 /// Capacity consumed by one sender before issuing a payload write.
@@ -193,8 +197,8 @@ struct PipeWaitPlan {};
 /// wait-any candidates.
 class PipeResourceAccessPlan {
 public:
-  using Resources =
-      std::variant<PipeResourceInfo, SmallVector<PipeResourceInfo>>;
+  using ResourceTable = SmallVector<PipeResourceInfo>;
+  using Resources = std::variant<PipeResourceInfo, ResourceTable>;
 
   PipeResourceAccessPlan(PipeReference pipeReference, Resources resources)
       : pipeReference(std::move(pipeReference)),
@@ -203,7 +207,7 @@ public:
   const PipeReference &getPipeReference() const { return pipeReference; }
 
   bool isSelected() const {
-    return std::holds_alternative<SmallVector<PipeResourceInfo>>(resources);
+    return std::holds_alternative<ResourceTable>(resources);
   }
 
   const PipeResourceInfo &getResources() const {
@@ -215,7 +219,7 @@ public:
   ArrayRef<PipeResourceInfo> getSelectedResources() const {
     assert(isSelected() &&
            "record-selected resources requested for a static pipe");
-    return std::get<SmallVector<PipeResourceInfo>>(resources);
+    return std::get<ResourceTable>(resources);
   }
 
 private:
