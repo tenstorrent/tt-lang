@@ -150,6 +150,20 @@ static Operation *findFirstSameKindAcquisition(Root &root,
 
 static std::optional<NestedAcquisitionBoundary>
 getNestedAcquisitionBoundary(DFBAcquireInterval interval) {
+  // A guarded acquisition is ordered at its enclosing if. A later acquire
+  // inside that same then-region projects to the same if and is absent from
+  // kindBoundary, so inspect the acquiring block directly first.
+  for (Operation &operation :
+       llvm::make_range(std::next(interval.acquire->getIterator()),
+                        interval.acquire->getBlock()->end())) {
+    if (isSameKindAcquisition(&operation, interval)) {
+      break;
+    }
+    if (Operation *firstAcquire =
+            findFirstSameKindAcquisition(operation, interval)) {
+      return NestedAcquisitionBoundary{&operation, firstAcquire};
+    }
+  }
   Operation *boundary = interval.kindBoundary;
   if (!boundary || isDFBAcquireOp(boundary)) {
     return std::nullopt;
@@ -443,7 +457,8 @@ static PlanningResult<NestedAcquisitionPlan> planNestedAcquisitionBoundary(
   Block *orderingBlock = nested.boundary->getBlock();
   Operation *start = orderingBlock->findAncestorOpInBlock(*interval.acquire);
   assert(start && "acquisition must project into the ordering block");
-  bool guarded = start != interval.acquire;
+  bool guarded =
+      start != interval.acquire || getGuardedAcquireIf(interval.acquire);
   int64_t heldTiles = getDFBLifecycleTileCount(interval.acquire);
 
   std::string beforeRegionAdvice =

@@ -3,10 +3,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "PipePlanning.h"
+#include "DFBAcquireReleaseAnalysis.h"
 
 #include "ttlang/Dialect/TTL/Transforms/PipeConstants.h"
 
-#include "mlir/IR/Dominance.h"
 #include "ttlang/Analysis/ValueOriginAnalysis.h"
 #include "ttlang/Dialect/TTCore/IR/TTCoreOpsTypes.h"
 #include "ttlang/Dialect/TTL/IR/TTL.h"
@@ -162,8 +162,8 @@ FailureOr<PipeTransferPayload> getPipeTransferPayload(PipeTransferSendOp sendOp,
 }
 
 static FailureOr<PipeSendPlan>
-buildPipeSendPlan(PipeTransferSendOp sendOp, const DominanceInfo &dominanceInfo,
-                  int64_t blockSpan, const FabricRoutePlan *fabricRoutePlan) {
+buildPipeSendPlan(PipeTransferSendOp sendOp, int64_t blockSpan,
+                  const FabricRoutePlan *fabricRoutePlan) {
   FailureOr<PipeTransferPayload> maybePayload =
       getPipeTransferPayload(sendOp, blockSpan);
   if (failed(maybePayload)) {
@@ -171,10 +171,7 @@ buildPipeSendPlan(PipeTransferSendOp sendOp, const DominanceInfo &dominanceInfo,
   }
 
   bool readFromDFB =
-      llvm::any_of(sendOp.getSrc().getUsers(), [&](Operation *user) {
-        return isa<CBWaitOp>(user) && user->getOperand(0) == sendOp.getSrc() &&
-               dominanceInfo.dominates(user, sendOp);
-      });
+      isNearestDFBAcquireWait(sendOp.getOperation(), sendOp.getSrc());
 
   ArrayRef<std::size_t> fabricRouteIndices =
       fabricRoutePlan
@@ -557,7 +554,6 @@ FailureOr<PipeModulePlan> buildPipeModulePlan(
     }
   });
 
-  DominanceInfo dominanceInfo(module);
   auto addTransferPlan =
       [&](Operation *operation, PipeReference pipeReference,
           PipeResourceAccessPlan::Resources resources) -> LogicalResult {
@@ -645,8 +641,7 @@ FailureOr<PipeModulePlan> buildPipeModulePlan(
       PipeTransferCreateOp transferCreate =
           transferIndex.getTransferCreate(operation);
       FailureOr<PipeSendPlan> maybeSendPlan = buildPipeSendPlan(
-          sendOp, dominanceInfo, getPipeTransferBlockSpan(transferCreate),
-          fabricRoutePlan);
+          sendOp, getPipeTransferBlockSpan(transferCreate), fabricRoutePlan);
       if (failed(maybeSendPlan)) {
         return failure();
       }

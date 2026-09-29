@@ -54,6 +54,10 @@ namespace mlir::tt::ttl {
 /// Classifies a reserve/push producer interval or wait/pop consumer interval.
 enum class DFBAcquireReleaseKind { Producer, Consumer };
 
+/// Whether the nearest preceding acquisition of `dfb` on the operation's
+/// enclosing block path is a wait rather than a reserve.
+bool isNearestDFBAcquireWait(Operation *operation, Value dfb);
+
 /// Half-open ownership interval for one DFB acquire operation.
 ///
 /// `kindBoundary` is the closest later acquire of the same kind on the same

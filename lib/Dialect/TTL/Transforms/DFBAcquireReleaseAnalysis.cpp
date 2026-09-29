@@ -71,16 +71,21 @@ static bool protocolUseMatchesAcquire(DFBAcquireInterval interval,
   return !foundDependency;
 }
 
-// Whether a wait on `dfb` precedes `operation` in its block or precedes one of
-// its ancestors in the ancestor's block, so it dominates `operation`.
-static bool hasDominatingDFBWait(Operation *operation, Value dfb) {
+// The closest acquisition in the operation's block or an enclosing block
+// selects the DFB pointer used by a direct pipe send.
+bool isNearestDFBAcquireWaitImpl(Operation *operation, Value dfb) {
   for (Operation *current = operation; current && !isa<func::FuncOp>(current);
        current = current->getParentOp()) {
     for (Operation *previous = current->getPrevNode(); previous;
          previous = previous->getPrevNode()) {
-      if (auto wait = dyn_cast<CBWaitOp>(previous);
-          wait && wait.getCb() == dfb) {
-        return true;
+      if (auto wait = dyn_cast<CBWaitOp>(previous)) {
+        if (wait.getCb() == dfb) {
+          return true;
+        }
+      } else if (auto reserve = dyn_cast<CBReserveOp>(previous)) {
+        if (reserve.getCb() == dfb) {
+          return false;
+        }
       }
     }
   }
@@ -100,14 +105,13 @@ static bool directDFBUseMatchesAcquire(DFBAcquireInterval interval,
     return true;
   }
 
-  // A pipe send reads through the read pointer only after a wait on the DFB;
-  // otherwise pipe lowering sends the reserved block through the write
-  // pointer.
+  // Pipe planning uses the nearest preceding acquisition to select the read
+  // or write pointer. Classify ownership by the same acquisition.
   bool readsWaitedBlock = copy.getSrc() == interval.dfb;
   if (readsWaitedBlock &&
       isa<PipeType, SelectedPipeSrcType, SelectedPipeDstType>(
           copy.getDst().getType())) {
-    readsWaitedBlock = hasDominatingDFBWait(copy, interval.dfb);
+    readsWaitedBlock = isNearestDFBAcquireWaitImpl(copy, interval.dfb);
   }
   switch (interval.kind) {
   case DFBAcquireReleaseKind::Producer:
@@ -416,6 +420,10 @@ static bool sameBlockReleaseMayOwnAcquire(DFBAcquireInterval interval,
 }
 
 } // namespace
+
+bool isNearestDFBAcquireWait(Operation *operation, Value dfb) {
+  return isNearestDFBAcquireWaitImpl(operation, dfb);
+}
 
 bool isDFBAcquireOp(Operation *op) { return isa<CBReserveOp, CBWaitOp>(op); }
 
