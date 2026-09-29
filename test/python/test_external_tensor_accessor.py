@@ -972,7 +972,13 @@ def test_external_compute_tensor_accessor_emitted_runner(
             kernel_name = "compute"
             me2e_thread_type = ThreadType.COMPUTE
         else:
-            kernel_name = os.path.splitext(os.path.basename(kernel_path))[0]
+            source_name = os.path.splitext(os.path.basename(kernel_path))[0]
+            if "_dm_read_" in source_name:
+                kernel_name = "reader"
+            elif "_dm_write_" in source_name:
+                kernel_name = "writer"
+            else:
+                pytest.fail(f"unrecognized data-movement kernel {source_name}")
             me2e_thread_type = ThreadType.NOC
         copied_kernel_path = me2e_kernel_dir / f"{kernel_name}.cpp"
         shutil.copyfile(kernel_path, copied_kernel_path)
