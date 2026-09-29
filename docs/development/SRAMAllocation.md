@@ -137,6 +137,8 @@ Per-node DFB placement requires an exact launch grid. The compiler groups multic
 
 Tensor backing with independently addressed payloads requires local access on each executing node. Access that requires a common address across nodes retains uniform allocation.
 
+For direct per-core tensor access, the runtime binds each kernel descriptor to the address on its device and node, including operations with no DFBs. Tensor-backed PipeNet receivers use the destination address; the runtime does not cache one common base for these receivers.
+
 ```text
 domains = merge overlapping multicast receiver groups
 for each domain:
