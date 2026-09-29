@@ -11,10 +11,13 @@
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/CheckedArithmetic.h"
+#include "llvm/Support/MathExtras.h"
 
 #include <algorithm>
 #include <functional>
+#include <map>
 #include <utility>
+#include <vector>
 
 namespace mlir::tt::ttl {
 
@@ -55,43 +58,117 @@ std::optional<int64_t> getTensorSliceGlobalIndex(TensorSliceOp slice) {
   return cast<IntegerAttr>(crtaIndices[tensorArgument.getArgNumber()]).getInt();
 }
 
-TensorRegionBounds
-TensorRegionOccurrences::getBounds(ArrayRef<int64_t> occurrenceStart) const {
+SmallVector<int64_t> TensorRegionOccurrences::getExtents() const {
   int64_t rankDifference = tensorGridShape.size() - sliceShape.size();
   SmallVector<int64_t> extents(tensorGridShape.size(), 1);
   for (int64_t dimension = rankDifference;
        dimension < static_cast<int64_t>(tensorGridShape.size()); ++dimension) {
     extents[dimension] = sliceShape[dimension - rankDifference];
   }
-  return TensorRegionBounds{
-      globalTensorIndex, SmallVector<int64_t>(tensorGridShape),
-      SmallVector<int64_t>(occurrenceStart), std::move(extents)};
+  return extents;
 }
 
-bool hasOverlappingTensorRegionOccurrences(
-    const TensorRegionOccurrences &region) {
-  for (std::size_t lhsIndex = 0; lhsIndex < region.startIndices.size();
-       ++lhsIndex) {
-    TensorRegionBounds lhs = region.getBounds(region.startIndices[lhsIndex]);
-    for (std::size_t rhsIndex = lhsIndex + 1;
-         rhsIndex < region.startIndices.size(); ++rhsIndex) {
-      if (tensorRegionsOverlap(
-              lhs, region.getBounds(region.startIndices[rhsIndex]))) {
-        return true;
+TensorRegionBounds
+TensorRegionOccurrences::getBounds(ArrayRef<int64_t> occurrenceStart) const {
+  return TensorRegionBounds{
+      globalTensorIndex, SmallVector<int64_t>(tensorGridShape),
+      SmallVector<int64_t>(occurrenceStart), getExtents()};
+}
+
+static bool boxesOverlap(ArrayRef<int64_t> lhsStart,
+                         ArrayRef<int64_t> lhsExtents,
+                         ArrayRef<int64_t> rhsStart,
+                         ArrayRef<int64_t> rhsExtents) {
+  for (std::size_t dimension = 0; dimension < lhsStart.size(); ++dimension) {
+    if (lhsStart[dimension] + lhsExtents[dimension] <= rhsStart[dimension] ||
+        rhsStart[dimension] + rhsExtents[dimension] <= lhsStart[dimension]) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool forEachOverlappingOccurrencePair(
+    const TensorRegionOccurrences &lhs, const TensorRegionOccurrences &rhs,
+    llvm::function_ref<bool(std::size_t, std::size_t)> visit) {
+  if (lhs.tensorGridShape != rhs.tensorGridShape) {
+    for (std::size_t lhsIndex = 0; lhsIndex < lhs.startIndices.size();
+         ++lhsIndex) {
+      for (std::size_t rhsIndex = 0; rhsIndex < rhs.startIndices.size();
+           ++rhsIndex) {
+        if (visit(lhsIndex, rhsIndex)) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  // Boxes no larger than a cell overlap only when their start cells differ by
+  // at most one in every dimension, so each occurrence is compared only with
+  // the occurrences of the 3^rank neighboring cells.
+  SmallVector<int64_t> lhsExtents = lhs.getExtents();
+  SmallVector<int64_t> rhsExtents = rhs.getExtents();
+  std::size_t rank = lhs.tensorGridShape.size();
+  SmallVector<int64_t> cellExtents(rank);
+  for (std::size_t dimension = 0; dimension < rank; ++dimension) {
+    cellExtents[dimension] =
+        std::max<int64_t>({lhsExtents[dimension], rhsExtents[dimension], 1});
+  }
+  auto getCell = [&](ArrayRef<int64_t> start) {
+    std::vector<int64_t> cell(rank);
+    for (std::size_t dimension = 0; dimension < rank; ++dimension) {
+      cell[dimension] =
+          llvm::divideFloorSigned(start[dimension], cellExtents[dimension]);
+    }
+    return cell;
+  };
+  std::map<std::vector<int64_t>, SmallVector<std::size_t>> rhsByCell;
+  for (auto [rhsIndex, rhsStart] : llvm::enumerate(rhs.startIndices)) {
+    rhsByCell[getCell(rhsStart)].push_back(rhsIndex);
+  }
+
+  std::size_t neighborCount = 1;
+  for (std::size_t dimension = 0; dimension < rank; ++dimension) {
+    neighborCount *= 3;
+  }
+  for (auto [lhsIndex, lhsStart] : llvm::enumerate(lhs.startIndices)) {
+    std::vector<int64_t> lhsCell = getCell(lhsStart);
+    for (std::size_t neighbor = 0; neighbor < neighborCount; ++neighbor) {
+      std::vector<int64_t> neighborCell = lhsCell;
+      std::size_t offsets = neighbor;
+      for (std::size_t dimension = 0; dimension < rank; ++dimension) {
+        neighborCell[dimension] += static_cast<int64_t>(offsets % 3) - 1;
+        offsets /= 3;
+      }
+      auto cellIt = rhsByCell.find(neighborCell);
+      if (cellIt == rhsByCell.end()) {
+        continue;
+      }
+      for (std::size_t rhsIndex : cellIt->second) {
+        if (boxesOverlap(lhsStart, lhsExtents, rhs.startIndices[rhsIndex],
+                         rhsExtents) &&
+            visit(lhsIndex, rhsIndex)) {
+          return true;
+        }
       }
     }
   }
   return false;
 }
 
+bool hasOverlappingTensorRegionOccurrences(
+    const TensorRegionOccurrences &region) {
+  return forEachOverlappingOccurrencePair(
+      region, region, [](std::size_t lhsIndex, std::size_t rhsIndex) {
+        return lhsIndex != rhsIndex;
+      });
+}
+
 bool tensorRegionOccurrencesOverlap(const TensorRegionOccurrences &lhs,
                                     const TensorRegionOccurrences &rhs) {
-  return llvm::any_of(lhs.startIndices, [&](ArrayRef<int64_t> lhsStart) {
-    TensorRegionBounds lhsBounds = lhs.getBounds(lhsStart);
-    return llvm::any_of(rhs.startIndices, [&](ArrayRef<int64_t> rhsStart) {
-      return tensorRegionsOverlap(lhsBounds, rhs.getBounds(rhsStart));
-    });
-  });
+  return forEachOverlappingOccurrencePair(
+      lhs, rhs, [](std::size_t, std::size_t) { return true; });
 }
 
 bool tensorRegionDestinationsMayAlias(const TensorRegionOccurrences &lhs,
@@ -109,13 +186,114 @@ SmallVector<bool> computeDisjointTensorRegionDestinations(
       destinations, [](const TensorRegionOccurrences &destination) {
         return !hasOverlappingTensorRegionOccurrences(destination);
       });
-  for (std::size_t lhsIndex = 0; lhsIndex < destinations.size(); ++lhsIndex) {
-    for (std::size_t rhsIndex = lhsIndex + 1; rhsIndex < destinations.size();
-         ++rhsIndex) {
-      if (tensorRegionDestinationsMayAlias(destinations[lhsIndex],
-                                           destinations[rhsIndex])) {
-        disjoint[lhsIndex] = false;
-        disjoint[rhsIndex] = false;
+  auto mayShareDevice = [&](std::size_t lhs, std::size_t rhs) {
+    DeviceRefAttr lhsDevice = destinations[lhs].device;
+    DeviceRefAttr rhsDevice = destinations[rhs].device;
+    return !lhsDevice || !rhsDevice || lhsDevice == rhsDevice;
+  };
+
+  // Destinations of one tensor with different tile-grid shapes may alias
+  // anywhere. Such pairs are rare and are compared directly.
+  std::map<int64_t, SmallVector<std::size_t>> byTensor;
+  for (auto [index, destination] : llvm::enumerate(destinations)) {
+    byTensor[destination.globalTensorIndex].push_back(index);
+  }
+  for (const auto &entry : byTensor) {
+    ArrayRef<std::size_t> indices = entry.second;
+    for (std::size_t lhsPosition = 0; lhsPosition < indices.size();
+         ++lhsPosition) {
+      for (std::size_t rhsPosition = lhsPosition + 1;
+           rhsPosition < indices.size(); ++rhsPosition) {
+        std::size_t lhs = indices[lhsPosition];
+        std::size_t rhs = indices[rhsPosition];
+        if (destinations[lhs].tensorGridShape !=
+                destinations[rhs].tensorGridShape &&
+            !destinations[lhs].startIndices.empty() &&
+            !destinations[rhs].startIndices.empty() &&
+            mayShareDevice(lhs, rhs)) {
+          disjoint[lhs] = false;
+          disjoint[rhs] = false;
+        }
+      }
+    }
+  }
+
+  // Occurrences of one tensor and tile grid are indexed by cells as large as
+  // the largest region, so each occurrence is compared only with occurrences
+  // in the 3^rank neighboring cells. This keeps the check linear in the total
+  // occurrence count.
+  std::map<std::pair<int64_t, std::vector<int64_t>>, SmallVector<std::size_t>>
+      byGrid;
+  for (auto [index, destination] : llvm::enumerate(destinations)) {
+    std::vector<int64_t> gridShape(destination.tensorGridShape.begin(),
+                                   destination.tensorGridShape.end());
+    byGrid[{destination.globalTensorIndex, gridShape}].push_back(index);
+  }
+  for (const auto &entry : byGrid) {
+    ArrayRef<std::size_t> indices = entry.second;
+    if (indices.size() < 2) {
+      continue;
+    }
+    std::size_t rank = entry.first.second.size();
+    SmallVector<SmallVector<int64_t>> extents;
+    SmallVector<int64_t> cellExtents(rank, 1);
+    for (std::size_t index : indices) {
+      extents.push_back(destinations[index].getExtents());
+      for (std::size_t dimension = 0; dimension < rank; ++dimension) {
+        cellExtents[dimension] =
+            std::max(cellExtents[dimension], extents.back()[dimension]);
+      }
+    }
+    auto getCell = [&](ArrayRef<int64_t> start) {
+      std::vector<int64_t> cell(rank);
+      for (std::size_t dimension = 0; dimension < rank; ++dimension) {
+        cell[dimension] =
+            llvm::divideFloorSigned(start[dimension], cellExtents[dimension]);
+      }
+      return cell;
+    };
+    // Each entry names a group position and an occurrence of that destination.
+    std::map<std::vector<int64_t>,
+             SmallVector<std::pair<std::size_t, std::size_t>>>
+        byCell;
+    for (auto [position, index] : llvm::enumerate(indices)) {
+      for (auto [occurrence, start] :
+           llvm::enumerate(destinations[index].startIndices)) {
+        byCell[getCell(start)].push_back({position, occurrence});
+      }
+    }
+    std::size_t neighborCount = 1;
+    for (std::size_t dimension = 0; dimension < rank; ++dimension) {
+      neighborCount *= 3;
+    }
+    for (auto [position, index] : llvm::enumerate(indices)) {
+      for (ArrayRef<int64_t> start : destinations[index].startIndices) {
+        std::vector<int64_t> cell = getCell(start);
+        for (std::size_t neighbor = 0; neighbor < neighborCount; ++neighbor) {
+          std::vector<int64_t> neighborCell = cell;
+          std::size_t offsets = neighbor;
+          for (std::size_t dimension = 0; dimension < rank; ++dimension) {
+            neighborCell[dimension] += static_cast<int64_t>(offsets % 3) - 1;
+            offsets /= 3;
+          }
+          auto cellIt = byCell.find(neighborCell);
+          if (cellIt == byCell.end()) {
+            continue;
+          }
+          for (auto [otherPosition, otherOccurrence] : cellIt->second) {
+            std::size_t otherIndex = indices[otherPosition];
+            if (otherPosition <= position ||
+                !mayShareDevice(index, otherIndex) ||
+                !boxesOverlap(
+                    start, extents[position],
+                    destinations[otherIndex].startIndices[otherOccurrence],
+                    extents[otherPosition])) {
+              continue;
+            }
+            disjoint[index] = false;
+            disjoint[otherIndex] = false;
+          }
+        }
       }
     }
   }

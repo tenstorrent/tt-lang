@@ -64,7 +64,22 @@ struct TensorRegionOccurrences {
   ArrayRef<SmallVector<int64_t>> startIndices;
 
   TensorRegionBounds getBounds(ArrayRef<int64_t> occurrenceStart) const;
+  /// Return the region extent in each tensor tile-grid dimension.
+  SmallVector<int64_t> getExtents() const;
 };
+
+/// Call `visit` with the indices of each pair of overlapping occurrences of
+/// `lhs` and `rhs` until it returns true, and return whether it did.
+/// Occurrences of tensors with different tile-grid shapes are treated as
+/// overlapping. The global tensor index and device are not compared.
+///
+/// Runs in time linear in the occurrence counts (times 3^rank) plus the
+/// overlapping pairs visited. Occurrence counts follow user loop trip counts
+/// and have no bound, so overlap checks must go through this index and must
+/// not compare occurrences pairwise.
+bool forEachOverlappingOccurrencePair(
+    const TensorRegionOccurrences &lhs, const TensorRegionOccurrences &rhs,
+    llvm::function_ref<bool(std::size_t, std::size_t)> visit);
 
 /// Return true when two occurrences of `region` overlap.
 bool hasOverlappingTensorRegionOccurrences(
@@ -82,7 +97,10 @@ bool tensorRegionDestinationsMayAlias(const TensorRegionOccurrences &lhs,
                                       const TensorRegionOccurrences &rhs);
 
 /// For each destination, return whether its occurrences are pairwise disjoint
-/// and no other destination may alias it.
+/// and no other destination may alias it. Runs in time linear in the total
+/// occurrence count (times 3^rank) plus the overlapping pairs; schedule
+/// verification passes one destination per expanded receive, so this must not
+/// compare destinations pairwise.
 SmallVector<bool> computeDisjointTensorRegionDestinations(
     ArrayRef<TensorRegionOccurrences> destinations);
 

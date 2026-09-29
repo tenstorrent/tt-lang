@@ -765,29 +765,25 @@ receiveOccurrencesPrecedeRead(TensorSliceOp readSlice, Operation *read,
       cast<RankedTensorType>(readSlice.getTensor().getType()).getShape();
   readRegions.sliceShape =
       cast<RankedTensorType>(readSlice.getType()).getShape();
-  for (std::size_t receiveIndex = 0;
-       receiveIndex < receiveRegion.occurrenceStartIndices.size();
-       ++receiveIndex) {
-    ArrayRef<int64_t> receiveInductionValues =
-        receiveRegion.occurrenceInductionValues[receiveIndex];
-    SmallVector<int64_t> receiveIteration;
+  readRegions.startIndices = reads->startIndices;
+  SmallVector<SmallVector<int64_t>> receiveIterations;
+  for (ArrayRef<int64_t> inductionValues :
+       receiveRegion.occurrenceInductionValues) {
+    SmallVector<int64_t> &iteration = receiveIterations.emplace_back();
     for (std::size_t position : receiveLoopPositions) {
-      receiveIteration.push_back(receiveInductionValues[position]);
-    }
-    TensorRegionBounds receiveBounds =
-        receives.getBounds(receiveRegion.occurrenceStartIndices[receiveIndex]);
-    for (auto [readStart, readIteration] :
-         llvm::zip_equal(reads->startIndices, reads->inductionValues)) {
-      if (tensorRegionsOverlap(receiveBounds,
-                               readRegions.getBounds(readStart)) &&
-          std::lexicographical_compare(
-              readIteration.begin(), readIteration.end(),
-              receiveIteration.begin(), receiveIteration.end())) {
-        return false;
-      }
+      iteration.push_back(inductionValues[position]);
     }
   }
-  return true;
+  bool readPrecedesReceive = forEachOverlappingOccurrencePair(
+      receives, readRegions,
+      [&](std::size_t receiveIndex, std::size_t readIndex) {
+        ArrayRef<int64_t> readIteration = reads->inductionValues[readIndex];
+        ArrayRef<int64_t> receiveIteration = receiveIterations[receiveIndex];
+        return std::lexicographical_compare(
+            readIteration.begin(), readIteration.end(),
+            receiveIteration.begin(), receiveIteration.end());
+      });
+  return !readPrecedesReceive;
 }
 
 static bool hasMatchingReceiveWaitBeforePush(
