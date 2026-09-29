@@ -133,7 +133,7 @@ SRAMAllocator::allocateDomains(
 
 ### Per-Node Allocation Domains
 
-Per-node DFB placement requires an exact launch grid. The compiler groups multicast receivers that must use the same destination address; groups that share a node become one domain. Other nodes can have separate payload layouts. Every domain retains the same control-record offsets, while payloads proven inactive on a domain are omitted. The compiler then calls `allocateDomains` once with the complete set of domain requests.
+Per-node DFB placement requires an exact launch grid. The compiler groups multicast receivers that must use the same destination address; groups that share a node become one domain. Other nodes can have separate payload layouts. Storage owners share payload addresses only when their lifetimes cannot overlap on any node in their allocation domain. Activity outside that domain does not constrain reuse; unknown activity or completion prevents reuse. Every domain retains the same control-record offsets, while payloads proven inactive on a domain are omitted. The compiler then calls `allocateDomains` once with the complete set of domain requests.
 
 Tensor-backed payloads may have different physical addresses on different nodes. Local access binds each kernel descriptor to the address on its device and node, including operations with no DFBs. A computed PipeNet transfer sends one address to all destinations, so the compiler records each destination and the runtime requires their payload addresses to match before creating PipeNet resources.
 
@@ -141,7 +141,8 @@ Tensor-backed payloads may have different physical addresses on different nodes.
 domains = merge overlapping multicast receiver groups
 for each domain:
     include owners that may be active on a member node
-    retain conflicts among included owners
+    build conflicts from completion order on the domain's nodes
+    conflict between owners if any pair of their logical DFBs conflicts
     use the common control prefix and target SRAM budget
 placements = allocateDomains(domains)
 emit one payload layout and arena size per domain
