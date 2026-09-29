@@ -601,20 +601,40 @@ static bool hasOwnedReleaseBeforeBoundary(const DFBReleaseSearch &search,
          llvm::any_of(search.releasesBeforeOwnedUses, precedesBoundary);
 }
 
-// Whether a release of the interval's kind on its DFB, direct or nested, lies
-// strictly between the acquisition and `boundary` in their block.
+// Whether every release of a merged group precedes the next same-kind
+// acquisition of its DFB after the group; a later release belongs to that
+// acquisition, not to a member.
+static bool releasesPrecedeNextAcquisition(const CoalescedAcquireGroup &group) {
+  Operation *lastMember = group.acquires.back();
+  for (Operation *operation = lastMember->getNextNode(); operation;
+       operation = operation->getNextNode()) {
+    if (isa<CBReserveOp, CBWaitOp>(operation) &&
+        operation->getName() == lastMember->getName() &&
+        getDFBAcquireDFB(operation) == getDFBAcquireDFB(lastMember)) {
+      return group.releases.back()->isBeforeInBlock(operation);
+    }
+  }
+  return true;
+}
+
+// Whether the releases of the interval's kind on its DFB, direct or nested,
+// strictly between the acquisition and `boundary` in their block cover every
+// tile the acquisition holds; an external call may release part of a block.
 static bool hasReleaseBefore(DFBAcquireInterval interval, Operation *boundary) {
+  int64_t releasedTiles = 0;
   for (Operation &operation :
        llvm::make_range(std::next(interval.acquire->getIterator()),
                         boundary->getIterator())) {
-    bool released = !forEachProtocolActionOfKind(
+    forEachProtocolActionOfKind(
         &operation, interval,
-        [](Operation *, bool acquisition, int64_t) { return acquisition; });
-    if (released) {
-      return true;
-    }
+        [&](Operation *, bool acquisition, int64_t tiles) {
+          if (!acquisition) {
+            releasedTiles += tiles;
+          }
+          return true;
+        });
   }
-  return false;
+  return releasedTiles >= getDFBLifecycleTileCount(interval.acquire);
 }
 
 static bool isBeforeLocalKindBoundary(Operation *operation,
@@ -1045,7 +1065,8 @@ static PlanningResult<SmallVector<MissingReleasePlan>> planMissingReleases(
                                : std::nullopt;
     // The group's releases, one per member, become the merged release, so a
     // merged block without uses needs no release of its own.
-    bool unusedCoalescedBlock = coalescedGroup && unused;
+    bool unusedCoalescedBlock = coalescedGroup && unused &&
+                                releasesPrecedeNextAcquisition(*coalescedGroup);
     if (dataMovement && coalescedGroup) {
       if (std::optional<PlanningDiagnostic> rejected =
               checkCoalescedDataMovementBlock(interval, *coalescedGroup,
@@ -1060,9 +1081,9 @@ static PlanningResult<SmallVector<MissingReleasePlan>> planMissingReleases(
       // block is the guard's.
       DFBAcquireInterval localInterval = interval;
       localInterval.kindBoundary = localBoundary;
-      Operation *localLast = acquire->getBlock()->findAncestorOpInBlock(
-          *findLastDFBAcquireOwnedUse(localInterval));
-      if (!localLast || localLast == acquire) {
+      Operation *localLast =
+          findLastDFBAcquireOwnedUseInAcquiringBlock(localInterval);
+      if (localLast == acquire) {
         return PlanningResult<SmallVector<MissingReleasePlan>>::invalidIR(
             localBoundary,
             ("a data-movement kernel cannot hold two acquired blocks of one "
