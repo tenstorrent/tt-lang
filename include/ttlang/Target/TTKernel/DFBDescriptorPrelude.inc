@@ -10,5 +10,10 @@ struct DFBDescriptor {
   static constexpr uint32_t pages_per_block = PagesPerBlock;
   static constexpr uint32_t block_count = BlockCount;
   static constexpr uint32_t page_size_bytes = PageSizeBytes;
+#if defined(COMPILE_FOR_BRISC) || defined(COMPILE_FOR_NCRISC) ||              \
+    defined(COMPILE_FOR_DM)
+  /// Returns the data-movement handle for this TT-Metal dataflow buffer.
+  static CircularBuffer bind() { return CircularBuffer(Index); }
+#endif
 };
 } // namespace ttlang

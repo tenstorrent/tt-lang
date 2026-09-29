@@ -69,6 +69,23 @@ struct TTLValidateCBBudgetPass
 
   void runOnOperation() override {
     ModuleOp moduleOp = getOperation();
+    if (usesCompilerSRAM(moduleOp)) {
+      auto arenaBytes =
+          moduleOp->getAttrOfType<IntegerAttr>(kL1ArenaBytesAttrName);
+      if (!arenaBytes || arenaBytes.getInt() < 0) {
+        moduleOp.emitOpError("requires a validated compiler-sram arena size");
+        signalPassFailure();
+        return;
+      }
+      std::optional<uint64_t> overrideBytes =
+          l1BudgetOverride == 0 ? std::nullopt
+                                : std::optional<uint64_t>(l1BudgetOverride);
+      if (failed(validateCombinedDFBResourceL1Bytes(
+              moduleOp, arenaBytes.getInt(), 0, 0, overrideBytes))) {
+        signalPassFailure();
+      }
+      return;
+    }
 
     std::optional<uint64_t> overrideBytes =
         l1BudgetOverride == 0 ? std::nullopt

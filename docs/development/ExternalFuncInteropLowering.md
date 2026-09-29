@@ -214,9 +214,9 @@ argument.
 
 | Source argument | Generated C++ interface | Restrictions |
 | --- | --- | --- |
-| `ttl.dfb_descriptor(dfb)` in `template_args` | `ttlang::DFBDescriptor<...>` template type | Declares a direct DFB dependency. |
-| `ttl.get_dfb_id(dfb)` in `template_args` | Physical DFB index `uint32_t` literal | When the callee accesses DFB storage, the same DFB must declare a dependency through `func_args`, `ttl.dfb_descriptor`, or `dfb_dependencies`. |
-| DFB in `func_args` | Physical DFB index `uint32_t` parameter | Declares a direct DFB dependency. |
+| `ttl.dfb_descriptor(dfb)` in `template_args` | `ttlang::DFBDescriptor<...>` for `metal-cb`; address-based `ttlang::l1::DFBDescriptor<...>` for `compiler-sram` | Declares a direct DFB dependency. |
+| `ttl.get_dfb_id(dfb)` in `template_args` | Physical DFB index `uint32_t` literal | `metal-cb` only. The same DFB must declare a dependency through `func_args`, `ttl.dfb_descriptor`, or `dfb_dependencies` when the callee accesses its storage. |
+| DFB in `func_args` | Physical DFB index for `metal-cb`; address-bound DFB operand for `compiler-sram` | Declares a direct DFB dependency. |
 | DFB in `dfb_dependencies` | No generated C++ argument | Declares dependency-only storage access. Entries must be distinct and must not duplicate automatic dependencies. |
 | Integer or boolean in `template_args` | Signed integer or boolean constant | Must be compile-time evaluable. |
 | Float in `template_args` | Unsigned IEEE-754 f32 bit-pattern constant | Must be compile-time evaluable. |
@@ -377,9 +377,9 @@ accesses is described in
 
 ## Typed DFB descriptors
 
-A descriptor supplies the finalized physical allocation properties required by
-an external DFB protocol. The two descriptor arguments in the `external_copy`
-call above lower to a C++ template invocation equivalent to:
+A descriptor supplies the finalized allocation properties required by an
+external DFB protocol. With `metal-cb`, the two descriptor arguments in the
+`external_copy` call above lower to a C++ template invocation equivalent to:
 
 ```c++
 external_copy<
@@ -417,12 +417,20 @@ inline void external_copy() {
 
 Descriptor operands are direct DFB dependencies. They remain visible to DFB
 lifetime and conflict analysis even though they become C++ types rather than
-runtime function parameters.
+runtime function parameters. With `compiler-sram`, data-movement descriptors
+instead encode page size, block geometry, and control/payload byte offsets in
+the operation's SRAM arena. An external function calls `Source::bind()` and
+`Destination::bind()` to obtain objects with `reserve_back`, `wait_front`,
+`get_write_ptr`, `get_read_ptr`, `push_back`, and `pop_front` methods. The
+[tested external copy](https://github.com/tenstorrent/tt-lang/blob/main/test/python/include/compiler_l1_external.hpp)
+shows this interface. Compute descriptors additionally encode data format and
+direct-to-destination unpack selection. The full parameter contract is in the
+[external functions reference](../sphinx/reference/external-functions.md).
 
 ## Integer DFB compatibility
 
-`ttl.get_dfb_id` remains available for headers that accept integer template
-indices:
+`ttl.get_dfb_id` remains available with `metal-cb` for headers that accept
+integer template indices:
 
 ```python
 ttl.call_extern_func(

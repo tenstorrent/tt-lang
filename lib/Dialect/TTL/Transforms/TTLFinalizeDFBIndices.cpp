@@ -10,7 +10,10 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "CompilerL1Allocation.h"
+#include "CompilerL1Allocator.h"
 #include "DFBAllocationLimits.h"
+#include "DFBConcurrentKernelLivenessAnalysis.h"
 #include "DFBPhysicalAllocationPlan.h"
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
@@ -139,17 +142,22 @@ applyPhysicalAllocationPlan(ModuleOp moduleOp, OpBuilder &builder,
        allocationPlan.getDescriptors()) {
     SmallVector<NamedAttribute> entryAttributes;
     entryAttributes.push_back(builder.getNamedAttr(
-        "dfb_index", builder.getI32IntegerAttr(descriptor.physicalIndex)));
+        kDFBAllocationIndexField,
+        builder.getI32IntegerAttr(descriptor.physicalIndex)));
     entryAttributes.push_back(builder.getNamedAttr(
-        "storage_index", builder.getI32IntegerAttr(descriptor.storageIndex)));
+        kDFBAllocationStorageIndexField,
+        builder.getI32IntegerAttr(descriptor.storageIndex)));
+    entryAttributes.push_back(
+        builder.getNamedAttr(kDFBAllocationNumTilesField,
+                             builder.getI32IntegerAttr(descriptor.numTiles)));
     entryAttributes.push_back(builder.getNamedAttr(
-        "num_tiles", builder.getI32IntegerAttr(descriptor.numTiles)));
-    entryAttributes.push_back(builder.getNamedAttr(
-        "element_type", TypeAttr::get(descriptor.elementType)));
-    entryAttributes.push_back(builder.getNamedAttr(
-        "page_size", builder.getI32IntegerAttr(descriptor.pageSize)));
-    entryAttributes.push_back(builder.getNamedAttr(
-        "block_count", builder.getI32IntegerAttr(descriptor.blockCount)));
+        kDFBAllocationElementTypeField, TypeAttr::get(descriptor.elementType)));
+    entryAttributes.push_back(
+        builder.getNamedAttr(kDFBAllocationPageSizeField,
+                             builder.getI32IntegerAttr(descriptor.pageSize)));
+    entryAttributes.push_back(
+        builder.getNamedAttr(kDFBAllocationBlockCountField,
+                             builder.getI32IntegerAttr(descriptor.blockCount)));
     if (descriptor.allocationDomain.known) {
       entryAttributes.push_back(builder.getNamedAttr(
           "allocation_nodes",
@@ -284,6 +292,21 @@ struct TTLFinalizeDFBIndicesPass
 
   void runOnOperation() override {
     ModuleOp moduleOp = getOperation();
+    std::optional<DFBMemoryModel> selectedModel =
+        parseDFBMemoryModel(memoryModel);
+    if (!selectedModel) {
+      moduleOp.emitOpError("unknown memory model: ") << memoryModel;
+      signalPassFailure();
+      return;
+    }
+    std::string strategyFailure;
+    FailureOr<std::unique_ptr<CompilerL1Allocator>> sramAllocator =
+        createCompilerL1Allocator(sramAllocationStrategy, strategyFailure);
+    if (failed(sramAllocator)) {
+      moduleOp.emitOpError() << strategyFailure;
+      signalPassFailure();
+      return;
+    }
     if (failed(validateSynchronizedDFBResetTarget(moduleOp))) {
       signalPassFailure();
       return;
@@ -291,6 +314,23 @@ struct TTLFinalizeDFBIndicesPass
     if (failed(validateDFBReconfigurationTarget(moduleOp))) {
       signalPassFailure();
       return;
+    }
+    if (*selectedModel == DFBMemoryModel::CompilerSRAM) {
+      if (failed(validateCompilerSRAMLifecycle(moduleOp))) {
+        signalPassFailure();
+        return;
+      }
+      PipeTransferCreateOp pipeTransfer;
+      moduleOp.walk([&](PipeTransferCreateOp operation) {
+        pipeTransfer = operation;
+        return WalkResult::interrupt();
+      });
+      if (pipeTransfer) {
+        pipeTransfer.emitOpError(
+            "compiler-sram does not support PipeNet transfers");
+        signalPassFailure();
+        return;
+      }
     }
     const DFBLogicalIdentityAnalysis &logicalIdentityAnalysis =
         getAnalysis<DFBLogicalIdentityAnalysis>();
@@ -302,6 +342,20 @@ struct TTLFinalizeDFBIndicesPass
       errorOperation->emitOpError()
           << logicalIdentityAnalysis.getErrorMessage();
       signalPassFailure();
+      return;
+    }
+    if (*selectedModel == DFBMemoryModel::CompilerSRAM) {
+      const auto &liveness = getAnalysis<DFBConcurrentKernelLivenessAnalysis>();
+      if (!liveness.succeeded()) {
+        moduleOp.emitOpError() << liveness.getErrorMessage();
+        signalPassFailure();
+        return;
+      }
+      if (failed(allocateCompilerL1(moduleOp, logicalIdentityAnalysis,
+                                    l1BudgetOverride, reuseUserDFBs,
+                                    **sramAllocator, liveness))) {
+        signalPassFailure();
+      }
       return;
     }
     FailureOr<SmallVector<DFBStaticConfigurationConflict>>

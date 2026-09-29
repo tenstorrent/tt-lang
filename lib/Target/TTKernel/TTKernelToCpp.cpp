@@ -7,6 +7,10 @@
 #include "ttlang/Dialect/TTKernel/IR/TTKernelOpsTypes.h"
 
 #include "ttlang/Target/TTKernel/DFBDescriptorPrelude_generated.h"
+#include "ttlang/Target/TTKernel/LLKs/compiler_l1_compute_generated.h"
+#include "ttlang/Target/TTKernel/LLKs/compiler_l1_compute_target_generated.h"
+#include "ttlang/Target/TTKernel/LLKs/compiler_l1_generated.h"
+#include "ttlang/Target/TTKernel/LLKs/compiler_l1_target_generated.h"
 #include "ttlang/Target/TTKernel/LLKs/experimental_constant_table_generated.h"
 #include "ttlang/Target/TTKernel/LLKs/experimental_coord_translation_generated.h"
 #include "ttlang/Target/TTKernel/LLKs/experimental_dfb_reconfiguration_generated.h"
@@ -56,6 +60,7 @@ public:
   ScopedModuleHelper(OpBuilder *builder, Location loc, Region *region,
                      ThreadType threadType) {
     std::set<llvm::StringRef> headers;
+    std::set<llvm::StringRef> opaqueHeaders;
 
     // Baseline, always required.
     switch (threadType) {
@@ -93,6 +98,8 @@ public:
 
     bool hasDevicePrint = false;
     bool requiresDFBDescriptor = false;
+    bool requiresCompilerL1 = false;
+    bool requiresCompilerL1Compute = false;
     region->walk([&](emitc::CallOpaqueOp callOp) {
       llvm::StringRef callee = callOp.getCallee();
 
@@ -107,10 +114,13 @@ public:
 
       if (auto headerAttr =
               callOp->getAttrOfType<StringAttr>("ttlang.opaque_header")) {
-        headers.insert(headerAttr.getValue());
+        opaqueHeaders.insert(headerAttr.getValue());
       }
       requiresDFBDescriptor |=
           callOp->hasAttr("ttlang.requires_dfb_descriptor");
+      requiresCompilerL1 |= callOp->hasAttr("ttlang.requires_compiler_l1");
+      requiresCompilerL1Compute |=
+          callOp->hasAttr("ttlang.requires_compiler_l1_compute");
 
       // Our experimental kernel code snippets.
       if (callee == "experimental::unpack_stall_on_pack") {
@@ -205,7 +215,9 @@ public:
 
     region->walk([&](emitc::VerbatimOp verbatimOp) {
       llvm::StringRef value = verbatimOp.getValue();
-
+      requiresCompilerL1 |= verbatimOp->hasAttr("ttlang.requires_compiler_l1");
+      requiresCompilerL1Compute |=
+          verbatimOp->hasAttr("ttlang.requires_compiler_l1_compute");
       if (value.starts_with("CircularBuffer")) {
         headers.insert("api/dataflow/circular_buffer.h");
       }
@@ -233,6 +245,10 @@ public:
       }
     });
 
+    if (!requiresCompilerL1 && !requiresCompilerL1Compute) {
+      headers.insert(opaqueHeaders.begin(), opaqueHeaders.end());
+    }
+
     region->walk([&](emitc::LiteralOp literalOp) {
       llvm::StringRef value = literalOp.getValue();
       llvm::StringRef callee =
@@ -251,23 +267,61 @@ public:
           loc, "#define REDUCE_DIM ReduceDim::REDUCE_COL");
     }
 
-    // The descriptor definition must precede user headers because those
-    // headers may name it in their function declarations.
     emitc::IncludeOp::create(*builder, loc, "cstdint", /*isStandard=*/true);
     if (requiresDFBDescriptor) {
+      if (threadType == ThreadType::Noc) {
+        // The Metal handle type must precede the descriptor, which user
+        // headers may name in their function declarations.
+        emitc::IncludeOp::create(*builder, loc, "api/dataflow/dataflow_api.h",
+                                 false);
+        emitc::IncludeOp::create(*builder, loc,
+                                 "api/dataflow/circular_buffer.h", false);
+        headers.erase("api/dataflow/dataflow_api.h");
+        headers.erase("api/dataflow/circular_buffer.h");
+      }
       emitc::VerbatimOp::create(
           *builder, loc,
           llvm::StringRef(dfb_descriptor_prelude_generated,
                           dfb_descriptor_prelude_generated_len));
     }
 
-    for (llvm::StringRef header : headers) {
+    auto emitHeader = [&](llvm::StringRef header) {
       bool isStandard = false;
       if (header.starts_with("<") && header.ends_with(">")) {
         isStandard = true;
         header = header.drop_front(1).drop_back(1);
       }
-      builder->create<emitc::IncludeOp>(loc, header, isStandard);
+      emitc::IncludeOp::create(*builder, loc, header, isStandard);
+    };
+    for (llvm::StringRef header : headers) {
+      emitHeader(header);
+    }
+
+    if (requiresCompilerL1 || requiresCompilerL1Compute) {
+      emitc::VerbatimOp::create(
+          *builder, loc,
+          llvm::StringRef(compiler_l1_target_generated,
+                          compiler_l1_target_generated_len));
+      emitc::VerbatimOp::create(
+          *builder, loc,
+          llvm::StringRef(compiler_l1_generated, compiler_l1_generated_len));
+    }
+    if (requiresCompilerL1Compute) {
+      emitc::VerbatimOp::create(
+          *builder, loc,
+          llvm::StringRef(compiler_l1_compute_target_generated,
+                          compiler_l1_compute_target_generated_len));
+      emitc::VerbatimOp::create(
+          *builder, loc,
+          llvm::StringRef(compiler_l1_compute_generated,
+                          compiler_l1_compute_generated_len));
+    }
+    if (requiresCompilerL1 || requiresCompilerL1Compute) {
+      for (llvm::StringRef header : opaqueHeaders) {
+        if (!headers.count(header)) {
+          emitHeader(header);
+        }
+      }
     }
 
     if (threadType == ThreadType::Compute) {

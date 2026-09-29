@@ -3,6 +3,7 @@
 //
 // RUN: ttlang-opt %s --ttl-to-ttkernel-pipeline --split-input-file | FileCheck %s
 // RUN: ttlang-opt %s --ttl-to-ttkernel-pipeline='accumulation-strategy=l1-pack' --split-input-file | FileCheck %s --check-prefix=L1
+// RUN: ttlang-opt %s --ttl-to-ttkernel-pipeline='accumulation-strategy=l1-pack memory-model=compiler-sram' --convert-ttkernel-to-emitc --split-input-file | FileCheck %s --check-prefix=SRAM
 
 // The source recurrence carries `acc = acc + delta` through an scf.for. The
 // pipeline materializes it as a reduction compute, copies the initial tile into
@@ -46,7 +47,12 @@
 // L1: } {ttl.l1_acc_initial = 1 : i32, ttl.l1_acc_loop, ttl.l1_acc_scope_id = 0 : i64}
 // L1-NEXT: ttkernel.cb_push_back(%[[OUT_CB]], %[[C1_I32]])
 // L1-NEXT: ttkernel.pack_reconfig_l1_acc(%[[C0_I32]])
-func.func @carried_add_dst_compute_pipeline() {
+// SRAM-LABEL: func.func @carried_add_dst_compute_pipeline
+// SRAM: emitc.verbatim "PACK((llk_pack_reconfig_l1_acc({})));"
+// SRAM: call_opaque "ttlang::l1::target::pack_tile"
+// SRAM: emitc.verbatim "PACK((llk_pack_reconfig_l1_acc({})));"
+// SRAM-NOT: ttkernel.pack_reconfig_l1_acc
+func.func @carried_add_dst_compute_pipeline() attributes {ttkernel.thread = #ttkernel.thread<compute>} {
   %cb_init = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
   %cb_delta = ttl.bind_cb {cb_index = 1, block_count = 3} {dfb_id = 1 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 3>
   %cb_out = ttl.bind_cb {cb_index = 2, block_count = 2} {dfb_id = 2 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>

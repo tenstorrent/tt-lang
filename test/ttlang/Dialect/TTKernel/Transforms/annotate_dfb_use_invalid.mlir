@@ -2,6 +2,20 @@
 // enclosing function's compile-time DFB argument range.
 // RUN: ttlang-opt %s -ttkernel-annotate-dfb-use --verify-diagnostics --split-input-file
 
+// Compiler-owned L1 requires finalized allocation metadata.
+// expected-error @below {{compiler-sram requires finalized allocation metadata}}
+module attributes {ttl.memory_model = "compiler-sram"} {
+}
+
+// -----
+
+// Allocation metadata must use the finalized array representation.
+// expected-error @below {{compiler-sram requires finalized allocation metadata}}
+module attributes {ttl.memory_model = "compiler-sram", ttl.dfb_allocations = 0 : i64} {
+}
+
+// -----
+
 module {
   func.func @invalid_resource_index() attributes {
       ttl.base_cta_index = 2 : i32,

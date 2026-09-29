@@ -226,11 +226,22 @@ ordinals.
 | `int` | Signed integer constant |
 | `bool` | Boolean constant |
 | `float` | Unsigned binary32 bit-pattern constant |
-| `ttl.dfb_descriptor(dfb)` | `ttlang::DFBDescriptor<index, pages_per_block, block_count, page_size>` type |
-| `ttl.get_dfb_id(dfb)` | Physical DFB index constant |
+| `ttl.dfb_descriptor(dfb)` | `metal-cb`: `ttlang::DFBDescriptor<index, pages_per_block, block_count, page_size>`; `compiler-sram`: address-based `ttlang::l1::DFBDescriptor<...>` or `ComputeDFBDescriptor<...>`. |
+| `ttl.get_dfb_id(dfb)` | Physical DFB index constant; `metal-cb` only. |
 
 A bare DFB is invalid in `template_args`. `ttl.dfb_descriptor` supplies typed
-allocation metadata. `ttl.get_dfb_id` supplies only an integer index.
+allocation metadata. With `compiler-sram`, the C++ callee binds the descriptor
+using `Descriptor::bind()` and uses its `reserve_back`, `wait_front`,
+`get_write_ptr`, `get_read_ptr`, `push_back`, and `pop_front` methods. The
+data-movement descriptor parameters are `page_size`, `pages_per_block`,
+`block_count`, `state_offset`, and `payload_offset`. The compute descriptor
+adds `format` first and `direct_to_destination` last. `state_offset` is relative
+to the operation's SRAM arena base; `payload_offset` is relative to that DFB's
+control record. The implementation is defined in
+[`compiler_l1.h`](https://github.com/tenstorrent/tt-lang/blob/main/include/ttlang/Target/TTKernel/LLKs/compiler_l1.h)
+and [`compiler_l1_compute.h`](https://github.com/tenstorrent/tt-lang/blob/main/include/ttlang/Target/TTKernel/LLKs/compiler_l1_compute.h).
+See [SRAM Allocation](https://github.com/tenstorrent/tt-lang/blob/main/docs/development/SRAMAllocation.md)
+for storage ownership and the supported operation contract.
 
 ```python
 ttl.call_extern_func(
@@ -254,7 +265,7 @@ addresses.
 | Python argument | Generated C++ argument | Restrictions |
 | --- | --- | --- |
 | Scalar value | Scalar parameter | Uses the kernel runtime-argument convention. |
-| DFB | Physical DFB index parameter | Declares a direct dependency on that DFB. |
+| DFB | `metal-cb`: physical DFB index; `compiler-sram`: address-bound DFB operand. | Declares a direct dependency on that DFB. |
 | Base tensor | Typed tensor accessor | Data movement accepts device DRAM or SRAM; compute accepts sharded SRAM. |
 | `ttl.raw_addr(tensor)` | `uint32_t` buffer address | Supported in compute and data-movement kernels. |
 

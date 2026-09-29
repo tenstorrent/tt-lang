@@ -16,6 +16,7 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
 #include <cstdint>
+#include <optional>
 
 #include "ttlang/Dialect/TTL/IR/TTLOpsDialect.h.inc"
 
@@ -36,6 +37,37 @@ class TTLTileOpTrait
 
 /// Attribute names.
 constexpr llvm::StringLiteral kCBIndexAttrPrefix("ttl.cb_index.");
+constexpr llvm::StringLiteral kMemoryModelAttrName("ttl.memory_model");
+constexpr llvm::StringLiteral kMetalCBMemoryModel("metal-cb");
+constexpr llvm::StringLiteral kCompilerSRAMMemoryModel("compiler-sram");
+constexpr llvm::StringLiteral kDPrintGeneratedAttrName("ttl.dprint_generated");
+constexpr llvm::StringLiteral kL1ArenaBytesAttrName("ttl.l1_arena_bytes");
+
+enum class DFBMemoryModel { MetalCB, CompilerSRAM };
+
+inline std::optional<DFBMemoryModel>
+parseDFBMemoryModel(llvm::StringRef value) {
+  if (value == kMetalCBMemoryModel) {
+    return DFBMemoryModel::MetalCB;
+  }
+  if (value == kCompilerSRAMMemoryModel) {
+    return DFBMemoryModel::CompilerSRAM;
+  }
+  return std::nullopt;
+}
+
+inline bool usesCompilerSRAM(Operation *operation) {
+  ModuleOp module = dyn_cast<ModuleOp>(operation);
+  if (!module) {
+    module = operation->getParentOfType<ModuleOp>();
+  }
+  if (!module) {
+    return false;
+  }
+  auto model = module->getAttrOfType<StringAttr>(kMemoryModelAttrName);
+  return model &&
+         parseDFBMemoryModel(model.getValue()) == DFBMemoryModel::CompilerSRAM;
+}
 
 /// Runtime configuration attributes.
 constexpr llvm::StringLiteral kFp32DestAccEnAttrName("fp32_dest_acc_en");
@@ -172,9 +204,23 @@ constexpr llvm::StringLiteral
 /// Placeholder marker on copy_tile (replaced during DST assignment).
 constexpr llvm::StringLiteral kPlaceholderCopyAttrName("ttl.placeholder_copy");
 
-/// Module attribute containing one runtime descriptor per physical DFB index.
+/// Runtime allocation metadata indexed by finalized DFB identity.
 constexpr llvm::StringLiteral kDFBAllocationsAttrName("ttl.dfb_allocations");
-
+/// Field names shared by Metal and compiler-managed DFB allocation entries.
+constexpr llvm::StringLiteral kDFBAllocationIndexField("dfb_index");
+constexpr llvm::StringLiteral kDFBAllocationStorageIndexField("storage_index");
+constexpr llvm::StringLiteral kDFBAllocationNumTilesField("num_tiles");
+constexpr llvm::StringLiteral kDFBAllocationPageSizeField("page_size");
+constexpr llvm::StringLiteral kDFBAllocationBlockCountField("block_count");
+constexpr llvm::StringLiteral kDFBAllocationElementTypeField("element_type");
+/// One published and one consumed 32-bit counter per logical DFB.
+inline constexpr uint64_t kCompilerSRAMControlRecordBytes =
+    2 * sizeof(uint32_t);
+/// Fields present only in compiler-managed SRAM allocation entries.
+constexpr llvm::StringLiteral kDFBAllocationStateOffsetField("l1_offset");
+constexpr llvm::StringLiteral
+    kDFBAllocationPayloadOffsetField("l1_payload_offset");
+constexpr llvm::StringLiteral kDFBAllocationBytesField("l1_allocation_bytes");
 /// Module attribute identifying allocation groups accepted by an unsafe
 /// user-supplied handoff assumption.
 constexpr llvm::StringLiteral
