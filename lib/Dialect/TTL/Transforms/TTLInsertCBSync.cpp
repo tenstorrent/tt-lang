@@ -1060,9 +1060,9 @@ static PlanningResult<SmallVector<MissingReleasePlan>> planMissingReleases(
       // block is the guard's.
       DFBAcquireInterval localInterval = interval;
       localInterval.kindBoundary = localBoundary;
-      Operation *localLast = acquire->getBlock()->findAncestorOpInBlock(
-          *findLastDFBAcquireOwnedUse(localInterval));
-      if (!localLast || localLast == acquire) {
+      Operation *localLast =
+          findLastDFBAcquireOwnedUseInAcquiringBlock(localInterval);
+      if (localLast == acquire) {
         return PlanningResult<SmallVector<MissingReleasePlan>>::invalidIR(
             localBoundary,
             ("a data-movement kernel cannot hold two acquired blocks of one "

@@ -897,6 +897,20 @@ Operation *findLastDFBAcquireOwnedUse(DFBAcquireInterval interval) {
   return last;
 }
 
+Operation *
+findLastDFBAcquireOwnedUseInAcquiringBlock(DFBAcquireInterval interval) {
+  Block *block = interval.acquire->getBlock();
+  Operation *last = interval.acquire;
+  walkDFBAcquireOwnedUses(interval, DFBUseTraversal::LazyTensorResults,
+                          [&](Operation *user, Operation *) {
+                            if (Operation *projected =
+                                    block->findAncestorOpInBlock(*user)) {
+                              updateLatestUse(projected, last);
+                            }
+                          });
+  return last;
+}
+
 void collectDFBAcquireOwnedUses(DFBAcquireInterval interval,
                                 SmallVectorImpl<Operation *> &uses) {
   walkDFBAcquireOwnedUses(

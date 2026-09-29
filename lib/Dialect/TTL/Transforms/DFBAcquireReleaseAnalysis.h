@@ -251,12 +251,18 @@ DFBAcquireReleaseOperations collectDFBAcquireReleaseOps(func::FuncOp func);
 DFBAcquireInterval makeDFBAcquireInterval(Operation *acquire,
                                           ArrayRef<Operation *> acquires);
 
-/// Finds the last operation in `interval.acquire`'s block that is owned by the
-/// interval.
+/// Finds the last operation in the interval's ordering block that is owned by
+/// the interval: the acquisition's block, or the guard's block for an
+/// acquisition in an `scf.if` then-region.
 ///
 /// See `docs/development/DFBManagement.md` for the asymmetric classification of
 /// direct DFB uses and tensor SSA uses.
 Operation *findLastDFBAcquireOwnedUse(DFBAcquireInterval interval);
+
+/// Finds the last operation in `interval.acquire`'s own block that contains a
+/// use owned by the interval, or the acquisition when there is none.
+Operation *
+findLastDFBAcquireOwnedUseInAcquiringBlock(DFBAcquireInterval interval);
 
 /// Collects operations that access storage owned by `interval`.
 ///
