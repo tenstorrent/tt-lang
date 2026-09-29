@@ -2,10 +2,11 @@
 // RUN: ttlang-opt %s --ttl-to-ttkernel-pipeline='memory-model=compiler-sram sram-allocation-strategy=first-fit-decreasing' --convert-ttkernel-to-emitc | FileCheck %s
 // RUN: ttlang-opt %s --ttl-to-ttkernel-pipeline='memory-model=compiler-sram sram-allocation-strategy=best-fit-decreasing' --convert-ttkernel-to-emitc | FileCheck %s
 
-// Generated fabric transfers use the tensor runtime argument as the stable
-// receiver base while the compiler-managed SRAM arena stores DFB state.
+// Generated fabric sends one tensor address to both receiver nodes; the
+// compiler-managed SRAM arena stores DFB state.
 
 // CHECK-LABEL: module attributes
+// CHECK-SAME: storage_segments = [{nodes = {{\[\[1, 0\], \[1, 1\]\]}}, tensor_backing =
 // CHECK-SAME: ttl.l1_arena_bytes = 4160 : i64
 // CHECK-SAME: ttl.memory_model = "compiler-sram"
 // CHECK-LABEL: func.func @tensor_backed_fabric
@@ -23,7 +24,7 @@
     edge = <source = <coordinates = [0]>, destination = <coordinates = [1]>>>
 
 module attributes {
-  ttl.launch_grid = array<i64: 2, 1>,
+  ttl.launch_grid = array<i64: 2, 2>,
   ttl.target_arch = #ttcore.arch<blackhole>
 } {
   func.func @tensor_backed_fabric(
@@ -43,16 +44,16 @@ module attributes {
          tensor_backing = #ttl.tensor_backing<tensor_index = 0,
              byte_offset = 0, byte_size = 4096>}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
-    %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
+    %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 1) net 0
         {deviceTransfer = #transfer}
-        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 1) net 0>
     ttl.if_dst %pipe
-        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 1) net 0> {
       %reserved = ttl.cb_reserve %destination
           : <[1, 1], !ttcore.tile<32x32, f32>, 1>
           -> tensor<1x1x!ttcore.tile<32x32, f32>>
       %receive = ttl.copy %pipe, %reserved
-          : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
+          : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 1) net 0>,
              tensor<1x1x!ttcore.tile<32x32, f32>>)
           -> !ttl.receive_request
       ttl.wait %receive : !ttl.receive_request
@@ -60,10 +61,10 @@ module attributes {
           : <[1, 1], !ttcore.tile<32x32, f32>, 1>
     }
     ttl.if_src %pipe
-        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 1) net 0> {
       %send = ttl.copy %source, %pipe
           : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>,
-             !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>)
+             !ttl.pipe<src(0, 0) dst(1, 0) to(1, 1) net 0>)
           -> !ttl.transfer_handle<write>
       ttl.wait %send : !ttl.transfer_handle<write>
     }

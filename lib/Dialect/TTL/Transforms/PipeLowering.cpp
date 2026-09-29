@@ -5032,8 +5032,8 @@ buildComputedAddressPlan(MutableArrayRef<PipeTransferAllocationUnit> units,
         (!compilerSRAM &&
          sharedStorageDFBIndices.contains(receiverInfo.dfbIndex)) ||
         (usesTensorBacking && !hasStableTensorStorage);
-    // Shared Metal storage can change base; tensor backing still requires one
-    // base across all receiver nodes.
+    // Compiler SRAM emits one backing segment per DFB, even when it covers
+    // several receiver nodes. Shared Metal storage may change its base.
     if (requiresReceiverPublishedAddress) {
       continue;
     }
