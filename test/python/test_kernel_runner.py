@@ -3289,6 +3289,43 @@ def test_reconfiguration_remote_uniform_scratch_reuses_full_pipe_backing(monkeyp
     assert segment.allocation_bytes == 4096
 
 
+def test_reconfiguration_unspecialized_epoch_respects_allocation_nodes(monkeypatch):
+    device, allocations, _ = _remote_uniform_scratch_environment(monkeypatch, {})
+    initial = PhysicalDFBConfig(
+        0,
+        1,
+        "bfloat16",
+        1,
+        2048,
+        (32, 32),
+        allocation_nodes=((0, 0),),
+        address_scope="remote_uniform",
+    )
+    larger = replace(initial, data_format="float32", page_size=4096)
+    plan = DFBReconfigurationPlan(
+        boundary_ordinals=(7,),
+        dfb_epochs=(
+            (
+                DFBConfigurationEpoch(None, initial),
+                DFBConfigurationEpoch(7, larger),
+            ),
+        ),
+    )
+
+    resources = kernel_runner.build_dfb_reconfiguration_runtime_resources(
+        tensors=[],
+        core_ranges=_FakeExplicitCoreRanges((0, 0), (1, 0)),
+        plan=plan,
+        cb_configs=_launch_configs(plan),
+        device=device,
+    )
+
+    assert [(cores, num_bytes) for cores, num_bytes, _ in allocations] == [
+        (((0, 0),), 4096)
+    ]
+    assert resources.scratch_segments_by_index[0][0].nodes == ((0, 0),)
+
+
 @pytest.mark.parametrize(
     "hybrid_allocation", [False, True], ids=["reconfigured-only", "local"]
 )

@@ -2925,7 +2925,13 @@ def build_dfb_reconfiguration_runtime_resources(
             config = epoch.config
             allocation = _get_dfb_allocation(config)
             segments = config.storage_segments or (
-                DFBStorageSegment(nodes=tuple(core_keys)),
+                DFBStorageSegment(
+                    nodes=(
+                        config.allocation_nodes
+                        if config.allocation_nodes is not None
+                        else tuple(core_keys)
+                    )
+                ),
             )
             for segment in segments:
                 if segment.is_tensor_backed:
@@ -3322,7 +3328,13 @@ def build_dfb_reconfiguration_runtime_resources(
             config = matching_epoch.config
             allocation = _get_dfb_allocation(config)
             segments = config.storage_segments or (
-                DFBStorageSegment(nodes=tuple(core_keys)),
+                DFBStorageSegment(
+                    nodes=(
+                        config.allocation_nodes
+                        if config.allocation_nodes is not None
+                        else tuple(core_keys)
+                    )
+                ),
             )
             records_by_core = {}
             for segment in segments:
