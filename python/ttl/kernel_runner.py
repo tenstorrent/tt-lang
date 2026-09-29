@@ -16,6 +16,7 @@ building and execution.
 from dataclasses import dataclass, field, replace
 import hashlib
 import json
+from itertools import chain
 import math
 import operator
 import os
@@ -3583,6 +3584,90 @@ def _validate_tensor_backed_dfb_binding(
     return tensor
 
 
+@dataclass(frozen=True)
+class _TensorBackingRange:
+    dfb_index: int
+    storage_owner: Tuple[str, int]
+    tensor_index: int
+    device: Optional[Tuple[int, ...]]
+    node: Tuple[int, int]
+    start: int
+    end: int
+
+    def overlaps(self, other: "_TensorBackingRange") -> bool:
+        return (
+            self.node == other.node
+            and (
+                self.device is None
+                or other.device is None
+                or self.device == other.device
+            )
+            and self.start < other.end
+            and other.start < self.end
+        )
+
+
+def _tensor_backing_ranges(
+    tensor: Any, config: PhysicalDFBConfig, segment: DFBStorageSegment
+) -> List[_TensorBackingRange]:
+    assert segment.tensor_index is not None
+    per_core = _is_per_core_allocated(tensor)
+    if per_core:
+        from ._sram_domains import tensor_base
+
+        try:
+            device_coordinates = tuple(tensor.device_coords())
+        except (AttributeError, RuntimeError, TypeError, ValueError) as error:
+            raise ValueError(
+                f"DFB[{config.dfb_index}] per-core tensor backing must expose "
+                "device coordinates"
+            ) from error
+    else:
+        device_coordinates = (None,)
+    if not device_coordinates:
+        raise ValueError(
+            f"DFB[{config.dfb_index}] tensor backing has no device coordinates"
+        )
+
+    ranges = []
+    for device_coordinate in device_coordinates:
+        try:
+            device_key = (
+                tuple(int(value) for value in device_coordinate)
+                if device_coordinate is not None
+                else None
+            )
+        except (TypeError, ValueError) as error:
+            raise ValueError(
+                f"DFB[{config.dfb_index}] tensor backing has invalid device coordinates"
+            ) from error
+        for node in segment.nodes:
+            try:
+                base_address = int(
+                    tensor_base(ttnn, tensor, node, device_key)
+                    if per_core
+                    else tensor.buffer_address()
+                )
+            except (AttributeError, RuntimeError, TypeError, ValueError) as error:
+                raise ValueError(
+                    f"DFB[{config.dfb_index}] tensor backing has no valid "
+                    f"address on device {device_key}, node {node}"
+                ) from error
+            start = base_address + segment.byte_offset
+            ranges.append(
+                _TensorBackingRange(
+                    config.dfb_index,
+                    _compiler_sram_storage_owner(config),
+                    segment.tensor_index,
+                    device_key,
+                    node,
+                    start,
+                    start + config.num_tiles * config.block_count * config.page_size,
+                )
+            )
+    return ranges
+
+
 def _validate_tensor_backing_aliases(
     tensors: List[Any],
     cb_configs: Iterable[PhysicalDFBConfig],
@@ -3590,69 +3675,51 @@ def _validate_tensor_backing_aliases(
     compiler_sram: bool = False,
 ) -> None:
     """Reject tensor aliases outside the selected storage ownership contract."""
-    bindings = []
+    bindings_by_location: Dict[
+        Tuple[Optional[Tuple[int, ...]], Tuple[int, int]], List[_TensorBackingRange]
+    ] = {}
+    bindings_by_node: Dict[Tuple[int, int], List[_TensorBackingRange]] = {}
     for config in cb_configs:
         for segment in config.storage_segments:
             if not segment.is_tensor_backed:
                 continue
             tensor = _validate_tensor_backed_dfb_binding(tensors, config, segment)
-            try:
-                absolute_start = int(tensor.buffer_address()) + segment.byte_offset
-            except (AttributeError, TypeError, ValueError):
-                raise ValueError(
-                    f"DFB[{config.dfb_index}] tensor backing does not expose a "
-                    "valid buffer_address()"
-                ) from None
-            absolute_end = (
-                absolute_start
-                + config.num_tiles * config.block_count * config.page_size
-            )
-            nodes = frozenset(segment.nodes)
-            for (
-                previous_index,
-                previous_owner,
-                previous_tensor_index,
-                previous_nodes,
-                previous_start,
-                previous_end,
-            ) in bindings:
-                if (
-                    nodes.isdisjoint(previous_nodes)
-                    or absolute_start >= previous_end
-                    or previous_start >= absolute_end
-                ):
-                    continue
-                if absolute_start != previous_start or absolute_end != previous_end:
-                    raise ValueError(
-                        "tensor-backed DFB byte ranges partially overlap on a "
-                        "shared launch node"
+            for current in _tensor_backing_ranges(tensor, config, segment):
+                if current.device is None:
+                    candidates = bindings_by_node.get(current.node, ())
+                else:
+                    candidates = chain(
+                        bindings_by_location.get((current.device, current.node), ()),
+                        bindings_by_location.get((None, current.node), ()),
                     )
-                if compiler_sram:
-                    if (
-                        _compiler_sram_storage_owner(config) == previous_owner
-                        or segment.tensor_index == previous_tensor_index
-                    ):
+                for previous in candidates:
+                    if not current.overlaps(previous):
                         continue
-                    raise ValueError(
-                        "identical tensor-backed DFB ranges require one "
-                        "compiler-sram storage owner or the same declared "
-                        "tensor backing"
-                    )
-                if config.dfb_index != previous_index:
-                    raise ValueError(
-                        "identical tensor-backed DFB ranges require one physical "
-                        "DFB index on a shared launch node"
-                    )
-            bindings.append(
-                (
-                    config.dfb_index,
-                    _compiler_sram_storage_owner(config),
-                    segment.tensor_index,
-                    nodes,
-                    absolute_start,
-                    absolute_end,
-                )
-            )
+                    if current.start != previous.start or current.end != previous.end:
+                        raise ValueError(
+                            "tensor-backed DFB byte ranges partially overlap on a "
+                            "shared launch node"
+                        )
+                    if compiler_sram:
+                        if (
+                            current.storage_owner == previous.storage_owner
+                            or current.tensor_index == previous.tensor_index
+                        ):
+                            continue
+                        raise ValueError(
+                            "identical tensor-backed DFB ranges require one "
+                            "compiler-sram storage owner or the same declared "
+                            "tensor backing"
+                        )
+                    if current.dfb_index != previous.dfb_index:
+                        raise ValueError(
+                            "identical tensor-backed DFB ranges require one "
+                            "physical DFB index on a shared launch node"
+                        )
+                bindings_by_location.setdefault(
+                    (current.device, current.node), []
+                ).append(current)
+                bindings_by_node.setdefault(current.node, []).append(current)
 
 
 def _resolve_dfb_placements(

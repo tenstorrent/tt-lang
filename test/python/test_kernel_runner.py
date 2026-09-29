@@ -8807,6 +8807,113 @@ def test_compiler_sram_accepts_declared_tensor_alias(
     )
 
 
+# Per-core tensor backing has one address per device and launch node.
+@pytest.mark.parametrize(
+    ("data_format", "page_size"),
+    [("bfloat16", 2048), ("float32", 4096), ("bfloat4_b", 576), ("bfloat8_b", 1088)],
+    ids=["bf16", "fp32", "bfp4", "bfp8"],
+)
+@pytest.mark.parametrize(
+    "memory_layout",
+    ["HEIGHT_SHARDED", "WIDTH_SHARDED", "BLOCK_SHARDED"],
+    ids=["height", "width", "block"],
+)
+def test_compiler_sram_accepts_per_core_tensor_backing(
+    monkeypatch, data_format, page_size, memory_layout
+):
+    fake_ttnn = _FakeTTNN()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    tensor = _FakeTensor(
+        object(),
+        dtype=kernel_runner.format_name_to_ttnn_dtype(data_format),
+        memory_layout=memory_layout,
+    )
+    tensor.is_per_core_allocated = lambda: True
+    tensor.device_coords = lambda: (
+        fake_ttnn.MeshCoordinate((0, 0)),
+        fake_ttnn.MeshCoordinate((0, 1)),
+    )
+    tensor.experimental_per_core_buffer_address = (
+        lambda device_coordinate, _core: 0x4000 + 0x1000 * device_coordinate.coords[1]
+    )
+    tensor.buffer_address = lambda: pytest.fail("per-core tensor has no common address")
+    config = replace(
+        _tensor_backing_config(
+            0,
+            nodes=((0, 0),),
+            data_format=data_format,
+            page_size=page_size,
+            byte_size=page_size,
+        ),
+        l1_offset=0,
+    )
+
+    kernel_runner._validate_tensor_backing_aliases(
+        [tensor], [config], compiler_sram=True
+    )
+
+
+# An overlap on one device is invalid even when other devices do not overlap.
+def test_compiler_sram_rejects_per_core_tensor_alias_on_one_device(monkeypatch):
+    fake_ttnn = _FakeTTNN()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    tensors = []
+    for device_addresses in ((0x4000, 0x5000), (0x4000, 0x8000)):
+        tensor = _FakeTensor(object(), dtype=fake_ttnn.DataType.BFLOAT16)
+        tensor.is_per_core_allocated = lambda: True
+        tensor.device_coords = lambda: (
+            fake_ttnn.MeshCoordinate((0, 0)),
+            fake_ttnn.MeshCoordinate((0, 1)),
+        )
+        tensor.experimental_per_core_buffer_address = (
+            lambda device_coordinate, _core, addresses=device_addresses: addresses[
+                device_coordinate.coords[1]
+            ]
+        )
+        tensor.buffer_address = lambda: pytest.fail(
+            "per-core tensor has no common address"
+        )
+        tensors.append(tensor)
+    configs = [
+        replace(
+            _tensor_backing_config(0, nodes=((0, 0),), block_count=2, byte_size=4096),
+            l1_offset=0,
+        ),
+        replace(_tensor_backing_config(1, nodes=((0, 0),)), l1_offset=8),
+    ]
+
+    with pytest.raises(ValueError, match="partially overlap"):
+        kernel_runner._validate_tensor_backing_aliases(
+            tensors, configs, compiler_sram=True
+        )
+
+
+# Equal numeric addresses on different devices refer to independent SRAM.
+def test_compiler_sram_accepts_tensor_backing_on_distinct_devices(monkeypatch):
+    fake_ttnn = _FakeTTNN()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    tensors = []
+    for device_index in range(2):
+        tensor = _FakeTensor(object(), dtype=fake_ttnn.DataType.BFLOAT16)
+        tensor.is_per_core_allocated = lambda: True
+        tensor.device_coords = lambda index=device_index: (
+            fake_ttnn.MeshCoordinate((0, index)),
+        )
+        tensor.experimental_per_core_buffer_address = lambda *_args: 0x4000
+        tensor.buffer_address = lambda: pytest.fail(
+            "per-core tensor has no common address"
+        )
+        tensors.append(tensor)
+    configs = [
+        replace(
+            _tensor_backing_config(dfb_index, nodes=((0, 0),)), l1_offset=8 * dfb_index
+        )
+        for dfb_index in range(2)
+    ]
+
+    kernel_runner._validate_tensor_backing_aliases(tensors, configs, compiler_sram=True)
+
+
 def test_pipe_runtime_resources_use_tensor_backed_computed_address_base(
     monkeypatch,
 ):
