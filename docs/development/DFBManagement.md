@@ -270,9 +270,9 @@ neither per-core DFB use metadata, allocation domains, nor reconfiguration
 scratch segments, the runtime applies the reference allocator's global minimum
 remaining interval to every logical core. The compile-time budget is always
 this device-wide minimum, so a per-core tensor on a core the operation does not
-launch on can still lower it. Per-core limits taken from the reference allocator's pages assume that every
-device holds its lockstep L1 pages at the same addresses on the same logical
-cores as the reference device.
+launch on can still lower it. Per-core limits taken from the reference
+allocator's pages assume that every device holds its lockstep L1 pages at the
+same addresses on the same logical cores as the reference device.
 The correctness invariant is that every surviving DFB access has one compatible
 descriptor on its launch core; conservative metadata preserves the
 whole-program descriptor behavior when this cannot be proved.
@@ -1336,6 +1336,21 @@ Two disjoint criteria establish ownership:
 The criteria are disjoint. DM-thread `ttl.copy` does not flow through
 `attach_cb` (it takes the DFB directly). Compute-kernel uses always go through
 `attach_cb` and never reference the DFB as a direct operand of a tile op.
+
+The Python frontend validates block acquisition before lowering a tensor
+copy: a DFB-to-tensor source must come from `wait()` and a tensor-to-DFB
+destination from `reserve()`. Lowering selects the pointer from the copy
+direction (`get_read_ptr` for DFB-to-tensor, `get_write_ptr` for
+tensor-to-DFB), so the opposite acquisition would address the wrong slot.
+This validation is frontend-only: the frontend builds a tensor copy on the
+DFB value itself rather than on the attached block, so tensor-to-DFB and
+DFB-to-tensor `ttl.copy` IR carries no acquisition information, and the
+supported pipeline produces these forms only through the Python frontend. Pipe receives
+into a `wait()` block are rejected by `CopyOp::verify`, which sees the
+attached block. A program that needs a produced block both in a tensor and in
+a consumer publishes the block and lets a second dataflow buffer's consumer
+perform the tensor copy from a `wait()` block, since a reserved block cannot
+be a tensor copy source and one DFB admits one consumer per node.
 
 #### Why two criteria
 
