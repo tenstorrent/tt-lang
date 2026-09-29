@@ -35,20 +35,6 @@
 
 namespace mlir::tt::ttl {
 
-/// Tile-grid box within one global tensor.
-struct TensorRegionBounds {
-  int64_t globalTensorIndex = 0;
-  SmallVector<int64_t> tensorGridShape;
-  SmallVector<int64_t> startIndices;
-  SmallVector<int64_t> extents;
-};
-
-/// Return false only when the boxes are proven disjoint. Boxes in grids of
-/// different shapes are treated as overlapping. The global tensor index is not
-/// compared.
-bool tensorRegionsOverlap(const TensorRegionBounds &lhs,
-                          const TensorRegionBounds &rhs);
-
 /// Return the global tensor index of the kernel-function argument sliced by
 /// `slice`, or no value when the function has no runtime index for it.
 std::optional<int64_t> getTensorSliceGlobalIndex(TensorSliceOp slice);
@@ -63,7 +49,6 @@ struct TensorRegionOccurrences {
   /// Slice start of every receive execution, in execution order.
   ArrayRef<SmallVector<int64_t>> startIndices;
 
-  TensorRegionBounds getBounds(ArrayRef<int64_t> occurrenceStart) const;
   /// Return the region extent in each tensor tile-grid dimension.
   SmallVector<int64_t> getExtents() const;
 };

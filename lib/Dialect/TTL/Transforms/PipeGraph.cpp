@@ -599,59 +599,25 @@ isBeforeInReceiverControlContext(Operation *before, Operation *after,
   return false;
 }
 
-// Return true when execution of `before` guarantees later execution of
-// `after`. An executed nested operation completes before subsequent enclosing
-// operations. A nested `after` may be projected outward only through control
-// that is statically selected at the receiver location.
-static bool
-executionGuaranteesLaterExecution(Operation *before, Operation *after,
-                                  const LaunchExecutionLocation &location,
-                                  const PipeGraphAnalysisState &analysisState) {
-  for (Operation *beforeAncestor = before; beforeAncestor;) {
-    for (Operation *afterAncestor = after; afterAncestor;) {
-      if (isBeforeInReceiverControlContext(beforeAncestor, afterAncestor,
-                                           location, analysisState)) {
-        return true;
-      }
-      Block *afterBlock = afterAncestor->getBlock();
-      Operation *parent = afterBlock ? afterBlock->getParentOp() : nullptr;
-      if (!parent) {
-        break;
-      }
-      std::optional<ReceiverControlContext> afterContext =
-          getReceiverControlContext(afterAncestor, location, analysisState);
-      std::optional<ReceiverControlContext> parentContext =
-          getReceiverControlContext(parent, location, analysisState);
-      if (!afterContext || afterContext != parentContext) {
-        break;
-      }
-      afterAncestor = parent;
+// Return true when `before` is ordered before `after`, or before an ancestor
+// of `after` reached through parents that `mayProjectAfter` admits, in the
+// receiver control context.
+static bool isBeforeProjectionOf(
+    Operation *before, Operation *after,
+    const LaunchExecutionLocation &location,
+    const PipeGraphAnalysisState &analysisState,
+    llvm::function_ref<bool(Operation *nested, Operation *parent)>
+        mayProjectAfter) {
+  for (Operation *afterAncestor = after; afterAncestor;) {
+    if (isBeforeInReceiverControlContext(before, afterAncestor, location,
+                                         analysisState)) {
+      return true;
     }
-
-    Block *beforeBlock = beforeAncestor->getBlock();
-    beforeAncestor = beforeBlock ? beforeBlock->getParentOp() : nullptr;
-  }
-  return false;
-}
-
-// Return true when `before` completes before `after` whenever both execute.
-// Projecting either operation through enclosing structured control preserves
-// this order without asserting that a runtime-selected region executes.
-static bool
-isBeforeInReceiverExecution(Operation *before, Operation *after,
-                            const LaunchExecutionLocation &location,
-                            const PipeGraphAnalysisState &analysisState) {
-  for (Operation *beforeAncestor = before; beforeAncestor;) {
-    for (Operation *afterAncestor = after; afterAncestor;) {
-      if (isBeforeInReceiverControlContext(beforeAncestor, afterAncestor,
-                                           location, analysisState)) {
-        return true;
-      }
-      Block *afterBlock = afterAncestor->getBlock();
-      afterAncestor = afterBlock ? afterBlock->getParentOp() : nullptr;
+    Operation *parent = afterAncestor->getParentOp();
+    if (!parent || !mayProjectAfter(afterAncestor, parent)) {
+      break;
     }
-    Block *beforeBlock = beforeAncestor->getBlock();
-    beforeAncestor = beforeBlock ? beforeBlock->getParentOp() : nullptr;
+    afterAncestor = parent;
   }
   return false;
 }
@@ -663,13 +629,48 @@ static bool
 isBeforeEveryExecution(Operation *before, Operation *after,
                        const LaunchExecutionLocation &location,
                        const PipeGraphAnalysisState &analysisState) {
-  for (Operation *afterAncestor = after; afterAncestor;) {
-    if (isBeforeInReceiverControlContext(before, afterAncestor, location,
-                                         analysisState)) {
+  return isBeforeProjectionOf(before, after, location, analysisState,
+                              [](Operation *, Operation *) { return true; });
+}
+
+// Return true when execution of `before` guarantees later execution of
+// `after`. An executed nested operation completes before subsequent enclosing
+// operations. A nested `after` may be projected outward only through control
+// that is statically selected at the receiver location.
+static bool
+executionGuaranteesLaterExecution(Operation *before, Operation *after,
+                                  const LaunchExecutionLocation &location,
+                                  const PipeGraphAnalysisState &analysisState) {
+  auto staticallySelected = [&](Operation *nested, Operation *parent) {
+    std::optional<ReceiverControlContext> nestedContext =
+        getReceiverControlContext(nested, location, analysisState);
+    return nestedContext &&
+           nestedContext ==
+               getReceiverControlContext(parent, location, analysisState);
+  };
+  for (Operation *beforeAncestor = before; beforeAncestor;
+       beforeAncestor = beforeAncestor->getParentOp()) {
+    if (isBeforeProjectionOf(beforeAncestor, after, location, analysisState,
+                             staticallySelected)) {
       return true;
     }
-    Block *afterBlock = afterAncestor->getBlock();
-    afterAncestor = afterBlock ? afterBlock->getParentOp() : nullptr;
+  }
+  return false;
+}
+
+// Return true when `before` completes before `after` whenever both execute.
+// Projecting either operation through enclosing structured control preserves
+// this order without asserting that a runtime-selected region executes.
+static bool
+isBeforeInReceiverExecution(Operation *before, Operation *after,
+                            const LaunchExecutionLocation &location,
+                            const PipeGraphAnalysisState &analysisState) {
+  for (Operation *beforeAncestor = before; beforeAncestor;
+       beforeAncestor = beforeAncestor->getParentOp()) {
+    if (isBeforeEveryExecution(beforeAncestor, after, location,
+                               analysisState)) {
+      return true;
+    }
   }
   return false;
 }
@@ -745,10 +746,12 @@ receiveOccurrencesPrecedeRead(TensorSliceOp readSlice, Operation *read,
                               const PipeGraphAnalysisState &analysisState) {
   FailureOr<TensorSliceOccurrences> reads = enumerateTensorSliceIterationStarts(
       readSlice, read, location, analysisState, kMaxEnumeratedReadIterations);
-  if (failed(reads) || receiveRegion.occurrenceInductionValues.size() !=
-                           receiveRegion.occurrenceStartIndices.size()) {
+  if (failed(reads)) {
     return false;
   }
+  assert(receiveRegion.occurrenceInductionValues.size() ==
+             receiveRegion.occurrenceStartIndices.size() &&
+         "enumerated receive occurrences carry their induction values");
   SmallVector<std::size_t> receiveLoopPositions;
   for (scf::ForOp loop : reads->loops) {
     const auto *position = llvm::find(receiveRegion.occurrenceLoops, loop);
@@ -1472,18 +1475,10 @@ static FailureOr<int64_t> getTensorGlobalIndex(TensorSliceOp slice,
   return *globalTensorIndex;
 }
 
-static FailureOr<TensorRegionBounds>
-getTensorRegionBounds(TensorSliceOp slice, Operation *diagnosticOwner,
-                      const LaunchExecutionLocation &location,
-                      const PipeGraphAnalysisState &analysisState) {
-  FailureOr<int64_t> globalTensorIndex =
-      getTensorGlobalIndex(slice, diagnosticOwner);
-  if (failed(globalTensorIndex)) {
-    return failure();
-  }
-
-  auto tensorType = cast<RankedTensorType>(slice.getTensor().getType());
-  auto sliceType = cast<RankedTensorType>(slice.getType());
+static FailureOr<SmallVector<int64_t>>
+getTensorSliceStart(TensorSliceOp slice, Operation *diagnosticOwner,
+                    const LaunchExecutionLocation &location,
+                    const PipeGraphAnalysisState &analysisState) {
   SmallVector<int64_t> startIndices;
   startIndices.reserve(slice.getIndices().size());
   for (Value index : slice.getIndices()) {
@@ -1497,15 +1492,7 @@ getTensorRegionBounds(TensorSliceOp slice, Operation *diagnosticOwner,
     }
     startIndices.push_back(resolvedIndex->getSExtValue());
   }
-  int64_t rankDifference = tensorType.getRank() - sliceType.getRank();
-  SmallVector<int64_t> extents(tensorType.getRank(), 1);
-  for (int64_t dimension = rankDifference; dimension < tensorType.getRank();
-       ++dimension) {
-    extents[dimension] = sliceType.getDimSize(dimension - rankDifference);
-  }
-  return TensorRegionBounds{*globalTensorIndex,
-                            SmallVector<int64_t>(tensorType.getShape()),
-                            std::move(startIndices), std::move(extents)};
+  return startIndices;
 }
 
 static bool isSerializedReuseOfTensorDestination(
@@ -1791,20 +1778,20 @@ LogicalResult PipeGraph::verifyTensorRegionDestinations(
                     pipeRegion);
               });
         } else {
-          FailureOr<TensorRegionBounds> maybeAccessedRegion =
-              getTensorRegionBounds(accessedSlice, copy, *maybeLocation,
-                                    analysisState);
-          if (failed(maybeAccessedRegion)) {
+          FailureOr<SmallVector<int64_t>> accessedStart = getTensorSliceStart(
+              accessedSlice, copy, *maybeLocation, analysisState);
+          if (failed(accessedStart)) {
             copyResult = failure();
             return WalkResult::interrupt();
           }
+          TensorRegionOccurrences accessedRegion{
+              *accessedTensorIndex, DeviceRefAttr(),
+              cast<RankedTensorType>(accessedSlice.getTensor().getType())
+                  .getShape(),
+              cast<RankedTensorType>(accessedSlice.getType()).getShape(),
+              ArrayRef<SmallVector<int64_t>>(*accessedStart)};
           overlapsAnyOccurrence =
-              llvm::any_of(tensorRegion.occurrenceStartIndices,
-                           [&](ArrayRef<int64_t> occurrenceStart) {
-                             return tensorRegionsOverlap(
-                                 *maybeAccessedRegion,
-                                 pipeRegion.getBounds(occurrenceStart));
-                           });
+              tensorRegionOccurrencesOverlap(accessedRegion, pipeRegion);
         }
         if (!overlapsAnyOccurrence) {
           continue;
