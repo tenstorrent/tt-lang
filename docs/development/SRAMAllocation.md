@@ -135,9 +135,7 @@ SRAMAllocator::allocateDomains(
 
 Per-node DFB placement requires an exact launch grid. The compiler groups multicast receivers that must use the same destination address; groups that share a node become one domain. Other nodes can have separate payload layouts. Every domain retains the same control-record offsets, while payloads proven inactive on a domain are omitted. The compiler then calls `allocateDomains` once with the complete set of domain requests.
 
-Tensor backing with independently addressed payloads requires local access on each executing node. Access that requires a common address across nodes retains uniform allocation.
-
-For direct per-core tensor access, the runtime binds each kernel descriptor to the address on its device and node, including operations with no DFBs. A computed PipeNet transfer uses one address for every destination. The compiler records each destination device and node; the runtime checks tensor device coverage and requires their physical payload addresses to match before dispatch. It does not cache one common tensor base across transfers.
+Tensor-backed payloads may have different physical addresses on different nodes. Local access binds each kernel descriptor to the address on its device and node, including operations with no DFBs. A computed PipeNet transfer sends one address to all destinations, so the compiler records each destination and the runtime requires their payload addresses to match before creating PipeNet resources.
 
 ```text
 domains = merge overlapping multicast receiver groups
