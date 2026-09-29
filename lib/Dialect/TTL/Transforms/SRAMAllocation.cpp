@@ -6,6 +6,8 @@
 #include "DFBAnalysisFailure.h"
 #include "DFBConcurrentKernelLivenessAnalysis.h"
 #include "DFBPhysicalAllocationPlan.h"
+#include "SRAMAllocationPlan.h"
+#include "SRAMAllocationReport.h"
 #include "SRAMAllocator.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/TTL/Transforms/DFBLogicalIdentityAnalysis.h"
@@ -23,34 +25,6 @@
 namespace mlir::tt::ttl {
 
 namespace {
-struct SRAMRegion {
-  int64_t logicalId;
-  CircularBufferType type;
-  TensorBackingAttr tensorBacking;
-  DFBAllocationGroupAttr allocationGroup;
-  LaunchNodeDomain launchDomain;
-  uint64_t pages;
-  uint64_t pageBytes;
-  uint64_t capacityPages;
-  uint64_t allocationBytes;
-  unsigned storageIndex = 0;
-  SmallVector<BindCBOp> declarations;
-};
-
-struct SRAMStorage {
-  uint64_t capacityPages = 0;
-  uint64_t allocationBytes = 0;
-  uint64_t offset = 0;
-  uint64_t stateOffset = 0;
-  SmallVector<unsigned> members;
-};
-
-struct SRAMAllocationPlan {
-  SmallVector<SRAMRegion> regions;
-  SmallVector<SRAMStorage> storage;
-  uint64_t arenaBytes;
-};
-
 static FailureOr<SRAMAllocationPlan>
 planRegions(ModuleOp module, const DFBLogicalIdentityAnalysis &identities,
             uint64_t budget, bool reuseStorage, const SRAMAllocator &allocator,
@@ -306,7 +280,8 @@ planRegions(ModuleOp module, const DFBLogicalIdentityAnalysis &identities,
     storage[storageIndex].offset = solution->offsets[allocationRegionIndex];
   }
   uint64_t arenaBytes = std::max(*controlBytes, solution->arenaBytes);
-  return SRAMAllocationPlan{std::move(plan), std::move(storage), arenaBytes};
+  return SRAMAllocationPlan{std::move(plan), std::move(storage), arenaBytes,
+                            alignment, *controlBytes};
 }
 
 using BackingHandoffsByOrdinal = DenseMap<int64_t, SmallVector<Attribute>>;
@@ -437,7 +412,7 @@ buildBackingHandoffs(const SRAMAllocationPlan &plan,
 LogicalResult allocateSRAM(
     ModuleOp module, const DFBLogicalIdentityAnalysis &identities,
     uint64_t budgetOverride, bool reuseStorage, const SRAMAllocator &allocator,
-    const DFBConcurrentKernelLivenessAnalysis &liveness,
+    bool reportAllocation, const DFBConcurrentKernelLivenessAnalysis &liveness,
     ArrayRef<DFBStaticConfigurationConflict> staticConfigurationConflicts,
     bool unsafeAssumeAllocationGroups,
     SmallVectorImpl<DFBAssumedAllocationGroup> &assumedAllocationGroups) {
@@ -591,6 +566,12 @@ LogicalResult allocateSRAM(
         return failure();
       }
     }
+  }
+  if (reportAllocation) {
+    const auto conflicts = DFBPhysicalConflictModel::buildStorage(
+        liveness, DFBStorageConflictMode::CompilerManaged);
+    printSRAMAllocationReport(llvm::errs(), plan, liveness, conflicts,
+                              allocator.getName(), reuseStorage, budget);
   }
   for (auto [regionIndex, region] : llvm::enumerate(plan.regions)) {
     for (BindCBOp declaration : region.declarations) {

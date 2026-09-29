@@ -25,7 +25,7 @@ struct DFBStaticConfigurationConflict;
 LogicalResult allocateSRAM(
     ModuleOp module, const DFBLogicalIdentityAnalysis &identities,
     uint64_t budgetOverride, bool reuseStorage, const SRAMAllocator &allocator,
-    const DFBConcurrentKernelLivenessAnalysis &liveness,
+    bool reportAllocation, const DFBConcurrentKernelLivenessAnalysis &liveness,
     llvm::ArrayRef<DFBStaticConfigurationConflict> staticConfigurationConflicts,
     bool unsafeAssumeAllocationGroups,
     llvm::SmallVectorImpl<DFBAssumedAllocationGroup> &assumedAllocationGroups);

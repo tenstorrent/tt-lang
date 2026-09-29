@@ -19,6 +19,7 @@ import json
 import math
 import operator
 import os
+import sys
 import threading
 import warnings
 import weakref
@@ -2043,6 +2044,32 @@ def _compiler_sram_backing_by_node(
         for segment in config.storage_segments
         for node in segment.nodes
     }
+
+
+def _print_sram_runtime_report(arena, core_ranges, requested_bytes, operation_name):
+    node_count = core_ranges.num_cores()
+    page_count = int(arena.buffer_num_pages())
+    if node_count <= 0 or page_count < node_count or page_count % node_count != 0:
+        raise RuntimeError(
+            "SRAM report requires uniform arena pages across participating nodes"
+        )
+    reserved_bytes = page_count // node_count * int(arena.buffer_aligned_page_size())
+    if reserved_bytes < requested_bytes:
+        raise RuntimeError(
+            "SRAM report reservation is smaller than its requested arena"
+        )
+    report = {
+        "schema_version": 1,
+        "phase": "runtime",
+        "operation": operation_name,
+        "scope": "arena-reference-device",
+        "requested_bytes_per_node": requested_bytes,
+        "reserved_bytes_per_node": reserved_bytes,
+        "node_count": node_count,
+        "reserved_bytes_on_reference_device": reserved_bytes * node_count,
+        "reservation_padding_bytes_per_node": reserved_bytes - requested_bytes,
+    }
+    print("ttlang-sram-report: " + json.dumps(report, sort_keys=True), file=sys.stderr)
 
 
 def _get_compiler_l1_arena_bytes(
@@ -4786,6 +4813,7 @@ def run_kernel_on_device(
     runtime_resource_cache: Optional[KernelRuntimeResourceCache] = None,
     device: Optional[Any] = None,
     memory_model: Optional[str] = None,
+    sram_allocation_report: bool = False,
 ) -> Any:
     """Execute a kernel, serializing use of persistent runtime resources."""
     if device_domain is not None and not isinstance(device_domain, DeviceDomain):
@@ -4862,6 +4890,10 @@ def run_kernel_on_device(
         arena_completion_state = _ArenaCompletionState()
         arguments["arena_completion_state"] = arena_completion_state
         try:
+            if sram_allocation_report:
+                _print_sram_runtime_report(
+                    arena, core_ranges, compiler_l1_arena_bytes, operation_name
+                )
             result = _run_kernel_on_device_impl(**arguments)
         except BaseException as execution_error:
             if not arena_completion_state.synchronization_attempted:
@@ -5109,6 +5141,7 @@ def emit_runner_source(
     sram_reconfiguration_resets: Sequence[SRAMReconfigurationReset] = (),
     tensor_configurations: Optional[Sequence[tuple]] = None,
     memory_model: Optional[str] = None,
+    sram_allocation_report: bool = False,
 ) -> str:
     """
     Emit Python source code for a standalone runner that invokes ttnn.generic_op.
@@ -5174,6 +5207,7 @@ def emit_runner_source(
     lines.append(f"NUM_TENSORS = {num_tensors}")
     lines.append(f"OPERATION_NAME = {kernel_name!r}")
     lines.append(f"MEMORY_MODEL = {memory_model!r}")
+    lines.append(f"SRAM_ALLOCATION_REPORT = {sram_allocation_report!r}")
     lines.append(
         f"SRAM_RECONFIGURATION_RESETS = {tuple(sram_reconfiguration_resets)!r}"
     )
@@ -5424,6 +5458,7 @@ def emit_runner_source(
         lines.append("        runtime_resource_factory=runtime_resource_factory,")
     lines.append("        operation_name=OPERATION_NAME,")
     lines.append("        memory_model=MEMORY_MODEL,")
+    lines.append("        sram_allocation_report=SRAM_ALLOCATION_REPORT,")
     lines.append("        runtime_resource_cache=_RUNTIME_RESOURCE_CACHE,")
     lines.append("        device=device,")
     lines.append("    )")
@@ -5457,6 +5492,7 @@ def emit_runner_file(
     sram_reconfiguration_resets: Sequence[SRAMReconfigurationReset] = (),
     tensor_configurations: Optional[Sequence[tuple]] = None,
     memory_model: Optional[str] = None,
+    sram_allocation_report: bool = False,
 ) -> str:
     """
     Emit a Python runner file for the compiled kernel.
@@ -5492,6 +5528,7 @@ def emit_runner_file(
         dfb_reconfiguration_plan=dfb_reconfiguration_plan,
         sram_reconfiguration_resets=sram_reconfiguration_resets,
         memory_model=memory_model,
+        sram_allocation_report=sram_allocation_report,
     )
 
     os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
