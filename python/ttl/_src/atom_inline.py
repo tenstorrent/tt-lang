@@ -274,7 +274,7 @@ class _LoopExitLiveness:
             return live
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             self.block(node.body, set(), _Jumps())
-            # TODO(#1013 follow-up): `_read_names` counts a nested scope's own
+            # TODO: `_read_names` counts a nested scope's own
             # parameters and locals as reads of the enclosing names, so a
             # later `lambda kind: ...` makes a loop target `kind` live and a
             # loop over non-literal elements is rejected; subtract the nested
@@ -316,7 +316,7 @@ def _mark_loop_targets_read_after(statements: List[ast.stmt]) -> None:
     Unrolling substitutes the element into scopes inside the loop body, so they
     never read the name.
 
-    TODO(#1013 follow-up): a callback defined outside the loop and called
+    TODO: a callback defined outside the loop and called
     inside it reads the target at call time in Python but sees only the
     post-loop binding here (or is rejected for non-literal elements), and a
     callback defined inside the body binds its iteration's element at
@@ -491,7 +491,7 @@ class _SubstituteTransformer(ast.NodeTransformer):
                 "inside its loop over a captured sequence"
             )
         targets_read_after = getattr(transformed_node, _LOOP_TARGETS_READ_AFTER)
-        # TODO(#1013 follow-up): an empty sequence leaves an earlier binding of
+        # TODO: an empty sequence leaves an earlier binding of
         # the target in place in Python; this rejects that program too because
         # the liveness analysis does not track definite assignment.
         if targets_read_after and not transformed_node.iter.elts:
