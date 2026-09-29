@@ -123,11 +123,11 @@ def test_reconfigured_receiver_uses_published_address(
     assert "ttl.pipe_computed_address_dfb_indices" not in final_mlir
 
 
-# Compiler-managed reconfiguration must retain the published tensor base while
-# deriving the compiler-owned receiver base from the arena.
+# Compiler-managed reconfiguration derives both receiver addresses from stable
+# tensor and arena bases.
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "f32"])
 @pytest.mark.parametrize("to_device", [to_dram, to_l1], ids=["dram", "l1"])
-def test_compiler_sram_reconfigured_receiver_uses_published_address(
+def test_compiler_sram_reconfigured_receiver_uses_computed_addresses(
     device,
     dtype,
     to_device,

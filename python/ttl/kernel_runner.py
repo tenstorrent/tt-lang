@@ -4813,10 +4813,9 @@ def run_kernel_on_device(
         )
     )
     if compiler_l1_arena_bytes is not None:
-        if dfb_reconfiguration_plan or any(kernel_fabric_routes or ()):
+        if dfb_reconfiguration_plan:
             raise ValueError(
-                "compiler-sram cannot combine with Metal DFB reconfiguration "
-                "or generated fabric routes"
+                "compiler-sram cannot combine with Metal DFB reconfiguration"
             )
         _validate_tensor_backing_aliases(tensors, cb_configs, compiler_sram=True)
     arguments = {

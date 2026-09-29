@@ -4996,13 +4996,13 @@ struct ComputedAddressPlan {
   llvm::MapVector<FuncOp, SmallVector<int32_t>> dfbIndices;
 };
 
-static ComputedAddressPlan buildComputedAddressPlan(
-    MutableArrayRef<PipeTransferAllocationUnit> units,
-    const PipeGraph &pipeGraph,
-    const FinalizedDFBStorageFootprint &storageFootprint,
-    const llvm::DenseSet<int64_t> &sharedStorageDFBIndices) {
+static ComputedAddressPlan
+buildComputedAddressPlan(MutableArrayRef<PipeTransferAllocationUnit> units,
+                         const PipeGraph &pipeGraph,
+                         const FinalizedDFBStorageFootprint &storageFootprint,
+                         const llvm::DenseSet<int64_t> &sharedStorageDFBIndices,
+                         bool compilerSRAM) {
   ComputedAddressPlan plan;
-
   /// One transfer whose recurrence can be materialized by its sender.
   struct Candidate {
     std::size_t unitIndex = 0;
@@ -5029,10 +5029,11 @@ static ComputedAddressPlan buildComputedAddressPlan(
         storageFootprint.singleTensorBasePhysicalIndices.contains(
             receiverInfo.dfbIndex);
     bool requiresReceiverPublishedAddress =
-        sharedStorageDFBIndices.contains(receiverInfo.dfbIndex) ||
+        (!compilerSRAM &&
+         sharedStorageDFBIndices.contains(receiverInfo.dfbIndex)) ||
         (usesTensorBacking && !hasStableTensorStorage);
-    // Use receiver publication when the physical DFB index cannot identify one
-    // address base valid for every storage segment and configuration.
+    // Compiler SRAM emits one backing segment per DFB, even when it covers
+    // several receiver nodes. Shared Metal storage may change its base.
     if (requiresReceiverPublishedAddress) {
       continue;
     }
@@ -5175,7 +5176,8 @@ LogicalResult buildPipeResourcePlan(
       recordSharedStorage(storageFootprint->globalMembers);
     }
     computedAddressPlan = buildComputedAddressPlan(
-        units, pipeGraph, *storageFootprint, sharedStorageDFBIndices);
+        units, pipeGraph, *storageFootprint, sharedStorageDFBIndices,
+        usesCompilerSRAM(mod));
   }
   info.computedAddressCounterInitializations =
       computedAddressPlan.counterInitializations;

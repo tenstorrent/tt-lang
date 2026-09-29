@@ -19,7 +19,7 @@ An *arena* is the node-local SRAM reservation for one operation execution. A *co
 | Allocation groups | Reuse a physical descriptor and its storage contract | Share one validated storage owner and control record |
 | Reset and reconfiguration | Blackhole TT-Metal interface reset and runtime descriptor reconfiguration | Blackhole address-based state reset with compiler-fixed geometry |
 | External C++ DFB access | Numeric index or typed descriptor bound to a TT-Metal DFB | Typed descriptor bound to compiler-assigned storage |
-| Local PipeNet receiver | TT-Metal DFB descriptor or tensor-backed address | Finalized arena or tensor-backed address; no TT-Metal DFB descriptor |
+| PipeNet receiver | TT-Metal DFB descriptor or tensor-backed address | Finalized arena or tensor-backed address for local and generated fabric transfers; no TT-Metal DFB descriptor |
 
 Shared terminology is defined in the [TT-Lang specification glossary](../sphinx/specs/TTLangSpecification.md#appendix-a-glossary). The DFB protocol and lifecycle rules are defined in [DFB Management](DFBManagement.md).
 
@@ -250,7 +250,7 @@ bind(descriptor):
 
 External calls can declare `DFBEffect` entries for protocol operations. These effects participate in lifetime and conflict analysis; a DFB dependency without effects remains live until completion is proved. Compiler-managed storage rejects unknown DFB access, numeric DFB template arguments, and DFB function arguments. External C++ code uses `ttl.dfb_descriptor(dfb)` as a template argument to bind compiler-managed storage.
 
-## Local PipeNet Transfers
+## PipeNet Transfers
 
 Local PipeNets use the existing transfer schedule, transport, capacity, and synchronization protocols. Finalized DFB storage determines a receiver's address: compiler-owned payloads use the arena base plus `l1_payload_offset`; tensor-backed payloads use the retained tensor base plus their declared byte offset. Neither requires a TT-Metal DFB descriptor. Producer and wait launch domains include explicit DFB operations and external-call `DFBEffect` declarations through the shared DFB access interface.
 
@@ -269,6 +269,19 @@ bindLocalPipeReceivers(allocation, computedReceivers):
 ```
 
 The finalized `ttl.crta_indices` list determines the tensor-address prefix even when a tensor-backed DFB outlives its original function operand. Cache identity includes tensor-backed receiver addresses, while ownership accounting excludes caller-owned tensors. The 32- or 64-index TT-Metal DFB limit does not apply to these logical DFBs; PipeNet transport and semaphore limits are unchanged.
+
+Generated inter-device transfers use the same receiver address rule. The arena is one TT-Metal mesh buffer with a common address on participating devices, so its payload offset identifies the destination allocation. A tensor-backed receiver has a computed address only when every participating node has the same tensor base and byte offset. Generated fabric requires a computed receiver address and diagnoses other cases before transfer lowering. Local PipeNets can use receiver publication, including when Metal shared descriptors can change backing storage. Fabric routing resolves device targets independently of these storage decisions.
+
+```text
+for each logicalDevice:
+    descriptor = buildProgramDescriptor(receiverAddresses, pipeResources)
+    bindings[logicalDevice] = planFabricRoutes(descriptor, logicalDevice)
+for each logicalDevice:
+    apply bindings[logicalDevice] to its descriptor
+dispatch the mesh program
+```
+
+Planning all bindings before applying any of them prevents an invalid route from partially configuring the mesh program.
 
 ## Target Interfaces
 
@@ -315,7 +328,7 @@ Monotonic allocation with explicit execution-phase overlays was considered. It c
 - Typed external C++ calls with explicit DFB effects and either compiler-owned or tensor-backed payloads.
 - Device-domain and mesh program placement with declarative external runtime resources.
 - Blackhole selected reset, reset-all, and reconfiguration.
-- Local intra-device PipeNet transfers with compiler-owned or tensor-backed receivers.
+- Local and generated inter-device PipeNet transfers with compiler-owned or tensor-backed receivers.
 - Wormhole allocation, transfer, compute, external descriptors, and local PipeNet compilation without reset or reconfiguration.
 
 ## Validation
@@ -339,12 +352,11 @@ Monotonic allocation with explicit execution-phase overlays was considered. It c
 - Sub-tile and row-major operations require matching geometry, stride, and capacity rules in the address-based compute interface.
 - Wormhole reset and reconfiguration require a target synchronization protocol validated on device.
 
-The intended dependency order after local PipeNet support is:
+The intended dependency order after generated fabric support is:
 
-1. Add generated inter-device fabric transfers. Resolve source and destination device domains, bind each device's runtime resources, and prove remote completion before storage reuse.
-2. Qualify representative external C++ kernels against the typed descriptor interface and add common adapters for required address, geometry, and completion operations.
-3. Add sub-tile and row-major metadata, partial-block and general contiguous multi-block transactions, and the corresponding address, stride, capacity, and wrap rules.
-4. Add Wormhole reset and reconfiguration after defining and device-qualifying a Wormhole synchronization protocol behind the existing target interface.
-5. Qualify complete model layers, then measure device cycles, arena high-water usage, initialization cost, compile time, and generated code size against `metal-cb`.
+1. Qualify representative external C++ kernels against the typed descriptor interface and add common adapters for required address, geometry, and completion operations.
+2. Add sub-tile and row-major metadata, partial-block and general contiguous multi-block transactions, and the corresponding address, stride, capacity, and wrap rules.
+3. Add Wormhole reset and reconfiguration after defining and device-qualifying a Wormhole synchronization protocol behind the existing target interface.
+4. Qualify complete model layers, then measure device cycles, arena high-water usage, initialization cost, compile time, and generated code size against `metal-cb`.
 
 Each extension must preserve the fail-before-mutation rule, architecture isolation, explicit ownership, and compiler-managed descriptor independence.
