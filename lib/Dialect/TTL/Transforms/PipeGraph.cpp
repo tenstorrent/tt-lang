@@ -622,6 +622,28 @@ static bool isBeforeProjectionOf(
   return false;
 }
 
+// Return true when `before` or one of its ancestors is ordered before a
+// projection of `after` that `mayProjectAfter` admits.
+static bool isAncestorBeforeProjectionOf(
+    Operation *before, Operation *after,
+    const LaunchExecutionLocation &location,
+    const PipeGraphAnalysisState &analysisState,
+    llvm::function_ref<bool(Operation *nested, Operation *parent)>
+        mayProjectAfter) {
+  for (Operation *beforeAncestor = before; beforeAncestor;
+       beforeAncestor = beforeAncestor->getParentOp()) {
+    if (isBeforeProjectionOf(beforeAncestor, after, location, analysisState,
+                             mayProjectAfter)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+static bool projectsThroughEveryParent(Operation *, Operation *) {
+  return true;
+}
+
 // Return true when `before` completes before every execution of `after`.
 // Only `after` is projected outward, because an operation enclosing `before`
 // may complete without executing `before`.
@@ -630,7 +652,7 @@ isBeforeEveryExecution(Operation *before, Operation *after,
                        const LaunchExecutionLocation &location,
                        const PipeGraphAnalysisState &analysisState) {
   return isBeforeProjectionOf(before, after, location, analysisState,
-                              [](Operation *, Operation *) { return true; });
+                              projectsThroughEveryParent);
 }
 
 // Return true when execution of `before` guarantees later execution of
@@ -648,14 +670,8 @@ executionGuaranteesLaterExecution(Operation *before, Operation *after,
            nestedContext ==
                getReceiverControlContext(parent, location, analysisState);
   };
-  for (Operation *beforeAncestor = before; beforeAncestor;
-       beforeAncestor = beforeAncestor->getParentOp()) {
-    if (isBeforeProjectionOf(beforeAncestor, after, location, analysisState,
-                             staticallySelected)) {
-      return true;
-    }
-  }
-  return false;
+  return isAncestorBeforeProjectionOf(before, after, location, analysisState,
+                                      staticallySelected);
 }
 
 // Return true when `before` completes before `after` whenever both execute.
@@ -665,14 +681,8 @@ static bool
 isBeforeInReceiverExecution(Operation *before, Operation *after,
                             const LaunchExecutionLocation &location,
                             const PipeGraphAnalysisState &analysisState) {
-  for (Operation *beforeAncestor = before; beforeAncestor;
-       beforeAncestor = beforeAncestor->getParentOp()) {
-    if (isBeforeEveryExecution(beforeAncestor, after, location,
-                               analysisState)) {
-      return true;
-    }
-  }
-  return false;
+  return isAncestorBeforeProjectionOf(before, after, location, analysisState,
+                                      projectsThroughEveryParent);
 }
 
 // Order that a receive wait must have relative to a later use. A push or post
@@ -1387,8 +1397,7 @@ resolveTensorRegionStartIndices(ReceiverTensorRegionInfo &region,
   // through the record matched by an enumerated iteration of another record
   // loop.
   auto evaluateRecordValue =
-      [&](Value value,
-          const llvm::DenseMap<Value, llvm::APInt> &inductionValues,
+      [&](Value value, const LoopInductionBindings &inductionValues,
           std::string &failureReason) -> std::optional<llvm::APInt> {
     if (selectedRecordLoop &&
         value == cast<scf::ForOp>(selectedRecordLoop).getInductionVar()) {
@@ -1479,18 +1488,15 @@ static FailureOr<SmallVector<int64_t>>
 getTensorSliceStart(TensorSliceOp slice, Operation *diagnosticOwner,
                     const LaunchExecutionLocation &location,
                     const PipeGraphAnalysisState &analysisState) {
-  SmallVector<int64_t> startIndices;
-  startIndices.reserve(slice.getIndices().size());
-  for (Value index : slice.getIndices()) {
-    std::optional<llvm::APInt> resolvedIndex =
-        evaluateIntegerAtLaunchLocation(index, location, analysisState);
-    if (!resolvedIndex || !resolvedIndex->isSignedIntN(64)) {
-      diagnosticOwner->emitOpError(
-          "cannot prove ownership of a tensor slice whose start depends on "
-          "runtime values");
-      return failure();
-    }
-    startIndices.push_back(resolvedIndex->getSExtValue());
+  IntegerExpressionEvaluator evaluator([&](Value value) {
+    return evaluateIntegerAtLaunchLocation(value, location, analysisState);
+  });
+  FailureOr<SmallVector<int64_t>> startIndices =
+      evaluateTensorSliceStart(slice, evaluator);
+  if (failed(startIndices)) {
+    diagnosticOwner->emitOpError(
+        "cannot prove ownership of a tensor slice whose start depends on "
+        "runtime values");
   }
   return startIndices;
 }

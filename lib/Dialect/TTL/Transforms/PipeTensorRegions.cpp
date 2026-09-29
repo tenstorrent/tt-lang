@@ -4,6 +4,8 @@
 
 #include "PipeTensorRegions.h"
 
+#include "ttlang/Dialect/TTL/Transforms/PipeNetExecutionUtils.h"
+
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/BuiltinTypes.h"
@@ -42,7 +44,8 @@ std::optional<int64_t> getTensorSliceGlobalIndex(TensorSliceOp slice) {
   return cast<IntegerAttr>(crtaIndices[tensorArgument.getArgNumber()]).getInt();
 }
 
-SmallVector<int64_t> TensorRegionOccurrences::getExtents() const {
+SmallVector<int64_t> getTensorRegionExtents(ArrayRef<int64_t> tensorGridShape,
+                                            ArrayRef<int64_t> sliceShape) {
   int64_t rankDifference = tensorGridShape.size() - sliceShape.size();
   SmallVector<int64_t> extents(tensorGridShape.size(), 1);
   for (int64_t dimension = rankDifference;
@@ -50,6 +53,29 @@ SmallVector<int64_t> TensorRegionOccurrences::getExtents() const {
     extents[dimension] = sliceShape[dimension - rankDifference];
   }
   return extents;
+}
+
+SmallVector<int64_t> TensorRegionOccurrences::getExtents() const {
+  return getTensorRegionExtents(tensorGridShape, sliceShape);
+}
+
+FailureOr<SmallVector<int64_t>>
+evaluateTensorSliceStart(TensorSliceOp slice,
+                         IntegerExpressionEvaluator &evaluator,
+                         std::size_t *failedDimension) {
+  SmallVector<int64_t> startIndices;
+  startIndices.reserve(slice.getIndices().size());
+  for (auto [dimension, index] : llvm::enumerate(slice.getIndices())) {
+    std::optional<llvm::APInt> resolvedIndex = evaluator.evaluate(index);
+    if (!resolvedIndex || !resolvedIndex->isSignedIntN(64)) {
+      if (failedDimension) {
+        *failedDimension = dimension;
+      }
+      return failure();
+    }
+    startIndices.push_back(resolvedIndex->getSExtValue());
+  }
+  return startIndices;
 }
 
 static bool boxesOverlap(ArrayRef<int64_t> lhsStart,
@@ -335,10 +361,19 @@ reportEnumerationBound(llvm::function_ref<InFlightDiagnostic()> emitError,
   return failure();
 }
 
+static LogicalResult
+reportUnenumerableLoops(llvm::function_ref<InFlightDiagnostic()> emitError) {
+  if (emitError) {
+    emitError() << "pipe receive tensor_slice requires statically enumerable "
+                   "enclosing loops";
+  }
+  return failure();
+}
+
 /// Return the `scf.for` loops enclosing `op` whose induction variables
 /// `valueEvaluator` cannot evaluate, outermost first. Fails when a trip count
-/// is not evaluable without inner induction bindings, or when the loops have
-/// more than `maxIterations` combined iterations.
+/// is not evaluable before any enumerated induction variable is bound, or when
+/// the loops have more than `maxIterations` combined iterations.
 static FailureOr<SmallVector<scf::ForOp>> resolveEnumeratedLoops(
     Operation *op,
     const IntegerExpressionEvaluator::ValueEvaluator &valueEvaluator,
@@ -358,19 +393,22 @@ static FailureOr<SmallVector<scf::ForOp>> resolveEnumeratedLoops(
   }
   std::reverse(loops.begin(), loops.end());
 
-  std::uint64_t iterationCount = 1;
+  SmallVector<std::uint64_t> tripCounts;
   for (scf::ForOp loop : loops) {
     std::optional<std::uint64_t> tripCount =
         getLoopTripCount(loop, LoopInductionBindings(), valueEvaluator);
     if (!tripCount) {
-      if (emitError) {
-        emitError() << "pipe receive tensor_slice requires statically "
-                       "enumerable enclosing loops";
-      }
-      return failure();
+      return reportUnenumerableLoops(emitError);
     }
+    tripCounts.push_back(*tripCount);
+  }
+  if (llvm::is_contained(tripCounts, 0)) {
+    return loops;
+  }
+  std::uint64_t iterationCount = 1;
+  for (std::uint64_t tripCount : tripCounts) {
     std::optional<std::uint64_t> product =
-        llvm::checkedMulUnsigned(iterationCount, *tripCount);
+        llvm::checkedMulUnsigned(iterationCount, tripCount);
     if (!product || *product > maxIterations) {
       return reportEnumerationBound(emitError, maxIterations);
     }
@@ -380,16 +418,29 @@ static FailureOr<SmallVector<scf::ForOp>> resolveEnumeratedLoops(
 }
 
 /// Bind every combination of the induction values of `loops`, outermost
-/// first, and call `visit` for each. Stops at the first failure.
+/// first, and call `visit` for each. Stops at the first failure; a failure of
+/// the enumeration itself, such as a bound that depends on runtime values, is
+/// reported through `emitError`.
 static LogicalResult forEachLoopIteration(
     ArrayRef<scf::ForOp> loops, LoopInductionBindings &bindings,
     const IntegerExpressionEvaluator::ValueEvaluator &valueEvaluator,
+    llvm::function_ref<InFlightDiagnostic()> emitError,
     function_ref<LogicalResult(const LoopInductionBindings &)> visit) {
   SmallVector<LoopLikeOpInterface> loopLikes = llvm::map_to_vector(
       loops, [](scf::ForOp loop) -> LoopLikeOpInterface { return loop; });
   // resolveEnumeratedLoops has bounded the iteration count.
   EnumerationBudget budget(std::numeric_limits<std::uint64_t>::max());
-  return enumerateLoopNest(loopLikes, bindings, budget, visit, valueEvaluator);
+  bool visitFailed = false;
+  if (succeeded(enumerateLoopNest(
+          loopLikes, bindings, budget,
+          [&](const LoopInductionBindings &iteration) {
+            visitFailed = failed(visit(iteration));
+            return failure(visitFailed);
+          },
+          valueEvaluator))) {
+    return success();
+  }
+  return visitFailed ? failure() : reportUnenumerableLoops(emitError);
 }
 
 /// Evaluate the start indices of `slice` for the bound induction values.
@@ -397,22 +448,16 @@ static FailureOr<SmallVector<int64_t>>
 evaluateSliceStart(TensorSliceOp slice, IntegerExpressionEvaluator &evaluator,
                    StringRef failureReason,
                    llvm::function_ref<InFlightDiagnostic()> emitError) {
-  SmallVector<int64_t> startIndices;
-  startIndices.reserve(slice.getIndices().size());
-  for (auto [dimension, index] : llvm::enumerate(slice.getIndices())) {
-    std::optional<llvm::APInt> resolvedIndex = evaluator.evaluate(index);
-    if (!resolvedIndex || !resolvedIndex->isSignedIntN(64)) {
-      if (emitError) {
-        InFlightDiagnostic diagnostic = emitError();
-        diagnostic << "pipe receive tensor_slice start index in dimension "
-                   << dimension << " is not statically enumerable";
-        if (!failureReason.empty()) {
-          diagnostic << ": " << failureReason;
-        }
-      }
-      return failure();
+  std::size_t failedDimension = 0;
+  FailureOr<SmallVector<int64_t>> startIndices =
+      evaluateTensorSliceStart(slice, evaluator, &failedDimension);
+  if (failed(startIndices) && emitError) {
+    InFlightDiagnostic diagnostic = emitError();
+    diagnostic << "pipe receive tensor_slice start index in dimension "
+               << failedDimension << " is not statically enumerable";
+    if (!failureReason.empty()) {
+      diagnostic << ": " << failureReason;
     }
-    startIndices.push_back(resolvedIndex->getSExtValue());
   }
   return startIndices;
 }
@@ -478,10 +523,10 @@ FailureOr<TensorSliceOccurrences> enumerateTensorSliceOccurrences(
   SmallVector<SmallVector<int64_t>> &occurrences = result.startIndices;
   failureReason.clear();
   if (failed(forEachLoopIteration(
-          *loops, bindings, evaluateInContext,
-          [&](const LoopInductionBindings &) -> LogicalResult {
+          *loops, bindings, evaluateInContext, emitError,
+          [&](const LoopInductionBindings &iteration) -> LogicalResult {
             IntegerExpressionEvaluator occurrenceEvaluator =
-                createLoopIntegerEvaluator(bindings, evaluateInContext);
+                createLoopIntegerEvaluator(iteration, evaluateInContext);
             for (auto [branch, selectedRegion] : enclosingBranches) {
               std::optional<llvm::APInt> condition =
                   occurrenceEvaluator.evaluate(branch.getCondition());
@@ -505,7 +550,7 @@ FailureOr<TensorSliceOccurrences> enumerateTensorSliceOccurrences(
             }
             occurrences.push_back(std::move(*startIndices));
             result.inductionValues.push_back(
-                boundInductionValues(*loops, bindings));
+                boundInductionValues(*loops, iteration));
             return success();
           }))) {
     return failure();
@@ -519,12 +564,10 @@ FailureOr<TensorSliceOccurrences> enumerateTensorSliceOccurrences(
                          "match its proven transfer count");
   }
 
-  TensorRegionOccurrences region{
-      /*globalTensorIndex=*/0, DeviceRefAttr(),
-      cast<RankedTensorType>(slice.getTensor().getType()).getShape(),
-      cast<RankedTensorType>(slice.getType()).getShape(), occurrences};
-  ArrayRef<int64_t> tensorGridShape = region.tensorGridShape;
-  SmallVector<int64_t> extents = region.getExtents();
+  ArrayRef<int64_t> tensorGridShape =
+      cast<RankedTensorType>(slice.getTensor().getType()).getShape();
+  SmallVector<int64_t> extents = getTensorRegionExtents(
+      tensorGridShape, cast<RankedTensorType>(slice.getType()).getShape());
   for (ArrayRef<int64_t> startIndices : occurrences) {
     for (int64_t dimension = 0;
          dimension < static_cast<int64_t>(tensorGridShape.size());
@@ -561,19 +604,18 @@ enumerateTensorSliceIterationStarts(TensorSliceOp slice, Operation *user,
   result.loops = *loops;
   LoopInductionBindings bindings;
   if (failed(forEachLoopIteration(
-          *loops, bindings, evaluateAtLocation,
-          [&](const LoopInductionBindings &) -> LogicalResult {
+          *loops, bindings, evaluateAtLocation, /*emitError=*/{},
+          [&](const LoopInductionBindings &iteration) -> LogicalResult {
             IntegerExpressionEvaluator iterationEvaluator =
-                createLoopIntegerEvaluator(bindings, evaluateAtLocation);
-            FailureOr<SmallVector<int64_t>> startIndices = evaluateSliceStart(
-                slice, iterationEvaluator, /*failureReason=*/"",
-                /*emitError=*/{});
+                createLoopIntegerEvaluator(iteration, evaluateAtLocation);
+            FailureOr<SmallVector<int64_t>> startIndices =
+                evaluateTensorSliceStart(slice, iterationEvaluator);
             if (failed(startIndices)) {
               return failure();
             }
             result.startIndices.push_back(std::move(*startIndices));
             result.inductionValues.push_back(
-                boundInductionValues(*loops, bindings));
+                boundInductionValues(*loops, iteration));
             return success();
           }))) {
     return failure();

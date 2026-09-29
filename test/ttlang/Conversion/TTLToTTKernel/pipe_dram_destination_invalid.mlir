@@ -816,3 +816,63 @@ module attributes {
 
 // Each device sends before it posts its own receive, which the schedule
 // verifier accepts because every iteration writes a distinct DRAM tile. The
+
+// -----
+
+// A receive loop whose trip count is static but whose bounds depend on a
+// runtime value cannot be enumerated.
+
+#runtime_layout = #ttl.layout<
+  shape = [64, 32], element_type = !ttcore.tile<32x32, bf16>,
+  buffer = dram, grid = [1, 1], memory = interleaved>
+#runtime_domain = #ttl.device_domain<components = <name = "device", extent = [2]>>
+#runtime_transfer = #ttl.device_transfer<
+  domain = #runtime_domain,
+  edge = <source = <coordinates = [0]>, destination = <coordinates = [1]>>>
+
+module attributes {ttl.launch_grid = [1, 1]} {
+  func.func @runtime_loop_bounds(
+      %output: tensor<2x1x!ttcore.tile<32x32, bf16>, #runtime_layout>,
+      %start: index)
+      attributes {
+        ttl.base_cta_index = 2 : i32, ttl.crta_indices = [0 : i32],
+        ttl.kernel_thread = #ttkernel.thread<noc>
+      } {
+    %send_dfb = ttl.bind_cb {cb_index = 0, block_count = 1}
+        {dfb_id = 0 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
+    %pipe = ttl.create_pipe src(0, 0) dst(0, 0) to(0, 0) net 0 {
+        deviceTransfer = #runtime_transfer}
+        : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>
+    %zero = arith.constant 0 : index
+    %one = arith.constant 1 : index
+    %two = arith.constant 2 : index
+    ttl.if_dst %pipe
+        : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0> {
+      %end = arith.addi %start, %two overflow<nsw> : index
+      scf.for %iteration = %start to %end step %one {
+        // expected-error @below {{pipe receive tensor_slice requires statically enumerable enclosing loops}}
+        %output_slice = ttl.tensor_slice %output[%zero, %zero]
+            : tensor<2x1x!ttcore.tile<32x32, bf16>, #runtime_layout>
+            -> tensor<1x1x!ttcore.tile<32x32, bf16>, #runtime_layout>
+        %receive = ttl.copy %pipe, %output_slice
+            : (!ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>,
+               tensor<1x1x!ttcore.tile<32x32, bf16>, #runtime_layout>)
+            -> !ttl.receive_request
+        ttl.wait %receive : !ttl.receive_request
+      }
+    }
+    ttl.if_src %pipe
+        : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0> {
+      %end = arith.addi %start, %two overflow<nsw> : index
+      scf.for %iteration = %start to %end step %one {
+        %send = ttl.copy %send_dfb, %pipe
+            : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>,
+               !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>)
+            -> !ttl.transfer_handle<write>
+        ttl.wait %send : !ttl.transfer_handle<write>
+      }
+    }
+    return
+  }
+}

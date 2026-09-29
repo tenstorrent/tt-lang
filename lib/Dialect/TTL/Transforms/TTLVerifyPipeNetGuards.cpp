@@ -2493,8 +2493,7 @@ FailureOr<PipeScheduleTensorDestination> enumeratePipeScheduleTensorDestination(
   auto resolveActiveFunctionArgument = [&](BlockArgument argument) {
     return resolveFunctionArgument(argument, postNode.callSites);
   };
-  auto evaluateRecordValue = [&](Value value,
-                                 const llvm::DenseMap<Value, llvm::APInt> &,
+  auto evaluateRecordValue = [&](Value value, const LoopInductionBindings &,
                                  std::string &) -> std::optional<llvm::APInt> {
     return evaluateActivePipeNetRecordValue(value, postNode.activeRecords,
                                             resolveActiveFunctionArgument);

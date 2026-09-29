@@ -20,10 +20,11 @@
 #include "mlir/IR/Diagnostics.h"
 #include "mlir/IR/Value.h"
 #include "mlir/Support/LogicalResult.h"
+#include "ttlang/Analysis/IntegerExpressionEvaluator.h"
+#include "ttlang/Analysis/LoopIterationUtils.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsAttrs.h"
 #include "ttlang/Dialect/TTL/Transforms/LaunchNodeDomainAnalysis.h"
-#include "ttlang/Dialect/TTL/Transforms/PipeNetExecutionUtils.h"
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/DenseMap.h"
@@ -53,6 +54,19 @@ struct TensorRegionOccurrences {
   /// Return the region extent in each tensor tile-grid dimension.
   SmallVector<int64_t> getExtents() const;
 };
+
+/// Return the extent in each tensor tile-grid dimension of a region of shape
+/// `sliceShape`, whose rank may be lower than the tensor's.
+SmallVector<int64_t> getTensorRegionExtents(ArrayRef<int64_t> tensorGridShape,
+                                            ArrayRef<int64_t> sliceShape);
+
+/// Evaluate the start index of every dimension of `slice`. On failure, set
+/// `failedDimension`, when provided, to the first dimension whose start is not
+/// a signed 64-bit value.
+FailureOr<SmallVector<int64_t>>
+evaluateTensorSliceStart(TensorSliceOp slice,
+                         IntegerExpressionEvaluator &evaluator,
+                         std::size_t *failedDimension = nullptr);
 
 /// Call `visit` with the indices of each pair of overlapping occurrences of
 /// `lhs` and `rhs` until it returns true, and return whether it did.
@@ -98,7 +112,7 @@ SmallVector<bool> computeDisjointTensorRegionDestinations(
 /// `failureReason` to explain a value it cannot resolve.
 using TensorSliceOccurrenceValueEvaluator =
     llvm::function_ref<std::optional<llvm::APInt>(
-        Value value, const llvm::DenseMap<Value, llvm::APInt> &inductionValues,
+        Value value, const LoopInductionBindings &inductionValues,
         std::string &failureReason)>;
 
 /// Start indices of a slice at each enumerated execution, in execution order,
