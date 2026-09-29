@@ -8831,6 +8831,45 @@ def test_pipe_runtime_resources_use_tensor_backed_computed_address_base(
     assert resources.l1_buffer_addresses == frozenset()
 
 
+# Per-node receiver bases are bound by destination, not cached as one tensor address.
+def test_per_node_pipe_resources_do_not_query_common_tensor_address(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    device = object()
+    core_ranges = _FakeExplicitCoreRanges((0, 0), (0, 0))
+    tensor = _LocalTensorTestDouble("l1", "height", core_ranges, per_core=True)
+    tensor.buffer_address = lambda: pytest.fail("per-core tensor has no common address")
+    config = replace(
+        _tensor_backing_config(0, nodes=((0, 0),)),
+        l1_offset=0,
+        storage_index=0,
+        storage_capacity_pages=1,
+        sram_node_layouts=(SRAMNodeLayout((0, 0), 0, False, 8, 0),),
+    )
+
+    resources = kernel_runner.build_pipe_runtime_resources(
+        tensors=[tensor],
+        core_ranges=core_ranges,
+        cb_configs=[config],
+        pipe_computed_address_dfb_indices=[0],
+        device=device,
+    )
+    cached, _ = kernel_runner.get_cached_runtime_resources(
+        kernel_runner.KernelRuntimeResourceCache(),
+        tensors=[tensor],
+        cb_configs=[config],
+        core_ranges=core_ranges,
+        pipe_sram_scratch_bytes=0,
+        num_pipe_global_semaphores=0,
+        pipe_computed_address_dfb_indices=(0,),
+        num_dfb_resets=0,
+        device=device,
+        memory_model="compiler-sram",
+    )
+
+    assert resources.computed_address_base_addresses == {}
+    assert cached.computed_address_base_addresses == {}
+
+
 def test_cached_pipe_resources_refresh_tensor_backed_computed_address(monkeypatch):
     fake_ttnn = _FakeTTNN()
     monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)

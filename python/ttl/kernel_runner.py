@@ -2782,6 +2782,9 @@ def _get_tensor_backed_computed_address_bases(
                 f"computed-address receiver DFB index {dfb_index} is invalid"
             )
         config = cb_configs[dfb_index]
+        # Per-node receiver bases are bound for each destination descriptor.
+        if config.sram_node_layouts:
+            continue
         if not _uses_tensor_backed_computed_address(config, dfb_index):
             continue
         segment_bases = set()
