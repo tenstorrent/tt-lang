@@ -296,6 +296,14 @@ getKernelThreadType(mlir::func::FuncOp func) {
   return std::nullopt;
 }
 
+/// Return true if `op` executes each of its regions at most once per
+/// invocation, so only enclosing loops can repeat an operation inside it.
+inline bool executesRegionsAtMostOnce(mlir::Operation *op) {
+  return mlir::isa<mlir::affine::AffineIfOp, mlir::scf::IfOp,
+                   mlir::scf::IndexSwitchOp, mlir::scf::ExecuteRegionOp,
+                   IfSrcOp, IfDstOp>(op);
+}
+
 /// Return true if `op` belongs to a NOC kernel thread.
 inline bool isNocKernelThread(mlir::Operation *op) {
   return getKernelThreadType(op->getParentOfType<mlir::func::FuncOp>()) ==

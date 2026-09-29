@@ -30,6 +30,42 @@ def TTLInsertCBSync
     destination reservation is not published automatically because only the
     selected request is known to be complete. Publication must be explicit and
     conditioned on the corresponding selection, or follow an exact wait.
+
+    A block still held when a nested region acquires the same DFB with the
+    same kind would alias that acquisition (`cb_wait_front` and
+    `cb_reserve_back` address the current slot). When the region releases
+    the block on some branches and never uses it afterwards, the release is
+    hoisted before the region:
+
+    ```mlir
+    %b0 = ttl.cb_wait %in : ...
+    ttl.store %b0, %slot : ...
+    scf.if %cond {
+      ttl.cb_pop %in : ...
+      %b1 = ttl.cb_wait %in : ...
+      ...
+    }
+    ```
+
+    becomes
+
+    ```mlir
+    %b0 = ttl.cb_wait %in : ...
+    ttl.store %b0, %slot : ...
+    ttl.cb_pop %in : ...
+    scf.if %cond {
+      %b1 = ttl.cb_wait %in : ...
+      ...
+    }
+    ```
+
+    The pass emits an error when the held block is used in or after the
+    region without a release on every branch, and, in data-movement kernels,
+    when a held block is not used before the next same-kind acquisition
+    unless the two acquisitions coalesce into one. The DFB pointer names the
+    first block of a coalesced acquisition, so in a data-movement kernel an
+    access to a later block is an error unless it is a pipe receive into that
+    block's view.
   }];
 
   let options = [
@@ -1043,6 +1079,50 @@ def TTLVerifyDFBSPSC
   let dependentDialects = [];
 }
 
+def TTLVerifyDFBLifecycle
+    : Pass<"ttl-verify-dfb-lifecycle", "::mlir::ModuleOp"> {
+  let summary = "Verify DFB acquire/release order and capacity per launch node";
+  let description = [{
+    Checks, per launch node and DFB, that the `ttl.cb_reserve`/`ttl.cb_push`
+    and `ttl.cb_wait`/`ttl.cb_pop` sequences of all kernels are well formed:
+    a release never exceeds the preceding acquisitions of its kind, open
+    acquisitions never exceed the DFB capacity, no acquisition is open when
+    the kernel returns, and across kernels the blocks waited for or popped
+    never exceed the blocks pushed while the unpopped blocks fit the capacity.
+    Every kernel on a node waits at a synchronized reset or reconfiguration
+    until all of them arrive, so the waits and reserves before one must be
+    satisfied by the pushes and pops before it. A reset restores the physical
+    interfaces of its lowered mask and a reconfiguration the descriptors that
+    `ttl.dfb_reconfiguration_plan` installs at its boundary on the node; a
+    restored DFB's sequence between two restorations is checked on its own,
+    and every other DFB's sequence continues across the operation.
+
+    Nodes where an external call may perform undeclared protocol actions on a
+    DFB are not checked for it. There the pass warns when the DFB is waited
+    on, never popped, and its producer can push more blocks than its capacity
+    before a restoration, because published blocks stay in the DFB.
+
+    ```mlir
+    // Rejected: four blocks are pushed into a capacity-1 DFB that no
+    // kernel pops.
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 1} {dfb_id = 0 : index} : ...
+    scf.for %i = %c0 to %c4 step %c1 {
+      %slot = ttl.cb_reserve %cb : ...
+      ttl.cb_push %cb : ...
+    }
+    ```
+
+    Region execution per node comes from the launch-node domain and
+    execution-count analyses; sequences they cannot resolve are accepted.
+    Requires the finalized DFB indices and `ttl.dfb_allocations` metadata
+    emitted by `ttl-finalize-dfb-indices`, the `ttl.dfb_reconfiguration_plan`
+    it emits for a module with reconfigurations, and a valid
+    `ttl.launch_grid`.
+  }];
+
+  let dependentDialects = [];
+}
+
 def TTLErasePipeNetScopes
     : Pass<"ttl-erase-pipenet-scopes", "::mlir::ModuleOp"> {
   let summary = "Inline and erase `ttl.pipenet_scope` regions";
@@ -1114,6 +1194,14 @@ def TTLFinalizeDFBIndices
     different geometry or storage. A DFB with live protocol state crosses a
     reconfiguration unchanged and remains active in every epoch it spans, so
     its physical index cannot be reassigned at those boundaries.
+
+    Every participant must execute a synchronized reset or reconfiguration the
+    same compile-time-known number of times on each launch node: at most once,
+    or once per iteration of one sequential loop with a compile-time-known
+    trip count. The count may depend on the launch node. A reset or
+    reconfiguration under a condition on a runtime value, or in nested loops,
+    is rejected because the DFB lifecycle checks do not cover transactions
+    across it.
 
     Physical-index coloring and storage coloring enforce different contracts.
     A physical index identifies one active hardware descriptor and therefore
