@@ -80,8 +80,9 @@ may serve as a forwarder.
 2. Forwarder nodes. Relay executes on forwarder nodes: launched nodes that are
    not endpoints of any pipe net in the operation. An operation author
    provides forwarders by launching more nodes than the pipe nets' node
-   relations name. Without forwarder nodes, the compiler delivers every
-   payload by direct unicast.
+   relations name. Without forwarder nodes, the compiler does not use relay
+   and delivers each payload by multicast when rule 1 permits it, or by direct
+   unicast.
 3. Visibility of received slices. Another data movement thread, on any node of
    the destination device, may read a slice written by a receive after the
    receiving thread's `wait()` on that receive is followed by an `inc` or `set`
