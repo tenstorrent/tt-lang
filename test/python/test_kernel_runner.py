@@ -3018,6 +3018,49 @@ def test_build_kernel_descriptors_accepts_complete_local_tensor_shards(monkeypat
     assert descriptors[0].common_runtime_args == [0x2000]
 
 
+def _per_core_device_shards(addresses):
+    return [
+        SimpleNamespace(
+            is_per_core_allocated=lambda: True,
+            device_coords=lambda coordinate=device_index: ((coordinate, 0),),
+            experimental_per_core_buffer_address=lambda *_args, value=address: value,
+        )
+        for device_index, address in enumerate(addresses)
+    ]
+
+
+# An I/O tensor needs no address binding when no kernel uses its runtime argument.
+@pytest.mark.parametrize("compiler_sram", [False, True], ids=["metal-dfb", "sram"])
+def test_descriptor_ignores_unreferenced_per_core_tensor(monkeypatch, compiler_sram):
+    fake_ttnn = _local_tensor_test_environment()
+    fake_ttnn.get_device_tensors = lambda _tensor: _per_core_device_shards(
+        (0x2000, 0x3000)
+    )
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    core_ranges = _FakeExplicitCoreRanges((0, 0), (1, 0))
+    tensor = _LocalTensorTestDouble("l1", "height", core_ranges, per_core=True)
+    spec = kernel_runner.KernelSpec(
+        path="/tmp/kernel.cpp",
+        thread_type="compute",
+        tensor_indices=[],
+        config=object(),
+    )
+
+    descriptors = kernel_runner.build_kernel_descriptors(
+        kernel_specs=[spec],
+        tensors=[tensor],
+        tensor_accessor_args=[],
+        core_ranges=core_ranges,
+        grid_cols=2,
+        grid_rows=1,
+        num_cbs=0,
+        compiler_sram=compiler_sram,
+    )
+
+    assert len(descriptors) == 1
+    assert descriptors[0].common_runtime_args == []
+
+
 # Each executing core receives the address of its local tensor shard.
 def test_build_kernel_descriptors_binds_per_core_local_tensor_addresses(monkeypatch):
     fake_ttnn = _local_tensor_test_environment()
@@ -3041,6 +3084,7 @@ def test_build_kernel_descriptors_binds_per_core_local_tensor_addresses(monkeypa
         grid_rows=1,
         num_cbs=0,
         sram_mesh_coordinate=(0, 0),
+        compiler_sram=True,
     )
 
     assert [descriptor.common_runtime_args for descriptor in descriptors] == [
@@ -3074,6 +3118,7 @@ def test_per_core_tensor_rejects_nonlocal_access(monkeypatch):
             grid_rows=1,
             num_cbs=0,
             sram_mesh_coordinate=(0, 0),
+            compiler_sram=True,
         )
 
 

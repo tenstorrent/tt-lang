@@ -1698,15 +1698,20 @@ def _is_per_core_allocated(tensor: Any) -> bool:
 
 
 def _resolve_per_core_tensor_addresses(
-    tensors: List[Any], mesh_coordinate: Optional[Tuple[int, ...]]
+    tensors: List[Any],
+    mesh_coordinate: Optional[Tuple[int, ...]],
+    referenced_tensor_indices: Iterable[int],
 ) -> Dict[int, Dict[Tuple[int, int], int]]:
-    """Resolve the local address of each independently allocated tensor shard."""
+    """Resolve addresses for independently allocated tensor runtime arguments."""
     _ensure_ttnn()
     if ttnn is None:
         raise RuntimeError("ttnn is not available")
 
     addresses_by_tensor = {}
+    referenced_indices = set(referenced_tensor_indices)
     for tensor_index, tensor in enumerate(tensors):
+        if tensor_index not in referenced_indices:
+            continue
         if not _is_per_core_allocated(tensor):
             continue
         try:
@@ -1953,6 +1958,7 @@ def build_kernel_descriptors(
     sram_node_arenas: Optional[Dict[Tuple[int, int], Any]] = None,
     sram_configs: Sequence[PhysicalDFBConfig] = (),
     sram_mesh_coordinate: Optional[Tuple[int, ...]] = None,
+    compiler_sram: bool = False,
 ) -> List[Any]:
     """
     Build kernel descriptors for ttnn.generic_op.
@@ -1983,6 +1989,8 @@ def build_kernel_descriptors(
             in finalized boundary order.
         compiler_l1_base_address: Common per-node base address for the
             compiler-managed SRAM arena.
+        compiler_sram: Resolve local per-core tensor addresses for
+            compiler-managed SRAM kernels.
 
     Returns:
         List of ttnn.KernelDescriptor objects.
@@ -2005,8 +2013,18 @@ def build_kernel_descriptors(
     computed_address_base_addresses = pipe_computed_address_base_addresses or {}
     extra_args = list(extra_common_runtime_args or [])
     reconfiguration_args = dict(dfb_reconfiguration_runtime_args or {})
-    per_core_tensor_addresses = _resolve_per_core_tensor_addresses(
-        tensors, sram_mesh_coordinate
+    per_core_tensor_addresses = (
+        _resolve_per_core_tensor_addresses(
+            tensors,
+            sram_mesh_coordinate,
+            (
+                tensor_index
+                for spec in kernel_specs
+                for tensor_index in spec.tensor_indices
+            ),
+        )
+        if compiler_sram
+        else {}
     )
     if (
         expected_extra_common_runtime_args is not None
@@ -4885,6 +4903,7 @@ def _run_kernel_on_device_impl(
             sram_node_arenas=sram_node_arenas,
             sram_configs=cb_configs,
             sram_mesh_coordinate=mesh_coordinate,
+            compiler_sram=compiler_l1,
             pipe_computed_address_base_addresses=pipe_computed_address_base_addresses,
             extra_common_runtime_args=(
                 pipe_runtime_resources.extra_common_runtime_args
