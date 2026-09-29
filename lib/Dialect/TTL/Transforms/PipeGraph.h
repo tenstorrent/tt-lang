@@ -260,6 +260,11 @@ struct ReceiverTensorRegionInfo {
   int64_t pageSizeBytes = 0;
   std::optional<int64_t> senderTensorArgumentIndex;
   Location loc;
+  /// Enumerated loops enclosing the destination slice and their induction
+  /// values at each occurrence, outermost first. Empty when the slice is
+  /// outside every enumerated loop.
+  SmallVector<scf::ForOp> occurrenceLoops = {};
+  SmallVector<SmallVector<int64_t>> occurrenceInductionValues = {};
 
   /// Return the occurrences written on `device`, which is null when unknown.
   TensorRegionOccurrences getOccurrences(DeviceRefAttr device) const {

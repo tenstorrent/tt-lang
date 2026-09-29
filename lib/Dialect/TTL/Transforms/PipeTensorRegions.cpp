@@ -122,7 +122,120 @@ SmallVector<bool> computeDisjointTensorRegionDestinations(
   return disjoint;
 }
 
-FailureOr<SmallVector<SmallVector<int64_t>>> enumerateTensorSliceOccurrences(
+namespace {
+struct LoopRange {
+  Value inductionVariable;
+  int64_t lowerBound = 0;
+  int64_t upperBound = 0;
+  int64_t step = 1;
+};
+} // namespace
+
+/// Resolve the `scf.for` loops enclosing `op` whose induction variables
+/// `evaluator` cannot evaluate, outermost first.
+static FailureOr<SmallVector<std::pair<scf::ForOp, LoopRange>>>
+resolveEnumeratedLoops(Operation *op, IntegerExpressionEvaluator &evaluator,
+                       llvm::function_ref<InFlightDiagnostic()> emitError) {
+  SmallVector<scf::ForOp> dynamicLoops;
+  for (Operation *ancestor = op->getParentOp(); ancestor;
+       ancestor = ancestor->getParentOp()) {
+    auto loop = dyn_cast<scf::ForOp>(ancestor);
+    if (loop && !evaluator.evaluate(loop.getInductionVar())) {
+      dynamicLoops.push_back(loop);
+    }
+    if (isa<func::FuncOp>(ancestor)) {
+      break;
+    }
+  }
+  std::reverse(dynamicLoops.begin(), dynamicLoops.end());
+
+  SmallVector<std::pair<scf::ForOp, LoopRange>> loops;
+  loops.reserve(dynamicLoops.size());
+  for (scf::ForOp loop : dynamicLoops) {
+    std::optional<llvm::APInt> lowerBound =
+        evaluator.evaluate(loop.getLowerBound());
+    std::optional<llvm::APInt> upperBound =
+        evaluator.evaluate(loop.getUpperBound());
+    std::optional<llvm::APInt> step = evaluator.evaluate(loop.getStep());
+    if (!lowerBound || !upperBound || !step || !lowerBound->isSignedIntN(64) ||
+        !upperBound->isSignedIntN(64) || !step->isSignedIntN(64) ||
+        step->getSExtValue() <= 0) {
+      if (emitError) {
+        emitError() << "pipe receive tensor_slice requires statically "
+                       "enumerable enclosing loops";
+      }
+      return failure();
+    }
+    loops.push_back(
+        {loop, LoopRange{loop.getInductionVar(), lowerBound->getSExtValue(),
+                         upperBound->getSExtValue(), step->getSExtValue()}});
+  }
+  return loops;
+}
+
+/// Bind every combination of the induction values of `loops`, outermost
+/// first, and call `visit` for each. Stops at the first failure.
+static LogicalResult
+forEachLoopIteration(ArrayRef<std::pair<scf::ForOp, LoopRange>> loops,
+                     llvm::DenseMap<Value, llvm::APInt> &inductionValues,
+                     llvm::function_ref<InFlightDiagnostic()> emitError,
+                     llvm::function_ref<LogicalResult()> visit) {
+  if (loops.empty()) {
+    return visit();
+  }
+  const LoopRange &range = loops.front().second;
+  for (int64_t value = range.lowerBound; value < range.upperBound;) {
+    inductionValues[range.inductionVariable] = llvm::APInt(
+        IndexType::kInternalStorageBitWidth, value, /*isSigned=*/true);
+    if (failed(forEachLoopIteration(loops.drop_front(), inductionValues,
+                                    emitError, visit))) {
+      return failure();
+    }
+    std::optional<int64_t> nextValue = llvm::checkedAdd(value, range.step);
+    if (!nextValue || *nextValue <= value) {
+      if (emitError) {
+        emitError() << "pipe receive tensor_slice loop enumeration overflowed";
+      }
+      return failure();
+    }
+    value = *nextValue;
+  }
+  inductionValues.erase(range.inductionVariable);
+  return success();
+}
+
+/// Evaluate the start indices of `slice` for the bound induction values.
+static FailureOr<SmallVector<int64_t>>
+evaluateSliceStart(TensorSliceOp slice, IntegerExpressionEvaluator &evaluator,
+                   const std::string &failureReason,
+                   llvm::function_ref<InFlightDiagnostic()> emitError) {
+  SmallVector<int64_t> startIndices;
+  startIndices.reserve(slice.getIndices().size());
+  for (auto [dimension, index] : llvm::enumerate(slice.getIndices())) {
+    std::optional<llvm::APInt> resolvedIndex = evaluator.evaluate(index);
+    if (!resolvedIndex || !resolvedIndex->isSignedIntN(64)) {
+      if (emitError) {
+        emitError() << "pipe receive tensor_slice start index in dimension "
+                    << dimension << " is not statically enumerable"
+                    << (failureReason.empty() ? "" : ": " + failureReason);
+      }
+      return failure();
+    }
+    startIndices.push_back(resolvedIndex->getSExtValue());
+  }
+  return startIndices;
+}
+
+/// Return the bound induction values of `loops`, outermost first.
+static SmallVector<int64_t> boundInductionValues(
+    ArrayRef<std::pair<scf::ForOp, LoopRange>> loops,
+    const llvm::DenseMap<Value, llvm::APInt> &inductionValues) {
+  return llvm::map_to_vector(loops, [&](const auto &loop) {
+    return inductionValues.lookup(loop.second.inductionVariable).getSExtValue();
+  });
+}
+
+FailureOr<TensorSliceOccurrences> enumerateTensorSliceOccurrences(
     TensorSliceOp slice, const LaunchExecutionLocation &location,
     const LaunchNodeDomainState &state, std::uint64_t expectedExecutionCount,
     TensorSliceOccurrenceValueEvaluator evaluateContextValue,
@@ -147,43 +260,10 @@ FailureOr<SmallVector<SmallVector<int64_t>>> enumerateTensorSliceOccurrences(
     return evaluateIntegerAtLaunchLocation(value, location, state);
   };
   IntegerExpressionEvaluator contextEvaluator(evaluateValue);
-
-  SmallVector<scf::ForOp> dynamicLoops;
-  for (Operation *ancestor = slice->getParentOp(); ancestor;
-       ancestor = ancestor->getParentOp()) {
-    auto loop = dyn_cast<scf::ForOp>(ancestor);
-    if (loop && !contextEvaluator.evaluate(loop.getInductionVar())) {
-      dynamicLoops.push_back(loop);
-    }
-    if (isa<func::FuncOp>(ancestor)) {
-      break;
-    }
-  }
-  std::reverse(dynamicLoops.begin(), dynamicLoops.end());
-
-  struct LoopRange {
-    Value inductionVariable;
-    int64_t lowerBound = 0;
-    int64_t upperBound = 0;
-    int64_t step = 1;
-  };
-  SmallVector<LoopRange> loopRanges;
-  loopRanges.reserve(dynamicLoops.size());
-  for (scf::ForOp loop : dynamicLoops) {
-    std::optional<llvm::APInt> lowerBound =
-        contextEvaluator.evaluate(loop.getLowerBound());
-    std::optional<llvm::APInt> upperBound =
-        contextEvaluator.evaluate(loop.getUpperBound());
-    std::optional<llvm::APInt> step = contextEvaluator.evaluate(loop.getStep());
-    if (!lowerBound || !upperBound || !step || !lowerBound->isSignedIntN(64) ||
-        !upperBound->isSignedIntN(64) || !step->isSignedIntN(64) ||
-        step->getSExtValue() <= 0) {
-      return reportFailure("pipe receive tensor_slice requires statically "
-                           "enumerable enclosing loops");
-    }
-    loopRanges.push_back(
-        LoopRange{loop.getInductionVar(), lowerBound->getSExtValue(),
-                  upperBound->getSExtValue(), step->getSExtValue()});
+  FailureOr<SmallVector<std::pair<scf::ForOp, LoopRange>>> loops =
+      resolveEnumeratedLoops(slice, contextEvaluator, emitError);
+  if (failed(loops)) {
+    return failure();
   }
 
   SmallVector<std::pair<scf::IfOp, unsigned>> enclosingBranches;
@@ -201,67 +281,45 @@ FailureOr<SmallVector<SmallVector<int64_t>>> enumerateTensorSliceOccurrences(
     }
   }
 
-  SmallVector<SmallVector<int64_t>> occurrences;
+  TensorSliceOccurrences result;
+  result.loops =
+      llvm::map_to_vector(*loops, [](const auto &loop) { return loop.first; });
+  SmallVector<SmallVector<int64_t>> &occurrences = result.startIndices;
   failureReason.clear();
-  std::function<LogicalResult(std::size_t)> enumerate =
-      [&](std::size_t loopIndex) -> LogicalResult {
-    if (loopIndex != loopRanges.size()) {
-      const LoopRange &range = loopRanges[loopIndex];
-      for (int64_t value = range.lowerBound; value < range.upperBound;) {
-        inductionValues[range.inductionVariable] = llvm::APInt(
-            IndexType::kInternalStorageBitWidth, value, /*isSigned=*/true);
-        if (failed(enumerate(loopIndex + 1))) {
-          return failure();
-        }
-        std::optional<int64_t> nextValue = llvm::checkedAdd(value, range.step);
-        if (!nextValue || *nextValue <= value) {
-          return reportFailure(
-              "pipe receive tensor_slice loop enumeration overflowed");
-        }
-        value = *nextValue;
-      }
-      inductionValues.erase(range.inductionVariable);
-      return success();
-    }
-
-    IntegerExpressionEvaluator occurrenceEvaluator(evaluateValue);
-    for (auto [branch, selectedRegion] : enclosingBranches) {
-      std::optional<llvm::APInt> condition =
-          occurrenceEvaluator.evaluate(branch.getCondition());
-      if (!condition || condition->getBitWidth() != 1) {
-        return reportFailure("pipe receive tensor_slice requires statically "
-                             "enumerable enclosing conditions");
-      }
-      if (condition->getBoolValue() != (selectedRegion == 0)) {
-        return success();
-      }
-    }
-
-    SmallVector<int64_t> startIndices;
-    startIndices.reserve(slice.getIndices().size());
-    for (auto [dimension, index] : llvm::enumerate(slice.getIndices())) {
-      std::optional<llvm::APInt> resolvedIndex =
-          occurrenceEvaluator.evaluate(index);
-      if (!resolvedIndex || !resolvedIndex->isSignedIntN(64)) {
-        return reportFailure(
-            "pipe receive tensor_slice start index in dimension ", dimension,
-            " is not statically enumerable",
-            failureReason.empty() ? "" : ": " + failureReason);
-      }
-      startIndices.push_back(resolvedIndex->getSExtValue());
-    }
-    if (occurrences.size() >= expectedExecutionCount) {
-      return reportFailure("pipe receive tensor_slice enumeration exceeds its "
-                           "proven transfer count");
-    }
-    occurrences.push_back(std::move(startIndices));
-    return success();
-  };
-  if (failed(enumerate(0))) {
+  if (failed(forEachLoopIteration(
+          *loops, inductionValues, emitError, [&]() -> LogicalResult {
+            IntegerExpressionEvaluator occurrenceEvaluator(evaluateValue);
+            for (auto [branch, selectedRegion] : enclosingBranches) {
+              std::optional<llvm::APInt> condition =
+                  occurrenceEvaluator.evaluate(branch.getCondition());
+              if (!condition || condition->getBitWidth() != 1) {
+                return reportFailure("pipe receive tensor_slice requires "
+                                     "statically enumerable enclosing "
+                                     "conditions");
+              }
+              if (condition->getBoolValue() != (selectedRegion == 0)) {
+                return success();
+              }
+            }
+            FailureOr<SmallVector<int64_t>> startIndices = evaluateSliceStart(
+                slice, occurrenceEvaluator, failureReason, emitError);
+            if (failed(startIndices)) {
+              return failure();
+            }
+            if (occurrences.size() >= expectedExecutionCount) {
+              return reportFailure("pipe receive tensor_slice enumeration "
+                                   "exceeds its proven transfer count");
+            }
+            occurrences.push_back(std::move(*startIndices));
+            result.inductionValues.push_back(
+                boundInductionValues(*loops, inductionValues));
+            return success();
+          }))) {
     return failure();
   }
-  if (dynamicLoops.empty() && occurrences.size() == 1) {
+  if (loops->empty() && occurrences.size() == 1) {
     occurrences.resize(expectedExecutionCount, occurrences.front());
+    result.inductionValues.resize(expectedExecutionCount);
   }
   if (occurrences.size() != expectedExecutionCount) {
     return reportFailure("pipe receive tensor_slice enumeration does not "
@@ -290,7 +348,51 @@ FailureOr<SmallVector<SmallVector<int64_t>>> enumerateTensorSliceOccurrences(
       }
     }
   }
-  return occurrences;
+  return result;
+}
+
+FailureOr<TensorSliceOccurrences>
+enumerateTensorSliceIterationStarts(TensorSliceOp slice, Operation *user,
+                                    const LaunchExecutionLocation &location,
+                                    const LaunchNodeDomainState &state,
+                                    std::uint64_t maxIterations) {
+  llvm::DenseMap<Value, llvm::APInt> inductionValues;
+  auto evaluateValue = [&](Value value) -> std::optional<llvm::APInt> {
+    auto inductionIt = inductionValues.find(value);
+    if (inductionIt != inductionValues.end()) {
+      return inductionIt->second;
+    }
+    return evaluateIntegerAtLaunchLocation(value, location, state);
+  };
+  IntegerExpressionEvaluator evaluator(evaluateValue);
+  FailureOr<SmallVector<std::pair<scf::ForOp, LoopRange>>> loops =
+      resolveEnumeratedLoops(user, evaluator, /*emitError=*/{});
+  if (failed(loops)) {
+    return failure();
+  }
+  TensorSliceOccurrences result;
+  result.loops =
+      llvm::map_to_vector(*loops, [](const auto &loop) { return loop.first; });
+  std::string failureReason;
+  if (failed(forEachLoopIteration(
+          *loops, inductionValues, /*emitError=*/{}, [&]() -> LogicalResult {
+            if (result.startIndices.size() >= maxIterations) {
+              return failure();
+            }
+            IntegerExpressionEvaluator iterationEvaluator(evaluateValue);
+            FailureOr<SmallVector<int64_t>> startIndices = evaluateSliceStart(
+                slice, iterationEvaluator, failureReason, /*emitError=*/{});
+            if (failed(startIndices)) {
+              return failure();
+            }
+            result.startIndices.push_back(std::move(*startIndices));
+            result.inductionValues.push_back(
+                boundInductionValues(*loops, inductionValues));
+            return success();
+          }))) {
+    return failure();
+  }
+  return result;
 }
 
 bool canOmitFabricReceiverRendezvous(bool isDeviceTransfer, bool isPointToPoint,

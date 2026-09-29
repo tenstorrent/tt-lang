@@ -16,6 +16,7 @@
 #ifndef TTLANG_DIALECT_TTL_TRANSFORMS_PIPETENSORREGIONS_H
 #define TTLANG_DIALECT_TTL_TRANSFORMS_PIPETENSORREGIONS_H
 
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Diagnostics.h"
 #include "mlir/IR/Value.h"
 #include "mlir/Support/LogicalResult.h"
@@ -95,6 +96,14 @@ using TensorSliceOccurrenceValueEvaluator =
         Value value, const llvm::DenseMap<Value, llvm::APInt> &inductionValues,
         std::string &failureReason)>;
 
+/// Start indices of a slice at each enumerated execution, in execution order,
+/// with the induction values of `loops` (outermost first) at that execution.
+struct TensorSliceOccurrences {
+  SmallVector<scf::ForOp> loops;
+  SmallVector<SmallVector<int64_t>> startIndices;
+  SmallVector<SmallVector<int64_t>> inductionValues;
+};
+
 /// Return the start indices of `slice` for each of its
 /// `expectedExecutionCount` executions at `location`, in execution order.
 /// Enclosing `scf.for` loops whose induction variables are not evaluable are
@@ -104,11 +113,22 @@ using TensorSliceOccurrenceValueEvaluator =
 /// when the enumeration count differs from `expectedExecutionCount`, or when an
 /// occurrence leaves the tensor tile grid. The failure is reported through
 /// `emitError` when it is provided.
-FailureOr<SmallVector<SmallVector<int64_t>>> enumerateTensorSliceOccurrences(
+FailureOr<TensorSliceOccurrences> enumerateTensorSliceOccurrences(
     TensorSliceOp slice, const LaunchExecutionLocation &location,
     const LaunchNodeDomainState &state, std::uint64_t expectedExecutionCount,
     TensorSliceOccurrenceValueEvaluator evaluateContextValue,
     llvm::function_ref<InFlightDiagnostic()> emitError);
+
+/// Return the start indices of `slice` for every iteration of the `scf.for`
+/// loops enclosing `user` whose induction variables are not evaluable at
+/// `location`, whether or not enclosing `scf.if` conditions execute `user`.
+/// Fails when a loop bound or start index cannot be evaluated or the iteration
+/// count exceeds `maxIterations`.
+FailureOr<TensorSliceOccurrences>
+enumerateTensorSliceIterationStarts(TensorSliceOp slice, Operation *user,
+                                    const LaunchExecutionLocation &location,
+                                    const LaunchNodeDomainState &state,
+                                    std::uint64_t maxIterations);
 
 /// Return true when a transfer needs no receiver readiness signal: it is a
 /// point-to-point fabric transfer to one receiver whose tensor-region

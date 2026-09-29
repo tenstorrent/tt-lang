@@ -656,6 +656,30 @@ isBeforeInReceiverExecution(Operation *before, Operation *after,
   return false;
 }
 
+// Return true when `before` completes before every execution of `after`.
+// Only `after` is projected outward, because an operation enclosing `before`
+// may complete without executing `before`.
+static bool
+isBeforeEveryExecution(Operation *before, Operation *after,
+                       const LaunchExecutionLocation &location,
+                       const PipeGraphAnalysisState &analysisState) {
+  for (Operation *afterAncestor = after; afterAncestor;) {
+    if (isBeforeInReceiverControlContext(before, afterAncestor, location,
+                                         analysisState)) {
+      return true;
+    }
+    Block *afterBlock = afterAncestor->getBlock();
+    afterAncestor = afterBlock ? afterBlock->getParentOp() : nullptr;
+  }
+  return false;
+}
+
+// Order that a receive wait must have relative to a later use. A push or post
+// that consumes a receive needs the wait only when the receive executes. A
+// tensor read needs it in every execution, because a no-rendezvous sender may
+// write the region at any time during the invocation.
+enum class ReceiveWaitOrder { WheneverBothExecute, EveryUseExecution };
+
 static bool hasMatchingReceiveWaitBeforeUse(
     PipeTransferPostOp postOp, Operation *consumer,
     const llvm::DenseMap<Operation *, SmallVector<PipeTransferWaitOp>>
@@ -664,14 +688,19 @@ static bool hasMatchingReceiveWaitBeforeUse(
                          SmallVector<PipeGraphAnalysisState::ReceiveWaitAnyUse>>
         &waitAnysByPost,
     const LaunchExecutionLocation &location,
-    const PipeGraphAnalysisState &analysisState) {
+    const PipeGraphAnalysisState &analysisState, ReceiveWaitOrder order) {
   auto waitIt = waitsByPost.find(postOp.getOperation());
   if (waitIt != waitsByPost.end() &&
       llvm::any_of(waitIt->second, [&](PipeTransferWaitOp waitOp) {
-        return executionGuaranteesLaterExecution(postOp, waitOp, location,
-                                                 analysisState) &&
-               isBeforeInReceiverExecution(waitOp, consumer, location,
-                                           analysisState);
+        if (!executionGuaranteesLaterExecution(postOp, waitOp, location,
+                                               analysisState)) {
+          return false;
+        }
+        return order == ReceiveWaitOrder::WheneverBothExecute
+                   ? isBeforeInReceiverExecution(waitOp, consumer, location,
+                                                 analysisState)
+                   : isBeforeEveryExecution(waitOp, consumer, location,
+                                            analysisState);
       })) {
     return true;
   }
@@ -699,6 +728,68 @@ static bool hasMatchingReceiveWaitBeforeUse(
   return false;
 }
 
+// Bounds the read iterations enumerated to order a read after the receives
+// of its region.
+constexpr std::uint64_t kMaxEnumeratedReadIterations = 4096;
+
+// Return true when every occurrence of `receiveRegion` that overlaps a region
+// `readSlice` selects executes no later than the read: in an earlier iteration
+// of the loops enclosing `read`, or in the same iteration. Every such loop must
+// also enclose the receive. The caller orders a same-iteration receive wait
+// before the read.
+static bool
+receiveOccurrencesPrecedeRead(TensorSliceOp readSlice, Operation *read,
+                              const ReceiverTensorRegionInfo &receiveRegion,
+                              DeviceRefAttr receiveDevice,
+                              const LaunchExecutionLocation &location,
+                              const PipeGraphAnalysisState &analysisState) {
+  FailureOr<TensorSliceOccurrences> reads = enumerateTensorSliceIterationStarts(
+      readSlice, read, location, analysisState, kMaxEnumeratedReadIterations);
+  if (failed(reads) || receiveRegion.occurrenceInductionValues.size() !=
+                           receiveRegion.occurrenceStartIndices.size()) {
+    return false;
+  }
+  SmallVector<std::size_t> receiveLoopPositions;
+  for (scf::ForOp loop : reads->loops) {
+    const auto *position = llvm::find(receiveRegion.occurrenceLoops, loop);
+    if (position == receiveRegion.occurrenceLoops.end()) {
+      return false;
+    }
+    receiveLoopPositions.push_back(
+        std::distance(receiveRegion.occurrenceLoops.begin(), position));
+  }
+  TensorRegionOccurrences receives =
+      receiveRegion.getOccurrences(receiveDevice);
+  TensorRegionOccurrences readRegions = receives;
+  readRegions.tensorGridShape =
+      cast<RankedTensorType>(readSlice.getTensor().getType()).getShape();
+  readRegions.sliceShape =
+      cast<RankedTensorType>(readSlice.getType()).getShape();
+  for (std::size_t receiveIndex = 0;
+       receiveIndex < receiveRegion.occurrenceStartIndices.size();
+       ++receiveIndex) {
+    ArrayRef<int64_t> receiveInductionValues =
+        receiveRegion.occurrenceInductionValues[receiveIndex];
+    SmallVector<int64_t> receiveIteration;
+    for (std::size_t position : receiveLoopPositions) {
+      receiveIteration.push_back(receiveInductionValues[position]);
+    }
+    TensorRegionBounds receiveBounds =
+        receives.getBounds(receiveRegion.occurrenceStartIndices[receiveIndex]);
+    for (auto [readStart, readIteration] :
+         llvm::zip_equal(reads->startIndices, reads->inductionValues)) {
+      if (tensorRegionsOverlap(receiveBounds,
+                               readRegions.getBounds(readStart)) &&
+          std::lexicographical_compare(
+              readIteration.begin(), readIteration.end(),
+              receiveIteration.begin(), receiveIteration.end())) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
 static bool hasMatchingReceiveWaitBeforePush(
     PipeTransferPostOp postOp, CBPushOp pushOp,
     const llvm::DenseMap<Operation *, SmallVector<PipeTransferWaitOp>>
@@ -708,9 +799,9 @@ static bool hasMatchingReceiveWaitBeforePush(
         &waitAnysByPost,
     const LaunchExecutionLocation &location,
     const PipeGraphAnalysisState &analysisState) {
-  return hasMatchingReceiveWaitBeforeUse(postOp, pushOp.getOperation(),
-                                         waitsByPost, waitAnysByPost, location,
-                                         analysisState);
+  return hasMatchingReceiveWaitBeforeUse(
+      postOp, pushOp.getOperation(), waitsByPost, waitAnysByPost, location,
+      analysisState, ReceiveWaitOrder::WheneverBothExecute);
 }
 
 /// Group endpoints by logical DFB lifecycle. Physical aliases from other
@@ -1351,14 +1442,16 @@ resolveTensorRegionStartIndices(ReceiverTensorRegionInfo &region,
     return selectedValue;
   };
 
-  FailureOr<SmallVector<SmallVector<int64_t>>> occurrences =
+  FailureOr<TensorSliceOccurrences> occurrences =
       enumerateTensorSliceOccurrences(
           region.slice, receiverLocation, analysisState, expectedExecutionCount,
           evaluateRecordValue, [&] { return region.slice.emitError(); });
   if (failed(occurrences)) {
     return failure();
   }
-  region.occurrenceStartIndices = std::move(*occurrences);
+  region.occurrenceLoops = std::move(occurrences->loops);
+  region.occurrenceInductionValues = std::move(occurrences->inductionValues);
+  region.occurrenceStartIndices = std::move(occurrences->startIndices);
   region.startIndices = region.occurrenceStartIndices.front();
   return success();
 }
@@ -1441,14 +1534,14 @@ static bool isSerializedReuseOfTensorDestination(
   if (failed(maybeLocation)) {
     return false;
   }
-  return hasMatchingReceiveWaitBeforeUse(lhsPost, rhsPost,
-                                         analysisState.receiveWaitsByPost,
-                                         analysisState.receiveWaitAnysByPost,
-                                         *maybeLocation, analysisState) ||
-         hasMatchingReceiveWaitBeforeUse(rhsPost, lhsPost,
-                                         analysisState.receiveWaitsByPost,
-                                         analysisState.receiveWaitAnysByPost,
-                                         *maybeLocation, analysisState);
+  return hasMatchingReceiveWaitBeforeUse(
+             lhsPost, rhsPost, analysisState.receiveWaitsByPost,
+             analysisState.receiveWaitAnysByPost, *maybeLocation, analysisState,
+             ReceiveWaitOrder::WheneverBothExecute) ||
+         hasMatchingReceiveWaitBeforeUse(
+             rhsPost, lhsPost, analysisState.receiveWaitsByPost,
+             analysisState.receiveWaitAnysByPost, *maybeLocation, analysisState,
+             ReceiveWaitOrder::WheneverBothExecute);
 }
 
 LogicalResult PipeGraph::verifyTensorRegionDestinations(
@@ -1734,12 +1827,18 @@ LogicalResult PipeGraph::verifyTensorRegionDestinations(
       // with the last completed receive rather than every future owner of the
       // same storage.
       auto postOp = cast<PipeTransferPostOp>(endpoint->postOp);
-      // TODO(#1140): this accepts a read that executes in an iteration without
-      // the receive, which races with a no-rendezvous write. Require every
-      // overlapping receive occurrence to precede the read.
-      bool completedBeforeRead = hasMatchingReceiveWaitBeforeUse(
-          postOp, copy.getOperation(), analysisState.receiveWaitsByPost,
-          analysisState.receiveWaitAnysByPost, *maybeLocation, analysisState);
+      bool completedBeforeRead =
+          hasMatchingReceiveWaitBeforeUse(
+              postOp, copy.getOperation(), analysisState.receiveWaitsByPost,
+              analysisState.receiveWaitAnysByPost, *maybeLocation,
+              analysisState, ReceiveWaitOrder::EveryUseExecution) ||
+          (receiveOccurrencesPrecedeRead(accessedSlice, copy, tensorRegion,
+                                         receiverDevice(*endpoint),
+                                         *maybeLocation, analysisState) &&
+           hasMatchingReceiveWaitBeforeUse(
+               postOp, copy.getOperation(), analysisState.receiveWaitsByPost,
+               analysisState.receiveWaitAnysByPost, *maybeLocation,
+               analysisState, ReceiveWaitOrder::WheneverBothExecute));
       bool hasSerializedAlias = false;
       bool supersededBeforeRead = false;
       for (const PipeReceiverEndpoint *otherEndpoint : tensorEndpoints) {
@@ -1764,16 +1863,18 @@ LogicalResult PipeGraph::verifyTensorRegionDestinations(
                 otherPost, getLaunchNodeCoord(otherEndpoint->receiver),
                 getPipeTransferNode(otherEndpoint->transferNode).deviceTransfer,
                 PipeRole::Destination);
-        if (failed(otherLocation) || !hasMatchingReceiveWaitBeforeUse(
-                                         otherPost, copy.getOperation(),
-                                         analysisState.receiveWaitsByPost,
-                                         analysisState.receiveWaitAnysByPost,
-                                         *otherLocation, analysisState)) {
+        if (failed(otherLocation) ||
+            !hasMatchingReceiveWaitBeforeUse(
+                otherPost, copy.getOperation(),
+                analysisState.receiveWaitsByPost,
+                analysisState.receiveWaitAnysByPost, *otherLocation,
+                analysisState, ReceiveWaitOrder::EveryUseExecution)) {
           continue;
         }
         supersededBeforeRead = hasMatchingReceiveWaitBeforeUse(
             postOp, otherPost, analysisState.receiveWaitsByPost,
-            analysisState.receiveWaitAnysByPost, *maybeLocation, analysisState);
+            analysisState.receiveWaitAnysByPost, *maybeLocation, analysisState,
+            ReceiveWaitOrder::WheneverBothExecute);
         if (supersededBeforeRead) {
           break;
         }

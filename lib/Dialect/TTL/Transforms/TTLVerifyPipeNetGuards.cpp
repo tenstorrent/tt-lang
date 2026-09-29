@@ -2508,11 +2508,11 @@ FailureOr<PipeScheduleTensorDestination> enumeratePipeScheduleTensorDestination(
     return evaluateActivePipeNetRecordValue(value, postNode.activeRecords,
                                             resolveActiveFunctionArgument);
   };
-  FailureOr<SmallVector<SmallVector<int64_t>>> startIndices =
+  FailureOr<TensorSliceOccurrences> occurrences =
       enumerateTensorSliceOccurrences(
           slice, postNode.location, state.launchDomains, count->constantFactor,
           evaluateRecordValue, /*emitError=*/{});
-  if (failed(startIndices)) {
+  if (failed(occurrences)) {
     return failure();
   }
   return PipeScheduleTensorDestination{
@@ -2521,7 +2521,7 @@ FailureOr<PipeScheduleTensorDestination> enumeratePipeScheduleTensorDestination(
       device,
       cast<RankedTensorType>(slice.getTensor().getType()).getShape(),
       cast<RankedTensorType>(slice.getType()).getShape(),
-      std::move(*startIndices)};
+      std::move(occurrences->startIndices)};
 }
 
 /// Return the receiver posts whose tensor-region destinations are disjoint by
