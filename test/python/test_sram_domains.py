@@ -13,7 +13,12 @@ from ttl._sram_domains import (
     validate_node_layouts,
     validate_receiver_targets,
 )
-from ttl.dataflow_buffer import PhysicalDFBConfig, SRAMNodeLayout, SRAMReceiverTarget
+from ttl.dataflow_buffer import (
+    DFBStorageSegment,
+    PhysicalDFBConfig,
+    SRAMNodeLayout,
+    SRAMReceiverTarget,
+)
 
 
 def make_config():
@@ -139,6 +144,30 @@ def test_receiver_target_retains_device_identity():
         pipe_computed_address_dfb_indices=[0],
     )
     validate_receiver_targets([spec], [make_config()])
+
+
+def test_receiver_target_requires_tensor_segment_on_destination():
+    config = replace(
+        make_config(),
+        l1_payload_offset=None,
+        l1_allocation_bytes=None,
+        storage_segments=(DFBStorageSegment(nodes=((0, 0),), tensor_index=0),),
+        sram_node_layouts=(
+            SRAMNodeLayout((0, 0), 0, False, 64, 0),
+            SRAMNodeLayout((1, 0), 0, False, 64, 1),
+        ),
+    )
+    valid_spec = SimpleNamespace(
+        sram_receiver_targets=[SRAMReceiverTarget(0, (0, 0))],
+        pipe_computed_address_dfb_indices=[0],
+    )
+    validate_receiver_targets([valid_spec], [config])
+    spec = SimpleNamespace(
+        sram_receiver_targets=[SRAMReceiverTarget(0, (1, 0))],
+        pipe_computed_address_dfb_indices=[0],
+    )
+    with pytest.raises(ValueError, match="no tensor-backed storage segment"):
+        validate_receiver_targets([spec], [config])
 
 
 def test_independent_address_requires_device_coordinate():

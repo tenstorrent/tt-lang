@@ -134,6 +134,14 @@ def validate_receiver_targets(kernel_specs, configs):
                 raise ValueError(
                     "SRAM receiver target has no payload on its destination node"
                 )
+            if config.l1_payload_offset is None and not any(
+                segment.is_tensor_backed and target.node in segment.nodes
+                for segment in config.storage_segments
+            ):
+                raise ValueError(
+                    "SRAM receiver target has no tensor-backed storage segment "
+                    "on its destination node"
+                )
 
 
 def tensor_base(ttnn_api, tensor, node, device_coordinate):

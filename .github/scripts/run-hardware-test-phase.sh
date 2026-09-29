@@ -131,7 +131,7 @@ case "$PHASE" in
             python3 -m pytest \
                 -c build/test/pytest.ini \
                 --rootdir="${REPO_ROOT}/test" \
-                test/python/fabric/test_ccl.py::test_compiler_l1_point_to_point \
+                test/python/fabric/test_ccl.py::test_compiler_sram_point_to_point \
                 -v -x --tb=long --timeout=120 --timeout-method=thread \
                 --junitxml=build/test/pytest-report-sram-fabric.xml
         ;;
