@@ -85,7 +85,7 @@ module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blac
 
 // An external producer declares its protocol effects, and the writer waits
 // for the published page without popping it. The plan bounds the lifecycle
-// and reinstalls the descriptor at a state-discarding boundary in every
+// and installs a new descriptor at a state-discarding boundary in every
 // iteration, which releases the waited page.
 module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blackhole>} {
   func.func @compute() attributes {
@@ -157,7 +157,7 @@ module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blac
 // The same program, except that the external producer declares no protocol
 // effects and the compute kernel announces its role with a push under a
 // runtime condition the compiler cannot resolve. The plan cannot bound the
-// lifecycle, so it reinstalls the descriptor at no boundary and the waited
+// lifecycle, so it installs a new descriptor at no boundary and the waited
 // page is never released. The lifecycle verifier cannot check this node
 // because of the undeclared external actions, and warns instead.
 module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blackhole>} {
@@ -217,7 +217,7 @@ module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blac
     scf.for %iteration = %c0 to %c4 step %c1 {
       // expected-warning @+3 {{logical DFB 0 is never popped on core_x=0, core_y=0, but its producer can push 4 block(s) into capacity 1 during the launch}}
       // expected-note @+2 {{published blocks stay in the DFB until a pop, so the producer blocks once the DFB is full}}
-      // expected-note @+1 {{a reconfiguration restores a DFB only where the finalized allocation reinstalls its descriptor, which requires a bounded lifecycle; declare the DFB effects of external calls that access it, or pop the published blocks}}
+      // expected-note @+1 {{a reconfiguration restores a DFB only where the reconfiguration plan installs a new descriptor for it, which requires a bounded lifecycle; declare the DFB effects of external calls that access it, or pop the published blocks}}
       ttl.opaque_call "read_partial" dfb_dependencies(
           %partial : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>)
           dfb_effects [#ttl.dfb_protocol_effect<wait, 0, 1>]
@@ -225,6 +225,53 @@ module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blac
       ttl.dfb_reconfiguration #boundary0
       ttl.dfb_reconfiguration #boundary1
     }
+    return
+  }
+}
+
+// -----
+
+#compute = #ttl.logical_kernel<kind = compute, identity = "compute", operation = "operation">
+#reader = #ttl.logical_kernel<kind = data_movement, identity = "reader", operation = "operation">
+#writer = #ttl.logical_kernel<kind = data_movement, identity = "writer", operation = "operation">
+#boundary0 = #ttl.dfb_reconfiguration<0, participants[#compute, #reader, #writer], discard_dfb_state = false>
+
+// A wait held across a reconfiguration that keeps the DFB is closed by an
+// external pop after the boundary. The pop closes the wait still open from
+// before the boundary instead of acquiring another block.
+module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blackhole>} {
+  func.func @compute() attributes {
+    ttl.kernel_thread = #ttkernel.thread<compute>,
+    ttl.logical_kernel = #compute
+  } {
+    ttl.dfb_reconfiguration #boundary0
+    return
+  }
+
+  func.func @read() attributes {
+    ttl.kernel_thread = #ttkernel.thread<noc>,
+    ttl.logical_kernel = #reader,
+    ttl.noc_index = 0 : i32
+  } {
+    %dfb = ttl.bind_cb {cb_index = 0, block_count = 1} {dfb_id = 0 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
+    %reserved = ttl.cb_reserve %dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 1> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.cb_push %dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 1>
+    %waited = ttl.cb_wait %dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 1> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.dfb_reconfiguration #boundary0
+    ttl.opaque_call "consume" dfb_dependencies(
+        %dfb : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>)
+        dfb_effects [#ttl.dfb_protocol_effect<pop, 0, 1>]
+        () {header = "consume.hpp"} : () -> ()
+    return
+  }
+
+  func.func @write() attributes {
+    ttl.kernel_thread = #ttkernel.thread<noc>,
+    ttl.logical_kernel = #writer,
+    ttl.noc_index = 1 : i32
+  } {
+    ttl.dfb_reconfiguration #boundary0
     return
   }
 }

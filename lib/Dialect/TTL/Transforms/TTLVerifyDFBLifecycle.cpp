@@ -730,16 +730,13 @@ private:
     return event;
   }
 
-  /// Open acquisitions of `counter` on `logicalId` in the block summarized
-  /// so far, from `sofar` (the block before this operation) and `partial`
-  /// (this operation's earlier effects).
   /// Append the effects of one protocol operation to `result`. Opaque-call
   /// summaries state Metal-level actions: a declared reserve or wait is a
   /// readiness threshold rather than an acquisition that a later release
-  /// closes, so only the declared pushes and pops count. On each alternative
-  /// of the block so far, an opaque push or pop closes a user acquisition of
-  /// its kind that is still open there, as automatic synchronization pairs
-  /// them; otherwise it is a transfer that acquires and releases its blocks.
+  /// closes, so only the declared pushes and pops count. An opaque push or pop
+  /// closes the user acquisitions of its kind still open since the DFB's last
+  /// restoration, as automatic synchronization pairs them; otherwise it is a
+  /// transfer that acquires and releases its blocks.
   void appendProtocolOp(Operation *op, TransactionSequenceResult &result) {
     bool opaque = isa<OpaqueCallOp>(op);
     for (const DFBProtocolEffect &effect :
@@ -1832,8 +1829,8 @@ bool warnUndrainedDFB(int64_t logicalId, ArrayRef<DFBTransaction> producers,
   }
   if (hasReconfiguration) {
     diagnostic.attachNote()
-        << "a reconfiguration restores a DFB only where the finalized "
-           "allocation reinstalls its descriptor, which requires a bounded "
+        << "a reconfiguration restores a DFB only where the reconfiguration "
+           "plan installs a new descriptor for it, which requires a bounded "
            "lifecycle; declare the DFB effects of external calls that access "
            "it, or pop the published blocks";
   }
