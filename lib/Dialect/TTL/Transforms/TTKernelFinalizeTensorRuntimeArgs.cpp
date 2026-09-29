@@ -176,11 +176,11 @@ remapCommonArgIndex(int64_t originalIndex,
   return *tensorSlotMap[originalIndex];
 }
 
-static FailureOr<int64_t> getCompilerSRAMTensorIndex(ModuleOp module,
-                                                     int64_t dfbIndex) {
+static FailureOr<SmallVector<int64_t>>
+getCompilerSRAMTensorIndices(ModuleOp module, int64_t dfbIndex) {
   auto memoryModel = module->getAttrOfType<StringAttr>(kMemoryModelAttrName);
   if (!memoryModel || memoryModel.getValue() != kCompilerSRAMMemoryModel) {
-    return int64_t{-1};
+    return SmallVector<int64_t>{};
   }
   auto allocations = module->getAttrOfType<ArrayAttr>(kDFBAllocationsAttrName);
   if (!allocations || dfbIndex < 0 ||
@@ -193,42 +193,51 @@ static FailureOr<int64_t> getCompilerSRAMTensorIndex(ModuleOp module,
   }
   Attribute segmentsAttribute = allocation.get("storage_segments");
   if (!segmentsAttribute) {
-    return int64_t{-1};
+    return SmallVector<int64_t>{};
   }
   auto segments = dyn_cast<ArrayAttr>(segmentsAttribute);
-  if (!segments) {
+  if (!segments || segments.empty()) {
     return failure();
   }
-  if (segments.size() != 1) {
-    return failure();
+  SmallVector<int64_t> tensorIndices;
+  for (Attribute segmentAttribute : segments) {
+    auto segment = dyn_cast<DictionaryAttr>(segmentAttribute);
+    if (!segment) {
+      return failure();
+    }
+    Attribute backingAttribute = segment.get("tensor_backing");
+    if (!backingAttribute) {
+      continue;
+    }
+    auto backing = dyn_cast<TensorBackingAttr>(backingAttribute);
+    if (!backing) {
+      return failure();
+    }
+    tensorIndices.push_back(backing.getTensorIndex());
   }
-  auto segment = dyn_cast<DictionaryAttr>(segments[0]);
-  auto backing = segment ? segment.getAs<TensorBackingAttr>("tensor_backing")
-                         : TensorBackingAttr();
-  return backing ? FailureOr<int64_t>(backing.getTensorIndex())
-                 : FailureOr<int64_t>(failure());
+  return tensorIndices;
 }
 
 static LogicalResult
 markCompilerSRAMTensorSlot(Operation *use, ModuleOp module, int64_t dfbIndex,
                            ArrayRef<int64_t> globalTensorIndices,
                            BitVector &liveTensorSlots) {
-  FailureOr<int64_t> tensorIndex = getCompilerSRAMTensorIndex(module, dfbIndex);
-  if (failed(tensorIndex)) {
+  FailureOr<SmallVector<int64_t>> tensorIndices =
+      getCompilerSRAMTensorIndices(module, dfbIndex);
+  if (failed(tensorIndices)) {
     use->emitOpError("has invalid compiler-sram tensor-backing metadata");
     return failure();
   }
-  if (*tensorIndex < 0) {
-    return success();
+  for (int64_t tensorIndex : *tensorIndices) {
+    auto slot = llvm::find(globalTensorIndices, tensorIndex);
+    if (slot == globalTensorIndices.end()) {
+      use->emitOpError("compiler-sram tensor backing references tensor ")
+          << tensorIndex
+          << " which is absent from the kernel's common tensor arguments";
+      return failure();
+    }
+    liveTensorSlots.set(std::distance(globalTensorIndices.begin(), slot));
   }
-  auto slot = llvm::find(globalTensorIndices, *tensorIndex);
-  if (slot == globalTensorIndices.end()) {
-    use->emitOpError("compiler-sram tensor backing references tensor ")
-        << *tensorIndex
-        << " which is absent from the kernel's common tensor arguments";
-    return failure();
-  }
-  liveTensorSlots.set(std::distance(globalTensorIndices.begin(), slot));
   return success();
 }
 

@@ -100,3 +100,39 @@ module attributes {ttl.memory_model = "compiler-sram", ttl.dfb_allocations = [
     return
   }
 }
+
+// -----
+
+// Segments on separate nodes retain their shared tensor argument.
+// CHECK-LABEL: func.func @preserve_shared_segmented_tensor_backing
+// CHECK-SAME: ttl.crta_indices = [7 : i32]
+module attributes {ttl.memory_model = "compiler-sram", ttl.dfb_allocations = [
+  {storage_segments = [
+    {nodes = [[0, 0]], tensor_backing = #ttl.tensor_backing<tensor_index = 7, byte_offset = 0, byte_size = 2048>},
+    {nodes = [[1, 0]], tensor_backing = #ttl.tensor_backing<tensor_index = 7, byte_offset = 0, byte_size = 2048>}]}
+]} {
+  func.func @preserve_shared_segmented_tensor_backing()
+      attributes {ttl.crta_indices = [3, 7],
+                  ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %dfb = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<1, !ttcore.tile<32x32, bf16>>
+    return
+  }
+}
+
+// -----
+
+// Distinct node segments retain both tensor arguments.
+// CHECK-LABEL: func.func @preserve_segmented_tensor_backing
+// CHECK-SAME: ttl.crta_indices = [7 : i32, 9 : i32]
+module attributes {ttl.memory_model = "compiler-sram", ttl.dfb_allocations = [
+  {storage_segments = [
+    {nodes = [[0, 0]], tensor_backing = #ttl.tensor_backing<tensor_index = 7, byte_offset = 0, byte_size = 2048>},
+    {nodes = [[1, 0]], tensor_backing = #ttl.tensor_backing<tensor_index = 9, byte_offset = 0, byte_size = 2048>}]}
+]} {
+  func.func @preserve_segmented_tensor_backing()
+      attributes {ttl.crta_indices = [3, 7, 9],
+                  ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %dfb = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<1, !ttcore.tile<32x32, bf16>>
+    return
+  }
+}
