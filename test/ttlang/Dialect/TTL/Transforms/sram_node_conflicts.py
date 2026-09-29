@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: (c) 2026 Tenstorrent AI ULC
 # SPDX-License-Identifier: Apache-2.0
 # RUN: %python %s
-# Compare per-node conflicts and exact placement with independent event schedules.
+# Compare per-node and multicast conflicts with independent event schedules.
 
 import importlib.util
 import itertools
@@ -90,7 +90,99 @@ def run(cases, mode, strategy, reuse):
     ]
 
 
+def validate_multicast_receiver_conflict():
+    # Both receivers use the same payload address. Only row one overlaps the
+    # first and second scratch DFB lifetimes, so that conflict applies to both.
+    module = """
+module attributes {ttl.launch_grid = [2, 2], ttl.target_arch = #ttcore.arch<blackhole>} {
+  func.func @multicast() attributes {ttl.kernel_thread = #ttkernel.thread<noc>, ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement>, ttl.noc_index = 0 : i32} {
+    %source = ttl.bind_cb {cb_index = 0, block_count = 1} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
+    %receiver = ttl.bind_cb {cb_index = 1, block_count = 1} {dfb_id = 1 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
+    %first = ttl.bind_cb {cb_index = 2, block_count = 1} {dfb_id = 2 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
+    %second = ttl.bind_cb {cb_index = 3, block_count = 1} {dfb_id = 3 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
+    %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 1) net 0 : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 1) net 0>
+    ttl.if_dst %pipe : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 1) net 0> {
+      %received = ttl.cb_reserve %receiver : <[1, 1], !ttcore.tile<32x32, bf16>, 1> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+      %receive = ttl.copy %pipe, %received : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 1) net 0>, tensor<1x1x!ttcore.tile<32x32, bf16>>) -> !ttl.receive_request
+      ttl.wait %receive : !ttl.receive_request
+      ttl.cb_push %receiver : <[1, 1], !ttcore.tile<32x32, bf16>, 1>
+      %consumed = ttl.cb_wait %receiver : <[1, 1], !ttcore.tile<32x32, bf16>, 1> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+      ttl.cb_pop %receiver : <[1, 1], !ttcore.tile<32x32, bf16>, 1>
+      %row = ttl.core_y : index
+      %zero = arith.constant 0 : index
+      %first_row = arith.cmpi eq, %row, %zero : index
+      %first_written = ttl.cb_reserve %first : <[1, 1], !ttcore.tile<32x32, bf16>, 1> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+      ttl.cb_push %first : <[1, 1], !ttcore.tile<32x32, bf16>, 1>
+      scf.if %first_row {
+        %first_read = ttl.cb_wait %first : <[1, 1], !ttcore.tile<32x32, bf16>, 1> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+        ttl.cb_pop %first : <[1, 1], !ttcore.tile<32x32, bf16>, 1>
+        %second_written = ttl.cb_reserve %second : <[1, 1], !ttcore.tile<32x32, bf16>, 1> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+        ttl.cb_push %second : <[1, 1], !ttcore.tile<32x32, bf16>, 1>
+      } else {
+        %second_written = ttl.cb_reserve %second : <[1, 1], !ttcore.tile<32x32, bf16>, 1> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+        ttl.cb_push %second : <[1, 1], !ttcore.tile<32x32, bf16>, 1>
+        %first_read = ttl.cb_wait %first : <[1, 1], !ttcore.tile<32x32, bf16>, 1> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+        ttl.cb_pop %first : <[1, 1], !ttcore.tile<32x32, bf16>, 1>
+      }
+      %second_read = ttl.cb_wait %second : <[1, 1], !ttcore.tile<32x32, bf16>, 1> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+      ttl.cb_pop %second : <[1, 1], !ttcore.tile<32x32, bf16>, 1>
+    }
+    ttl.if_src %pipe : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 1) net 0> {
+      %produced = ttl.cb_reserve %source : <[1, 1], !ttcore.tile<32x32, bf16>, 1> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+      ttl.cb_push %source : <[1, 1], !ttcore.tile<32x32, bf16>, 1>
+      %send = ttl.copy %source, %pipe : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>, !ttl.pipe<src(0, 0) dst(1, 0) to(1, 1) net 0>) -> !ttl.transfer_handle<write>
+      ttl.wait %send : !ttl.transfer_handle<write>
+      %read = ttl.cb_wait %source : <[1, 1], !ttcore.tile<32x32, bf16>, 1> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+      ttl.cb_pop %source : <[1, 1], !ttcore.tile<32x32, bf16>, 1>
+    }
+    return
+  }
+}
+"""
+    result = subprocess.run(
+        [
+            "ttlang-opt",
+            "-pass-pipeline=builtin.module(ttl-finalize-dfb-indices{memory-model=compiler-sram sram-allocation-mode=per-node sram-allocation-report=true reuse-user-dfbs=true})",
+        ],
+        input=module,
+        text=True,
+        capture_output=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    prefix = "ttlang-sram-report: "
+    reports = [
+        json.loads(line[len(prefix) :])
+        for line in result.stderr.splitlines()
+        if line.startswith(prefix)
+    ]
+    assert len(reports) == 3
+    receivers = next(
+        report for report in reports if sorted(report["nodes"]) == [[1, 0], [1, 1]]
+    )
+    conflicting_nodes = {
+        tuple(entry["node"])
+        for entry in receivers["logical_conflicts"]
+        if tuple(sorted(entry["logical_dfbs"])) == (2, 3)
+    }
+    assert conflicting_nodes == {(1, 1)}
+    owners = {
+        member: owner
+        for owner in receivers["owners"]
+        for member in owner["logical_dfbs"]
+    }
+    first = owners[2]
+    second = owners[3]
+    assert (
+        first["arena_payload_offset"] + first["arena_payload_bytes"]
+        <= second["arena_payload_offset"]
+        or second["arena_payload_offset"] + second["arena_payload_bytes"]
+        <= first["arena_payload_offset"]
+    )
+
+
 def main():
+    validate_multicast_receiver_conflict()
     schedules = [
         events
         for events in itertools.permutations(range(6))
