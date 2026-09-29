@@ -1003,6 +1003,29 @@ func.func @dm_raw_read_of_earlier_block_after_second_wait(
 
 // -----
 
+// A partial pop does not release the first block: half of it is still held at
+// the second wait, so a scalar read of it after that wait is rejected.
+
+func.func @dm_raw_read_of_partially_popped_block_after_second_wait(
+    %arg0: tensor<2x8x!ttcore.tile<32x32, bf16>, #ttl.layout<shape = [64, 256], element_type = !ttcore.tile<32x32, bf16>, buffer = system_memory, grid = [1, 1], memory = interleaved>>)
+    attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+  %c0 = arith.constant 0 : index
+  %cb = ttl.bind_cb{cb_index = 0, block_count = 2} : !ttl.cb<[1, 2], !ttcore.tile<32x32, bf16>, 2>
+  %first = ttl.cb_wait %cb : <[1, 2], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x2x!ttcore.tile<32x32, bf16>>
+  %s0 = ttl.tensor_slice %arg0[%c0, %c0] : tensor<2x8x!ttcore.tile<32x32, bf16>, #ttl.layout<shape = [64, 256], element_type = !ttcore.tile<32x32, bf16>, buffer = system_memory, grid = [1, 1], memory = interleaved>> -> tensor<1x2x!ttcore.tile<32x32, bf16>, #ttl.layout<shape = [64, 256], element_type = !ttcore.tile<32x32, bf16>, buffer = system_memory, grid = [1, 1], memory = interleaved>>
+  %x0 = ttl.copy %cb, %s0 : (!ttl.cb<[1, 2], !ttcore.tile<32x32, bf16>, 2>, tensor<1x2x!ttcore.tile<32x32, bf16>, #ttl.layout<shape = [64, 256], element_type = !ttcore.tile<32x32, bf16>, buffer = system_memory, grid = [1, 1], memory = interleaved>>) -> !ttl.transfer_handle<write>
+  ttl.wait %x0 : !ttl.transfer_handle<write>
+  ttl.cb_pop %cb {num_tiles = 1 : i64} : <[1, 2], !ttcore.tile<32x32, bf16>, 2>
+  %second = ttl.cb_wait %cb : <[1, 2], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x2x!ttcore.tile<32x32, bf16>>
+  // expected-error @below {{a data-movement kernel cannot hold two acquired blocks of one dataflow buffer; this operation accesses the earlier block after the next acquisition returned the same slot, so pop the earlier block before that acquisition}}
+  %element = ttl.raw_element_read %first[%c0, %c0] : tensor<1x2x!ttcore.tile<32x32, bf16>> -> bf16
+  ttl.cb_pop %cb {num_tiles = 1 : i64} : <[1, 2], !ttcore.tile<32x32, bf16>, 2>
+  ttl.cb_pop %cb : <[1, 2], !ttcore.tile<32x32, bf16>, 2>
+  func.return
+}
+
+// -----
+
 // Two consecutive reserves coalesce into one two-block reservation inside a
 // loop, but the copies address the dataflow buffer rather than each block's
 // view, so the copy meant for the second block writes the first slot.

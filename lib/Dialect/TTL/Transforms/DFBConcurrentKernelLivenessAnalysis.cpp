@@ -2018,7 +2018,7 @@ static LogicalResult validateDFBReconfigurationsAtNode(
               ("repeated DFB reconfiguration with exact count " +
                llvm::Twine(*executionCount) +
                " must execute once in every iteration of a sequential loop "
-               "with a compile-time-known trip count")
+               "with a constant trip count")
                   .str());
           return failure();
         }
@@ -2218,7 +2218,7 @@ static LogicalResult validateSynchronizedResetsAtNode(
               ("repeated synchronized DFB reset with exact count " +
                llvm::Twine(*executionCount) +
                " must execute once in every iteration of a sequential loop "
-               "with a compile-time-known trip count")
+               "with a constant trip count")
                   .str());
           return failure();
         }

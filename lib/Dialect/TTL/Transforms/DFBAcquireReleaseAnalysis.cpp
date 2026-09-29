@@ -562,14 +562,8 @@ planCoalescedAcquireGroups(Block &block, DFBAcquireReleaseKind kind) {
     if (group.acquires.size() < 2) {
       continue;
     }
-    // A release after the next same-kind acquisition belongs to that
-    // acquisition, so a member without its own release leaves the group
-    // unmerged.
     for (Operation *op = group.acquires.back()->getNextNode(); op;
          op = op->getNextNode()) {
-      if (isAcquire(op) && getDFBAcquireDFB(op) == dfb) {
-        break;
-      }
       if (erasedReleases.contains(op) || !isRelease(op) ||
           getDFBReleaseDFB(op) != dfb) {
         continue;
@@ -894,6 +888,20 @@ Operation *findLastDFBAcquireOwnedUse(DFBAcquireInterval interval) {
                             updateLatestUse(projected, last);
                           });
 
+  return last;
+}
+
+Operation *
+findLastDFBAcquireOwnedUseInAcquiringBlock(DFBAcquireInterval interval) {
+  Block *block = interval.acquire->getBlock();
+  Operation *last = interval.acquire;
+  walkDFBAcquireOwnedUses(interval, DFBUseTraversal::LazyTensorResults,
+                          [&](Operation *user, Operation *) {
+                            if (Operation *projected =
+                                    block->findAncestorOpInBlock(*user)) {
+                              updateLatestUse(projected, last);
+                            }
+                          });
   return last;
 }
 

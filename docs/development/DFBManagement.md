@@ -286,8 +286,9 @@ boundary. `ttl.reset_all_dfbs(reset_boundary)` provides the same boundary for
 every allocated physical DFB index. A declaration contains exactly one compute
 kernel and two data movement kernels. On each launch node, every participant
 executes it the same compile-time-known number of times: at most once, or once
-per iteration of one sequential loop with a compile-time-known trip count. The
-count may depend on the launch node but not on runtime values. A reset under a
+per iteration of one sequential loop with a constant trip count. The count may
+differ between launch nodes through conditions on the launch node, but not
+through a loop bound or a runtime value. A reset under a
 condition on a runtime value, such as a dispatch-condition result, or in nested
 loops is a compilation error because the lifecycle checks in
 [Verification](#verification) do not cover DFB transactions across it.
@@ -334,9 +335,10 @@ A `DFBReconfiguration` declares one compute kernel and two data-movement
 kernels that must execute the same worker-local descriptor update. Each
 participant calls `ttl.reconfigure_dfbs` for that declaration. On each launch
 node, a call executes at most once, or once per iteration of one sequential
-loop with a compile-time-known trip count when each iteration contains at least
-two ordered reconfiguration calls. The count may depend on the launch node but
-not on runtime values. The corresponding calls in every participant must use
+loop with a constant trip count when each iteration contains at least two
+ordered reconfiguration calls. The count may differ between launch nodes through
+conditions on the launch node, but not through a loop bound or a runtime value.
+The corresponding calls in every participant must use
 equivalent loops and appear in the same order. All declarations in one module
 use the same participant set. A call under a condition on a runtime value or in
 nested loops is a compilation error, as for resets. Runtime execution is
@@ -758,7 +760,7 @@ its sequence continues across the boundary.
 
 A kernel has one sequence per DFB. A region containing a barrier whose
 execution the counts do not resolve makes every DFB of the kernel unknown. A
-loop whose body contains a barrier has a compile-time-known trip count `N`,
+loop whose body contains a barrier has a constant trip count `N`,
 because the liveness analysis rejects other barrier loops. The pass summarizes
 the first iteration and one later iteration with the loop index bound, and lays
 out only the iterations that decide a check. For a DFB that a barrier in the body

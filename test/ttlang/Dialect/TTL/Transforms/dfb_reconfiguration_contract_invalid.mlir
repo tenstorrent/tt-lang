@@ -56,7 +56,7 @@ module attributes {ttl.launch_grid = [2, 1], ttl.target_arch = #ttcore.arch<blac
   } {
     ttl.pipenet_foreach_dst attributes {records = #records} {
     ^bb0(%pipe: !ttl.selected_pipe_dst):
-      // expected-error @below {{repeated DFB reconfiguration with exact count 2 must execute once in every iteration of a sequential loop with a compile-time-known trip count}}
+      // expected-error @below {{repeated DFB reconfiguration with exact count 2 must execute once in every iteration of a sequential loop with a constant trip count}}
       ttl.dfb_reconfiguration #boundary
       ttl.yield
     }

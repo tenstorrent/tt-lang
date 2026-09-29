@@ -8,6 +8,7 @@
 # RUN: env TTLANG_COMPILE_ONLY=1 %python %s first-block-read 2>&1 | FileCheck %s --check-prefix=FIRST-BLOCK-READ
 # RUN: env TTLANG_COMPILE_ONLY=1 %python %s unused-blocks 2>&1 | FileCheck %s --check-prefix=UNUSED-BLOCKS
 # RUN: env TTLANG_COMPILE_ONLY=1 %python %s unused-gather-block 2>&1 | FileCheck %s --check-prefix=UNUSED-GATHER-BLOCK
+# RUN: env TTLANG_COMPILE_ONLY=1 %python %s guarded-send-before-next-wait 2>&1 | FileCheck %s --check-prefix=GUARDED-SEND
 
 # RECEIVES-WITH-READ: COMPILED
 # FIRST-BLOCK-WRITE: int32_t [[TWO:v[0-9]+]] = 2;
@@ -28,6 +29,13 @@
 # UNUSED-GATHER-BLOCK: .push_back([[THREE]]);
 # UNUSED-GATHER-BLOCK-NOT: push_back
 # UNUSED-GATHER-BLOCK: COMPILED
+# GUARDED-SEND: [[DFB:cb_ctarg_[0-9]+]].wait_front(
+# GUARDED-SEND: [[DFB]].reserve_back(
+# GUARDED-SEND: [[DFB]].push_back(
+# GUARDED-SEND: async_write(CoreLocalMem<uint32_t>([[DFB]].get_read_ptr()), unicast_ep
+# GUARDED-SEND: [[DFB]].pop_front(
+# GUARDED-SEND: [[DFB]].wait_front(
+# GUARDED-SEND: COMPILED
 
 """Accept data-movement kernels that hold several blocks of one DFB when
 `ttl-coalesce-dfb-acquires` merges them into one multi-block acquisition.
@@ -262,12 +270,56 @@ def make_unused_gather_block():
     return unused_gather_block
 
 
+def make_guarded_send_before_next_wait():
+    # A waited block assigned under a node condition is held across a
+    # reservation of the same DFB and sent before the next wait; its pop is
+    # inserted after the send.
+    pipe = ttl.Pipe(src=(0, 0), dst=(1, 0))
+    net = ttl.PipeNet([pipe])
+
+    @ttl.operation(grid=(2, 1))
+    def guarded_send_before_next_wait(inp, out):
+        _net = net
+        dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=3)
+        recv_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+
+        @ttl.compute()
+        def compute():
+            pass
+
+        @ttl.datamovement()
+        def reader():
+            node_x, _ = ttl.node(dims=2)
+            if node_x == 0:
+                with dfb.reserve() as staged:
+                    ttl.copy(inp[0, 0], staged).wait()
+                waited = dfb.wait()
+                with dfb.reserve() as reserved:
+                    ttl.copy(inp[0, 1], reserved).wait()
+                ttl.copy(waited, pipe).wait()
+                with dfb.wait() as last:
+                    ttl.copy(last, out[0, 1]).wait()
+            if node_x == 1:
+                with recv_dfb.reserve() as received:
+                    ttl.copy(pipe, received).wait()
+
+        @ttl.datamovement()
+        def writer():
+            node_x, _ = ttl.node(dims=2)
+            if node_x == 1:
+                with recv_dfb.wait() as received:
+                    ttl.copy(received, out[0, 0]).wait()
+
+    return guarded_send_before_next_wait
+
+
 FACTORIES = {
     "receives-with-read": make_held_reservations_with_read,
     "first-block-write": make_first_block_write,
     "first-block-read": make_first_block_read,
     "unused-blocks": make_unused_blocks,
     "unused-gather-block": make_unused_gather_block,
+    "guarded-send-before-next-wait": make_guarded_send_before_next_wait,
 }
 operation = FACTORIES[MODE]()
 
