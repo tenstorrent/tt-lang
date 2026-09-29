@@ -24,7 +24,7 @@ import warnings
 import weakref
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
-from ._kernel_headers import kernel_include_paths
+from .config import kernel_include_paths
 
 ttnn = None  # Lazy-loaded via _ensure_ttnn()
 
