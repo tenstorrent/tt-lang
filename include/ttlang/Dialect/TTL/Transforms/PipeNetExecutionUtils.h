@@ -105,6 +105,12 @@ struct ActivePipeNetExecution {
   std::optional<std::uint64_t> countDivisor = 1;
 };
 
+/// Return false only when both logical devices are known and differ. A null
+/// device is unknown.
+inline bool devicesMayCoincide(DeviceRefAttr lhs, DeviceRefAttr rhs) {
+  return !lhs || !rhs || lhs == rhs;
+}
+
 /// Largest logical-device domain that PipeNet analyses enumerate.
 constexpr std::uint64_t kMaxEnumeratedDeviceDomainSize = 1ULL << 20;
 

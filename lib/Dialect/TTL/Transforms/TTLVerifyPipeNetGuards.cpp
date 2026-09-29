@@ -1869,6 +1869,41 @@ bool hasZeroExecutionCount(ArrayRef<PipeCallSite> callSites, Operation *op,
   return maybeCount && *maybeCount == 0;
 }
 
+/// Return true when `callOp` directly calls a function in `functions`.
+bool callsFunctionIn(func::CallOp callOp,
+                     const llvm::DenseSet<Operation *> &functions,
+                     SymbolTableCollection &symbolTables) {
+  func::FuncOp callee = symbolTables.lookupNearestSymbolFrom<func::FuncOp>(
+      callOp, callOp.getCalleeAttr());
+  return callee && functions.contains(callee.getOperation());
+}
+
+/// Add every function that reaches a function in `functions` through direct
+/// calls, and return the result.
+llvm::DenseSet<Operation *>
+addTransitiveCallers(ModuleOp module, llvm::DenseSet<Operation *> functions,
+                     SymbolTableCollection &symbolTables) {
+  bool changed;
+  do {
+    changed = false;
+    for (func::FuncOp function : module.getOps<func::FuncOp>()) {
+      if (functions.contains(function.getOperation())) {
+        continue;
+      }
+      WalkResult walkResult = function.walk([&](func::CallOp callOp) {
+        return callsFunctionIn(callOp, functions, symbolTables)
+                   ? WalkResult::interrupt()
+                   : WalkResult::advance();
+      });
+      if (walkResult.wasInterrupted()) {
+        functions.insert(function.getOperation());
+        changed = true;
+      }
+    }
+  } while (changed);
+  return functions;
+}
+
 /// Return the functions that contain a pipe event directly or through calls to
 /// another function in the module.
 llvm::DenseSet<Operation *>
@@ -1880,28 +1915,7 @@ getFunctionsWithPipeEvents(ModuleOp module, const ModuleState &state,
       functions.insert(function.getOperation());
     }
   }
-
-  bool changed;
-  do {
-    changed = false;
-    for (func::FuncOp function : module.getOps<func::FuncOp>()) {
-      if (functions.contains(function.getOperation())) {
-        continue;
-      }
-      function.walk([&](func::CallOp callOp) {
-        func::FuncOp callee =
-            symbolTables.lookupNearestSymbolFrom<func::FuncOp>(
-                callOp, callOp.getCalleeAttr());
-        if (!callee || !functions.contains(callee.getOperation())) {
-          return WalkResult::advance();
-        }
-        functions.insert(function.getOperation());
-        changed = true;
-        return WalkResult::interrupt();
-      });
-    }
-  } while (changed);
-  return functions;
+  return addTransitiveCallers(module, std::move(functions), symbolTables);
 }
 
 /// Return functions reachable from kernel-thread entry points through direct
@@ -1962,12 +1976,8 @@ bool regionContributesPipeEvents(
       return WalkResult::interrupt();
     }
     auto callOp = mlir::dyn_cast<func::CallOp>(op);
-    if (!callOp) {
-      return WalkResult::advance();
-    }
-    func::FuncOp callee = symbolTables.lookupNearestSymbolFrom<func::FuncOp>(
-        callOp, callOp.getCalleeAttr());
-    return callee && functionsWithPipeEvents.contains(callee.getOperation())
+    return callOp && callsFunctionIn(callOp, functionsWithPipeEvents,
+                                     symbolTables)
                ? WalkResult::interrupt()
                : WalkResult::advance();
   });
@@ -1989,37 +1999,15 @@ getFunctionsWithPipeCopies(ModuleOp module,
                            SymbolTableCollection &symbolTables) {
   llvm::DenseSet<Operation *> functions;
   for (func::FuncOp function : module.getOps<func::FuncOp>()) {
-    WalkResult walkResult = function.walk([&](CopyOp copyOp) {
-      if (isPipeCopy(copyOp)) {
-        functions.insert(function.getOperation());
-        return WalkResult::interrupt();
-      }
-      return WalkResult::advance();
+    WalkResult walkResult = function.walk([](CopyOp copyOp) {
+      return isPipeCopy(copyOp) ? WalkResult::interrupt()
+                                : WalkResult::advance();
     });
-    (void)walkResult;
-  }
-
-  bool changed;
-  do {
-    changed = false;
-    for (func::FuncOp function : module.getOps<func::FuncOp>()) {
-      if (functions.contains(function.getOperation())) {
-        continue;
-      }
-      function.walk([&](func::CallOp callOp) {
-        func::FuncOp callee =
-            symbolTables.lookupNearestSymbolFrom<func::FuncOp>(
-                callOp, callOp.getCalleeAttr());
-        if (callee && functions.contains(callee.getOperation())) {
-          functions.insert(function.getOperation());
-          changed = true;
-          return WalkResult::interrupt();
-        }
-        return WalkResult::advance();
-      });
+    if (walkResult.wasInterrupted()) {
+      functions.insert(function.getOperation());
     }
-  } while (changed);
-  return functions;
+  }
+  return addTransitiveCallers(module, std::move(functions), symbolTables);
 }
 
 bool contributesPipeCopy(
@@ -2030,12 +2018,8 @@ bool contributesPipeCopy(
     return isPipeCopy(copyOp);
   }
   auto callOp = mlir::dyn_cast<func::CallOp>(operation);
-  if (!callOp) {
-    return false;
-  }
-  func::FuncOp callee = symbolTables.lookupNearestSymbolFrom<func::FuncOp>(
-      callOp, callOp.getCalleeAttr());
-  return callee && functionsWithPipeCopies.contains(callee.getOperation());
+  return callOp &&
+         callsFunctionIn(callOp, functionsWithPipeCopies, symbolTables);
 }
 
 size_t countPipeCopyContributors(
@@ -2564,7 +2548,7 @@ findDisjointTensorDestinationPosts(ArrayRef<PipeScheduleNode> nodes,
     DeviceRefAttr destinationDevice = destination.device;
     bool mayShareDeviceWithUnenumerated =
         llvm::any_of(unenumeratedDevices, [&](DeviceRefAttr device) {
-          return !device || !destinationDevice || device == destinationDevice;
+          return devicesMayCoincide(device, destinationDevice);
         });
     if (disjoint[index] && !mayShareDeviceWithUnenumerated) {
       disjointPosts.insert(destination.postNode);

@@ -77,6 +77,12 @@ verifyDeviceRefInDomain(DeviceDomainAttr domain, DeviceRefAttr deviceRef,
                         llvm::function_ref<InFlightDiagnostic()> emitError,
                         StringRef context, bool allowUpperBound = false);
 
+/// Return every device of `domain` in row-major component and axis order.
+SmallVector<DeviceRefAttr> enumerateDomainDevices(DeviceDomainAttr domain);
+
+/// Return the number of devices in `domain`, or failure when it overflows.
+FailureOr<std::uint64_t> getDomainDeviceCount(DeviceDomainAttr domain);
+
 /// Verify a transfer edge and its source/destination relation in `domain`.
 LogicalResult
 verifyTransferEdgeInDomain(DeviceDomainAttr domain, TransferEdgeAttr edge,

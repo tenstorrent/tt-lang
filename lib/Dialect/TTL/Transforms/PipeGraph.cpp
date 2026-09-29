@@ -1623,10 +1623,8 @@ LogicalResult PipeGraph::verifyTensorRegionDestinations(
   };
   auto mayExecuteOnSameDevice = [&](Operation *operation,
                                     const PipeReceiverEndpoint &endpoint) {
-    DeviceRefAttr operationDevice = enclosingPipeDevice(operation);
-    DeviceRefAttr endpointDevice = receiverDevice(endpoint);
-    return !operationDevice || !endpointDevice ||
-           operationDevice == endpointDevice;
+    return devicesMayCoincide(enclosingPipeDevice(operation),
+                              receiverDevice(endpoint));
   };
 
   for (func::FuncOp function : mod.getOps<func::FuncOp>()) {
@@ -1765,16 +1763,9 @@ LogicalResult PipeGraph::verifyTensorRegionDestinations(
                     accessedEndpoint->receiver.y != endpoint->receiver.y) {
                   return false;
                 }
-                DeviceRefAttr accessedDevice =
-                    receiverDevice(*accessedEndpoint);
-                DeviceRefAttr endpointDevice = receiverDevice(*endpoint);
-                if (accessedDevice && endpointDevice &&
-                    accessedDevice != endpointDevice) {
-                  return false;
-                }
-                return tensorRegionOccurrencesOverlap(
+                return tensorRegionDestinationsMayAlias(
                     accessedEndpoint->getTensorRegionDestination()
-                        .getOccurrences(accessedDevice),
+                        .getOccurrences(receiverDevice(*accessedEndpoint)),
                     pipeRegion);
               });
         } else {

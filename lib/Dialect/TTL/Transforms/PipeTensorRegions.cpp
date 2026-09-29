@@ -201,9 +201,7 @@ bool tensorRegionOccurrencesOverlap(const TensorRegionOccurrences &lhs,
 
 bool tensorRegionDestinationsMayAlias(const TensorRegionOccurrences &lhs,
                                       const TensorRegionOccurrences &rhs) {
-  bool provenDifferentDevices =
-      lhs.device && rhs.device && lhs.device != rhs.device;
-  return !provenDifferentDevices &&
+  return devicesMayCoincide(lhs.device, rhs.device) &&
          lhs.globalTensorIndex == rhs.globalTensorIndex &&
          tensorRegionOccurrencesOverlap(lhs, rhs);
 }
@@ -214,12 +212,6 @@ SmallVector<bool> computeDisjointTensorRegionDestinations(
       destinations, [](const TensorRegionOccurrences &destination) {
         return !hasOverlappingTensorRegionOccurrences(destination);
       });
-
-  auto mayShareDevice = [&](std::size_t lhs, std::size_t rhs) {
-    DeviceRefAttr lhsDevice = destinations[lhs].device;
-    DeviceRefAttr rhsDevice = destinations[rhs].device;
-    return !lhsDevice || !rhsDevice || lhsDevice == rhsDevice;
-  };
 
   // Destinations of one tensor with different tile-grid shapes may alias
   // anywhere when they may share a device. Two distinct shapes per device, per
@@ -316,7 +308,9 @@ SmallVector<bool> computeDisjointTensorRegionDestinations(
         occurrencesByCell.forEachCandidate(start, [&](const CellEntry &other) {
           auto [otherPosition, otherStart] = other;
           std::size_t otherIndex = indices[otherPosition];
-          if (otherPosition == position || !mayShareDevice(index, otherIndex) ||
+          if (otherPosition == position ||
+              !devicesMayCoincide(destinations[index].device,
+                                  destinations[otherIndex].device) ||
               !boxesOverlap(start, extents[position], otherStart,
                             extents[otherPosition])) {
             return false;
