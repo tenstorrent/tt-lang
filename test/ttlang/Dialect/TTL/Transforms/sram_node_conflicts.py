@@ -35,9 +35,9 @@ def make_module(schedules, architecture, unknown):
         f"module attributes {{ttl.launch_grid = [2, 1], ttl.target_arch = #ttcore.arch<{architecture}>}} {{",
         "func.func @schedule() attributes {ttl.kernel_thread = #ttkernel.thread<noc>, ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement>, ttl.noc_index = 0 : i32} {",
     ]
-    for region, (tile, dtype, _, capacity) in enumerate(stress.FORMATS[:3]):
+    for region, (tile, dtype, _, capacity, pages) in enumerate(stress.FORMATS[:3]):
         lines.append(
-            f"%storage_{region} = ttl.bind_cb {{cb_index = {region}, block_count = {capacity}}} {{dfb_id = {region} : index}} : !ttl.cb<[1, 1], !ttcore.tile<{tile}, {dtype}>, {capacity}>"
+            f"%storage_{region} = ttl.bind_cb {{cb_index = {region}, block_count = {capacity}}} {{dfb_id = {region} : index}} : !ttl.cb<[{pages}, 1], !ttcore.tile<{tile}, {dtype}>, {capacity}>"
         )
     lines += [
         "%column = ttl.core_x : index",
@@ -50,11 +50,11 @@ def make_module(schedules, architecture, unknown):
             lines.append("} else {")
         for event_index, event in enumerate(events):
             region, action = divmod(event, 2)
-            tile, dtype, _, capacity = stress.FORMATS[region]
-            signature = f"<[1, 1], !ttcore.tile<{tile}, {dtype}>, {capacity}>"
+            tile, dtype, _, capacity, pages = stress.FORMATS[region]
+            signature = f"<[{pages}, 1], !ttcore.tile<{tile}, {dtype}>, {capacity}>"
             acquire, release = ("reserve", "push") if action == 0 else ("wait", "pop")
             lines += [
-                f"%view_{node}_{event_index} = ttl.cb_{acquire} %storage_{region} : {signature} -> tensor<1x1x!ttcore.tile<{tile}, {dtype}>>",
+                f"%view_{node}_{event_index} = ttl.cb_{acquire} %storage_{region} : {signature} -> tensor<{pages}x1x!ttcore.tile<{tile}, {dtype}>>",
                 f"ttl.cb_{release} %storage_{region} : {signature}",
             ]
             if unknown and event_index == 1:
@@ -70,7 +70,10 @@ def run(cases, mode, strategy, reuse):
             "ttlang-opt",
             "--split-input-file",
             "-pass-pipeline=builtin.module(ttl-finalize-dfb-indices{"
-            + f"memory-model=compiler-l1 sram-allocation-mode={mode} sram-allocation-report=true l1-allocation-strategy={strategy} reuse-user-dfbs={str(reuse).lower()}"
+            + f"memory-model=compiler-sram sram-allocation-mode={mode} "
+            + "sram-allocation-report=true "
+            + f"sram-allocation-strategy={strategy} "
+            + f"reuse-user-dfbs={str(reuse).lower()}"
             + "})",
         ],
         input="\n// -----\n".join(make_module(*case) for case in cases),
@@ -119,7 +122,7 @@ def main():
         "first-fit-decreasing",
         "best-fit-decreasing",
         "multi-order-decreasing",
-        "exact",
+        "minimum-arena",
     ):
         for mode in ("uniform", "per-node"):
             for reuse in (False, True):
@@ -130,8 +133,10 @@ def main():
                 for case_index, (pair, architecture, unknown) in enumerate(cases):
                     quantum = 64 if architecture == "blackhole" else 32
                     sizes = [
-                        (page_bytes * capacity + quantum - 1) // quantum * quantum
-                        for _, _, page_bytes, capacity in stress.FORMATS[:3]
+                        (page_bytes * capacity * pages + quantum - 1)
+                        // quantum
+                        * quantum
+                        for _, _, page_bytes, capacity, pages in stress.FORMATS[:3]
                     ]
                     per_node = [conflicts_for(events) for events in pair]
                     for domain in range(domains):
@@ -165,7 +170,7 @@ def main():
                                 or offsets[second] + sizes[second] <= offsets[first]
                             )
                         control = report["control_and_padding_bytes"]
-                        if strategy == "exact":
+                        if strategy == "minimum-arena":
                             assert report[
                                 "arena_bytes_per_node"
                             ] == control + stress.minimum_payload_bytes(sizes, expected)

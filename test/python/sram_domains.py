@@ -320,7 +320,12 @@ def node_sensitive_copy(source, destination):
 @pytest.mark.parametrize("allocator", [to_dram, to_l1], ids=["dram", "sram"])
 @pytest.mark.parametrize(
     "strategy",
-    ["first-fit-decreasing", "best-fit-decreasing", "multi-order-decreasing", "exact"],
+    [
+        "first-fit-decreasing",
+        "best-fit-decreasing",
+        "multi-order-decreasing",
+        "minimum-arena",
+    ],
 )
 @pytest.mark.parametrize("reuse", [True, False], ids=["reuse", "no-reuse"])
 def test_per_node_temporal_reuse(
@@ -339,7 +344,13 @@ def test_per_node_temporal_reuse(
         node_sensitive_copy(
             source,
             destination,
-            options=f"--ttl-memory-model=compiler-l1 --ttl-sram-allocation-mode={mode} --ttl-l1-allocation-strategy={strategy} {'--ttl-reuse-user-dfbs' if reuse else '--no-ttl-reuse-user-dfbs'} --ttl-sram-allocation-report",
+            options=(
+                "--ttl-memory-model=compiler-sram "
+                f"--ttl-sram-allocation-mode={mode} "
+                f"--ttl-sram-allocation-strategy={strategy} "
+                f"{'--ttl-reuse-user-dfbs' if reuse else '--no-ttl-reuse-user-dfbs'} "
+                "--ttl-sram-allocation-report"
+            ),
         )
         assert_allclose(
             ttnn.to_torch(destination).float(), expected.float(), rtol=0, atol=0

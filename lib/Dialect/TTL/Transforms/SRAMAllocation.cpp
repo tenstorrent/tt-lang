@@ -323,7 +323,6 @@ planRegions(ModuleOp module, const DFBLogicalIdentityAnalysis &identities,
     return graph;
   };
   SmallVector<SRAMAllocationDomainProblem> requests;
-  SmallVector<DFBPhysicalConflictModel> domainConflicts;
   SmallVector<SmallVector<LaunchNodeCoord>> nodeDomains;
   if (allocationMode == "per-node") {
     nodeDomains = collectSRAMNodeDomains(module, liveness.getLaunchNodes());
@@ -367,10 +366,10 @@ planRegions(ModuleOp module, const DFBLogicalIdentityAnalysis &identities,
         request.allocation.regionBytes.push_back(
             problem.regionBytes[sourceRegion]);
       }
-      domainConflicts.push_back(DFBPhysicalConflictModel::buildStorage(
-          liveness, DFBStorageConflictMode::CompilerManaged, nodeDomain));
+      const auto domainConflictModel = DFBPhysicalConflictModel::buildStorage(
+          liveness, DFBStorageConflictMode::CompilerManaged, nodeDomain);
       request.allocation.conflicts =
-          buildConflicts(request.storageIndices, domainConflicts.back());
+          buildConflicts(request.storageIndices, domainConflictModel);
       requests.push_back(std::move(request));
     }
   }
@@ -728,9 +727,9 @@ LogicalResult allocateSRAM(
     }
   }
   if (reportAllocation) {
-    const auto conflicts = DFBPhysicalConflictModel::buildStorage(
-        liveness, DFBStorageConflictMode::CompilerManaged);
     if (plan.nodeLayouts.empty()) {
+      const auto conflicts = DFBPhysicalConflictModel::buildStorage(
+          liveness, DFBStorageConflictMode::CompilerManaged);
       printSRAMAllocationReport(llvm::errs(), plan, liveness, conflicts,
                                 allocator.getName(), reuseStorage, budget);
     } else {
