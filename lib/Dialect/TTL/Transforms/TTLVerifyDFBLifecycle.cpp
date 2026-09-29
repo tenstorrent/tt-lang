@@ -769,11 +769,19 @@ private:
       TransactionSequenceSummary::Counter openCounter =
           push ? TransactionSequenceSummary::ProducerOpen
                : TransactionSequenceSummary::ConsumerOpen;
-      TransactionSequenceSummary &last =
-          result.getOrCreate(*logicalId).back().summary;
+      TransactionSegments &segments = result.getOrCreate(*logicalId);
+      std::optional<SmallVector<TransactionSequenceSummary, 1>> intervals =
+          getRestoredIntervals(segments);
+      if (!intervals) {
+        result.abandon(*logicalId);
+        continue;
+      }
+      TransactionSequenceSummary &last = segments.back().summary;
       // The release closes the open user acquisition first; only the
-      // remainder is a self-contained transfer.
-      std::int64_t open = std::max<std::int64_t>(0, last.net[openCounter]);
+      // remainder is a self-contained transfer. A barrier that restores a
+      // different DFB does not close this DFB's acquisition.
+      std::int64_t open =
+          std::max<std::int64_t>(0, intervals->back().net[openCounter]);
       bool overflow =
           open < *blocks &&
           !last.append(makeEvent(push ? DFBProtocolEffectKind::Reserve
