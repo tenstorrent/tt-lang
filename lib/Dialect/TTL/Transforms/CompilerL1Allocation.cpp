@@ -19,23 +19,6 @@
 
 namespace mlir::tt::ttl {
 
-LogicalResult validateCompilerSRAMLifecycle(ModuleOp module) {
-  Operation *firstBoundary = nullptr;
-  module.walk([&](Operation *operation) -> WalkResult {
-    if (!isa<ResetDFBsOp, ResetAllDFBsOp, DFBReconfigurationOp>(operation)) {
-      return WalkResult::advance();
-    }
-    firstBoundary = operation;
-    return WalkResult::interrupt();
-  });
-  if (!firstBoundary) {
-    return success();
-  }
-  firstBoundary->emitOpError("compiler-sram does not support synchronized DFB "
-                             "reset or reconfiguration");
-  return failure();
-}
-
 namespace {
 struct L1Region {
   int64_t logicalId;
@@ -129,7 +112,8 @@ planRegions(ModuleOp module, const DFBLogicalIdentityAnalysis &identities,
   for (auto &entry : regions) {
     plan.push_back(std::move(entry.second));
   }
-  const auto conflicts = DFBPhysicalConflictModel::buildStorage(liveness);
+  const auto conflicts = DFBPhysicalConflictModel::buildStorage(
+      liveness, DFBStorageConflictMode::CompilerManaged);
   DenseMap<int64_t, unsigned> lifecycleIndices;
   for (auto [lifecycleIndex, lifecycle] :
        llvm::enumerate(liveness.getLogicalDFBLifecycles())) {
@@ -208,8 +192,11 @@ allocateCompilerL1(ModuleOp module,
   const L1AllocationPlan &plan = *maybePlan;
   OpBuilder builder(module.getContext());
   SmallVector<Attribute> allocations;
+  DenseMap<int64_t, int32_t> allocationIndexByLogicalId;
   for (auto [regionIndex, region] : llvm::enumerate(plan.regions)) {
     uint64_t payloadOffset = plan.solution.offsets[regionIndex];
+    allocationIndexByLogicalId.try_emplace(region.logicalId,
+                                           static_cast<int32_t>(regionIndex));
     for (BindCBOp declaration : region.declarations) {
       declaration.setDfbIdAttr(builder.getIndexAttr(region.logicalId));
       declaration.setCbIndexAttr(builder.getIndexAttr(regionIndex));
@@ -235,6 +222,50 @@ allocateCompilerL1(ModuleOp module,
         builder.getNamedAttr(kDFBAllocationBytesField,
                              builder.getI64IntegerAttr(region.allocationBytes)),
     }));
+  }
+  DenseMap<int64_t, SmallVector<int32_t>> resetsByReconfiguration;
+  for (const DFBLogicalLifecycle &lifecycle :
+       liveness.getLogicalDFBLifecycles()) {
+    auto allocationIt = allocationIndexByLogicalId.find(lifecycle.logicalId);
+    assert(allocationIt != allocationIndexByLogicalId.end() &&
+           "every logical DFB must have a compiler-sram allocation");
+    auto collectTerminalReconfigurations = [&](const DFBPerNodeLifetime &node) {
+      for (const DFBLifecycleEpoch &epoch : node.epochs) {
+        if (epoch.terminalReconfigurationOrdinal) {
+          resetsByReconfiguration[*epoch.terminalReconfigurationOrdinal]
+              .push_back(allocationIt->second);
+        }
+      }
+    };
+    for (const DFBPerNodeLifetime &node : lifecycle.nodeLifetimes) {
+      collectTerminalReconfigurations(node);
+    }
+    for (const DFBPerNodeLifetime &node : lifecycle.possibleNodeLifetimes) {
+      collectTerminalReconfigurations(node);
+    }
+  }
+  SmallVector<Attribute> reconfigurationResets;
+  for (int64_t ordinal : liveness.getReconfigurationBoundaryOrdinals()) {
+    auto resetIt = resetsByReconfiguration.find(ordinal);
+    if (resetIt == resetsByReconfiguration.end()) {
+      continue;
+    }
+    SmallVector<int32_t> &indices = resetIt->second;
+    llvm::sort(indices);
+    indices.erase(llvm::unique(indices), indices.end());
+    reconfigurationResets.push_back(builder.getDictionaryAttr({
+        builder.getNamedAttr("ordinal", builder.getI64IntegerAttr(ordinal)),
+        builder.getNamedAttr("dfb_indices",
+                             builder.getDenseI32ArrayAttr(indices)),
+    }));
+  }
+  assert(reconfigurationResets.size() == resetsByReconfiguration.size() &&
+         "every terminal epoch must reference a known reconfiguration");
+  if (reconfigurationResets.empty()) {
+    module->removeAttr(kCompilerSRAMReconfigurationResetsAttrName);
+  } else {
+    module->setAttr(kCompilerSRAMReconfigurationResetsAttrName,
+                    builder.getArrayAttr(reconfigurationResets));
   }
   module->setAttr(kL1ArenaBytesAttrName,
                   builder.getI64IntegerAttr(plan.solution.arenaBytes));

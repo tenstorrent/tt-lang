@@ -827,7 +827,9 @@ LogicalResult validateCombinedDFBResourceL1Bytes(
   FailureOr<uint64_t> globalSemaphoreBytes =
       getGlobalSemaphoreL1Bytes(module, globalSemaphoreCount);
   FailureOr<uint64_t> reconfigurationStateBytes =
-      getDFBReconfigurationStateAllocationBytes(module);
+      usesCompilerSRAM(module)
+          ? FailureOr<uint64_t>(0)
+          : getDFBReconfigurationStateAllocationBytes(module);
   std::optional<uint64_t> requiredBytes =
       succeeded(scratchAllocationBytes)
           ? llvm::checkedAddUnsigned(dfbBytes, *scratchAllocationBytes)
