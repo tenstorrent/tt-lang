@@ -7635,6 +7635,44 @@ def test_routing_plane_distinguishes_empty_launch_domain_from_absent(monkeypatch
     assert program.semaphores == []
 
 
+def test_device_domain_prunes_interference_with_filtered_empty_interval(monkeypatch):
+    fake_ttnn = _FakeTTNN()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    monkeypatch.setattr(
+        kernel_runner, "get_min_remaining_l1_for_device", lambda _device, **_kwargs: 0
+    )
+    empty_interval = _fabric_manager_interval(
+        "empty", interfering_intervals=("active",), launch_nodes=()
+    )
+    active_interval = _fabric_manager_interval(
+        "active", interfering_intervals=("empty",), launch_nodes=((1, 0),)
+    )
+    kernel_spec = kernel_runner.KernelSpec(
+        path="/tmp/kernel.cpp",
+        thread_type="noc",
+        tensor_indices=[],
+        config=object(),
+        fabric_runtime_arg_base_common_index=0,
+        fabric_manager_intervals=(empty_interval, active_interval),
+    )
+
+    result = kernel_runner.run_kernel_on_device(
+        kernel_specs=[kernel_spec],
+        tensors=[_FakeTensor(_FakeMeshDevice())],
+        cb_configs=[],
+        core_ranges=_FakeCoreRanges((((1, 0), (1, 0)),)),
+        device_domain=DeviceDomain((1, 2)),
+        device=_FakeMeshDevice(),
+        kernel_fabric_routes=[
+            [kernel_runner.FabricRouteSpec((0, 0), (0, 1), ((1, 0),), 0)]
+        ],
+        operation_name="empty_interval_interference",
+    )
+
+    assert result is not None
+    assert len(fake_ttnn.fabric_setup_calls) == 1
+
+
 def test_device_domain_plans_all_fabric_bindings_before_setup(monkeypatch):
     fake_ttnn = _FakeTTNN()
     monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)

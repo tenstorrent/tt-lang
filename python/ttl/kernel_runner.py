@@ -5519,6 +5519,25 @@ def _run_kernel_on_device_impl(
                     if launch_nodes:
                         intervals.append(replace(interval, launch_nodes=launch_nodes))
                 descriptor_intervals.append(tuple(intervals))
+            active_interval_ids = {
+                interval.identity
+                for intervals in descriptor_intervals
+                for interval in intervals
+            }
+            descriptor_intervals = [
+                tuple(
+                    replace(
+                        interval,
+                        interfering_intervals=tuple(
+                            identity
+                            for identity in interval.interfering_intervals
+                            if identity in active_interval_ids
+                        ),
+                    )
+                    for interval in intervals
+                )
+                for intervals in descriptor_intervals
+            ]
             if not has_fabric_target_bindings:
                 configure_routing_plane_runtime_args(
                     program_descriptor=device_program,
