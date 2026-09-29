@@ -351,6 +351,22 @@ SmallVector<bool> computeDisjointTensorRegionDestinations(
   return disjoint;
 }
 
+/// Return the first dimension in which a region of `extents` starting at
+/// `start` leaves `tensorGridShape`. Regions inside the grid keep start plus
+/// extent free of overflow in the overlap tests.
+static std::optional<std::size_t>
+findDimensionOutsideTileGrid(ArrayRef<int64_t> start, ArrayRef<int64_t> extents,
+                             ArrayRef<int64_t> tensorGridShape) {
+  for (std::size_t dimension = 0; dimension < tensorGridShape.size();
+       ++dimension) {
+    if (start[dimension] < 0 || extents[dimension] <= 0 ||
+        start[dimension] > tensorGridShape[dimension] - extents[dimension]) {
+      return dimension;
+    }
+  }
+  return std::nullopt;
+}
+
 static LogicalResult
 reportEnumerationBound(llvm::function_ref<InFlightDiagnostic()> emitError,
                        std::uint64_t maxIterations) {
@@ -569,18 +585,13 @@ FailureOr<TensorSliceOccurrences> enumerateTensorSliceOccurrences(
   SmallVector<int64_t> extents = getTensorRegionExtents(
       tensorGridShape, cast<RankedTensorType>(slice.getType()).getShape());
   for (ArrayRef<int64_t> startIndices : occurrences) {
-    for (int64_t dimension = 0;
-         dimension < static_cast<int64_t>(tensorGridShape.size());
-         ++dimension) {
-      int64_t regionExtent = extents[dimension];
-      if (startIndices[dimension] < 0 || regionExtent <= 0 ||
-          startIndices[dimension] > tensorGridShape[dimension] - regionExtent) {
-        return reportFailure("pipe receive tensor_slice region in dimension ",
-                             dimension, " starts at ", startIndices[dimension],
-                             " with extent ", regionExtent,
-                             ", outside the destination tensor tile grid ",
-                             tensorGridShape[dimension]);
-      }
+    if (std::optional<std::size_t> dimension = findDimensionOutsideTileGrid(
+            startIndices, extents, tensorGridShape)) {
+      return reportFailure("pipe receive tensor_slice region in dimension ",
+                           *dimension, " starts at ", startIndices[*dimension],
+                           " with extent ", extents[*dimension],
+                           ", outside the destination tensor tile grid ",
+                           tensorGridShape[*dimension]);
     }
   }
   return result;
@@ -600,6 +611,10 @@ enumerateTensorSliceIterationStarts(TensorSliceOp slice, Operation *user,
   if (failed(loops)) {
     return failure();
   }
+  ArrayRef<int64_t> tensorGridShape =
+      cast<RankedTensorType>(slice.getTensor().getType()).getShape();
+  SmallVector<int64_t> extents = getTensorRegionExtents(
+      tensorGridShape, cast<RankedTensorType>(slice.getType()).getShape());
   TensorSliceOccurrences result;
   result.loops = *loops;
   LoopInductionBindings bindings;
@@ -610,7 +625,9 @@ enumerateTensorSliceIterationStarts(TensorSliceOp slice, Operation *user,
                 createLoopIntegerEvaluator(iteration, evaluateAtLocation);
             FailureOr<SmallVector<int64_t>> startIndices =
                 evaluateTensorSliceStart(slice, iterationEvaluator);
-            if (failed(startIndices)) {
+            if (failed(startIndices) ||
+                findDimensionOutsideTileGrid(*startIndices, extents,
+                                             tensorGridShape)) {
               return failure();
             }
             result.startIndices.push_back(std::move(*startIndices));

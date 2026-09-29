@@ -146,8 +146,8 @@ FailureOr<TensorSliceOccurrences> enumerateTensorSliceOccurrences(
 /// Return the start indices of `slice` for every iteration of the `scf.for`
 /// loops enclosing `user` whose induction variables are not evaluable at
 /// `location`, whether or not enclosing `scf.if` conditions execute `user`.
-/// Fails when a loop bound or start index cannot be evaluated or the iteration
-/// count exceeds `maxIterations`.
+/// Fails when a loop bound or start index cannot be evaluated, a start leaves
+/// the tensor tile grid, or the iteration count exceeds `maxIterations`.
 FailureOr<TensorSliceOccurrences>
 enumerateTensorSliceIterationStarts(TensorSliceOp slice, Operation *user,
                                     const LaunchExecutionLocation &location,
