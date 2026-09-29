@@ -1768,11 +1768,13 @@ struct DFBReconfigurationLowering : OpConversionPattern<DFBReconfigurationOp> {
         rewriter, op.getLoc(),
         IntegerType::get(rewriter.getContext(), 32, IntegerType::Unsigned),
         runtimeArgIndex);
-    ttk::OpaqueCallOp::create(
+    auto reconfigurationCall = ttk::OpaqueCallOp::create(
         rewriter, op.getLoc(), TypeRange{},
         rewriter.getStringAttr("experimental::reconfigure_dfb_interfaces"),
         rewriter.getStringAttr("<cstdint>"), ValueRange{configurationAddress},
         ArrayAttr(), rewriter.getDenseI32ArrayAttr({0}), DenseI32ArrayAttr());
+    reconfigurationCall->setAttr(kDFBReconfigurationOrdinalAttrName,
+                                 rewriter.getI64IntegerAttr(ordinal));
     rewriter.eraseOp(op);
     return success();
   }
@@ -2513,6 +2515,9 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
                            ? PipeGraphLaunchDomainMode::WhenPipesPresent
                            : PipeGraphLaunchDomainMode::Required);
   if (failed(pipeGraphOrErr)) {
+    return failure();
+  }
+  if (failed(preparePipeTensorDestinationRuntimeArguments(*pipeGraphOrErr))) {
     return failure();
   }
 

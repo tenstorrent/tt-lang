@@ -62,19 +62,48 @@ FailureOr<uint64_t> getSynchronizedResetDFBMask(Operation *reset,
                                                 uint64_t allocatedMask) {
   assert((isa<ResetDFBsOp, ResetAllDFBsOp>(reset)) &&
          "expected a synchronized DFB reset");
-  auto selectedReset = dyn_cast<ResetDFBsOp>(reset);
-  if (!selectedReset) {
-    return allocatedMask;
+  ValueRange dfbs;
+  if (auto selectedReset = dyn_cast<ResetDFBsOp>(reset)) {
+    dfbs = selectedReset.getDfbs();
+  } else {
+    dfbs = cast<ResetAllDFBsOp>(reset).getPreservedDfbs();
   }
-  uint64_t resetMask = 0;
-  for (Value dfb : selectedReset.getDfbs()) {
+
+  DenseMap<int64_t, uint64_t> groupMasks;
+  ModuleOp module = reset->getParentOfType<ModuleOp>();
+  WalkResult result = module.walk([&](BindCBOp bind) -> WalkResult {
+    DFBAllocationGroupAttr group = bind.getAllocationGroupAttr();
+    if (!group) {
+      return WalkResult::advance();
+    }
+    FailureOr<int32_t> index = getValidatedDFBIndex(bind.getResult(), bind);
+    if (failed(index)) {
+      return WalkResult::interrupt();
+    }
+    groupMasks[group.getOrdinal()] |= getDFBIndexBit(*index);
+    return WalkResult::advance();
+  });
+  if (result.wasInterrupted()) {
+    return failure();
+  }
+
+  uint64_t selectedMask = 0;
+  for (Value dfb : dfbs) {
     FailureOr<int32_t> dfbIndex = getValidatedDFBIndex(dfb, reset);
     if (failed(dfbIndex)) {
       return failure();
     }
-    resetMask |= getDFBIndexBit(*dfbIndex);
+    selectedMask |= getDFBIndexBit(*dfbIndex);
+    BindCBOp declaration = getDFBDeclaration(dfb);
+    if (!declaration) {
+      return reset->emitOpError("cannot resolve DFB declaration");
+    }
+    if (DFBAllocationGroupAttr group = declaration.getAllocationGroupAttr()) {
+      selectedMask |= groupMasks[group.getOrdinal()];
+    }
   }
-  return resetMask;
+  return isa<ResetAllDFBsOp>(reset) ? allocatedMask & ~selectedMask
+                                   : selectedMask;
 }
 
 DFBReconfigurationInstalls
