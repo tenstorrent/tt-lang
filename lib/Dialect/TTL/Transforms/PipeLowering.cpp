@@ -318,12 +318,23 @@ getIntervalExecutionLocations(const FabricManagerIntervalPlan &interval,
   return locations;
 }
 
+using ExecutionLocationCounts =
+    llvm::DenseMap<std::tuple<Attribute, int64_t, int64_t>, std::uint64_t>;
+
+static ExecutionLocationCounts
+countExecutionLocations(ArrayRef<FabricManagerExecutionLocation> locations) {
+  ExecutionLocationCounts counts;
+  for (FabricManagerExecutionLocation location : locations) {
+    ++counts[{location.device, location.node.x, location.node.y}];
+  }
+  return counts;
+}
+
 static std::uint64_t getMaximumLocationMultiplicity(
     ArrayRef<FabricManagerExecutionLocation> locations) {
   std::uint64_t maximum = 1;
-  for (FabricManagerExecutionLocation location : locations) {
-    maximum = std::max<std::uint64_t>(
-        maximum, std::count(locations.begin(), locations.end(), location));
+  for (const auto &entry : countExecutionLocations(locations)) {
+    maximum = std::max(maximum, entry.second);
   }
   return maximum;
 }
@@ -331,7 +342,8 @@ static std::uint64_t getMaximumLocationMultiplicity(
 static bool
 executionLocationsEqual(ArrayRef<FabricManagerExecutionLocation> lhs,
                         ArrayRef<FabricManagerExecutionLocation> rhs) {
-  return std::is_permutation(lhs.begin(), lhs.end(), rhs.begin(), rhs.end());
+  return lhs.size() == rhs.size() &&
+         countExecutionLocations(lhs) == countExecutionLocations(rhs);
 }
 
 static std::optional<std::uint64_t> getIntervalInvocationUpperBound(

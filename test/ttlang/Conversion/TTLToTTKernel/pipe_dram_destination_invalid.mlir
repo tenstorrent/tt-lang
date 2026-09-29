@@ -445,6 +445,104 @@ module attributes {ttl.launch_grid = [1, 1]} {
 
 // -----
 
+// Wait-any completion tracks a reserved DFB block per candidate, so a receive
+// into a DRAM tensor region cannot be a wait-any candidate.
+
+#wait_any_input_layout = #ttl.layout<
+  shape = [64, 64], element_type = !ttcore.tile<32x32, bf16>,
+  buffer = dram, grid = [1, 1], memory = interleaved>
+#wait_any_output_layout = #ttl.layout<
+  shape = [128, 64], element_type = !ttcore.tile<32x32, bf16>,
+  buffer = dram, grid = [1, 1], memory = interleaved>
+
+module attributes {
+  ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blackhole>
+} {
+  func.func @wait_any_dram_sender(
+      %input: tensor<2x2x!ttcore.tile<32x32, bf16>, #wait_any_input_layout>)
+      attributes {
+        ttl.base_cta_index = 2 : i32,
+        ttl.crta_indices = [0 : i32],
+        ttl.kernel_thread = #ttkernel.thread<noc>,
+        ttl.noc_index = 0 : i32
+      } {
+    %send_dfb = ttl.bind_cb {cb_index = 0, block_count = 2}
+        {dfb_id = 0 : index}
+        : !ttl.cb<[2, 2], !ttcore.tile<32x32, bf16>, 2>
+    ttl.pipenet_foreach_src attributes {
+      records = #ttl.pipenet_records<net 0 name "direct_dram" pipes[
+        <srcX = 0, srcY = 0, dstStartX = 0, dstStartY = 0,
+         dstEndX = 0, dstEndY = 0,
+         deviceTransfer = <
+           domain = <components = <name = "device", extent = [2, 2]>>,
+           edge = <source = <coordinates = [0, 0]>,
+                   destination = <coordinates = [1, 1]>>>>
+      ]>
+    } {
+    ^bb0(%pipe: !ttl.selected_pipe_src):
+      %reserved = ttl.cb_reserve %send_dfb
+          : <[2, 2], !ttcore.tile<32x32, bf16>, 2>
+          -> tensor<2x2x!ttcore.tile<32x32, bf16>>
+      %block = ttl.attach_cb %reserved, %send_dfb
+          : (tensor<2x2x!ttcore.tile<32x32, bf16>>,
+             !ttl.cb<[2, 2], !ttcore.tile<32x32, bf16>, 2>)
+          -> tensor<2x2x!ttcore.tile<32x32, bf16>>
+      %zero = arith.constant 0 : index
+      %input_slice = ttl.tensor_slice %input[%zero, %zero]
+          : tensor<2x2x!ttcore.tile<32x32, bf16>, #wait_any_input_layout>
+          -> tensor<2x2x!ttcore.tile<32x32, bf16>, #wait_any_input_layout>
+      %read = ttl.copy %input_slice, %send_dfb
+          : (tensor<2x2x!ttcore.tile<32x32, bf16>, #wait_any_input_layout>,
+             !ttl.cb<[2, 2], !ttcore.tile<32x32, bf16>, 2>)
+          -> !ttl.transfer_handle<read>
+      ttl.wait %read : !ttl.transfer_handle<read>
+      %send = ttl.copy %block, %pipe
+          : (tensor<2x2x!ttcore.tile<32x32, bf16>>,
+             !ttl.selected_pipe_src)
+          -> !ttl.transfer_handle<write>
+      ttl.wait %send : !ttl.transfer_handle<write>
+    }
+    return
+  }
+
+  func.func @wait_any_dram_receiver(
+      %output: tensor<4x2x!ttcore.tile<32x32, bf16>, #wait_any_output_layout>)
+      attributes {
+        ttl.base_cta_index = 2 : i32,
+        ttl.crta_indices = [1 : i32],
+        ttl.kernel_thread = #ttkernel.thread<noc>,
+        ttl.noc_index = 1 : i32
+      } {
+    ttl.pipenet_foreach_dst attributes {
+      records = #ttl.pipenet_records<net 0 name "direct_dram" pipes[
+        <srcX = 0, srcY = 0, dstStartX = 0, dstStartY = 0,
+         dstEndX = 0, dstEndY = 0,
+         deviceTransfer = <
+           domain = <components = <name = "device", extent = [2, 2]>>,
+           edge = <source = <coordinates = [0, 0]>,
+                   destination = <coordinates = [1, 1]>>>>
+      ]>
+    } {
+    ^bb0(%pipe: !ttl.selected_pipe_dst):
+      %zero = arith.constant 0 : index
+      %output_slice = ttl.tensor_slice %output[%zero, %zero]
+          : tensor<4x2x!ttcore.tile<32x32, bf16>, #wait_any_output_layout>
+          -> tensor<2x2x!ttcore.tile<32x32, bf16>, #wait_any_output_layout>
+      %receive = ttl.copy %pipe, %output_slice
+          : (!ttl.selected_pipe_dst,
+             tensor<2x2x!ttcore.tile<32x32, bf16>, #wait_any_output_layout>)
+          -> !ttl.receive_request
+      // expected-error @below {{requires every candidate receive to target a reserved DFB block}}
+      %ready = ttl.wait_any %receive start %zero
+          : (!ttl.receive_request, index) -> !ttl.ready_receive
+      ttl.wait %receive : !ttl.receive_request
+    }
+    return
+  }
+}
+
+// -----
+
 // A read in every iteration must follow the receive wait in every iteration.
 // The receive executes only in the last iteration, and a no-rendezvous sender
 // may write the region while the first iteration reads it.
