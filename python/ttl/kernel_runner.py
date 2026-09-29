@@ -2927,14 +2927,7 @@ def build_dfb_reconfiguration_runtime_resources(
     reconfigured_storage_indices = set()
     remote_uniform_storage_indices = set()
     for dfb_index, epochs in enumerate(plan.dfb_epochs):
-        storage_indices = {
-            _physical_dfb_storage_index(epoch.config) for epoch in epochs
-        }
-        if len(storage_indices) != 1:
-            raise ValueError(
-                f"DFB[{dfb_index}] configurations use different storage indices"
-            )
-        storage_index = storage_indices.pop()
+        storage_index = _physical_dfb_storage_index(epochs[0].config)
         storage_index_by_dfb[dfb_index] = storage_index
         if any(
             epoch.config.address_scope == DFBAddressScope.REMOTE_UNIFORM
@@ -3011,21 +3004,8 @@ def build_dfb_reconfiguration_runtime_resources(
                 math.lcm(current_alignment, scratch_alignment),
             )
 
-    # The launch descriptor is built from the same backing tensor as the epochs.
-    if len(cb_configs) != len(plan.dfb_epochs):
-        raise ValueError(
-            "launch DFB configuration count does not match the reconfiguration plan"
-        )
     for dfb_index, config in enumerate(cb_configs):
         storage_index = storage_index_by_dfb[dfb_index]
-        if (
-            config.dfb_index != dfb_index
-            or _physical_dfb_storage_index(config) != storage_index
-        ):
-            raise ValueError(
-                f"launch DFB configuration {dfb_index} does not match the "
-                "reconfiguration plan's physical or storage index"
-            )
         if storage_index not in runtime_backed_storage_indices:
             continue
         allocation = _get_dfb_allocation(config)
@@ -4647,6 +4627,10 @@ def _validate_dfb_reconfiguration_plan(
         raise ValueError("DFB reconfiguration plan must contain a boundary")
     if len(set(boundary_ordinals)) != len(boundary_ordinals):
         raise ValueError("DFB reconfiguration boundary ordinals must be unique")
+    if cb_configs is not None and len(cb_configs) != len(plan.dfb_epochs):
+        raise ValueError(
+            "launch DFB configuration count does not match the reconfiguration plan"
+        )
 
     configurations_by_entry = {None: {}}
     configurations_by_entry.update({ordinal: {} for ordinal in boundary_ordinals})
@@ -4656,6 +4640,7 @@ def _validate_dfb_reconfiguration_plan(
                 f"DFB reconfiguration plan has no configurations for DFB[{dfb_index}]"
             )
         seen_entries = set()
+        storage_indices = set()
         for epoch in epochs:
             entry_ordinal = epoch.entry_reconfiguration_ordinal
             if entry_ordinal in seen_entries:
@@ -4680,7 +4665,21 @@ def _validate_dfb_reconfiguration_plan(
                 )
             _get_dfb_allocation(config)
             _validate_physical_dfb_config(config, dfb_index)
+            storage_indices.add(_physical_dfb_storage_index(config))
             configurations_by_entry[entry_ordinal][dfb_index] = config
+        if len(storage_indices) != 1:
+            raise ValueError(
+                f"DFB[{dfb_index}] configurations use different storage indices"
+            )
+        if cb_configs is not None:
+            launch_config = cb_configs[dfb_index]
+            if launch_config.dfb_index != dfb_index or _physical_dfb_storage_index(
+                launch_config
+            ) != next(iter(storage_indices)):
+                raise ValueError(
+                    f"launch DFB configuration {dfb_index} does not match the "
+                    "reconfiguration plan's physical or storage index"
+                )
 
     current_tensor_configurations = {}
 
@@ -4731,16 +4730,17 @@ def _validate_dfb_reconfiguration_plan(
                         segment.is_tensor_backed,
                         remote_uniform,
                     )
-        elif config.allocation_nodes is None:
+        elif config.allocation_nodes is None or config.allocation_nodes == ():
             for dfb_node in tuple(active_sources_by_dfb_node):
                 if dfb_node[0] == dfb_index:
                     del active_sources_by_dfb_node[dfb_node]
-            for node in program_nodes if program_nodes is not None else (None,):
-                active_sources_by_dfb_node[(dfb_index, node)] = (
-                    storage_index,
-                    False,
-                    remote_uniform,
-                )
+            if config.allocation_nodes is None:
+                for node in program_nodes if program_nodes is not None else (None,):
+                    active_sources_by_dfb_node[(dfb_index, node)] = (
+                        storage_index,
+                        False,
+                        remote_uniform,
+                    )
         else:
             for node in config.allocation_nodes:
                 active_sources_by_dfb_node[(dfb_index, node)] = (

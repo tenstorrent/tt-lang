@@ -150,6 +150,53 @@ def test_reconfiguration_runtime_resources_reject_mismatched_launch_config(
         )
 
 
+@pytest.mark.parametrize("mismatch", ["storage_index", "dfb_index"])
+def test_reconfiguration_descriptors_reject_mismatched_launch_config(
+    monkeypatch, mismatch
+):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    config = PhysicalDFBConfig(0, 1, "bfloat16", 1, 2048, (32, 32), storage_index=4)
+    plan = DFBReconfigurationPlan(
+        boundary_ordinals=(7,),
+        dfb_epochs=(
+            (DFBConfigurationEpoch(None, config), DFBConfigurationEpoch(7, config)),
+        ),
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="launch DFB configuration 0 does not match the reconfiguration plan",
+    ):
+        kernel_runner.build_cb_descriptors(
+            tensors=[],
+            cb_configs=[replace(config, **{mismatch: 5})],
+            core_ranges=_FakeExplicitCoreRanges((0, 0), (0, 0)),
+            dfb_reconfiguration_plan=plan,
+        )
+
+
+def test_reconfiguration_descriptors_reject_mismatched_launch_count(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    config = PhysicalDFBConfig(0, 1, "bfloat16", 1, 2048, (32, 32))
+    plan = DFBReconfigurationPlan(
+        boundary_ordinals=(7,),
+        dfb_epochs=(
+            (DFBConfigurationEpoch(None, config), DFBConfigurationEpoch(7, config)),
+        ),
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="launch DFB configuration count does not match the reconfiguration plan",
+    ):
+        kernel_runner.build_cb_descriptors(
+            tensors=[],
+            cb_configs=[],
+            core_ranges=_FakeExplicitCoreRanges((0, 0), (0, 0)),
+            dfb_reconfiguration_plan=plan,
+        )
+
+
 @pytest.fixture(autouse=True)
 def _lockstep_allocator_by_default(monkeypatch):
     # Hybrid-mode tests set the allocator mode explicitly; an exported setting
@@ -3820,6 +3867,36 @@ def test_reconfiguration_remote_uniform_ignores_empty_shared_storage(monkeypatch
     )
 
     kernel_runner._validate_dfb_reconfiguration_plan([_backing_tensor(device)], plan)
+
+
+def test_reconfiguration_remote_uniform_clears_exact_empty_epoch(monkeypatch):
+    device, _, base_plan = _remote_uniform_scratch_environment(
+        monkeypatch, {(0, 0): 0xC000}
+    )
+    initial = base_plan.dfb_epochs[0][0].config
+    empty = replace(initial, storage_segments=(), allocation_nodes=())
+    scratch = replace(
+        initial,
+        storage_segments=(DFBStorageSegment(nodes=((1, 0),)),),
+        allocation_nodes=((1, 0),),
+    )
+    plan = DFBReconfigurationPlan(
+        boundary_ordinals=(7, 8),
+        dfb_epochs=(
+            (
+                DFBConfigurationEpoch(None, initial),
+                DFBConfigurationEpoch(7, empty),
+                DFBConfigurationEpoch(8, scratch),
+            ),
+        ),
+    )
+
+    kernel_runner._validate_dfb_reconfiguration_plan(
+        [_backing_tensor(device)],
+        plan,
+        cb_configs=[initial],
+        core_ranges=_FakeExplicitCoreRanges((0, 0), (1, 0)),
+    )
 
 
 # PipeNet backing that covers only some cores of remote-uniform storage would
