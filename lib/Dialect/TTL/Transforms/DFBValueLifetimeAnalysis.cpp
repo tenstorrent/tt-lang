@@ -145,15 +145,12 @@ private:
 };
 
 static std::optional<AttachCBOp> findAssociation(Value value) {
-  value = traceDFBShapeViews(value);
-  if (auto slice = value.getDefiningOp<tensor::ExtractSliceOp>()) {
-    return findAssociation(slice.getSource());
-  }
-  if (auto extract = value.getDefiningOp<tensor::ExtractOp>()) {
-    return findAssociation(extract.getTensor());
-  }
-  if (auto association = value.getDefiningOp<AttachCBOp>()) {
-    return association;
+  while (value) {
+    Operation *operation = value.getDefiningOp();
+    if (auto association = dyn_cast_if_present<AttachCBOp>(operation)) {
+      return association;
+    }
+    value = getStorageAliasSource(operation);
   }
   return std::nullopt;
 }

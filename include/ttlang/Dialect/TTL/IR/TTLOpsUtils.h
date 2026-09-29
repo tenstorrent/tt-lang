@@ -345,6 +345,12 @@ mlir::Value getSingletonDimensionShapeViewSource(mlir::Operation *operation);
 /// the checked expand/collapse operations above.
 mlir::Value getDFBConversionCastSource(mlir::Operation *operation);
 
+/// Return the source value when `operation` preserves DFB storage identity.
+///
+/// Supported aliases are DFB associations, checked singleton-dimension shape
+/// views, tensor slices and extracts, and accepted DFB conversion casts.
+mlir::Value getStorageAliasSource(mlir::Operation *operation);
+
 /// Trace conversion bridges and checked singleton-dimension tensor views.
 inline mlir::Value traceDFBShapeViews(mlir::Value value) {
   while (true) {
@@ -369,24 +375,14 @@ inline mlir::Value traceDFBShapeViews(mlir::Value value) {
 /// `ttl.cb_reserve`.
 inline mlir::Operation *findCBAcquireOp(mlir::Value tensor) {
   while (true) {
-    tensor = traceDFBShapeViews(tensor);
-    if (auto attach = tensor.getDefiningOp<AttachCBOp>()) {
-      tensor = attach.getTensor();
-      continue;
-    }
-    if (auto slice = tensor.getDefiningOp<mlir::tensor::ExtractSliceOp>()) {
-      tensor = slice.getSource();
-      continue;
-    }
-    if (auto extract = tensor.getDefiningOp<mlir::tensor::ExtractOp>()) {
-      tensor = extract.getTensor();
-      continue;
-    }
     mlir::Operation *definition = tensor.getDefiningOp();
     if (mlir::isa_and_nonnull<CBWaitOp, CBReserveOp>(definition)) {
       return definition;
     }
-    return nullptr;
+    tensor = getStorageAliasSource(definition);
+    if (!tensor) {
+      return nullptr;
+    }
   }
 }
 
@@ -426,22 +422,14 @@ inline bool isInactiveGuardedDFBYield(mlir::Value value) {
 inline mlir::Operation *findCBAcquireOp(mlir::Value tensor,
                                         mlir::Operation *use) {
   while (true) {
-    tensor = traceDFBShapeViews(tensor);
-    if (auto attach = tensor.getDefiningOp<AttachCBOp>()) {
-      tensor = attach.getTensor();
-      continue;
-    }
-    if (auto slice = tensor.getDefiningOp<mlir::tensor::ExtractSliceOp>()) {
-      tensor = slice.getSource();
-      continue;
-    }
-    if (auto extract = tensor.getDefiningOp<mlir::tensor::ExtractOp>()) {
-      tensor = extract.getTensor();
-      continue;
-    }
     mlir::Operation *definition = tensor.getDefiningOp();
     if (mlir::isa_and_nonnull<CBWaitOp, CBReserveOp>(definition)) {
       return definition;
+    }
+
+    if (mlir::Value source = getStorageAliasSource(definition)) {
+      tensor = source;
+      continue;
     }
 
     auto result = mlir::dyn_cast<mlir::OpResult>(tensor);
@@ -628,38 +616,41 @@ inline bool isCBAcquireView(mlir::Value tensor) {
 
 /// Return the circular buffer attached to `tensor`, or null if none.
 inline mlir::Value getAttachedCB(mlir::Value tensor) {
-  tensor = traceDFBShapeViews(tensor);
-  // After CB lowering, shape views and slices may terminate at a materialized
-  // TTKernel handle rather than a TTL acquire operation.
-  if (mlir::isa<mlir::tt::ttkernel::CBType>(tensor.getType())) {
-    return tensor;
-  }
-  if (mlir::isa_and_nonnull<mlir::tensor::ExpandShapeOp,
-                            mlir::tensor::CollapseShapeOp>(
-          tensor.getDefiningOp())) {
+  while (tensor) {
+    // After CB lowering, aliases may terminate at a materialized TTKernel
+    // handle rather than a TTL acquire operation.
+    if (mlir::isa<mlir::tt::ttkernel::CBType>(tensor.getType())) {
+      return tensor;
+    }
+
+    mlir::Operation *definition = tensor.getDefiningOp();
+    if (auto attach =
+            mlir::dyn_cast_or_null<mlir::tt::ttl::AttachCBOp>(definition)) {
+      return attach.getCb();
+    }
+    if (mlir::Value source = getStorageAliasSource(definition)) {
+      tensor = source;
+      continue;
+    }
+
+    // Reject unsupported expand/collapse operations before the generic view
+    // fallback, which does not prove the singleton-dimension contract.
+    if (mlir::isa_and_nonnull<mlir::tensor::ExpandShapeOp,
+                              mlir::tensor::CollapseShapeOp>(definition)) {
+      return {};
+    }
+    if (auto viewLike =
+            mlir::dyn_cast_or_null<mlir::ViewLikeOpInterface>(definition)) {
+      mlir::Value source = viewLike.getViewSource();
+      if (mlir::isa<CircularBufferType>(source.getType())) {
+        return source;
+      }
+      tensor = source;
+      continue;
+    }
     return {};
   }
-  if (auto slice = tensor.getDefiningOp<mlir::tensor::ExtractSliceOp>()) {
-    return getAttachedCB(slice.getSource());
-  }
-
-  if (auto extract = tensor.getDefiningOp<mlir::tensor::ExtractOp>()) {
-    return getAttachedCB(extract.getTensor());
-  }
-
-  if (auto attach = tensor.getDefiningOp<mlir::tt::ttl::AttachCBOp>()) {
-    return attach.getCb();
-  }
-
-  if (auto viewLike = tensor.getDefiningOp<mlir::ViewLikeOpInterface>()) {
-    mlir::Value source = viewLike.getViewSource();
-    if (mlir::isa<CircularBufferType>(source.getType())) {
-      return source;
-    }
-    return getAttachedCB(source);
-  }
-
-  return mlir::Value();
+  return {};
 }
 
 /// Returns true when `op` receives from a pipe into DFB-backed storage.

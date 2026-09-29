@@ -16,10 +16,10 @@ class ComputeOp;
 
 /// Generate lowering for a ComputeOp containing tile_matmul_block.
 ///
-/// Creates a single DstSectionOp with the matmul_block call, all cloned
-/// body ops expanded M*N times, and per-output-view stores. For M=N=1
-/// (single output tile), each op is emitted once. For M*N > 1, ops are
-/// cloned per tile with remapped DST indices.
+/// Creates a single DstSectionOp with one matmul_block call per batch, all
+/// cloned body ops expanded numBatches*M*N times, and per-output-view stores.
+/// Each body op is cloned per output tile with remapped DST indices, including
+/// distinct tiles from different batches when M=N=1.
 LogicalResult generateMatmulCompute(PatternRewriter &rewriter, Location loc,
                                     ComputeOp op,
                                     ArrayRef<AffineMap> indexingMaps,
