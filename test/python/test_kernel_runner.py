@@ -3435,6 +3435,36 @@ def test_reconfiguration_remote_uniform_accepts_uniform_tensor_segments(
     ]
 
 
+def test_reconfiguration_remote_uniform_accepts_full_scratch_to_tensor_transition(
+    monkeypatch,
+):
+    device, _, base_plan = _remote_uniform_scratch_environment(
+        monkeypatch, {(0, 0): 0xC000}
+    )
+    initial = replace(base_plan.dfb_epochs[0][0].config, storage_segments=())
+    tensor = replace(
+        initial,
+        storage_segments=(
+            DFBStorageSegment(nodes=((0, 0),), tensor_index=0, byte_size=2048),
+        ),
+    )
+    plan = DFBReconfigurationPlan(
+        boundary_ordinals=(7,),
+        dfb_epochs=(
+            (DFBConfigurationEpoch(None, initial), DFBConfigurationEpoch(7, tensor)),
+        ),
+    )
+
+    resources = kernel_runner.build_dfb_reconfiguration_runtime_resources(
+        tensors=[_backing_tensor(device)],
+        core_ranges=_FakeExplicitCoreRanges((0, 0), (0, 0)),
+        plan=plan,
+        cb_configs=_launch_configs(plan),
+        device=device,
+    )
+    assert len(resources.configuration_tensors) == 1
+
+
 def test_reconfiguration_remote_uniform_rejects_partial_scratch_transition(
     monkeypatch,
 ):

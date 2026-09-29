@@ -2710,7 +2710,7 @@ def _runtime_resource_compatibility_key(
     tensor_address_key = []
     if dfb_reconfiguration_plan is not None:
         _validate_dfb_reconfiguration_plan(
-            tensors, dfb_reconfiguration_plan, cb_configs
+            tensors, dfb_reconfiguration_plan, cb_configs, core_ranges
         )
         tensor_indices = sorted(
             {
@@ -2900,7 +2900,7 @@ def build_dfb_reconfiguration_runtime_resources(
     if ttnn is None:
         raise RuntimeError("ttnn is not available")
     _validate_remote_uniform_storage_sources(cb_configs)
-    _validate_dfb_reconfiguration_plan(tensors, plan, cb_configs)
+    _validate_dfb_reconfiguration_plan(tensors, plan, cb_configs, core_ranges)
     resource_device = device if device is not None else _first_device(tensors)
     reusable_backing_tensors = dict(existing_backing_tensors or {})
     reusable_backing_allocation_bytes = dict(existing_backing_allocation_bytes or {})
@@ -4617,6 +4617,7 @@ def _validate_dfb_reconfiguration_plan(
     tensors: List[Any],
     plan: DFBReconfigurationPlan,
     cb_configs: Optional[List[PhysicalDFBConfig]] = None,
+    core_ranges: Optional[Any] = None,
 ) -> None:
     """Validate every configuration before allocating runtime resources."""
     boundary_ordinals = plan.boundary_ordinals
@@ -4690,6 +4691,11 @@ def _validate_dfb_reconfiguration_plan(
     active_sources_by_dfb_node: Dict[
         Tuple[int, Optional[Tuple[int, int]]], Tuple[int, bool, bool]
     ] = {}
+    program_nodes = (
+        _core_range_coordinates(core_ranges, label="program core ranges")
+        if core_ranges is not None
+        else None
+    )
 
     def apply_sources(config: PhysicalDFBConfig) -> None:
         dfb_index = config.dfb_index
@@ -4707,11 +4713,12 @@ def _validate_dfb_reconfiguration_plan(
             for dfb_node in tuple(active_sources_by_dfb_node):
                 if dfb_node[0] == dfb_index:
                     del active_sources_by_dfb_node[dfb_node]
-            active_sources_by_dfb_node[(dfb_index, None)] = (
-                storage_index,
-                False,
-                remote_uniform,
-            )
+            for node in program_nodes if program_nodes is not None else (None,):
+                active_sources_by_dfb_node[(dfb_index, node)] = (
+                    storage_index,
+                    False,
+                    remote_uniform,
+                )
         else:
             for node in config.allocation_nodes:
                 active_sources_by_dfb_node[(dfb_index, node)] = (
@@ -4823,7 +4830,7 @@ def build_cb_descriptors(
     _validate_remote_uniform_storage_sources(cb_configs)
     if dfb_reconfiguration_plan is not None:
         _validate_dfb_reconfiguration_plan(
-            tensors, dfb_reconfiguration_plan, cb_configs
+            tensors, dfb_reconfiguration_plan, cb_configs, core_ranges
         )
     _validate_remote_uniform_tensor_backing(
         tensors, cb_configs, dfb_reconfiguration_plan
