@@ -900,12 +900,19 @@ matchStridedTableIndex(Value index, std::size_t tableSize) {
                            static_cast<std::size_t>(offset)};
 }
 
+/// Return the value of every entry of a non-empty table whose entries are all
+/// equal.
+static std::optional<int64_t> getUniformTableValue(ArrayRef<int64_t> values) {
+  if (values.empty() || !llvm::all_equal(values)) {
+    return std::nullopt;
+  }
+  return values.front();
+}
+
 OpFoldResult ConstantTableLookupOp::fold(FoldAdaptor adaptor) {
   ArrayRef<int64_t> values = getValues();
-  if (!values.empty() && llvm::all_of(values.drop_front(), [&](int64_t value) {
-        return value == values.front();
-      })) {
-    return IntegerAttr::get(getResult().getType(), values.front());
+  if (std::optional<int64_t> uniformValue = getUniformTableValue(values)) {
+    return IntegerAttr::get(getResult().getType(), *uniformValue);
   }
 
   auto indexAttr = dyn_cast_or_null<IntegerAttr>(adaptor.getIndex());
@@ -925,11 +932,9 @@ void ConstantTableLookupOp::getCanonicalizationPatterns(
   patterns.add(+[](ConstantTableLookupOp lookupOp,
                    PatternRewriter &rewriter) -> LogicalResult {
     ArrayRef<int64_t> values = lookupOp.getValues();
-    if (!values.empty() &&
-        llvm::all_of(values.drop_front(),
-                     [&](int64_t value) { return value == values.front(); })) {
+    if (std::optional<int64_t> uniformValue = getUniformTableValue(values)) {
       rewriter.replaceOpWithNewOp<arith::ConstantIndexOp>(lookupOp,
-                                                          values.front());
+                                                          *uniformValue);
       return success();
     }
 

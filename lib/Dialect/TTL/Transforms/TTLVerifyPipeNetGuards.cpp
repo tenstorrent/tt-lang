@@ -905,7 +905,24 @@ struct PipeOccurrences {
   DeviceDomainAttr localDeviceDomain;
   DeviceRefAttr localDevice;
   SmallVector<PipeScheduleNodeId> sends;
+
+  LaunchExecutionLocation getReceiverLocation(LaunchNodeCoord node) const {
+    return localDevice
+               ? LaunchExecutionLocation(node, localDeviceDomain, localDevice)
+               : LaunchExecutionLocation(node);
+  }
 };
+
+/// Return the logical device of a local PipeNet event at `location`. A device
+/// transfer names its endpoint devices itself, so it has none.
+std::pair<DeviceDomainAttr, DeviceRefAttr>
+getLocalPipeDevice(DeviceTransferAttr deviceTransfer,
+                   const LaunchExecutionLocation &location) {
+  if (deviceTransfer) {
+    return {};
+  }
+  return {location.deviceDomain, location.device};
+}
 
 using PipeIdentity =
     std::tuple<int64_t, int64_t, int64_t, int64_t, int64_t, int64_t, int64_t,
@@ -920,10 +937,8 @@ using PipeCoordIdentity =
 PipeIdentity getPipeIdentity(PipeType pipeType,
                              DeviceTransferAttr deviceTransfer,
                              const LaunchExecutionLocation &location) {
-  DeviceDomainAttr localDeviceDomain =
-      deviceTransfer ? DeviceDomainAttr() : location.deviceDomain;
-  DeviceRefAttr localDevice =
-      deviceTransfer ? DeviceRefAttr() : location.device;
+  auto [localDeviceDomain, localDevice] =
+      getLocalPipeDevice(deviceTransfer, location);
   return {pipeType.getPipeNetId(), pipeType.getSrcX(),
           pipeType.getSrcY(),      pipeType.getDstStartX(),
           pipeType.getDstEndX(),   pipeType.getDstStartY(),
@@ -1766,14 +1781,6 @@ private:
   ModuleState &state;
 };
 
-/// Return whether the static predecessor and successor counts cannot pair.
-bool haveInvalidPipeOccurrenceCount(ArrayRef<PipeScheduleNodeId> predecessors,
-                                    ArrayRef<PipeScheduleNodeId> successors,
-                                    bool requireEqualOccurrences) {
-  return requireEqualOccurrences ? predecessors.size() != successors.size()
-                                 : predecessors.size() < successors.size();
-}
-
 /// Emit one diagnostic for a static event-definition mismatch across one or
 /// more receivers of the same pipe.
 void emitPipeOccurrenceCountError(ArrayRef<PipeScheduleNode> nodes,
@@ -1821,13 +1828,13 @@ void emitPipeOccurrenceCountError(ArrayRef<PipeScheduleNode> nodes,
 /// Verify that predecessor and successor operations at the same traversal
 /// position pair one-to-one: repeated pairs must have equal execution counts
 /// under equivalent control conditions.
-LogicalResult verifyPipeOccurrencePairs(
-    ArrayRef<PipeScheduleNode> nodes, ArrayRef<PipeScheduleNodeId> predecessors,
-    ArrayRef<PipeScheduleNodeId> successors, StringRef predecessorName,
-    StringRef successorName, LaunchNodeCoord receiverCoord, ModuleState &state,
-    bool requireEqualOccurrences = true) {
-  assert(!haveInvalidPipeOccurrenceCount(predecessors, successors,
-                                         requireEqualOccurrences) &&
+LogicalResult
+verifyPipeOccurrencePairs(ArrayRef<PipeScheduleNode> nodes,
+                          ArrayRef<PipeScheduleNodeId> predecessors,
+                          ArrayRef<PipeScheduleNodeId> successors,
+                          StringRef predecessorName, StringRef successorName,
+                          LaunchNodeCoord receiverCoord, ModuleState &state) {
+  assert(predecessors.size() == successors.size() &&
          "static occurrence counts must be validated before pairing");
   for (auto [predecessor, successor] : llvm::zip(predecessors, successors)) {
     if (!proveEqualPipeScheduleNodeCounts(nodes[predecessor], nodes[successor],
@@ -2595,13 +2602,9 @@ llvm::DenseSet<Operation *> findNoRendezvousSendOps(
     bool hasDisjointTensorRegionDestination = false;
     if (hasSingleReceiver) {
       LaunchNodeCoord receiver = *destinations.nodes.begin();
-      LaunchExecutionLocation receiverLocation =
-          occurrences.localDevice
-              ? LaunchExecutionLocation(receiver, occurrences.localDeviceDomain,
-                                        occurrences.localDevice)
-              : LaunchExecutionLocation(receiver);
-      auto postsIt = receivePostNodes.find(getPipeCoordIdentity(
-          occurrences.pipeType, occurrences.deviceTransfer, receiverLocation));
+      auto postsIt = receivePostNodes.find(
+          getPipeCoordIdentity(occurrences.pipeType, occurrences.deviceTransfer,
+                               occurrences.getReceiverLocation(receiver)));
       hasDisjointTensorRegionDestination =
           postsIt != receivePostNodes.end() && !postsIt->second.empty() &&
           llvm::all_of(postsIt->second, [&](PipeScheduleNodeId postNodeId) {
@@ -2738,19 +2741,16 @@ void verifyPipeScheduleCycles(ModuleOp module, ModuleState &state) {
                   if (event.kind == PipeEventKind::Send) {
                     PipeIdentity pipeIdentity = getPipeIdentity(
                         event.pipeType, event.deviceTransfer, location);
+                    auto [localDeviceDomain, localDevice] =
+                        getLocalPipeDevice(event.deviceTransfer, location);
                     auto pipeIt =
                         pipeOccurrences
-                            .try_emplace(
-                                pipeIdentity,
-                                PipeOccurrences{event.pipeType,
-                                                event.deviceTransfer,
-                                                event.deviceTransfer
-                                                    ? DeviceDomainAttr()
-                                                    : location.deviceDomain,
-                                                event.deviceTransfer
-                                                    ? DeviceRefAttr()
-                                                    : location.device,
-                                                {}})
+                            .try_emplace(pipeIdentity,
+                                         PipeOccurrences{event.pipeType,
+                                                         event.deviceTransfer,
+                                                         localDeviceDomain,
+                                                         localDevice,
+                                                         {}})
                             .first;
                     matchingNodes = &pipeIt->second.sends;
                   } else if (event.kind == PipeEventKind::ReceivePost) {
@@ -2814,21 +2814,14 @@ void verifyPipeScheduleCycles(ModuleOp module, ModuleState &state) {
     };
 
     SmallVector<LaunchNodeCoord> postMismatchCoords;
-    DeviceDomainAttr localDeviceDomain = occurrences.localDeviceDomain;
-    DeviceRefAttr localDevice = occurrences.localDevice;
-    auto getReceiverLocation = [&](LaunchNodeCoord coord) {
-      return localDevice ? LaunchExecutionLocation(coord, localDeviceDomain,
-                                                   localDevice)
-                         : LaunchExecutionLocation(coord);
-    };
     if (!occurrences.sends.empty()) {
       for (LaunchNodeCoord coord : destinations.nodes) {
         ArrayRef<PipeScheduleNodeId> posts = getReceiverNodes(
-            receivePostNodes, getPipeCoordIdentity(occurrences.pipeType,
-                                                   occurrences.deviceTransfer,
-                                                   getReceiverLocation(coord)));
-        if (haveInvalidPipeOccurrenceCount(posts, occurrences.sends,
-                                           /*requireEqualOccurrences=*/true)) {
+            receivePostNodes,
+            getPipeCoordIdentity(occurrences.pipeType,
+                                 occurrences.deviceTransfer,
+                                 occurrences.getReceiverLocation(coord)));
+        if (posts.size() != occurrences.sends.size()) {
           postMismatchCoords.push_back(coord);
         }
       }
@@ -2838,15 +2831,16 @@ void verifyPipeScheduleCycles(ModuleOp module, ModuleState &state) {
           receivePostNodes,
           getPipeCoordIdentity(
               occurrences.pipeType, occurrences.deviceTransfer,
-              getReceiverLocation(postMismatchCoords.front())));
+              occurrences.getReceiverLocation(postMismatchCoords.front())));
       emitPipeOccurrenceCountError(nodes, posts, occurrences.sends,
                                    "receiver post", "send", postMismatchCoords,
                                    state);
       for (LaunchNodeCoord coord : destinations.nodes) {
         ArrayRef<PipeScheduleNodeId> unpairedPosts = getReceiverNodes(
-            receivePostNodes, getPipeCoordIdentity(occurrences.pipeType,
-                                                   occurrences.deviceTransfer,
-                                                   getReceiverLocation(coord)));
+            receivePostNodes,
+            getPipeCoordIdentity(occurrences.pipeType,
+                                 occurrences.deviceTransfer,
+                                 occurrences.getReceiverLocation(coord)));
         postsWithInvalidCorrespondence.insert(unpairedPosts.begin(),
                                               unpairedPosts.end());
       }
@@ -2856,7 +2850,7 @@ void verifyPipeScheduleCycles(ModuleOp module, ModuleState &state) {
     for (LaunchNodeCoord coord : destinations.nodes) {
       PipeCoordIdentity identity =
           getPipeCoordIdentity(occurrences.pipeType, occurrences.deviceTransfer,
-                               getReceiverLocation(coord));
+                               occurrences.getReceiverLocation(coord));
       if (!occurrences.sends.empty()) {
         ArrayRef<PipeScheduleNodeId> posts =
             getReceiverNodes(receivePostNodes, identity);

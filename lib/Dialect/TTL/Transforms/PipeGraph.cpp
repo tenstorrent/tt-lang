@@ -2556,21 +2556,22 @@ getAggregateLocalPipeDeviceDomain(const PipeGraphAnalysisState &analysisState) {
   return deviceDomain;
 }
 
-/// Return the per-device execution count for a local PipeNet event when every
-/// logical device has the same count. A local PipeNet represents one replicated
-/// transfer program, so a device-varying count cannot use one endpoint graph.
-static std::optional<std::uint64_t> getUniformLocalTransferExecutionCount(
-    Operation *op, LaunchNodeCoord node, const PipeReference &pipeRef,
+/// Return the execution count of the protocol operation `op` at `location`.
+/// A local PipeNet event (no `deviceTransfer`) represents one replicated
+/// transfer program, so it needs the same count on every device of
+/// `localDeviceDomain`; a device-varying count cannot use one endpoint graph.
+static std::optional<std::uint64_t> getTransferExecutionCount(
+    Operation *op, const LaunchExecutionLocation &location,
+    DeviceTransferAttr deviceTransfer, const PipeReference &pipeRef,
     std::optional<std::uint64_t> recordIndex,
-    std::optional<PipeRecordAttr> record, DeviceDomainAttr deviceDomain,
+    std::optional<PipeRecordAttr> record, DeviceDomainAttr localDeviceDomain,
     PipeGraphAnalysisState &analysisState) {
-  if (!deviceDomain) {
-    return getConcreteTransferExecutionCount(op, LaunchExecutionLocation(node),
-                                             pipeRef, recordIndex,
+  if (deviceTransfer || !localDeviceDomain) {
+    return getConcreteTransferExecutionCount(op, location, pipeRef, recordIndex,
                                              analysisState, record);
   }
   FailureOr<SmallVector<DeviceRefAttr>> maybeDevices =
-      enumerateDeviceDomain(deviceDomain);
+      enumerateDeviceDomain(localDeviceDomain);
   if (failed(maybeDevices)) {
     return std::nullopt;
   }
@@ -2578,8 +2579,8 @@ static std::optional<std::uint64_t> getUniformLocalTransferExecutionCount(
   std::optional<std::uint64_t> uniformCount;
   for (DeviceRefAttr device : *maybeDevices) {
     std::optional<std::uint64_t> maybeCount = getConcreteTransferExecutionCount(
-        op, LaunchExecutionLocation(node, deviceDomain, device), pipeRef,
-        recordIndex, analysisState, record);
+        op, LaunchExecutionLocation(location.node, localDeviceDomain, device),
+        pipeRef, recordIndex, analysisState, record);
     if (!maybeCount) {
       return std::nullopt;
     }
@@ -2712,14 +2713,10 @@ PipeGraph::rebuildEndpointGraph(const PipeTransferIndex &transferIndex,
                   return failure();
                 }
                 std::optional<std::uint64_t> maybeExecutionCount =
-                    deviceTransfer
-                        ? getConcreteTransferExecutionCount(
-                              sendOp.getOperation(), *maybeLocation, *pipeRef,
-                              selectedRecordIndex, analysisState, record)
-                        : getUniformLocalTransferExecutionCount(
-                              sendOp.getOperation(), source, *pipeRef,
-                              selectedRecordIndex, record,
-                              aggregateLocalDeviceDomain, analysisState);
+                    getTransferExecutionCount(
+                        sendOp.getOperation(), *maybeLocation, deviceTransfer,
+                        *pipeRef, selectedRecordIndex, record,
+                        aggregateLocalDeviceDomain, analysisState);
                 if (maybeExecutionCount && *maybeExecutionCount == 0) {
                   return success();
                 }
@@ -2790,14 +2787,10 @@ PipeGraph::rebuildEndpointGraph(const PipeTransferIndex &transferIndex,
                   return;
                 }
                 std::optional<std::uint64_t> maybeExecutionCount =
-                    deviceTransfer
-                        ? getConcreteTransferExecutionCount(
-                              postOp.getOperation(), *maybeLocation, *pipeRef,
-                              selectedRecordIndex, analysisState, record)
-                        : getUniformLocalTransferExecutionCount(
-                              postOp.getOperation(), receiverCoord, *pipeRef,
-                              selectedRecordIndex, record,
-                              aggregateLocalDeviceDomain, analysisState);
+                    getTransferExecutionCount(
+                        postOp.getOperation(), *maybeLocation, deviceTransfer,
+                        *pipeRef, selectedRecordIndex, record,
+                        aggregateLocalDeviceDomain, analysisState);
                 if (!maybeExecutionCount || *maybeExecutionCount != 0) {
                   candidates.postsByReceiver[receiver].push_back(
                       {postOp, selectedRecordIndex, record,
@@ -2898,28 +2891,18 @@ PipeGraph::rebuildEndpointGraph(const PipeTransferIndex &transferIndex,
           return;
         }
         bool haveEqualExecutionCounts = false;
-        std::optional<std::uint64_t> maybeSendCount =
-            candidates.deviceTransfer
-                ? getConcreteTransferExecutionCount(
-                      sendOp.getOperation(), *maybeSendLocation, *sendPipeRef,
-                      candidates.sends[sendIndex].recordIndex, analysisState,
-                      candidates.sends[sendIndex].record)
-                : getUniformLocalTransferExecutionCount(
-                      sendOp.getOperation(), {pipeKey.srcX, pipeKey.srcY},
-                      *sendPipeRef, candidates.sends[sendIndex].recordIndex,
-                      candidates.sends[sendIndex].record,
-                      aggregateLocalDeviceDomain, analysisState);
-        std::optional<std::uint64_t> maybePostCount =
-            candidates.deviceTransfer
-                ? getConcreteTransferExecutionCount(
-                      postOp.getOperation(), *maybePostLocation, *postPipeRef,
-                      postsIt->second[sendIndex].recordIndex, analysisState,
-                      postsIt->second[sendIndex].record)
-                : getUniformLocalTransferExecutionCount(
-                      postOp.getOperation(), getLaunchNodeCoord(receiver),
-                      *postPipeRef, postsIt->second[sendIndex].recordIndex,
-                      postsIt->second[sendIndex].record,
-                      aggregateLocalDeviceDomain, analysisState);
+        std::optional<std::uint64_t> maybeSendCount = getTransferExecutionCount(
+            sendOp.getOperation(), *maybeSendLocation,
+            candidates.deviceTransfer, *sendPipeRef,
+            candidates.sends[sendIndex].recordIndex,
+            candidates.sends[sendIndex].record, aggregateLocalDeviceDomain,
+            analysisState);
+        std::optional<std::uint64_t> maybePostCount = getTransferExecutionCount(
+            postOp.getOperation(), *maybePostLocation,
+            candidates.deviceTransfer, *postPipeRef,
+            postsIt->second[sendIndex].recordIndex,
+            postsIt->second[sendIndex].record, aggregateLocalDeviceDomain,
+            analysisState);
         if (maybeSendCount && maybePostCount) {
           haveEqualExecutionCounts = *maybeSendCount == *maybePostCount;
         }

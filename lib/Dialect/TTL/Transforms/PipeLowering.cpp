@@ -331,11 +331,7 @@ static std::uint64_t getMaximumLocationMultiplicity(
 static bool
 executionLocationsEqual(ArrayRef<FabricManagerExecutionLocation> lhs,
                         ArrayRef<FabricManagerExecutionLocation> rhs) {
-  return lhs.size() == rhs.size() &&
-         llvm::all_of(lhs, [&](FabricManagerExecutionLocation lhsLocation) {
-           return std::count(lhs.begin(), lhs.end(), lhsLocation) ==
-                  std::count(rhs.begin(), rhs.end(), lhsLocation);
-         });
+  return std::is_permutation(lhs.begin(), lhs.end(), rhs.begin(), rhs.end());
 }
 
 static std::optional<std::uint64_t> getIntervalInvocationUpperBound(
@@ -376,21 +372,14 @@ static std::optional<bool> getInvocationCounterRequirement(
     ArrayRef<std::uint64_t> maximumLocationMultiplicities,
     const FabricRoutePlan &plan,
     const llvm::SmallPtrSetImpl<Operation *> &generatedControlOps) {
-  assert(receiverRuntimeIntervals.size() == senderRuntimeIntervals.size() &&
-         "paired manager functions must have equal interval counts");
-  assert(receiverRuntimeIntervals.size() ==
-             maximumLocationMultiplicities.size() &&
-         "each paired interval needs a location multiplicity");
   std::uint64_t totalInvocationUpperBound = 0;
   // A runtime ordinal preserves the generation sequence when a conditional
   // skips one interval. Constants are sufficient only for one single-shot
   // interval.
   bool requiresInvocationCounter = receiverRuntimeIntervals.size() > 1;
-  for (auto [intervalPosition, receiverRuntimeIndex] :
-       llvm::enumerate(receiverRuntimeIntervals)) {
-    std::size_t senderRuntimeIndex = senderRuntimeIntervals[intervalPosition];
-    std::uint64_t maximumMultiplicity =
-        maximumLocationMultiplicities[intervalPosition];
+  for (auto [receiverRuntimeIndex, senderRuntimeIndex, maximumMultiplicity] :
+       llvm::zip_equal(receiverRuntimeIntervals, senderRuntimeIntervals,
+                       maximumLocationMultiplicities)) {
     std::optional<std::uint64_t> receiverUpperBound =
         getIntervalInvocationUpperBound(
             plan.runtimeIntervals[receiverRuntimeIndex], generatedControlOps);

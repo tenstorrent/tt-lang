@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Iterable, Mapping, Optional
 
-from .kernel import Kernel, KernelKind, KernelSelector
+from .kernel import Kernel, KernelKind, KernelSelector, _selector_kind
 
 
 class FabricManagerEffectKind(Enum):
@@ -99,8 +99,7 @@ class FabricManagerClaim:
         self._binding.bind(operation_identity, self.name)
 
     def _operation_identity_capture(self) -> tuple:
-        kind = self.kernel if isinstance(self.kernel, KernelKind) else self.kernel.kind
-        return ("fabric-manager-claim", self.name, kind.value)
+        return ("fabric-manager-claim", self.name, _selector_kind(self.kernel).value)
 
     def _effect(self, kind: FabricManagerEffectKind) -> FabricManagerEffect:
         return FabricManagerEffect(self, kind)
