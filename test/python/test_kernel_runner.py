@@ -2374,6 +2374,116 @@ def test_build_kernel_descriptors_binds_per_core_tensor_addresses(
     assert descriptors[1].runtime_args[1][0] == [0x2000]
 
 
+def test_build_kernel_descriptors_tracks_specs_after_partitioning(monkeypatch):
+    fake_ttnn = _local_tensor_test_environment()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    core_ranges = _FakeExplicitCoreRanges((0, 0), (1, 0))
+    tensor = _PerCoreLocalTensorTestDouble("l1-small", "block", core_ranges)
+    partitioned_spec = kernel_runner.KernelSpec(
+        path="/tmp/partitioned.cpp",
+        thread_type="noc",
+        tensor_indices=[0],
+        config=object(),
+    )
+    unsplit_spec = kernel_runner.KernelSpec(
+        path="/tmp/unsplit.cpp",
+        thread_type="compute",
+        tensor_indices=[],
+        config=object(),
+    )
+    descriptor_spec_indices = []
+
+    descriptors = kernel_runner.build_kernel_descriptors(
+        kernel_specs=[partitioned_spec, unsplit_spec],
+        tensors=[tensor],
+        tensor_accessor_args=[],
+        core_ranges=core_ranges,
+        grid_cols=2,
+        grid_rows=1,
+        num_cbs=0,
+        device_coordinates=[0, 3],
+        descriptor_spec_indices=descriptor_spec_indices,
+    )
+
+    assert descriptor_spec_indices == [0, 0, 1]
+    assert [descriptor.kernel_source for descriptor in descriptors] == [
+        "/tmp/partitioned.cpp",
+        "/tmp/partitioned.cpp",
+        "/tmp/unsplit.cpp",
+    ]
+    assert [descriptor.common_runtime_args for descriptor in descriptors] == [
+        [0x2300, 0, 3],
+        [0x2310, 0, 3],
+        [0, 3],
+    ]
+
+
+def test_device_domain_scopes_fabric_metadata_to_partitioned_descriptors(monkeypatch):
+    fake_ttnn = _local_tensor_test_environment()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    monkeypatch.setattr(
+        kernel_runner, "get_min_remaining_l1_for_device", lambda _device, **_kwargs: 0
+    )
+    core_ranges = _FakeExplicitCoreRanges((0, 0), (1, 0))
+    tensor = _PerCoreLocalTensorTestDouble("l1-small", "block", core_ranges)
+    tensor.device = lambda: _FakeMeshDevice()
+    interval = _fabric_manager_interval(
+        "generated.sender", launch_nodes=((0, 0), (1, 0))
+    )
+    route = kernel_runner.FabricRouteSpec((0, 0), (0, 1), ((0, 0), (1, 0)), 0)
+    specs = [
+        kernel_runner.KernelSpec(
+            path="/tmp/sender.cpp",
+            thread_type="noc",
+            tensor_indices=[0],
+            config=object(),
+            fabric_runtime_arg_base_common_index=1,
+            fabric_manager_intervals=(interval,),
+        ),
+        kernel_runner.KernelSpec(
+            path="/tmp/compute.cpp",
+            thread_type="compute",
+            tensor_indices=[],
+            config=object(),
+        ),
+    ]
+    observed = []
+
+    def plan_bindings(**kwargs):
+        observed.append(kwargs)
+        return object()
+
+    monkeypatch.setattr(
+        kernel_runner, "_build_fabric_target_binding_plan", plan_bindings
+    )
+    monkeypatch.setattr(
+        kernel_runner, "_apply_fabric_target_binding_plan", lambda **_kwargs: None
+    )
+
+    kernel_runner.run_kernel_on_device(
+        kernel_specs=specs,
+        tensors=[tensor],
+        cb_configs=[],
+        core_ranges=core_ranges,
+        device_domain=DeviceDomain((1, 2)),
+        kernel_fabric_routes=[[route], []],
+    )
+
+    assert len(observed) == 2
+    for plan in observed:
+        assert len(plan["program_descriptor"].kernels) == 3
+        assert plan["kernel_fabric_routes"] == [[route], [route], []]
+        assert plan["kernel_fabric_runtime_arg_base_common_indices"] == [
+            1,
+            1,
+            None,
+        ]
+        assert [
+            [item.launch_nodes for item in intervals]
+            for intervals in plan["kernel_fabric_manager_intervals"]
+        ] == [[((0, 0),)], [((1, 0),)], []]
+
+
 class _UniformPerCoreTensorTestDouble(_PerCoreLocalTensorTestDouble):
     @staticmethod
     def experimental_per_core_buffer_address(device_coordinate, core):

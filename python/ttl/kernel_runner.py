@@ -2058,6 +2058,7 @@ def build_kernel_descriptors(
     device_coordinates: Optional[List[int]] = None,
     descriptor_resource_plans: Optional[Sequence[_KernelDescriptorResourcePlan]] = None,
     dfb_reconfiguration_runtime_args: Optional[Dict[Tuple[int, int], List[int]]] = None,
+    descriptor_spec_indices: Optional[List[int]] = None,
 ) -> List[Any]:
     """
     Build kernel descriptors for ttnn.generic_op.
@@ -2085,6 +2086,8 @@ def build_kernel_descriptors(
             kernel_specs.
         dfb_reconfiguration_runtime_args: Per-core L1 configuration addresses
             in finalized boundary order.
+        descriptor_spec_indices: If provided, receives the source kernel spec
+            index for each emitted descriptor.
 
     Returns:
         List of ttnn.KernelDescriptor objects.
@@ -2234,6 +2237,8 @@ def build_kernel_descriptors(
                 kernel_descriptors.append(
                     ttnn.KernelDescriptor(**kernel_descriptor_args)
                 )
+                if descriptor_spec_indices is not None:
+                    descriptor_spec_indices.append(kernel_spec_index)
 
     return kernel_descriptors
 
@@ -5294,6 +5299,7 @@ def _run_kernel_on_device_impl(
         )
 
     def build_device_program(device_coordinates=None):
+        descriptor_spec_indices = []
         kernel_descriptors = build_kernel_descriptors(
             kernel_specs=kernel_specs,
             tensors=tensors,
@@ -5318,6 +5324,7 @@ def _run_kernel_on_device_impl(
             dfb_reconfiguration_runtime_args=(
                 reconfiguration_resources.configuration_runtime_args
             ),
+            descriptor_spec_indices=descriptor_spec_indices,
         )
         program_descriptor = build_program_descriptor(
             kernel_descriptors=kernel_descriptors,
@@ -5326,7 +5333,7 @@ def _run_kernel_on_device_impl(
         )
         if normalized_program_hash is not None:
             program_descriptor.custom_program_hash = normalized_program_hash
-        return program_descriptor
+        return program_descriptor, descriptor_spec_indices
 
     if device_domain is not None:
         fabric_routes = kernel_fabric_routes or [[] for _ in kernel_specs]
@@ -5341,16 +5348,42 @@ def _run_kernel_on_device_impl(
         for mesh_coordinate, runtime_coordinates in _iter_device_domain_coordinates(
             device_domain, mesh_program_placements
         ):
-            device_program = build_device_program(runtime_coordinates)
+            device_program, descriptor_spec_indices = build_device_program(
+                runtime_coordinates
+            )
             program_descriptors[mesh_coordinate] = device_program
+            descriptor_specs = [
+                kernel_specs[index] for index in descriptor_spec_indices
+            ]
+            descriptor_routes = [
+                fabric_routes[index] for index in descriptor_spec_indices
+            ]
+            descriptor_runtime_arg_bases = [
+                spec.fabric_runtime_arg_base_common_index for spec in descriptor_specs
+            ]
+            descriptor_intervals = []
+            for descriptor_index, spec in enumerate(descriptor_specs):
+                descriptor_ranges = device_program.kernels[descriptor_index].core_ranges
+                intervals = []
+                for interval in spec.fabric_manager_intervals:
+                    if interval.launch_nodes is None:
+                        intervals.append(interval)
+                        continue
+                    launch_nodes = tuple(
+                        node
+                        for node in interval.launch_nodes
+                        if descriptor_ranges.contains(ttnn.CoreCoord(*node))
+                    )
+                    if launch_nodes:
+                        intervals.append(replace(interval, launch_nodes=launch_nodes))
+                descriptor_intervals.append(tuple(intervals))
             if not has_fabric_target_bindings:
                 configure_routing_plane_runtime_args(
                     program_descriptor=device_program,
-                    kernel_fabric_routes=fabric_routes,
-                    kernel_fabric_runtime_arg_base_common_indices=[
-                        spec.fabric_runtime_arg_base_common_index
-                        for spec in kernel_specs
-                    ],
+                    kernel_fabric_routes=descriptor_routes,
+                    kernel_fabric_runtime_arg_base_common_indices=(
+                        descriptor_runtime_arg_bases
+                    ),
                     mesh_device=mesh_device,
                     device_coordinates=mesh_coordinate,
                     grid_cols=grid_cols,
@@ -5361,13 +5394,11 @@ def _run_kernel_on_device_impl(
             fabric_binding_plans[mesh_coordinate] = _build_fabric_target_binding_plan(
                 ttnn_api=ttnn,
                 program_descriptor=device_program,
-                kernel_fabric_routes=fabric_routes,
-                kernel_fabric_runtime_arg_base_common_indices=[
-                    spec.fabric_runtime_arg_base_common_index for spec in kernel_specs
-                ],
-                kernel_fabric_manager_intervals=[
-                    spec.fabric_manager_intervals for spec in kernel_specs
-                ],
+                kernel_fabric_routes=descriptor_routes,
+                kernel_fabric_runtime_arg_base_common_indices=(
+                    descriptor_runtime_arg_bases
+                ),
+                kernel_fabric_manager_intervals=descriptor_intervals,
                 external_fabric_connections=external_fabric_connections,
                 mesh_device=mesh_device,
                 device_coordinates=mesh_coordinate,
@@ -5386,7 +5417,7 @@ def _run_kernel_on_device_impl(
             )
         program = build_device_mesh_program_descriptor(program_descriptors)
     else:
-        program_descriptor = build_device_program()
+        program_descriptor, _ = build_device_program()
         program = program_descriptor
         if mesh_program_placements is not None:
             program = build_mesh_program_descriptor(
