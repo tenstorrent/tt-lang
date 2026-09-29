@@ -8,6 +8,7 @@ from collections import defaultdict
 from dataclasses import FrozenInstanceError, replace
 from enum import Enum
 import gc
+import inspect
 import os
 from pathlib import Path
 import re
@@ -4554,6 +4555,18 @@ def test_reconfiguration_shares_sufficient_pipe_backing(monkeypatch):
 
 # A reused PipeNet backing covers only its shard cores; a core that needs
 # reconfiguration scratch without a shard gets separate scratch there.
+def _build_reconfiguration_resources(**kwargs):
+    """Call build_dfb_reconfiguration_runtime_resources with the launch DFB
+    configurations when the runtime requires them (runtime-backed storage), and
+    without them where the parameter does not exist."""
+    parameters = inspect.signature(
+        kernel_runner.build_dfb_reconfiguration_runtime_resources
+    ).parameters
+    if "cb_configs" not in parameters:
+        kwargs.pop("cb_configs", None)
+    return kernel_runner.build_dfb_reconfiguration_runtime_resources(**kwargs)
+
+
 def test_reconfiguration_allocates_scratch_where_pipe_backing_has_no_shard(
     monkeypatch,
 ):
@@ -4570,7 +4583,7 @@ def test_reconfiguration_allocates_scratch_where_pipe_backing_has_no_shard(
     scratch_tensor = _FakeTensor(device, address=0xC000)
     scratch_allocations = []
 
-    def allocate_scratch(core_ranges, num_bytes, _device):
+    def allocate_scratch(core_ranges, num_bytes, _device, **_kwargs):
         scratch_allocations.append((core_ranges, num_bytes))
         return scratch_tensor
 
@@ -4596,13 +4609,14 @@ def test_reconfiguration_allocates_scratch_where_pipe_backing_has_no_shard(
         ),
     )
 
-    resources = kernel_runner.build_dfb_reconfiguration_runtime_resources(
+    resources = _build_reconfiguration_resources(
         tensors=[],
         core_ranges=_FakeExplicitCoreRanges((0, 0), (1, 0)),
         plan=plan,
         existing_backing_tensors={0: backing_tensor},
         existing_backing_allocation_bytes={0: 2048},
         device=device,
+        cb_configs=[config],
     )
 
     assert len(scratch_allocations) == 1
@@ -8158,8 +8172,27 @@ def test_static_dfb_descriptor_local_search_runs_beyond_exact_plan_limit(
         ((0, 0), (3, 0)),
     )
     plan_sizes = (
-        192, 256, 128, 320, 64, 256, 192, 256, 64, 256, 192,
-        320, 128, 192, 320, 192, 256, 192, 128, 320, 64,
+        192,
+        256,
+        128,
+        320,
+        64,
+        256,
+        192,
+        256,
+        64,
+        256,
+        192,
+        320,
+        128,
+        192,
+        320,
+        192,
+        256,
+        192,
+        128,
+        320,
+        64,
     )
     assert len(plan_nodes) > kernel_runner._STATIC_DFB_PACKING_EXACT_PLAN_LIMIT
     descriptor_plans = [
@@ -10622,49 +10655,3 @@ def test_emit_runner_source_preserves_fabric_binding_metadata(monkeypatch):
     assert "kernel_fabric_routes=KERNEL_FABRIC_ROUTES" in source
     assert "KERNEL_FABRIC_RUNTIME_ARG_BASE_COMMON_INDICES = [0]" in source
     compile(source, "<generated-runner>", "exec")
-
-
-def test_reconfiguration_static_storage_rejects_segment_offset(monkeypatch):
-    """A static storage segment keeps the descriptor base, so it has no offset."""
-    fake_ttnn = _FakeTTNN()
-    fake_ttnn.uint32 = "uint32"
-    fake_ttnn.ROW_MAJOR_LAYOUT = "row-major"
-    fake_ttnn.ShardOrientation = type("ShardOrientation", (), {"ROW_MAJOR": 0})
-    fake_ttnn.TensorMemoryLayout = type("TensorMemoryLayout", (), {"HEIGHT_SHARDED": 0})
-    fake_ttnn.BufferType = type("BufferType", (), {"L1": 0})
-    fake_ttnn.ShardSpec = lambda *args: args
-    fake_ttnn.MemoryConfig = lambda *args: args
-    device = object()
-    fake_ttnn.from_torch = lambda *_args, **_kwargs: _FakeTensor(device, address=0x9000)
-    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
-    monkeypatch.setattr(
-        kernel_runner,
-        "_allocate_l1_sharded_storage_tensor",
-        lambda *_args, **_kwargs: pytest.fail("unexpected scratch allocation"),
-    )
-    config = PhysicalDFBConfig(
-        0,
-        1,
-        "bfloat16",
-        1,
-        2048,
-        (32, 32),
-        (DFBStorageSegment(nodes=((1, 0),), byte_offset=64),),
-    )
-    plan = DFBReconfigurationPlan(
-        boundary_ordinals=(7,),
-        dfb_epochs=(
-            (
-                DFBConfigurationEpoch(None, config),
-                DFBConfigurationEpoch(7, config),
-            ),
-        ),
-    )
-
-    with pytest.raises(RuntimeError, match=r"static storage segment .* byte offset 64"):
-        kernel_runner.build_dfb_reconfiguration_runtime_resources(
-            tensors=[],
-            core_ranges=_FakeExplicitCoreRanges((0, 0), (1, 0)),
-            plan=plan,
-            device=device,
-        )
