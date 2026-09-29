@@ -52,6 +52,33 @@ module attributes {
 
 // -----
 
+// An explicitly empty storage segment list has the same all-core default as
+// an absent list in the runtime record builder.
+// CHECK-LABEL: func.func @empty_storage_segments
+// CHECK: ttkernel.opaque_call "experimental::reconfigure_dfb_interfaces" template_args [1 : ui32, 6 : ui32, 2048 : ui32, 1 : ui32, 2048 : ui32]
+// CHECK-NOT: dfb_resource_indices
+module attributes {
+  ttl.dfb_reconfiguration_plan = {
+    boundary_ordinals = array<i64: 0>,
+    dfbs = [{dfb_index = 6 : i32, configurations = [
+      {block_count = 1 : i32, num_tiles = 1 : i32, page_size = 2048 : i32},
+      {entry_reconfiguration = 0 : i64, block_count = 1 : i32,
+       num_tiles = 1 : i32, page_size = 2048 : i32,
+       storage_segments = []}]}]
+  }
+} {
+  func.func @empty_storage_segments(%configuration_address: ui32) attributes {
+    ttl.core_coord = [[0, 0]]
+  } {
+    ttkernel.opaque_call "experimental::reconfigure_dfb_interfaces"(%configuration_address) {
+      header = "<cstdint>", ttl.dfb_reconfiguration_ordinal = 0 : i64
+    } : (ui32) -> ()
+    return
+  }
+}
+
+// -----
+
 // Descriptor fields stay static when only the backing tensor changes; the
 // record still supplies the address.
 // CHECK-LABEL: func.func @changing_storage_source

@@ -91,6 +91,7 @@ from .dfb_allocation_group import (
     make_dfb_allocation_group,
 )
 from .dataflow_buffer import (
+    DFBAddressScope,
     DataflowBuffer,
     _reset_cb_counter,
     make_dataflow_buffer_like,
@@ -524,7 +525,16 @@ def _is_compile_time_literal(value: Any) -> bool:
         return True
     if value is None or isinstance(
         value,
-        (bool, int, float, str, ScalarType, KernelKind, UInt32TemplateArgument),
+        (
+            bool,
+            int,
+            float,
+            str,
+            ScalarType,
+            KernelKind,
+            UInt32TemplateArgument,
+            DFBAddressScope,
+        ),
     ):
         return True
     if isinstance(value, (tuple, list)):

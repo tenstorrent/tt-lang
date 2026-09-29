@@ -10,6 +10,7 @@ import ast
 import copy
 import hashlib
 import inspect
+from enum import Enum
 from typing import (
     Dict,
     FrozenSet,
@@ -1270,11 +1271,14 @@ def _literal_node(
     name_hint: str,
 ) -> ast.expr:
     if value is ScalarType or isinstance(
-        value, (ScalarType, KernelKind, UInt32TemplateArgument)
+        value, (ScalarType, KernelKind, UInt32TemplateArgument, Enum)
     ):
         if isinstance(value, UInt32TemplateArgument):
             category = "uint32_template_argument"
             type_name = str(value.value)
+        elif isinstance(value, Enum) and not isinstance(value, KernelKind):
+            category = "enum"
+            type_name = f"{type(value).__name__.lower()}_{value.name.lower()}"
         else:
             type_name = "class" if value is ScalarType else value.name.lower()
             category = "kernel_kind" if isinstance(value, KernelKind) else "scalar_type"
