@@ -3061,6 +3061,87 @@ def test_descriptor_ignores_unreferenced_per_core_tensor(monkeypatch, compiler_s
     assert descriptors[0].common_runtime_args == []
 
 
+# A DFB-free kernel still needs a separate address binding on each mesh device.
+@pytest.mark.parametrize("selected_device", [False, True], ids=["all", "selected"])
+def test_dfb_free_compiler_sram_binds_per_core_tensor_across_devices(
+    monkeypatch, selected_device
+):
+    fake_ttnn = _local_tensor_test_environment()
+    fake_ttnn.get_device_tensors = lambda _tensor: _per_core_device_shards(
+        (0x2000, 0x3000)
+    )
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    mesh_device = _FakeMeshDevice()
+    core_ranges = _FakeExplicitCoreRanges((0, 0), (0, 0))
+    tensor = _LocalTensorTestDouble("l1", "height", core_ranges, per_core=True)
+    tensor.device_coords = lambda: (
+        fake_ttnn.MeshCoordinate((0, 0)),
+        fake_ttnn.MeshCoordinate((0, 1)),
+    )
+    tensor.experimental_per_core_buffer_address = (
+        lambda device_coordinate, _core: 0x2000 + 0x1000 * device_coordinate.coords[1]
+    )
+    tensor.buffer_address = lambda: pytest.fail("per-core tensor has no common address")
+    spec = kernel_runner.KernelSpec(
+        path="/tmp/kernel.cpp",
+        thread_type="compute",
+        tensor_indices=[0],
+        local_tensor_indices=[0],
+        config=object(),
+    )
+
+    result = kernel_runner.run_kernel_on_device(
+        kernel_specs=[spec],
+        tensors=[tensor],
+        cb_configs=[],
+        core_ranges=core_ranges,
+        memory_model="compiler-sram",
+        device=mesh_device,
+        mesh_program_placements=(
+            [kernel_runner.MeshProgramPlacement((0, 1))] if selected_device else None
+        ),
+    )
+
+    programs = result["program"].mesh_programs
+    assert len(programs) == (1 if selected_device else 2)
+    expected_addresses = [[0x3000]] if selected_device else [[0x2000], [0x3000]]
+    assert [
+        program.kernels[0].common_runtime_args for _, program in programs
+    ] == expected_addresses
+
+
+# Without explicit placement, all directly accessed tensors must cover the same devices.
+def test_dfb_free_compiler_sram_rejects_mismatched_tensor_devices(monkeypatch):
+    fake_ttnn = _local_tensor_test_environment()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    mesh_device = _FakeMeshDevice()
+    core_ranges = _FakeExplicitCoreRanges((0, 0), (0, 0))
+    full_tensor = _LocalTensorTestDouble("l1", "height", core_ranges, per_core=True)
+    partial_tensor = _LocalTensorTestDouble("l1", "height", core_ranges, per_core=True)
+    full_tensor.device_coords = lambda: (
+        fake_ttnn.MeshCoordinate((0, 0)),
+        fake_ttnn.MeshCoordinate((0, 1)),
+    )
+    partial_tensor.device_coords = lambda: (fake_ttnn.MeshCoordinate((0, 0)),)
+    spec = kernel_runner.KernelSpec(
+        path="/tmp/kernel.cpp",
+        thread_type="compute",
+        tensor_indices=[0, 1],
+        local_tensor_indices=[0, 1],
+        config=object(),
+    )
+
+    with pytest.raises(ValueError, match="different device domains"):
+        kernel_runner.run_kernel_on_device(
+            kernel_specs=[spec],
+            tensors=[full_tensor, partial_tensor],
+            cb_configs=[],
+            core_ranges=core_ranges,
+            memory_model="compiler-sram",
+            device=mesh_device,
+        )
+
+
 # Each executing core receives the address of its local tensor shard.
 def test_build_kernel_descriptors_binds_per_core_local_tensor_addresses(monkeypatch):
     fake_ttnn = _local_tensor_test_environment()

@@ -4890,6 +4890,20 @@ def _run_kernel_on_device_impl(
             resource_plan.structural_fingerprint,
         )
 
+    per_core_runtime_tensors = []
+    if compiler_l1:
+        referenced_indices = {
+            tensor_index
+            for spec in kernel_specs
+            for tensor_index in spec.tensor_indices
+        }
+        per_core_runtime_tensors = [
+            tensors[tensor_index]
+            for tensor_index in sorted(referenced_indices)
+            if 0 <= tensor_index < len(tensors)
+            and _is_per_core_allocated(tensors[tensor_index])
+        ]
+
     def build_device_program(device_coordinates=None, mesh_coordinate=None):
         kernel_descriptors = build_kernel_descriptors(
             kernel_specs=kernel_specs,
@@ -4985,12 +4999,27 @@ def _run_kernel_on_device_impl(
                 device_coordinates=mesh_coordinate,
             )
         program = build_device_mesh_program_descriptor(program_descriptors)
-    elif sram_node_arenas:
+    elif sram_node_arenas or per_core_runtime_tensors:
         if mesh_program_placements is None:
-            arena = next(iter(sram_node_arenas.values()))
-            mesh_coordinates = [
-                tuple(coordinate) for coordinate in arena.device_coords()
-            ]
+            address_source = next(iter(sram_node_arenas.values()), None)
+            if address_source is None:
+                address_source = per_core_runtime_tensors[0]
+            mesh_coordinates = sorted(
+                {tuple(coordinate) for coordinate in address_source.device_coords()}
+            )
+            if not mesh_coordinates:
+                raise ValueError("per-core SRAM storage has no device coordinates")
+            if not sram_node_arenas:
+                selected_coordinates = set(mesh_coordinates)
+                for tensor in per_core_runtime_tensors[1:]:
+                    tensor_coordinates = {
+                        tuple(coordinate) for coordinate in tensor.device_coords()
+                    }
+                    if tensor_coordinates != selected_coordinates:
+                        raise ValueError(
+                            "per-core tensor runtime arguments have different "
+                            "device domains"
+                        )
         else:
             mesh_coordinates = sorted(
                 {
