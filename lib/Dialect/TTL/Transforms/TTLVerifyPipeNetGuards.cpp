@@ -2132,17 +2132,42 @@ FailureOr<bool> expandStaticPipeScheduleLoops(ModuleOp module,
   SymbolTableCollection symbolTables;
   llvm::DenseSet<Operation *> functionsWithPipeCopies =
       getFunctionsWithPipeCopies(module, symbolTables);
+  auto containsPipeCopy = [&](scf::ForOp loop) {
+    return loop.getRegion()
+        .walk([&](Operation *operation) {
+          return contributesPipeCopy(operation, functionsWithPipeCopies,
+                                     symbolTables)
+                     ? WalkResult::interrupt()
+                     : WalkResult::advance();
+        })
+        .wasInterrupted();
+  };
+
+  // Loops nested in a statically zero-trip loop never execute, so zero-trip
+  // loops are erased before any nested loop is checked against the bounds.
+  SmallVector<scf::ForOp> zeroTripLoops;
+  module.walk<WalkOrder::PreOrder>([&](scf::ForOp loop) {
+    if (!containsPipeCopy(loop)) {
+      return WalkResult::skip();
+    }
+    std::optional<uint64_t> tripCount =
+        materializeStaticPipeScheduleLoopBounds(loop);
+    if (tripCount && *tripCount == 0) {
+      zeroTripLoops.push_back(loop);
+      return WalkResult::skip();
+    }
+    return WalkResult::advance();
+  });
+  for (scf::ForOp loop : zeroTripLoops) {
+    loop.replaceAllUsesWith(loop.getInitArgs());
+    loop.erase();
+  }
+
   SmallVector<scf::ForOp> loops;
   module.walk<WalkOrder::PostOrder>([&](scf::ForOp loop) {
-    WalkResult walkResult = loop.getRegion().walk([&](Operation *operation) {
-      if (contributesPipeCopy(operation, functionsWithPipeCopies,
-                              symbolTables)) {
-        loops.push_back(loop);
-        return WalkResult::interrupt();
-      }
-      return WalkResult::advance();
-    });
-    (void)walkResult;
+    if (containsPipeCopy(loop)) {
+      loops.push_back(loop);
+    }
   });
 
   uint64_t expandedOperations = 0;
@@ -2152,11 +2177,7 @@ FailureOr<bool> expandStaticPipeScheduleLoops(ModuleOp module,
     if (!tripCount) {
       continue;
     }
-    if (*tripCount == 0) {
-      loop.replaceAllUsesWith(loop.getInitArgs());
-      loop.erase();
-      continue;
-    }
+    assert(*tripCount != 0 && "zero-trip loops were erased above");
     if (scope == ScheduleLoopExpansion::IterationDependentLoops &&
         !loopHasIterationDependentPipeControl(loop, functionsWithPipeCopies,
                                               symbolTables)) {

@@ -814,11 +814,6 @@ module attributes {
 
 // -----
 
-// Each device sends before it posts its own receive, which the schedule
-// verifier accepts because every iteration writes a distinct DRAM tile. The
-
-// -----
-
 // A receive loop whose trip count is static but whose bounds depend on a
 // runtime value cannot be enumerated.
 

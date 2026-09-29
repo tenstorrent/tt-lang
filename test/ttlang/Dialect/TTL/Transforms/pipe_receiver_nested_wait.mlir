@@ -5,6 +5,7 @@
 
 // CHECK-LABEL: func.func @nested_receive_wait_precedes_push
 // CHECK: ttkernel.experimental.semaphore_wait_min
+// CHECK: ttkernel.cb_push_back
 
 module attributes {ttl.launch_grid = array<i64: 2, 1>} {
   func.func @nested_receive_wait_precedes_push()
