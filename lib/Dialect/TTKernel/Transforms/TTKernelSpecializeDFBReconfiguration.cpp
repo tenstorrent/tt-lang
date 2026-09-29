@@ -103,7 +103,7 @@ static FailureOr<bool>
 configurationAppliesToCore(DictionaryAttr configuration,
                            CoreCoordinate coreCoordinate) {
   auto storageSegments = configuration.getAs<ArrayAttr>("storage_segments");
-  if (!storageSegments) {
+  if (!storageSegments || storageSegments.empty()) {
     return true;
   }
 
