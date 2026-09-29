@@ -13,22 +13,22 @@
 // CHECK-LABEL: module attributes
 // CHECK-SAME: ttl.pipe_sync_semaphore_count = 1 : i64
 // CHECK-LABEL: func.func @sender_node
-// CHECK-SAME: interferingIntervals = ["external.blaze"]>
+// CHECK-SAME: interferingIntervals = ["external.collective"]>
 // CHECK: %[[SENDER_COUNTER:.*]] = memref.alloca() : memref<1xi32>
 // CHECK: %[[SENDER_INVOCATION:.*]] = memref.load %[[SENDER_COUNTER]]
 // CHECK: ttkernel.experimental.semaphore_wait_min
 // CHECK: ttkernel.routing_plane.close_connections
 // CHECK: memref.store {{.*}}, %[[SENDER_COUNTER]]
 // CHECK-LABEL: func.func @receiver_node
-// CHECK-SAME: interferingIntervals = ["external.blaze"]>
+// CHECK-SAME: interferingIntervals = ["external.collective"]>
 // CHECK: %[[RECEIVER_COUNTER:.*]] = memref.alloca() : memref<1xi32>
 // CHECK: %[[RECEIVER_INVOCATION:.*]] = memref.load %[[RECEIVER_COUNTER]]
 // CHECK: ttkernel.experimental.semaphore_wait_min
 // CHECK: ttkernel.routing_plane.close_connections
 // CHECK: memref.store {{.*}}, %[[RECEIVER_COUNTER]]
-// CHECK-LABEL: func.func @blaze_like
-// CHECK-SAME: ttl.fabric_manager_intervals = [#ttl.fabric_manager_interval<identity = "external.blaze", kind = external, claim = "blaze", routeIndices = [], interferingIntervals = ["generated.0", "generated.1"]>]
-// CHECK-NEXT: ttkernel.opaque_call "blaze_collective"
+// CHECK-LABEL: func.func @external_collective
+// CHECK-SAME: ttl.fabric_manager_intervals = [#ttl.fabric_manager_interval<identity = "external.collective", kind = external, claim = "collective", routeIndices = [], interferingIntervals = ["generated.0", "generated.1"]>]
+// CHECK-NEXT: ttkernel.opaque_call "external_collective"
 // CHECK-NEXT: return
 
 module attributes {ttl.launch_grid = [2, 1], ttl.target_arch = #ttcore.arch<blackhole>} {
@@ -101,10 +101,10 @@ module attributes {ttl.launch_grid = [2, 1], ttl.target_arch = #ttcore.arch<blac
     }
     return
   }
-  func.func @blaze_like() attributes {ttl.base_cta_index = 2 : i32, ttl.crta_indices = [], ttl.kernel_thread = #ttkernel.thread<noc>, ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement>, ttl.noc_index = 1 : i32} {
-    ttl.opaque_call "blaze_collective" () {
+  func.func @external_collective() attributes {ttl.base_cta_index = 2 : i32, ttl.crta_indices = [], ttl.kernel_thread = #ttkernel.thread<noc>, ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement>, ttl.noc_index = 1 : i32} {
+    ttl.opaque_call "external_collective" () {
         fabric_manager_effects = [#ttl.fabric_manager_effect<
-            claim = "blaze", kind = scoped>],
+            claim = "collective", kind = scoped>],
         header = "fabric.hpp"} : () -> ()
     return
   }

@@ -388,8 +388,7 @@ static std::optional<bool> getInvocationCounterRequirement(
   bool requiresInvocationCounter = receiverRuntimeIntervals.size() > 1;
   for (auto [intervalPosition, receiverRuntimeIndex] :
        llvm::enumerate(receiverRuntimeIntervals)) {
-    std::size_t senderRuntimeIndex =
-        senderRuntimeIntervals[intervalPosition];
+    std::size_t senderRuntimeIndex = senderRuntimeIntervals[intervalPosition];
     std::uint64_t maximumMultiplicity =
         maximumLocationMultiplicities[intervalPosition];
     std::optional<std::uint64_t> receiverUpperBound =
@@ -647,8 +646,7 @@ static void planFabricManagerOwnership(
         if (matches) {
           invocationCounterRequirement = getInvocationCounterRequirement(
               receiverRuntimeIntervals, senderRuntimeIntervals,
-              maximumLocationMultiplicities, plan,
-              generatedControlOps);
+              maximumLocationMultiplicities, plan, generatedControlOps);
           matches = invocationCounterRequirement.has_value();
         }
         if (matches) {

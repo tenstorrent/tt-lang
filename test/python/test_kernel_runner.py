@@ -19,6 +19,7 @@ from typing import NamedTuple
 import weakref
 
 import pytest
+import ttl
 import ttl.layouts as ttl_layouts
 
 from ttl import (
@@ -116,6 +117,17 @@ class _FakeTensor:
 
 class _FakeTensorWithoutDevice:
     pass
+
+
+class _BFloat16Template:
+    @property
+    def dtype(self):
+        import torch
+
+        return torch.bfloat16
+
+
+_MIXED_FABRIC_RECEIVER_KERNEL = Kernel(KernelKind.DATA_MOVEMENT)
 
 
 class _FakeDevice:
@@ -4967,6 +4979,122 @@ def test_routing_plane_rejects_generated_external_link_conflict(monkeypatch):
     assert fake_ttnn.fabric_setup_calls == []
     assert program.semaphores == []
     assert all(not kernel.runtime_args for kernel in program.kernels)
+
+
+def test_compiled_mixed_fabric_claim_rejects_one_shared_link(monkeypatch):
+    import inspect
+
+    monkeypatch.setenv("TTLANG_COMPILE_ONLY", "1")
+    device_domain = DeviceDomain((1, 2))
+    exchange = ttl.PipeNet(
+        graph=ttl.TransferGraph.all_to_all(device_domain),
+        pipes=[ttl.Pipe(src=(0, 0), dst=(0, 0))],
+    )
+    collective_manager = FabricManagerClaim("collective", _MIXED_FABRIC_RECEIVER_KERNEL)
+
+    @ttl.operation(grid=(1, 1), device_domain=device_domain)
+    def mixed_fabric():
+        template = _BFloat16Template()
+        send_dfb = ttl.make_dataflow_buffer_like(template, shape=(1, 1), block_count=1)
+        receive_dfb = ttl.make_dataflow_buffer_like(
+            template, shape=(1, 1), block_count=1
+        )
+
+        @ttl.compute()
+        def compute():
+            pass
+
+        @ttl.datamovement()
+        def sender():
+            def send(pipe):
+                with send_dfb.reserve() as block:
+                    pass
+                with send_dfb.wait() as block:
+                    ttl.copy(block, pipe).wait()
+
+            exchange.if_src(send)
+
+        @ttl.datamovement(kernel=_MIXED_FABRIC_RECEIVER_KERNEL)
+        def receiver():
+            ttl.call_extern_func(
+                "/dev/null/fabric.hpp",
+                "collective_open",
+                fabric_manager_effects=(collective_manager.acquire(),),
+            )
+
+            def receive(pipe):
+                with receive_dfb.reserve() as block:
+                    ttl.copy(pipe, block).wait()
+                with receive_dfb.wait() as block:
+                    pass
+
+            exchange.if_dst(receive)
+            ttl.call_extern_func(
+                "/dev/null/fabric.hpp",
+                "collective_close",
+                fabric_manager_effects=(collective_manager.release(),),
+            )
+
+    mixed_fabric()
+    cache = inspect.getclosurevars(mixed_fabric).nonlocals["cache"]
+    assert len(cache) == 1
+    compiled = next(iter(cache.values()))
+    assert any(compiled.kernel_fabric_routes)
+    assert any(
+        interval.claim == collective_manager.identity
+        for intervals in compiled.kernel_fabric_manager_intervals
+        for interval in intervals
+    )
+
+    fake_ttnn = _FakeTTNN()
+    fake_ttnn.fabric_forwarding_links[_FakeFabricNodeId(0, 1)] = [0]
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    core_ranges = _make_fake_core_ranges()
+    kernels = [
+        _FakeTTNN.KernelDescriptor(
+            kernel_source=path,
+            core_ranges=core_ranges,
+            compile_time_args=[],
+            common_runtime_args=[] if base is None else [0] * (base + 1),
+            config=config,
+        )
+        for (path, _thread_type), config, base in zip(
+            compiled.kernel_paths,
+            compiled.kernel_configs,
+            compiled.kernel_fabric_runtime_arg_base_common_indices,
+        )
+    ]
+    program = _FakeTTNN.ProgramDescriptor(kernels, [], [])
+    binding = FabricConnectionBinding(
+        claim=collective_manager,
+        connections=(
+            FabricConnectionRequirement(
+                local_device=DeviceRef(0, 0),
+                remote_device=DeviceRef(0, 1),
+                worker_nodes=((0, 0),),
+                fixed_link_index=0,
+            ),
+        ),
+        abi_identity="collective-v1",
+    )
+
+    with pytest.raises(ValueError, match="cannot assign distinct forwarding links"):
+        kernel_runner.configure_routing_plane_runtime_args(
+            program_descriptor=program,
+            kernel_fabric_routes=compiled.kernel_fabric_routes,
+            kernel_fabric_runtime_arg_base_common_indices=(
+                compiled.kernel_fabric_runtime_arg_base_common_indices
+            ),
+            kernel_fabric_manager_intervals=(compiled.kernel_fabric_manager_intervals),
+            kernel_fabric_mux_capable=compiled.kernel_fabric_mux_capable,
+            external_fabric_connections=(binding,),
+            mesh_device=_FakeMeshDevice(),
+            device_coordinates=(0, 0),
+            grid_cols=1,
+            grid_rows=1,
+        )
+    assert fake_ttnn.fabric_setup_calls == []
+    assert program.semaphores == []
 
 
 def test_routing_plane_rejects_unavailable_external_fixed_link(monkeypatch):
