@@ -14,6 +14,7 @@ from ttlang_test_utils import to_dram, to_l1
 from utils.correctness import assert_allclose, assert_pcc
 from test_compiler_l1 import l1_copy, _make_allocation_stress, ALLOCATION_SCHEDULES
 from test_external_tensor_accessor import _get_local_tensor_accessor_copy
+from pipe.test_tensor_backed_computed_address import _make_tensor_backed_receiver
 
 import ttnn
 
@@ -86,6 +87,45 @@ def test_per_node_copy_to_independently_allocated_output(device, dtype):
     assert_allclose(
         ttnn.to_torch(destination).float(), expected.float(), rtol=0, atol=0
     )
+
+
+# A per-node PipeNet receiver must use its destination tensor shard address.
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "fp32"])
+@pytest.mark.parametrize("tile_offset", [0, 1], ids=["base", "offset"])
+def test_per_node_tensor_backed_pipe_receiver(device, dtype, tile_offset):
+    expected = torch.arange(32 * 32, dtype=torch.float32).reshape(32, 32)
+    source = to_dram(expected.to(dtype), device)
+    shard_spec = ttnn.ShardSpec(
+        ttnn.CoreRangeSet({ttnn.CoreRange(ttnn.CoreCoord(0, 0), ttnn.CoreCoord(0, 0))}),
+        (32, 3 * 32),
+        ttnn.ShardOrientation.ROW_MAJOR,
+    )
+    memory_config = ttnn.MemoryConfig(
+        ttnn.TensorMemoryLayout.HEIGHT_SHARDED, ttnn.BufferType.L1, shard_spec
+    )
+    memory_config.experimental_set_per_core_allocation(True)
+    destination = ttnn.from_torch(
+        torch.zeros(32, 3 * 32, dtype=dtype),
+        dtype=ttnn.bfloat16 if dtype == torch.bfloat16 else ttnn.float32,
+        layout=ttnn.TILE_LAYOUT,
+        device=device,
+        memory_config=memory_config,
+    )
+    page_size = int(destination.get_tile().get_tile_size(destination.dtype))
+
+    _make_tensor_backed_receiver(tile_offset * page_size)(
+        source,
+        destination,
+        options=(
+            "--ttl-memory-model=compiler-sram "
+            "--ttl-sram-allocation-mode=per-node "
+            "--ttl-pipe-computed-addresses"
+        ),
+    )
+
+    expected_output = torch.zeros(32, 3 * 32)
+    expected_output[:, tile_offset * 32 : (tile_offset + 1) * 32] = expected
+    assert_allclose(ttnn.to_torch(destination).float(), expected_output, rtol=0, atol=0)
 
 
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "fp32"])
