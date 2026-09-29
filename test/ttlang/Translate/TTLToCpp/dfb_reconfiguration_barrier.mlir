@@ -24,7 +24,7 @@
 // CHECK-NOT: experimental_dfb_reconfiguration.h
 // CHECK-NOT: experimental_dfb_reset.h
 // CHECK: get_arg_val<uint32_t>(get_compile_time_arg_val(0))
-// CHECK: experimental::reconfigure_dfb_interfaces({{.*}});
+// CHECK: ::experimental::reconfigure_dfb_interfaces({{.*}});
 
 module attributes {
   ttl.target_arch = #ttcore.arch<blackhole>,
