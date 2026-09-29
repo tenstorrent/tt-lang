@@ -187,6 +187,18 @@ module attributes {ttl.memory_model = "compiler-sram", ttl.l1_arena_bytes = 6553
 
 // -----
 
+// A DFB operation without an address-based lowering must not use the Metal implementation.
+module attributes {ttl.memory_model = "compiler-sram", ttl.l1_arena_bytes = 2112 : i64, ttl.dfb_allocations = [{dfb_index = 0 : i64, storage_index = 0 : i64, element_type = !ttcore.tile<32x32, bf16>, page_size = 2048 : i64, num_tiles = 1 : i64, block_count = 1 : i64, storage_capacity_pages = 1 : i64, l1_allocation_bytes = 2048 : i64, l1_offset = 0 : i64, l1_payload_offset = 64 : i64}]} {
+  func.func @unsupported_dfb_operation() attributes {ttkernel.thread = #ttkernel.thread<compute>} {
+    %storage = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<1, !ttcore.tile<32x32, bf16>>
+    // expected-error @below {{'ttkernel.compute_kernel_hw_startup' op has no compiler-sram lowering for ttkernel.compute_kernel_hw_startup; Metal DFB fallback is disabled}}
+    ttkernel.compute_kernel_hw_startup(%storage, %storage) : (!ttkernel.cb<1, !ttcore.tile<32x32, bf16>>, !ttkernel.cb<1, !ttcore.tile<32x32, bf16>>) -> ()
+    return
+  }
+}
+
+// -----
+
 // Pre-lowered C++ can contain storage effects that the validator cannot classify.
 module attributes {ttl.memory_model = "compiler-sram", ttl.l1_arena_bytes = 65536 : i64, ttl.dfb_allocations = []} {
   func.func @prelowered_effect() attributes {ttkernel.thread = #ttkernel.thread<compute>} {

@@ -264,6 +264,12 @@ static LogicalResult finalizeFunction(func::FuncOp function) {
     return failure();
   }
   WalkResult opaqueCallWalk = function.walk([&](ttk::OpaqueCallOp call) {
+    // SRAM reset calls carry DFB indices for core specialization but address
+    // only compiler-owned control records, not tensor-backed payloads.
+    if (call.getCallee() == "experimental::reset_dfb_interfaces" ||
+        call.getCallee() == "ttlang::l1::resetState") {
+      return WalkResult::advance();
+    }
     auto resourceIndices = call.getDfbResourceIndices();
     if (!resourceIndices) {
       return WalkResult::advance();

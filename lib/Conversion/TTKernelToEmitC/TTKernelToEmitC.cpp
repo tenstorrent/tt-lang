@@ -4122,7 +4122,11 @@ static LogicalResult validateCompilerSRAMModule(ModuleOp module) {
             "compiler-sram external calls cannot pass or return DFB values");
         return WalkResult::interrupt();
       }
-      if (!supported) {
+      bool hasDFBValue = llvm::any_of(
+          llvm::concat<Value>(operation->getOperands(),
+                              operation->getResults()),
+          [](Value value) { return isa<ttkernel::CBType>(value.getType()); });
+      if (hasDFBValue && !supported) {
         operation->emitOpError()
             << "has no compiler-sram lowering for " << operation->getName()
             << "; Metal DFB fallback is disabled";

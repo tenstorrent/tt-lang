@@ -318,19 +318,6 @@ struct TTLFinalizeDFBIndicesPass
       signalPassFailure();
       return;
     }
-    if (*selectedModel == DFBMemoryModel::CompilerSRAM) {
-      PipeTransferCreateOp pipeTransfer;
-      moduleOp.walk([&](PipeTransferCreateOp operation) {
-        pipeTransfer = operation;
-        return WalkResult::interrupt();
-      });
-      if (pipeTransfer) {
-        pipeTransfer.emitOpError(
-            "compiler-sram does not support PipeNet transfers");
-        signalPassFailure();
-        return;
-      }
-    }
     const DFBLogicalIdentityAnalysis &logicalIdentityAnalysis =
         getAnalysis<DFBLogicalIdentityAnalysis>();
     if (!logicalIdentityAnalysis.succeeded()) {

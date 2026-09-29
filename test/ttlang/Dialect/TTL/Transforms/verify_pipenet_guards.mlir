@@ -1,10 +1,9 @@
 // RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(ttl-verify-pipenet-guards,ttl-erase-pipenet-scopes)' | FileCheck %s
 
-// Summary: Verifies that ttl-verify-pipenet-guards accepts role-contained
-// PipeNet work, and that ttl-erase-pipenet-scopes inlines and erases the
-// `ttl.pipenet_scope` markers so downstream lowering sees a scope-free IR.
-// Each split module includes the finalization metadata required by the
-// verifier; its descriptor contents are irrelevant to guard analysis.
+// Summary: Verifies PipeNet role containment, DFB protocol producer and wait
+// domains, and scope erasure. Each split module includes the finalization
+// metadata required by the verifier; its descriptor contents are irrelevant
+// to guard analysis.
 
 // A copy into a pipe is valid only on the source node. A copy out of a pipe is
 // valid only on destination nodes. Existing ttl.if_src/ttl.if_dst regions
@@ -38,6 +37,45 @@ module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [2 : i64, 1 : i64
           : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
              tensor<1x1x!ttcore.tile<32x32, bf16>>)
           -> !ttl.receive_request
+    }
+    func.return
+  }
+}
+
+// -----
+
+// External DFB protocol effects participate in the same launch-domain proof as
+// explicit DFB operations.
+
+module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [2 : i64, 1 : i64]} {
+  // CHECK-LABEL: func.func @opaque_effect_producer
+  // CHECK: ttl.opaque_call "produce"
+  func.func @opaque_effect_producer() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+    %dfb = ttl.bind_cb {cb_index = 12, block_count = 2} {dfb_id = 12 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    ttl.if_dst %pipe : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
+      ttl.opaque_call "produce"
+          dfb_dependencies(%dfb : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>)
+          dfb_effects [#ttl.dfb_protocol_effect<reserve, 0, 1>, #ttl.dfb_protocol_effect<push, 0, 1>]
+          () {header = "producer.hpp"} : () -> ()
+    }
+    func.return
+  }
+
+  // CHECK-LABEL: func.func @consume_opaque_effect_result
+  // CHECK: ttl.cb_wait
+  func.func @consume_opaque_effect_result() attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+    %dfb = ttl.bind_cb {cb_index = 12, block_count = 2} {dfb_id = 12 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %core_x = ttl.core_x : index
+    %destination_x = arith.constant 1 : index
+    %is_destination = arith.cmpi eq, %core_x, %destination_x : index
+    scf.if %is_destination {
+      %view = ttl.cb_wait %dfb
+          : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+          -> tensor<1x1x!ttcore.tile<32x32, bf16>>
     }
     func.return
   }
