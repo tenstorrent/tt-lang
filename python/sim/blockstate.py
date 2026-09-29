@@ -124,12 +124,6 @@ def _validate_mismatch_hint(
         AccessState.MR,
         AccessState.RW,
     ):
-        if kernel == KernelKind.DATA_MOVEMENT:
-            if attempted == ExpectedOp.COPY_DST and ExpectedOp.COPY_SRC in expected_ops:
-                return (
-                    "After wait(), data is already in the block: copy *from* it first, not into it (unless the "
-                    "state machine already allows a destination copy)."
-                )
         if kernel == KernelKind.COMPUTE:
             if attempted == ExpectedOp.STORE and ExpectedOp.STORE_SRC in expected_ops:
                 return (
@@ -312,8 +306,8 @@ _OPS_TX_AND_COPY_SRC: FrozenSet[ExpectedOp] = frozenset(
     {ExpectedOp.TX_WAIT, ExpectedOp.COPY_SRC}
 )
 _OPS_TX: FrozenSet[ExpectedOp] = frozenset({ExpectedOp.TX_WAIT})
-_OPS_COPY_DST_SRC_POP: FrozenSet[ExpectedOp] = frozenset(
-    {ExpectedOp.COPY_DST, ExpectedOp.COPY_SRC, ExpectedOp.POP}
+_OPS_COPY_SRC_POP: FrozenSet[ExpectedOp] = frozenset(
+    {ExpectedOp.COPY_SRC, ExpectedOp.POP}
 )
 _OPS_COPY_SRC: FrozenSet[ExpectedOp] = frozenset({ExpectedOp.COPY_SRC})
 _OPS_PUSH_AND_COPY_SRC: FrozenSet[ExpectedOp] = frozenset(
@@ -343,17 +337,14 @@ STATE_TRANSITIONS: Dict[
         Tuple[AccessState, FrozenSet[ExpectedOp]],
     ],
 ] = {
-    # DM kernel, WAIT acquisition
+    # DM kernel, WAIT acquisition. A waited block is only ever a copy source:
+    # a copy into it would write the producer slot instead of the waited one.
     (BlockAcquisition.WAIT, KernelKind.DATA_MOVEMENT): {
         # Copy as source: MR/RW -> ROR; further copies and tx_wait both expected
         ("copy_src", AccessState.MR): (AccessState.ROR, _OPS_TX_AND_COPY_SRC),
         ("copy_src", AccessState.RW): (AccessState.ROR, _OPS_TX_AND_COPY_SRC),
-        # Copy as destination: RW -> NAW + TX_WAIT
-        ("copy_dst", AccessState.RW): (AccessState.NAW, _OPS_TX),
-        # TX wait complete from ROR (N==1) -> RW with copy + pop ops
-        ("tx_wait", AccessState.ROR): (AccessState.RW, _OPS_COPY_DST_SRC_POP),
-        # TX wait complete from NAW -> MR with copy_src only
-        ("tx_wait", AccessState.NAW): (AccessState.MR, _OPS_COPY_SRC),
+        # TX wait complete from ROR (N==1) -> RW with copy_src + pop
+        ("tx_wait", AccessState.ROR): (AccessState.RW, _OPS_COPY_SRC_POP),
     },
     # DM kernel, RESERVE acquisition
     (BlockAcquisition.RESERVE, KernelKind.DATA_MOVEMENT): {

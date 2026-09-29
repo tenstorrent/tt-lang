@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import enum
 import warnings
 from typing import List, Optional, Tuple, Union
 
@@ -391,7 +392,7 @@ class TensorBlock:
             raise ValueError(
                 "store() must be called on a block acquired from reserve() or wait()"
             )
-        acquired_view = _get_acquired_view_from_block(ast_self)
+        acquired_view, _ = _get_block_acquisition(ast_self)
         _require_matching_tile_shapes(
             rhs.type.element_type,
             acquired_view.type.element_type,
@@ -435,13 +436,10 @@ class TensorBlock:
             raise ValueError(
                 "+= must be called on a block acquired from reserve() or wait()"
             )
-        acquired_view = _get_acquired_view_from_block(ast_self)
-        acquire_op_name = _get_acquire_op_name_from_view(acquired_view)
-        if acquire_op_name == "ttl.cb_wait":
+        acquired_view, acquisition = _get_block_acquisition(ast_self)
+        if acquisition == _BlockAcquisition.WAIT:
             ttl.store(ttl.add(ast_self, rhs), acquired_view)
             return ast_self
-        if acquire_op_name != "ttl.cb_reserve":
-            raise ValueError("block acquisition must be ttl.cb_reserve or ttl.cb_wait")
         ttl.store(rhs, acquired_view, accumulate=True)
         return ast_self
 
@@ -655,12 +653,26 @@ def _get_then_yielded_guarded_dfb_value(value):
     return then_yield.operands[result_number]
 
 
-def _get_acquire_op_name_from_view(value):
+class _BlockAcquisition(enum.Enum):
+    """How a block was acquired; the value is the user-facing method name."""
+
+    RESERVE = "reserve"
+    WAIT = "wait"
+
+
+_ACQUIRE_OP_ACQUISITIONS = {
+    "ttl.cb_reserve": _BlockAcquisition.RESERVE,
+    "ttl.cb_wait": _BlockAcquisition.WAIT,
+}
+
+
+def _get_view_acquisition(value):
     while True:
         owner = getattr(value, "owner", None)
         owner_name = getattr(owner, "name", None)
-        if owner_name in ("ttl.cb_reserve", "ttl.cb_wait"):
-            return owner_name
+        acquisition = _ACQUIRE_OP_ACQUISITIONS.get(owner_name)
+        if acquisition is not None:
+            return acquisition
         if owner_name == "ttl.attach_cb":
             value = owner.operands[0]
             continue
@@ -670,8 +682,8 @@ def _get_acquire_op_name_from_view(value):
         value = guarded_value
 
 
-def _get_acquired_view_from_block(block):
-    """Extract the reserve or wait view from a block.
+def _get_block_acquisition(block):
+    """Return the acquired view of a block and how it was acquired.
 
     The attach_cb op has signature: (tensor, cb) -> tensor
     So the reserve/wait tensor is operand[0].
@@ -679,11 +691,21 @@ def _get_acquired_view_from_block(block):
     if block.owner.name != "ttl.attach_cb":
         raise ValueError(f"expected block from ttl.attach_cb, got {block.owner.name}")
     acquired_view = block.owner.operands[0]
-    if _get_acquire_op_name_from_view(acquired_view) is None:
+    acquisition = _get_view_acquisition(acquired_view)
+    if acquisition is None:
         raise ValueError(
             "ttl.attach_cb tensor must come from ttl.cb_reserve or ttl.cb_wait"
         )
-    return acquired_view
+    return acquired_view, acquisition
+
+
+def _require_copy_block_acquisition(block, expected, transfer_description):
+    _, actual = _get_block_acquisition(block)
+    if actual != expected:
+        raise ValueError(
+            f"copy() {transfer_description} requires a block acquired from "
+            f"{expected.value}(), not {actual.value}()"
+        )
 
 
 def _get_reserve_backed_view(block, method_name: str):
@@ -691,8 +713,8 @@ def _get_reserve_backed_view(block, method_name: str):
         raise ValueError(
             f"{method_name}() must be called on a block acquired from reserve()"
         )
-    acquired_view = _get_acquired_view_from_block(block)
-    if _get_acquire_op_name_from_view(acquired_view) != "ttl.cb_reserve":
+    acquired_view, acquisition = _get_block_acquisition(block)
+    if acquisition != _BlockAcquisition.RESERVE:
         raise ValueError(f"{method_name}() requires a reserve-backed block")
     return acquired_view
 
@@ -898,6 +920,10 @@ def copy(src, dst, *, byte_count=None) -> Union[CopyTransferHandler, ReceiveRequ
     For pipe transfers:
         ttl.copy(block, pipe) - send from DFB block to pipe
         ttl.copy(pipe, block) - receive from pipe to DFB block
+
+    Tensor-to-DFB and Pipe-to-DFB copies require a reserve-acquired destination.
+    DFB-to-tensor copies require a wait-acquired source. Pipe sends may read
+    either acquisition when the DFB publication has a matching consumer.
     """
     # Check for pipe operands first
     src_is_pipe = _is_pipe(src)
@@ -927,9 +953,7 @@ def copy(src, dst, *, byte_count=None) -> Union[CopyTransferHandler, ReceiveRequ
         else:
             # Pipe -> DFB receive. The sender writes into the receiver-owned block.
             if not _is_block(dst):
-                raise ValueError(
-                    "copy() from pipe requires block dst (from cb.reserve() or cb.wait())"
-                )
+                raise ValueError("copy() from pipe requires a DFB block destination")
             pipe_val = _get_pipe_mlir_value(src)
             ctx = dst.type.context
             xf_type = ttl.ReceiveRequestType.get(ctx)
@@ -970,10 +994,16 @@ def copy(src, dst, *, byte_count=None) -> Union[CopyTransferHandler, ReceiveRequ
     if dst_is_subscript:
         if not _is_block(src):
             raise ValueError("copy() with tensor subscript dst requires block src")
+        _require_copy_block_acquisition(
+            src, _BlockAcquisition.WAIT, "from a DFB block to a tensor"
+        )
         cb_shape = _get_cb_shape(_get_cb_from_block(src))
     elif src_is_subscript:
         if not _is_block(dst):
             raise ValueError("copy() with tensor subscript src requires block dst")
+        _require_copy_block_acquisition(
+            dst, _BlockAcquisition.RESERVE, "from a tensor to a DFB block"
+        )
         cb_shape = _get_cb_shape(_get_cb_from_block(dst))
     else:
         raise ValueError(
