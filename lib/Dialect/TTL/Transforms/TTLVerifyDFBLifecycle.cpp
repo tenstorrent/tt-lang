@@ -947,6 +947,19 @@ private:
     std::uint64_t count = 0;
   };
 
+  /// The loop index of generation `which`. The loop executes that index, so it
+  /// is representable, but `which * stride` may not be; 64-bit APInt
+  /// arithmetic wraps and yields the exact index.
+  static std::int64_t getGenerationIndex(const GenerationRange &range,
+                                         std::uint64_t which) {
+    llvm::APInt index(64, static_cast<std::uint64_t>(range.first),
+                      /*isSigned=*/true);
+    index += llvm::APInt(64, which) *
+             llvm::APInt(64, static_cast<std::uint64_t>(range.stride),
+                         /*isSigned=*/true);
+    return index.getSExtValue();
+  }
+
   /// The loop index bound while one generation of a barrier loop is
   /// summarized, and the loop's generations.
   struct BoundGeneration {
@@ -965,9 +978,7 @@ private:
     generation = BoundGeneration{
         range.inductionVar,
         llvm::APInt(
-            width,
-            static_cast<std::uint64_t>(
-                range.first + static_cast<std::int64_t>(which) * range.stride),
+            width, static_cast<std::uint64_t>(getGenerationIndex(range, which)),
             /*isSigned=*/true),
         range};
     TransactionSequenceResult result = summarizeRegion(body, bodyExecutions);
@@ -1027,14 +1038,16 @@ private:
       return false;
     }
     std::int64_t constant = other->getSExtValue();
-    std::int64_t second = range.first + range.stride;
-    std::int64_t last =
-        range.first + static_cast<std::int64_t>(range.count - 1) * range.stride;
+    std::int64_t second = getGenerationIndex(range, 1);
+    std::int64_t last = getGenerationIndex(range, range.count - 1);
     switch (comparison.getPredicate()) {
     case arith::CmpIPredicate::eq:
     case arith::CmpIPredicate::ne:
       return constant < second || constant > last ||
-             (constant - second) % range.stride != 0;
+             (static_cast<std::uint64_t>(constant) -
+              static_cast<std::uint64_t>(second)) %
+                     static_cast<std::uint64_t>(range.stride) !=
+                 0;
     default: {
       auto compare = [&](std::int64_t index) {
         llvm::APInt indexValue(other->getBitWidth(),
@@ -1118,7 +1131,7 @@ private:
       generation->index =
           llvm::APInt(saved.index.getBitWidth(),
                       static_cast<std::uint64_t>(
-                          range.first + (firstGeneration ? 0 : range.stride)),
+                          getGenerationIndex(range, firstGeneration ? 0 : 1)),
                       /*isSigned=*/true);
       std::optional<llvm::APInt> value =
           IntegerExpressionEvaluator(getValueEvaluator())
