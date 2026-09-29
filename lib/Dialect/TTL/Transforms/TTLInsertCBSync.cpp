@@ -451,8 +451,8 @@ struct NestedAcquisitionPlan {
 // boundary that no later acquisition owns, marks the program invalid.
 static PlanningResult<NestedAcquisitionPlan> planNestedAcquisitionBoundary(
     DFBAcquireInterval interval, const NestedAcquisitionBoundary &nested,
-    Operation *lastOwnedUse, bool requiresExplicitRelease,
-    StringRef effectName) {
+    Operation *lastOwnedUse, const DFBReleaseSearch &releaseSearch,
+    bool requiresExplicitRelease, StringRef effectName) {
   using Result = PlanningResult<NestedAcquisitionPlan>;
   Block *orderingBlock = nested.boundary->getBlock();
   Operation *start = orderingBlock->findAncestorOpInBlock(*interval.acquire);
@@ -513,17 +513,53 @@ static PlanningResult<NestedAcquisitionPlan> planNestedAcquisitionBoundary(
                             orderingBlock)) {
     return heldInvalid(beforeRegionAdvice);
   }
+  // A release attributed to this acquisition outside the nested boundary
+  // cannot justify the nested acquisition, even when it is under a matching
+  // guard outside the boundary's block.
+  auto releasedAfterBoundary = [&](Operation *release) {
+    if (nested.boundary->isAncestor(release)) {
+      return false;
+    }
+    Operation *projected = orderingBlock->findAncestorOpInBlock(*release);
+    return !projected || !projected->isBeforeInBlock(nested.boundary);
+  };
+  if (llvm::any_of(releaseSearch.guardedLocalReleases, releasedAfterBoundary) ||
+      llvm::any_of(releaseSearch.sameLevelReleases, releasedAfterBoundary) ||
+      llvm::any_of(releaseSearch.nestedReleases, releasedAfterBoundary) ||
+      llvm::any_of(releaseSearch.releasesBeforeOwnedUses,
+                   releasedAfterBoundary)) {
+    return heldInvalid(beforeRegionAdvice);
+  }
 
   Operation *projectedLast =
       lastOwnedUse ? orderingBlock->findAncestorOpInBlock(*lastOwnedUse)
                    : nullptr;
   bool used = lastOwnedUse && lastOwnedUse != start;
-  bool usedAfterBoundary =
-      used && projectedLast && nested.boundary->isBeforeInBlock(projectedLast);
-  bool usedInOrAfterBoundary =
-      heldBlockUsed ||
-      (used &&
-       (!projectedLast || !projectedLast->isBeforeInBlock(nested.boundary)));
+  bool usedAfterBoundary = false;
+  bool usedInOrAfterBoundary = heldBlockUsed;
+  if (used && projectedLast) {
+    usedAfterBoundary = nested.boundary->isBeforeInBlock(projectedLast);
+    usedInOrAfterBoundary |= !projectedLast->isBeforeInBlock(nested.boundary);
+  } else if (used) {
+    // A guarded acquisition's last use can project to its enclosing if,
+    // outside this nested boundary's block. Inspect actual storage uses in
+    // that block instead of treating the unavailable projection as live.
+    SmallVector<Operation *> ownedUses;
+    collectDFBAcquireOwnedUses(interval, ownedUses);
+    for (Operation *use : ownedUses) {
+      Operation *projected = orderingBlock->findAncestorOpInBlock(*use);
+      if (!projected) {
+        usedInOrAfterBoundary = true;
+        continue;
+      }
+      if (nested.boundary->isBeforeInBlock(projected)) {
+        usedAfterBoundary = true;
+      }
+      if (!projected->isBeforeInBlock(nested.boundary)) {
+        usedInOrAfterBoundary = true;
+      }
+    }
+  }
 
   NestedAcquisitionPlan plan;
   plan.releases.assign(releases.begin(), releases.end());
@@ -1084,7 +1120,7 @@ static PlanningResult<SmallVector<MissingReleasePlan>> planMissingReleases(
       if (!hasOwnedReleaseBeforeBoundary(releaseSearch, nested->boundary)) {
         PlanningResult<NestedAcquisitionPlan> nestedPlan =
             planNestedAcquisitionBoundary(
-                interval, *nested, last,
+                interval, *nested, last, releaseSearch,
                 acquisitionsRequiringExplicitRelease.contains(acquire),
                 effectName);
         if (nestedPlan.isInvalidIR()) {
