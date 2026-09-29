@@ -216,7 +216,7 @@ def open_ring_mesh(fabric_config=ttnn.FabricConfig.FABRIC_2D):
     discovered_shape = tuple(get_fabric_mesh_shape(fabric_config=fabric_config))
     if discovered_shape not in RING_MESH_SHAPES:
         raise ValueError(
-            f"the ring all-gather needs a 2x2 or 2x4 mesh; found {discovered_shape}"
+            f"the ring all-gather needs a 2x2, 2x4, or 4x2 mesh; found {discovered_shape}"
         )
     with open_fabric_mesh(fabric_config=fabric_config) as mesh_device:
         mesh_device.reshape(ttnn.MeshShape((prod(discovered_shape), 1)))

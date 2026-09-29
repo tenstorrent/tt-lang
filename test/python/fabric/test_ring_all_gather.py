@@ -30,7 +30,7 @@ pytestmark = pytest.mark.multi_device
 def test_ring_all_gather(torch_dtype, m_tiles, k_shard_tiles, lanes, chunk_shape):
     mesh_shape = tuple(get_fabric_mesh_shape(fabric_config=ttnn.FabricConfig.FABRIC_2D))
     if mesh_shape not in RING_MESH_SHAPES:
-        pytest.skip("the ring all-gather needs a 2x2 or 2x4 mesh")
+        pytest.skip("the ring all-gather needs a 2x2, 2x4, or 4x2 mesh")
     with open_ring_mesh() as mesh_device:
         run_ring_all_gather(
             mesh_device,
