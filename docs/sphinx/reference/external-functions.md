@@ -243,6 +243,10 @@ and [`compiler_l1_compute.h`](https://github.com/tenstorrent/tt-lang/blob/main/i
 See [SRAM Allocation](https://github.com/tenstorrent/tt-lang/blob/main/docs/development/SRAMAllocation.md)
 for storage ownership and the supported operation contract.
 
+Generated C++ defines `TTLANG_DFB_STORAGE_COMPILER_SRAM` before the external header: `0` for `metal-cb` and `1` for `compiler-sram`. A compute adapter tests this marker when Metal LLKs require numeric DFB indices but the compiler-managed target interface requires bound SRAM addresses. The definitions are in [DFBDescriptorPrelude.inc](../../../include/ttlang/Target/TTKernel/DFBDescriptorPrelude.inc) and [compiler_l1.h](../../../include/ttlang/Target/TTKernel/LLKs/compiler_l1.h). Architecture-specific address and compute operations remain behind the target interface.
+
+Opaque C++ bodies are not analyzed for compute configuration. The enclosing `@ttl.operation` sets any required options, such as `fp32_dest_acc_en=True` when the external function uses FP32 destination registers.
+
 ```python
 ttl.call_extern_func(
     HEADER,
