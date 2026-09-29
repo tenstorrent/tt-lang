@@ -4,10 +4,14 @@
 
 """Python API validation for DFB address scopes."""
 
+import ast
+import copy
+
 import pytest
 import ttl
 
 from ttl import dataflow_buffer
+from ttl.atom import _lift_setup
 
 
 class _FakeShardSpec:
@@ -103,3 +107,41 @@ def test_operation_accepts_inline_address_scope_enum():
         block.pop()
 
     assert operation._spec.frozen_scope["ttl"] is ttl
+
+
+@pytest.mark.parametrize(
+    "scope", ["remote_uniform", ttl.DFBAddressScope.REMOTE_UNIFORM]
+)
+def test_composed_operation_lifts_captured_address_scope(scope):
+    @ttl.operation()
+    def helper():
+        dfb = ttl.make_dfb("bf16", shape=(1, 1), address_scope=scope)
+        block = dfb.wait()
+        block.pop()
+
+    @ttl.operation(grid=(1, 1))
+    def operation():
+        helper()
+
+    spec = operation._spec
+    ast.parse(spec.source)
+    _, dfbs, _, _ = _lift_setup(
+        copy.deepcopy(spec.fn_ast), dict(spec.frozen_scope), spec.operation_identity
+    )
+    assert len(dfbs) == 1
+    assert next(iter(dfbs.values())).address_scope == ttl.DFBAddressScope.REMOTE_UNIFORM
+
+
+def test_captured_address_scope_changes_operation_identity():
+    def make_operation(scope):
+        @ttl.operation(grid=(1, 1))
+        def operation():
+            dfb = ttl.make_dfb("bf16", shape=(1, 1), address_scope=scope)
+            block = dfb.wait()
+            block.pop()
+
+        return operation
+
+    local = make_operation(ttl.DFBAddressScope.LOCAL)
+    remote = make_operation(ttl.DFBAddressScope.REMOTE_UNIFORM)
+    assert local._spec.operation_identity != remote._spec.operation_identity
