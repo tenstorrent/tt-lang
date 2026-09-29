@@ -1,12 +1,31 @@
-# Functional Simulator
+# Simulation backends
 
-TT-Lang includes a functional simulator that runs operations as pure Python, without requiring Tenstorrent hardware or the full compiler stack. Use it to validate kernel logic and iterate quickly during development.
+The source-tree `./bin/tt-lang-sim` launcher has two complementary backends:
+
+| Backend | Execution path | Best suited to |
+|---|---|---|
+| `python` (default) | Python interpreter with torch-backed tensors | Fast kernel iteration, Python debugging, and native macOS use |
+| `emule` | TT-Lang compiler, tt-metal, and tt-emule | Testing generated kernels and runtime behavior without silicon |
+
+The `tt-lang-sim` console command installed by either PyPI package provides the
+`python` backend. For compiler-backed emulation, use
+`./bin/tt-lang-sim --backend=emule` from a TT-Lang source checkout.
+
+For the emule backend, start with
+[Getting started with compiler-backed emulation](simulator-getting-started.md), which
+covers host prerequisites, environment installation, program execution, and
+the repository's existing test framework.
+
+The Python backend runs operations without requiring Tenstorrent hardware or
+the full compiler stack. Use it to validate kernel logic and iterate quickly
+during development.
 
 The simulator typically supports more language features than the compiler at any given point — see the [functionality matrix](specs/TTLangSpecification.md#appendix-d-functionality-matrix) for current coverage.
 
+(simulator-python-setup)=
 ## Setup
 
-The recommended path is to install the simulator from PyPI:
+For the Python backend, the recommended path is to install from PyPI:
 
 ```bash
 python3 -m venv --prompt ttlang ttlang-venv
@@ -42,6 +61,35 @@ If you have already built the full TT-Lang compiler (`source build/env/activate`
 ```bash
 tt-lang-sim examples/eltwise_add.py
 ```
+
+### Compiler-backed emulation
+
+The emule backend uses the same launcher interface as the Python backend.
+The [emule getting-started guide](simulator-getting-started.md) describes
+installation. From the root of an installed source checkout:
+
+```bash
+./bin/tt-lang-sim --backend=emule examples/eltwise_add.py
+```
+
+The script imports the real `ttl` and `ttnn` packages, TT-Lang compiles each
+operation, and tt-metal dispatches the generated kernels to tt-emule.
+
+The getting-started guide covers
+[environment installation](simulator-getting-started.md#install-the-environment),
+[compiler tests](simulator-getting-started.md#run-tests-with-the-existing-test-framework),
+[source validation and image provenance](simulator-getting-started.md#validate-and-inspect-the-environment),
+and [supported workloads](simulator-getting-started.md#known-limitations).
+
+Use the Python backend for simulator options such as `--grid`, `--trace`, and
+`--no-float32-promotion`. For the emule backend, the pinned environment supplies
+the device configuration. Pass program arguments after `--`:
+
+```bash
+./bin/tt-lang-sim --backend=emule program.py -- --program-option value
+```
+
+### Testing the Python backend
 
 Run the simulator test suite:
 

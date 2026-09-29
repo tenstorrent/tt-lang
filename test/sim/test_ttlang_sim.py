@@ -372,6 +372,7 @@ class TestScriptMustBeFirstArgument:
         )
         assert result.returncode == 0
         assert "SCRIPT.py" in result.stdout
+        assert "--backend=emule" in result.stdout
 
     def test_short_help_without_script(self):
         result = subprocess.run(
@@ -394,6 +395,59 @@ class TestScriptMustBeFirstArgument:
         )
         assert result.returncode == 0
         assert "tt-lang-sim" in result.stdout
+
+    @pytest.mark.parametrize("backend_options", [[], ["--backend=python"]])
+    def test_python_backend_selection(self, tmp_path, backend_options):
+        script = tmp_path / "kernel.py"
+        script.write_text("print('python backend selected')\n")
+        result = subprocess.run(
+            [sys.executable, "-m", "sim.ttlang_sim", str(script), *backend_options],
+            cwd=self._REPO,
+            env=self._ENV,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, result.stderr
+        assert "python backend selected" in result.stdout
+
+    def test_unknown_backend_is_rejected(self, tmp_path):
+        script = tmp_path / "kernel.py"
+        script.write_text("raise AssertionError('script must not run')\n")
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "sim.ttlang_sim",
+                str(script),
+                "--backend=unknown",
+            ],
+            cwd=self._REPO,
+            env=self._ENV,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 2
+        assert "invalid choice: 'unknown'" in result.stderr
+        assert "choose from python, emule" in result.stderr.replace("'", "")
+
+    def test_python_entrypoint_rejects_source_only_emule_backend(self):
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "sim.ttlang_sim",
+                str(self._REPO / "examples" / "broadcast_demo.py"),
+                "--backend",
+                "emule",
+            ],
+            cwd=self._REPO,
+            env=self._ENV,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 2
+        assert "emule backend requires a TT-Lang source checkout" in result.stderr
+        assert "from the checkout root, run ./bin/tt-lang-sim" in result.stderr
 
 
 class TestMaxDfbsCommandLineOption:
