@@ -552,19 +552,16 @@ static PlanningResult<NestedAcquisitionPlan> planNestedAcquisitionBoundary(
 }
 
 // Whether a release the search attributes to the acquisition projects before
-// `boundary` in the ordering block. Guarded local releases lie inside the
-// guard, which precedes the boundary.
+// `boundary` in the ordering block.
 static bool hasOwnedReleaseBeforeBoundary(const DFBReleaseSearch &search,
                                           Operation *boundary) {
-  if (!search.guardedLocalReleases.empty()) {
-    return true;
-  }
   Block *orderingBlock = boundary->getBlock();
   auto precedesBoundary = [&](Operation *release) {
     Operation *projected = orderingBlock->findAncestorOpInBlock(*release);
     return projected && projected->isBeforeInBlock(boundary);
   };
-  return llvm::any_of(search.sameLevelReleases, precedesBoundary) ||
+  return llvm::any_of(search.guardedLocalReleases, precedesBoundary) ||
+         llvm::any_of(search.sameLevelReleases, precedesBoundary) ||
          llvm::any_of(search.releasesBeforeOwnedUses, precedesBoundary);
 }
 
