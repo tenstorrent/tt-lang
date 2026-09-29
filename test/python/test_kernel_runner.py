@@ -3165,7 +3165,6 @@ def test_reconfiguration_remote_uniform_scratch_rejects_partial_pipe_backing(
             existing_backing_tensors={0: _FakeTensor(device, address=0xC000)},
             existing_backing_allocation_bytes={0: 4096},
             device=device,
-            cb_configs=[config],
         )
 
 
