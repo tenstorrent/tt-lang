@@ -2690,6 +2690,7 @@ def _runtime_resource_compatibility_key(
     dfb_reconfiguration_plan: Optional[DFBReconfigurationPlan],
     device: Optional[Any],
 ) -> Tuple[Tuple[Any, ...], Optional[Any]]:
+    _validate_remote_uniform_storage_sources(cb_configs)
     requires_device = (
         pipe_sram_scratch_bytes > 0
         or num_pipe_global_semaphores > 0
@@ -2896,6 +2897,7 @@ def build_dfb_reconfiguration_runtime_resources(
     _ensure_ttnn()
     if ttnn is None:
         raise RuntimeError("ttnn is not available")
+    _validate_remote_uniform_storage_sources(cb_configs)
     _validate_dfb_reconfiguration_plan(tensors, plan)
     resource_device = device if device is not None else _first_device(tensors)
     reusable_backing_tensors = dict(existing_backing_tensors or {})
@@ -4261,6 +4263,34 @@ def _physical_dfb_storage_index(config: PhysicalDFBConfig) -> int:
     return config.dfb_index if config.storage_index is None else config.storage_index
 
 
+def _validate_remote_uniform_storage_sources(
+    configs: Iterable[PhysicalDFBConfig],
+) -> None:
+    """Reject active tensor and scratch sources for one remote-uniform storage."""
+    sources_by_storage = {}
+    remote_uniform_storage_indices = set()
+    for config in configs:
+        if not config.storage_segments and config.allocation_nodes == ():
+            continue
+        storage_index = _physical_dfb_storage_index(config)
+        sources = sources_by_storage.setdefault(storage_index, set())
+        if config.storage_segments:
+            sources.update(
+                segment.is_tensor_backed for segment in config.storage_segments
+            )
+        else:
+            sources.add(False)
+        if config.address_scope == DFBAddressScope.REMOTE_UNIFORM:
+            remote_uniform_storage_indices.add(storage_index)
+    for storage_index in sorted(remote_uniform_storage_indices):
+        if len(sources_by_storage[storage_index]) > 1:
+            raise ValueError(
+                f"storage[{storage_index}] address_scope='remote_uniform' "
+                "cannot mix tensor-backed and scratch storage across "
+                "active DFB configurations"
+            )
+
+
 def _shared_static_storage_size(
     member_indices: Sequence[int],
     allocations: Sequence[_DFBAllocation],
@@ -4646,26 +4676,7 @@ def _validate_dfb_reconfiguration_plan(
     active_configurations = {}
     for boundary_ordinal in (None, *boundary_ordinals):
         active_configurations.update(configurations_by_entry[boundary_ordinal])
-        sources_by_storage = {}
-        remote_uniform_storage_indices = set()
-        for config in active_configurations.values():
-            storage_index = _physical_dfb_storage_index(config)
-            sources = sources_by_storage.setdefault(storage_index, set())
-            if config.storage_segments:
-                sources.update(
-                    segment.is_tensor_backed for segment in config.storage_segments
-                )
-            else:
-                sources.add(False)
-            if config.address_scope == DFBAddressScope.REMOTE_UNIFORM:
-                remote_uniform_storage_indices.add(storage_index)
-        for storage_index in remote_uniform_storage_indices:
-            if len(sources_by_storage[storage_index]) > 1:
-                raise ValueError(
-                    f"storage[{storage_index}] address_scope='remote_uniform' "
-                    "cannot mix tensor-backed and scratch storage across "
-                    "active DFB configurations"
-                )
+        _validate_remote_uniform_storage_sources(active_configurations.values())
 
 
 def _validate_remote_uniform_tensor_backing(
@@ -4759,6 +4770,7 @@ def build_cb_descriptors(
     _ensure_ttnn()
     if ttnn is None:
         raise RuntimeError("ttnn is not available")
+    _validate_remote_uniform_storage_sources(cb_configs)
     _validate_remote_uniform_tensor_backing(
         tensors, cb_configs, dfb_reconfiguration_plan
     )

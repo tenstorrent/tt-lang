@@ -3475,6 +3475,111 @@ def test_reconfiguration_remote_uniform_rejects_mixed_shared_storage_at_boundary
     assert allocations == []
 
 
+def test_static_remote_uniform_rejects_mixed_shared_storage(monkeypatch):
+    device, _, _ = _remote_uniform_scratch_environment(monkeypatch, {(0, 0): 0xC000})
+    monkeypatch.setattr(
+        kernel_runner,
+        "get_min_remaining_l1_for_device",
+        lambda *_args, **_kwargs: 65536,
+    )
+    monkeypatch.setattr(
+        kernel_runner,
+        "_get_remaining_l1_by_core_for_device",
+        lambda _device, cores, **_kwargs: {core: 65536 for core in cores},
+    )
+    tensor_config = PhysicalDFBConfig(
+        0,
+        1,
+        "bfloat16",
+        1,
+        2048,
+        (32, 32),
+        (DFBStorageSegment(nodes=((0, 0),), tensor_index=0, byte_size=2048),),
+        allocation_nodes=((0, 0),),
+        storage_index=4,
+        address_scope="remote_uniform",
+    )
+    scratch_config = replace(
+        tensor_config,
+        dfb_index=1,
+        storage_segments=(DFBStorageSegment(nodes=((1, 0),)),),
+        allocation_nodes=((1, 0),),
+    )
+
+    with pytest.raises(ValueError, match="remote_uniform.*tensor.*scratch"):
+        kernel_runner.build_cb_descriptors(
+            tensors=[_backing_tensor(device)],
+            cb_configs=[tensor_config, scratch_config],
+            core_ranges=_FakeExplicitCoreRanges((0, 0), (1, 0)),
+        )
+    with pytest.raises(ValueError, match="remote_uniform.*tensor.*scratch"):
+        kernel_runner._runtime_resource_compatibility_key(
+            tensors=[],
+            cb_configs=[tensor_config, scratch_config],
+            core_ranges=None,
+            pipe_sram_scratch_bytes=0,
+            num_pipe_global_semaphores=0,
+            pipe_computed_address_dfb_indices=(),
+            num_dfb_resets=0,
+            dfb_reconfiguration_plan=None,
+            device=None,
+        )
+
+
+def test_static_remote_uniform_ignores_empty_shared_storage(monkeypatch):
+    device, _, _ = _remote_uniform_scratch_environment(monkeypatch, {(0, 0): 0xC000})
+    tensor_config = PhysicalDFBConfig(
+        0,
+        1,
+        "bfloat16",
+        1,
+        2048,
+        (32, 32),
+        (DFBStorageSegment(nodes=((0, 0),), tensor_index=0, byte_size=2048),),
+        allocation_nodes=((0, 0),),
+        storage_index=4,
+        address_scope="remote_uniform",
+    )
+    empty_config = replace(
+        tensor_config, dfb_index=1, storage_segments=(), allocation_nodes=()
+    )
+
+    descriptors = kernel_runner.build_cb_descriptors(
+        tensors=[_backing_tensor(device)],
+        cb_configs=[tensor_config, empty_config],
+        core_ranges=_FakeExplicitCoreRanges((0, 0), (1, 0)),
+    )
+    assert len(descriptors) == 1
+
+
+def test_reconfiguration_remote_uniform_ignores_empty_shared_storage(monkeypatch):
+    device, _, _ = _remote_uniform_scratch_environment(monkeypatch, {(0, 0): 0xC000})
+    tensor_config = PhysicalDFBConfig(
+        0,
+        1,
+        "bfloat16",
+        1,
+        2048,
+        (32, 32),
+        (DFBStorageSegment(nodes=((0, 0),), tensor_index=0, byte_size=2048),),
+        allocation_nodes=((0, 0),),
+        storage_index=4,
+        address_scope="remote_uniform",
+    )
+    empty_config = replace(
+        tensor_config, dfb_index=1, storage_segments=(), allocation_nodes=()
+    )
+    plan = DFBReconfigurationPlan(
+        boundary_ordinals=(7,),
+        dfb_epochs=(
+            (DFBConfigurationEpoch(None, tensor_config),),
+            (DFBConfigurationEpoch(None, empty_config),),
+        ),
+    )
+
+    kernel_runner._validate_dfb_reconfiguration_plan([_backing_tensor(device)], plan)
+
+
 # PipeNet backing that covers only some cores of remote-uniform storage would
 # give the remaining cores a different base.
 def test_reconfiguration_remote_uniform_scratch_rejects_partial_pipe_backing(
