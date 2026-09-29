@@ -318,12 +318,14 @@ getIntervalExecutionLocations(const FabricManagerIntervalPlan &interval,
   return locations;
 }
 
-static bool
-locationsAreUnique(ArrayRef<FabricManagerExecutionLocation> locations) {
-  return llvm::all_of(llvm::enumerate(locations), [&](auto indexedLocation) {
-    return !llvm::is_contained(locations.take_front(indexedLocation.index()),
-                               indexedLocation.value());
-  });
+static std::uint64_t getMaximumLocationMultiplicity(
+    ArrayRef<FabricManagerExecutionLocation> locations) {
+  std::uint64_t maximum = 1;
+  for (FabricManagerExecutionLocation location : locations) {
+    maximum = std::max<std::uint64_t>(
+        maximum, std::count(locations.begin(), locations.end(), location));
+  }
+  return maximum;
 }
 
 static bool
@@ -331,7 +333,8 @@ executionLocationsEqual(ArrayRef<FabricManagerExecutionLocation> lhs,
                         ArrayRef<FabricManagerExecutionLocation> rhs) {
   return lhs.size() == rhs.size() &&
          llvm::all_of(lhs, [&](FabricManagerExecutionLocation lhsLocation) {
-           return llvm::is_contained(rhs, lhsLocation);
+           return std::count(lhs.begin(), lhs.end(), lhsLocation) ==
+                  std::count(rhs.begin(), rhs.end(), lhsLocation);
          });
 }
 
@@ -369,17 +372,26 @@ static std::optional<std::uint64_t> getIntervalInvocationUpperBound(
 
 static std::optional<bool> getInvocationCounterRequirement(
     ArrayRef<std::size_t> receiverRuntimeIntervals,
-    ArrayRef<std::size_t> senderRuntimeIntervals, const FabricRoutePlan &plan,
+    ArrayRef<std::size_t> senderRuntimeIntervals,
+    ArrayRef<std::uint64_t> maximumLocationMultiplicities,
+    const FabricRoutePlan &plan,
     const llvm::SmallPtrSetImpl<Operation *> &generatedControlOps) {
   assert(receiverRuntimeIntervals.size() == senderRuntimeIntervals.size() &&
          "paired manager functions must have equal interval counts");
+  assert(receiverRuntimeIntervals.size() ==
+             maximumLocationMultiplicities.size() &&
+         "each paired interval needs a location multiplicity");
   std::uint64_t totalInvocationUpperBound = 0;
   // A runtime ordinal preserves the generation sequence when a conditional
   // skips one interval. Constants are sufficient only for one single-shot
   // interval.
   bool requiresInvocationCounter = receiverRuntimeIntervals.size() > 1;
-  for (auto [receiverRuntimeIndex, senderRuntimeIndex] :
-       llvm::zip_equal(receiverRuntimeIntervals, senderRuntimeIntervals)) {
+  for (auto [intervalPosition, receiverRuntimeIndex] :
+       llvm::enumerate(receiverRuntimeIntervals)) {
+    std::size_t senderRuntimeIndex =
+        senderRuntimeIntervals[intervalPosition];
+    std::uint64_t maximumMultiplicity =
+        maximumLocationMultiplicities[intervalPosition];
     std::optional<std::uint64_t> receiverUpperBound =
         getIntervalInvocationUpperBound(
             plan.runtimeIntervals[receiverRuntimeIndex], generatedControlOps);
@@ -389,13 +401,18 @@ static std::optional<bool> getInvocationCounterRequirement(
     if (!receiverUpperBound || receiverUpperBound != senderUpperBound) {
       return std::nullopt;
     }
+    std::optional<std::uint64_t> intervalUpperBound =
+        llvm::checkedMulUnsigned(*receiverUpperBound, maximumMultiplicity);
+    if (!intervalUpperBound) {
+      return std::nullopt;
+    }
     std::optional<std::uint64_t> newTotal = llvm::checkedAddUnsigned(
-        totalInvocationUpperBound, *receiverUpperBound);
+        totalInvocationUpperBound, *intervalUpperBound);
     if (!newTotal) {
       return std::nullopt;
     }
     totalInvocationUpperBound = *newTotal;
-    requiresInvocationCounter |= *receiverUpperBound > 1;
+    requiresInvocationCounter |= *intervalUpperBound > 1;
   }
 
   // Each invocation consumes two monotonically increasing generations. Leave
@@ -598,6 +615,7 @@ static void planFabricManagerOwnership(
           continue;
         }
         bool matches = true;
+        SmallVector<std::uint64_t> maximumLocationMultiplicities;
         for (auto [receiverRuntimeIndex, senderRuntimeIndex] : llvm::zip_equal(
                  receiverRuntimeIntervals, senderRuntimeIntervals)) {
           const FabricRuntimeIntervalPlan &receiverRuntime =
@@ -617,18 +635,19 @@ static void planFabricManagerOwnership(
           if (senderInterval.kind !=
                   FabricManagerIntervalKind::GeneratedSender ||
               receiverInterval.transferNodes != senderInterval.transferNodes ||
-              !locationsAreUnique(receiverLocations) ||
-              !locationsAreUnique(senderLocations) ||
               !executionLocationsEqual(receiverLocations, senderLocations) ||
               !intervalRoutesEqual(receiverInterval, senderInterval, plan)) {
             matches = false;
             break;
           }
+          maximumLocationMultiplicities.push_back(
+              getMaximumLocationMultiplicity(receiverLocations));
         }
         std::optional<bool> invocationCounterRequirement;
         if (matches) {
           invocationCounterRequirement = getInvocationCounterRequirement(
-              receiverRuntimeIntervals, senderRuntimeIntervals, plan,
+              receiverRuntimeIntervals, senderRuntimeIntervals,
+              maximumLocationMultiplicities, plan,
               generatedControlOps);
           matches = invocationCounterRequirement.has_value();
         }
