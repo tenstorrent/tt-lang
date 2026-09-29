@@ -2080,6 +2080,8 @@ materializeStaticPipeScheduleLoopBounds(scf::ForOp loop) {
 
 /// Return whether pipe-event control inside `loop` depends on its induction
 /// variable. Such loops require concrete iterations to preserve event order.
+/// TODO(#1139): follow the induction variable into helper-call arguments and
+/// through `iter_args`; both are classified as iteration-invariant.
 bool loopHasIterationDependentPipeControl(
     scf::ForOp loop, const llvm::DenseSet<Operation *> &functionsWithPipeCopies,
     SymbolTableCollection &symbolTables) {

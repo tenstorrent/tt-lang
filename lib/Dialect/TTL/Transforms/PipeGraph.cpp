@@ -1734,6 +1734,9 @@ LogicalResult PipeGraph::verifyTensorRegionDestinations(
       // with the last completed receive rather than every future owner of the
       // same storage.
       auto postOp = cast<PipeTransferPostOp>(endpoint->postOp);
+      // TODO(#1140): this accepts a read that executes in an iteration without
+      // the receive, which races with a no-rendezvous write. Require every
+      // overlapping receive occurrence to precede the read.
       bool completedBeforeRead = hasMatchingReceiveWaitBeforeUse(
           postOp, copy.getOperation(), analysisState.receiveWaitsByPost,
           analysisState.receiveWaitAnysByPost, *maybeLocation, analysisState);
