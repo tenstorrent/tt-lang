@@ -34,3 +34,20 @@ module {
     return
   }
 }
+
+// -----
+
+// A connection manager without transfer calls still requires the adapter class.
+// CHECK: SPLIT-OUTPUT
+// CHECK: class RoutingPlaneConnectionManager {
+// CHECK-NOT: routing_plane_write(
+// CHECK-NOT: routing_plane_scatter_write(
+// CHECK: void kernel_main() {
+// CHECK-NEXT: experimental::RoutingPlaneConnectionManager routing_plane_connection_manager_0;
+
+module {
+  func.func @manager_only() attributes {ttkernel.thread = #ttkernel.thread<noc>} {
+    emitc.verbatim "experimental::RoutingPlaneConnectionManager routing_plane_connection_manager_0;"
+    return
+  }
+}

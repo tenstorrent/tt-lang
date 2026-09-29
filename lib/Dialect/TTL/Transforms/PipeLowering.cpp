@@ -5705,7 +5705,11 @@ preparePipeTensorDestinationRuntimeArguments(PipeGraph &pipeGraph) {
           "receiver per transfer record");
       return failure();
     }
-    if (!transferNode.deviceTransfer) {
+    // A same-device graph edge lowers to NoC, which has no tensor-destination
+    // transport.
+    DeviceTransferAttr deviceTransfer = transferNode.deviceTransfer;
+    if (!deviceTransfer || deviceTransfer.getEdge().getSource() ==
+                               deviceTransfer.getEdge().getDestination()) {
       sendOp.emitError(
           "computed DRAM pipe destination requires an inter-device transfer");
       return failure();

@@ -96,8 +96,9 @@ The runtime-argument call:
 
 - selects a forwarding direction and fabric link;
 - allocates the connection semaphores in the program descriptor;
-- returns the runtime arguments consumed by
-  `RoutingPlaneConnectionManager::build_from_args()`.
+- returns the runtime arguments consumed by TT-Metal's
+  `tt::tt_fabric::RoutingPlaneConnectionManager::build_from_args()`, which the
+  adapter's `open()` reaches through `open_connections()`.
 
 The kernel opens the required connections before sending, obtains the sender
 associated with a connection slot, and closes all opened connections before
