@@ -10,11 +10,10 @@ import torch
 ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
 
 from examples.multidevice_ring_all_gather import (
-    RING_MESH_SHAPES,
+    UnsupportedRingMesh,
     open_ring_mesh,
     run_ring_all_gather,
 )
-from ttlang_test_utils import get_fabric_mesh_shape
 
 pytestmark = pytest.mark.multi_device
 
@@ -28,15 +27,15 @@ pytestmark = pytest.mark.multi_device
     ids=["one-chunk-per-lane", "two-by-two-chunks-per-lane", "four-chunks-one-lane"],
 )
 def test_ring_all_gather(torch_dtype, m_tiles, k_shard_tiles, lanes, chunk_shape):
-    mesh_shape = tuple(get_fabric_mesh_shape(fabric_config=ttnn.FabricConfig.FABRIC_2D))
-    if mesh_shape not in RING_MESH_SHAPES:
-        pytest.skip("the ring all-gather needs a 2x2, 2x4, or 4x2 mesh")
-    with open_ring_mesh() as mesh_device:
-        run_ring_all_gather(
-            mesh_device,
-            torch_dtype,
-            m_tiles=m_tiles,
-            k_shard_tiles=k_shard_tiles,
-            lanes=lanes,
-            chunk_shape=chunk_shape,
-        )
+    try:
+        with open_ring_mesh() as mesh_device:
+            run_ring_all_gather(
+                mesh_device,
+                torch_dtype,
+                m_tiles=m_tiles,
+                k_shard_tiles=k_shard_tiles,
+                lanes=lanes,
+                chunk_shape=chunk_shape,
+            )
+    except UnsupportedRingMesh as error:
+        pytest.skip(str(error))

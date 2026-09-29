@@ -22,8 +22,7 @@ from benchmarks.common import write_csv
 from benchmarks.device_timing import latest_kernel_duration, read_device_profile
 from examples.multidevice_ring_all_gather import (
     TILE_SIZE,
-    expected_destination,
-    make_ring_all_gather_operation,
+    make_ring_all_gather_workload,
     open_ring_mesh,
 )
 from ttlang_test_utils import to_dram
@@ -66,38 +65,17 @@ def parse_args():
 
 
 def make_ttlang_workload(mesh_device, full, arguments, device_count):
-    m = arguments.m_tiles * TILE_SIZE
-    k_shard = arguments.k_shard_tiles * TILE_SIZE
-    source = to_dram(
-        full, mesh_device, mesh_mapper=ttnn.ShardTensorToMesh(mesh_device, dim=1)
-    )
-    destination = to_dram(
-        torch.zeros(device_count * m, (device_count - 1) * k_shard, dtype=full.dtype),
+    run, destinations = make_ring_all_gather_workload(
         mesh_device,
-        mesh_mapper=ttnn.ShardTensorToMesh(mesh_device, dim=0),
-    )
-    operation = make_ring_all_gather_operation(
-        device_count,
+        full,
         m_tiles=arguments.m_tiles,
         k_shard_tiles=arguments.k_shard_tiles,
         lanes=arguments.lanes,
         chunk_shape=tuple(arguments.chunk_shape),
     )
 
-    def run():
-        operation(source, destination)
-
     def correct():
-        result = ttnn.to_torch(
-            destination, mesh_composer=ttnn.ConcatMeshToTensor(mesh_device, dim=0)
-        )
-        return all(
-            torch.equal(
-                result[device * m : (device + 1) * m],
-                expected_destination(full, device, device_count, k_shard),
-            )
-            for device in range(device_count)
-        )
+        return all(torch.equal(actual, expected) for actual, expected in destinations())
 
     return run, correct
 

@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: (c) 2026 Tenstorrent AI ULC
 # SPDX-License-Identifier: Apache-2.0
 
-"""Read TT-Metal's standard device-kernel metric, without parsing profiler CSVs."""
+"""Read TT-Metal's device-kernel duration through its profiler post-processing."""
 
 import os
 import statistics
@@ -21,20 +21,17 @@ def read_device_profile(device):
     return archived
 
 
-def latest_kernel_duration(csv_path, device_ids, *, aggregation="max", program_count=1):
-    """Return the latest program sequence's duration on each participating device.
+def latest_kernel_duration(csv_path, device_ids, *, aggregation="max"):
+    """Return the latest program's duration on each participating device.
 
     TT-Metal defines device_kernel_duration as the earliest kernel start to
     latest kernel end across a device's workers. Device clocks are independent;
     compare durations, never timestamps, across devices.
-    Multiple programs include the device-clock interval between launches.
     """
     if aggregation not in ("mean", "max"):
         raise ValueError(f"unsupported device aggregation: {aggregation}")
     if not device_ids:
         raise ValueError("at least one participating device is required")
-    if program_count < 1:
-        raise ValueError("program_count must be positive")
     from tracy.device_post_proc_config import default_setup
     from tracy.process_device_log import import_log_run_stats
 
@@ -54,31 +51,16 @@ def latest_kernel_duration(csv_path, device_ids, *, aggregation="max", program_c
         ]["ops"]
         if not operations:
             raise ValueError(f"no profiled operations for device {device_id}")
-        if len(operations) < program_count:
-            raise ValueError(f"missing programs on device {device_id}")
-        intervals = []
-        for operation in operations[-program_count:]:
-            series = operation["analysis"]["device_kernel_duration"]["series"]
-            if len(series) != 1:
-                raise ValueError(f"expected one kernel interval on device {device_id}")
-            interval = series[0]
-            start_zone, end_zone = interval["duration_type"]
-            if start_zone["run_host_id"] != end_zone["run_host_id"]:
-                raise ValueError("kernel interval spans different program launches")
-            intervals.append(interval)
-        cycles = int(intervals[-1]["duration_cycles"])
-        if program_count > 1:
-            for previous, current in zip(intervals, intervals[1:]):
-                if (
-                    current["duration_type"][0]["run_host_id"]
-                    <= previous["duration_type"][1]["run_host_id"]
-                    or current["start_cycle"] < previous["end_cycle"]
-                ):
-                    raise ValueError("program sequence is not ordered")
-            cycles = int(intervals[-1]["end_cycle"] - intervals[0]["start_cycle"])
+        series = operations[-1]["analysis"]["device_kernel_duration"]["series"]
+        if len(series) != 1:
+            raise ValueError(f"expected one kernel interval on device {device_id}")
+        interval = series[0]
+        start_zone, end_zone = interval["duration_type"]
+        if start_zone["run_host_id"] != end_zone["run_host_id"]:
+            raise ValueError("kernel interval spans different program launches")
         per_device[str(device_id)] = {
             "run_host_id": int(start_zone["run_host_id"]),
-            "cycles": cycles,
+            "cycles": int(interval["duration_cycles"]),
         }
     device_cycles = [device["cycles"] for device in per_device.values()]
     cycles = (
@@ -90,7 +72,6 @@ def latest_kernel_duration(csv_path, device_ids, *, aggregation="max", program_c
         "us": cycles / frequency_mhz,
         "frequency_mhz": frequency_mhz,
         "device_aggregation": aggregation,
-        "program_count": program_count,
         "timing_scope": "first_kernel_start_to_last_kernel_end",
         "mean_device_us": statistics.mean(device_cycles) / frequency_mhz,
         "max_device_us": max(device_cycles) / frequency_mhz,

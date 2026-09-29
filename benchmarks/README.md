@@ -1,8 +1,9 @@
 # tt-lang Benchmarks
 
 Benchmarks in this directory are executable Python modules. Each benchmark owns
-its operation-specific setup and imports only the small helpers in
-`benchmarks.common` and, when it reports device time, `benchmarks.device_timing`.
+its measurement setup, may import the operation it measures from `examples/`,
+and otherwise imports only the small helpers in `benchmarks.common` and, when
+it reports device time, `benchmarks.device_timing`.
 
 Shared helpers:
 

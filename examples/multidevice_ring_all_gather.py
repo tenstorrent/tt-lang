@@ -114,18 +114,14 @@ def make_ring_all_gather_operation(
                             local_blk,
                         ).wait()
                     with local_dfb.wait() as local_blk:
+
+                        def send_seed(pipe):
+                            ttl.copy(local_blk, pipe).wait()
+
                         if direction == 0:
-
-                            def send_forward_seed(pipe):
-                                ttl.copy(local_blk, pipe).wait()
-
-                            forward_seed_net.if_src(send_forward_seed)
+                            forward_seed_net.if_src(send_seed)
                         else:
-
-                            def send_backward_seed(pipe):
-                                ttl.copy(local_blk, pipe).wait()
-
-                            backward_seed_net.if_src(send_backward_seed)
+                            backward_seed_net.if_src(send_seed)
 
         # Only this thread accesses `destination`: every read reuses the slice
         # of the receive that wrote it, which keeps the ownership proof local.
@@ -166,18 +162,14 @@ def make_ring_all_gather_operation(
                             with relay_dfb.reserve() as relay_blk:
                                 ttl.copy(region, relay_blk).wait()
                             with relay_dfb.wait() as relay_blk:
+
+                                def send_relay(pipe):
+                                    ttl.copy(relay_blk, pipe).wait()
+
                                 if direction == 0:
-
-                                    def send_forward_relay(pipe):
-                                        ttl.copy(relay_blk, pipe).wait()
-
-                                    forward_relay_net.if_src(send_forward_relay)
+                                    forward_relay_net.if_src(send_relay)
                                 else:
-
-                                    def send_backward_relay(pipe):
-                                        ttl.copy(relay_blk, pipe).wait()
-
-                                    backward_relay_net.if_src(send_backward_relay)
+                                    backward_relay_net.if_src(send_relay)
 
     return ring_all_gather
 
@@ -207,20 +199,75 @@ def expected_destination(
 RING_MESH_SHAPES = ((2, 2), (2, 4), (4, 2))
 
 
+class UnsupportedRingMesh(ValueError):
+    """The discovered mesh shape is not in RING_MESH_SHAPES."""
+
+
 @contextmanager
 def open_ring_mesh(fabric_config=ttnn.FabricConfig.FABRIC_2D):
     """Open every discovered device as an (N, 1) mesh whose line is a ring.
 
-    Raises ValueError for a discovered shape outside RING_MESH_SHAPES.
+    Raises UnsupportedRingMesh for a discovered shape outside RING_MESH_SHAPES.
     """
     discovered_shape = tuple(get_fabric_mesh_shape(fabric_config=fabric_config))
     if discovered_shape not in RING_MESH_SHAPES:
-        raise ValueError(
-            f"the ring all-gather needs a 2x2, 2x4, or 4x2 mesh; found {discovered_shape}"
+        supported = ", ".join("x".join(map(str, shape)) for shape in RING_MESH_SHAPES)
+        raise UnsupportedRingMesh(
+            f"the ring all-gather needs a mesh of shape {supported}; "
+            f"found {discovered_shape}"
         )
     with open_fabric_mesh(fabric_config=fabric_config) as mesh_device:
         mesh_device.reshape(ttnn.MeshShape((prod(discovered_shape), 1)))
         yield mesh_device
+
+
+def make_ring_all_gather_workload(
+    mesh_device,
+    full: torch.Tensor,
+    *,
+    m_tiles: int,
+    k_shard_tiles: int,
+    lanes: int,
+    chunk_shape: tuple[int, int],
+) -> tuple[Callable[[], None], Callable[[], list[tuple[torch.Tensor, torch.Tensor]]]]:
+    """Place `full`, sharded along K, on `mesh_device` and return a function
+    that runs the ring all-gather and a function that returns each device's
+    destination paired with its expected value."""
+    device_count = mesh_device.get_num_devices()
+    m = m_tiles * TILE_SIZE
+    k_shard = k_shard_tiles * TILE_SIZE
+    source = to_dram(
+        full, mesh_device, mesh_mapper=ttnn.ShardTensorToMesh(mesh_device, dim=1)
+    )
+    destination = to_dram(
+        torch.zeros(device_count * m, (device_count - 1) * k_shard, dtype=full.dtype),
+        mesh_device,
+        mesh_mapper=ttnn.ShardTensorToMesh(mesh_device, dim=0),
+    )
+    operation = make_ring_all_gather_operation(
+        device_count,
+        m_tiles=m_tiles,
+        k_shard_tiles=k_shard_tiles,
+        lanes=lanes,
+        chunk_shape=chunk_shape,
+    )
+
+    def run():
+        operation(source, destination)
+
+    def destinations():
+        result = ttnn.to_torch(
+            destination, mesh_composer=ttnn.ConcatMeshToTensor(mesh_device, dim=0)
+        )
+        return [
+            (
+                result[device * m : (device + 1) * m],
+                expected_destination(full, device, device_count, k_shard),
+            )
+            for device in range(device_count)
+        ]
+
+    return run, destinations
 
 
 def run_ring_all_gather(
@@ -232,36 +279,22 @@ def run_ring_all_gather(
     lanes: int,
     chunk_shape: tuple[int, int],
 ) -> None:
-    device_count = mesh_device.get_num_devices()
-    m = m_tiles * TILE_SIZE
-    k_shard = k_shard_tiles * TILE_SIZE
-    full = torch.randn(m, device_count * k_shard, dtype=torch_dtype)
-    source = to_dram(
-        full, mesh_device, mesh_mapper=ttnn.ShardTensorToMesh(mesh_device, dim=1)
+    full = torch.randn(
+        m_tiles * TILE_SIZE,
+        mesh_device.get_num_devices() * k_shard_tiles * TILE_SIZE,
+        dtype=torch_dtype,
     )
-    destination = to_dram(
-        torch.zeros(device_count * m, (device_count - 1) * k_shard, dtype=torch_dtype),
+    run, destinations = make_ring_all_gather_workload(
         mesh_device,
-        mesh_mapper=ttnn.ShardTensorToMesh(mesh_device, dim=0),
-    )
-    operation = make_ring_all_gather_operation(
-        device_count,
+        full,
         m_tiles=m_tiles,
         k_shard_tiles=k_shard_tiles,
         lanes=lanes,
         chunk_shape=chunk_shape,
     )
-    operation(source, destination)
-    result = ttnn.to_torch(
-        destination, mesh_composer=ttnn.ConcatMeshToTensor(mesh_device, dim=0)
-    )
-    for device in range(device_count):
-        assert_allclose(
-            result[device * m : (device + 1) * m].float(),
-            expected_destination(full, device, device_count, k_shard).float(),
-            rtol=0,
-            atol=0,
-        )
+    run()
+    for actual, expected in destinations():
+        assert_allclose(actual.float(), expected.float(), rtol=0, atol=0)
 
 
 def main() -> None:
