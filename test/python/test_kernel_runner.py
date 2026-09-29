@@ -6876,8 +6876,27 @@ def test_static_dfb_descriptor_local_search_runs_beyond_exact_plan_limit(
         ((0, 0), (3, 0)),
     )
     plan_sizes = (
-        192, 256, 128, 320, 64, 256, 192, 256, 64, 256, 192,
-        320, 128, 192, 320, 192, 256, 192, 128, 320, 64,
+        192,
+        256,
+        128,
+        320,
+        64,
+        256,
+        192,
+        256,
+        64,
+        256,
+        192,
+        320,
+        128,
+        192,
+        320,
+        192,
+        256,
+        192,
+        128,
+        320,
+        64,
     )
     assert len(plan_nodes) > kernel_runner._STATIC_DFB_PACKING_EXACT_PLAN_LIMIT
     descriptor_plans = [
