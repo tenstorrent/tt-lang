@@ -327,7 +327,7 @@ Monotonic allocation with explicit execution-phase overlays was considered. It c
 - Consumer-owned replacement writes into the acquired read window without changing occupancy or sequence state.
 - Full 32x32 BF16 and FP32 tiles for address-based compute.
 - Address-based tensor transfer, elementwise compute, matmul, reductions, broadcast, transpose, and selected activation operations covered by the implementation tests.
-- Typed external C++ calls with explicit DFB effects and either compiler-owned or tensor-backed payloads.
+- Typed external C++ calls with explicit DFB effects, compiler-owned or tensor-backed payloads, and BF16/FP32 elementwise multiplication and block matmul.
 - Device-domain and mesh program placement with declarative external runtime resources.
 - Blackhole selected reset, reset-all, and reconfiguration.
 - Local and generated inter-device PipeNet transfers with compiler-owned or tensor-backed receivers.
@@ -339,6 +339,7 @@ Monotonic allocation with explicit execution-phase overlays was considered. It c
 | --- | --- |
 | Blackhole transfer and compute | Device correctness across BF16/FP32, DRAM/TTNN L1 tensors, repeated executions, counter wraparound, 96 live DFBs, arithmetic with 66 allocated DFBs, matmul, reductions, residual, MLP, attention, and expert merge |
 | External calls and lifecycle boundaries | 20 Blackhole device cases across BF16/FP32 and DRAM/TTNN L1, including repeated selected reset, reset-all, reconfiguration, live state preservation, payload reuse, and reset of allocation index 65 |
+| External C++ compute | [Elementwise](../../test/python/test_external_dfb_reuse.py) passes 98 Blackhole BF16/FP32 cases, including a 70-DFB composition. [Block matmul](../../test/python/test_external_matmul.py) passes 118 cases across 1x1, 1x2, and 2x2 tile blocks, both storage backends, tensor backing, reset/reconfiguration, and native gated-MLP composition. |
 | Tensor-backed storage | 46 Blackhole BF16/FP32 device cases cover compiler-owned and tensor-backed storage, height/width/block sharding, shard orientation, byte offsets, replacement, and repeated execution. |
 | Allocation groups | Four Blackhole BF16/FP32 device cases cover shared-state handoff and different member capacities. |
 | Local PipeNet | 46 Blackhole BF16/FP32 device cases cover DRAM/SRAM tensors, transfer protocols, reset and reconfiguration, repeated invocation, typed external calls, and receiver indices above the Metal descriptor limit; Wormhole support is compile-only. |
@@ -356,7 +357,7 @@ Monotonic allocation with explicit execution-phase overlays was considered. It c
 
 The intended dependency order after generated fabric support is:
 
-1. Qualify representative external C++ kernels against the typed descriptor interface and add common adapters for required address, geometry, and completion operations.
+1. Qualify additional external C++ kernels against the typed descriptor interface. Extend the target interface only for operations whose address, geometry, or completion requirements it does not yet express.
 2. Add sub-tile and row-major metadata, partial-block and general contiguous multi-block transactions, and the corresponding address, stride, capacity, and wrap rules.
 3. Add Wormhole reset and reconfiguration after defining and device-qualifying a Wormhole synchronization protocol behind the existing target interface.
 4. Qualify complete model layers, then measure device cycles, arena high-water usage, initialization cost, compile time, and generated code size against `metal-cb`.
