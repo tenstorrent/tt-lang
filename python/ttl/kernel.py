@@ -322,6 +322,11 @@ def _encode_identity_literal(value) -> Optional[bytes]:
             elements.append(f"{len(encoded)}:".encode("ascii") + encoded)
         kind = b"tuple" if isinstance(value, tuple) else b"list"
         return kind + b":" + b"".join(elements)
+    semantic_identity = getattr(value, "_operation_identity_capture", None)
+    if callable(semantic_identity):
+        encoded = _encode_identity_literal(semantic_identity())
+        if encoded is not None:
+            return b"semantic:" + encoded
     return None
 
 
@@ -342,12 +347,6 @@ def _encode_identity_capture(
     if is_ttnn_global_semaphore(value):
         address = get_ttnn_global_semaphore_address(value)
         return f"global-semaphore:{address}".encode("ascii")
-
-    semantic_identity = getattr(value, "_operation_identity_capture", None)
-    if callable(semantic_identity):
-        encoded = _encode_identity_literal(semantic_identity())
-        if encoded is not None:
-            return b"semantic:" + encoded
 
     if inspect.ismodule(value):
         return f"module:{value.__name__}".encode("utf-8")

@@ -5,6 +5,7 @@
 """Python API validation for DFB address scopes."""
 
 import pytest
+import ttl
 
 from ttl import dataflow_buffer
 
@@ -76,3 +77,29 @@ def test_invalid_address_scope_is_rejected():
         dataflow_buffer.make_dfb(
             "bf16", shape=(1, 1), address_scope="operation_uniform"
         )
+
+
+@pytest.mark.parametrize(
+    "scope", ["remote_uniform", ttl.DFBAddressScope.REMOTE_UNIFORM]
+)
+def test_operation_captures_address_scope(scope):
+    @ttl.operation(grid=(1, 1))
+    def operation(inp):
+        dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), address_scope=scope)
+        block = dfb.wait()
+        block.pop()
+
+    assert operation._spec.compile_time_captures["scope"] == scope
+    assert operation._spec.frozen_scope["scope"] == scope
+
+
+def test_operation_accepts_inline_address_scope_enum():
+    @ttl.operation(grid=(1, 1))
+    def operation(inp):
+        dfb = ttl.make_dataflow_buffer_like(
+            inp, shape=(1, 1), address_scope=ttl.DFBAddressScope.REMOTE_UNIFORM
+        )
+        block = dfb.wait()
+        block.pop()
+
+    assert operation._spec.frozen_scope["ttl"] is ttl
