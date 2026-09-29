@@ -260,6 +260,8 @@ Shared compute helpers depend on tile properties, not SRAM offsets, capacities, 
 
 On a compute thread, the generated `ComputeDFBDescriptor` also carries the tile format, height, width, and direct-to-destination choice. Its storage offsets remain fixed compile-time values; compute helpers specialize only on tile properties. In finalized allocation metadata, `l1_payload_offset` is absolute within the arena. The generated descriptor stores the difference between that address and its control-record address.
 
+External compute descriptors accept BF16, FP32, BFP4_B, and BFP8_B tiles. The target interface requires complete 32x32 tiles for block-float formats. Native generated compute remains limited to BF16 and FP32; an external C++ kernel supplies the mixed-format compute sequence.
+
 An external compute adapter selects Metal numeric-index operations or address-based target operations using `TTLANG_DFB_STORAGE_COMPILER_SRAM` (0 for Metal, 1 for compiler-managed SRAM). Generated device code defines the marker before including the external header; architecture-specific operations remain behind `ttlang::l1::target`. Opaque C++ bodies are outside compiler compute analysis, so the enclosing operation declares any required compute configuration. [External functions](../sphinx/reference/external-functions.md#template-arguments) specifies the C++ interface.
 
 ```text
@@ -349,7 +351,7 @@ Monotonic allocation with explicit execution-phase overlays was considered. It c
 - Consumer-owned replacement writes into the acquired read window without changing occupancy or sequence state.
 - BF16 and FP32 address-based compute for 1x32, 2x32, 4x32, 8x32, 16x16, 16x32, 32x16, and 32x32 tiles.
 - Address-based tensor transfer, elementwise compute, matmul, reductions, broadcast, transpose, and selected activation operations covered by the implementation tests.
-- Typed external C++ calls with explicit DFB effects, compiler-owned or tensor-backed payloads, and BF16/FP32 elementwise multiplication and block matmul.
+- Typed external C++ calls with explicit DFB effects, compiler-owned or tensor-backed payloads, BF16/FP32 elementwise multiplication and block matmul, and BF16 by BFP4_B/BFP8_B block matmul.
 - Device-domain and mesh program placement with declarative external runtime resources.
 - Blackhole selected reset, reset-all, and reconfiguration.
 - Local and generated inter-device PipeNet transfers with compiler-owned or tensor-backed receivers.
@@ -362,12 +364,12 @@ Monotonic allocation with explicit execution-phase overlays was considered. It c
 | [Sub-tile compute](../../test/python/test_subtile_compute.py) | 424 Blackhole device-correctness cases cover BF16/FP32, DRAM/SRAM tensors, both storage backends, both compiler allocation strategies, tensor-backed multi-page expressions, geometry changes within one kernel, and typed external descriptors. |
 | Blackhole transfer and compute | Device correctness across BF16/FP32, DRAM/TTNN L1 tensors, repeated executions, counter wraparound, 96 live DFBs, arithmetic with 66 allocated DFBs, matmul, reductions, residual, MLP, attention, and expert merge |
 | External calls and lifecycle boundaries | 20 Blackhole device cases across BF16/FP32 and DRAM/TTNN L1, including repeated selected reset, reset-all, reconfiguration, live state preservation, payload reuse, and reset of allocation index 65 |
-| External C++ compute | [Elementwise](../../test/python/test_external_dfb_reuse.py) passes 98 Blackhole BF16/FP32 cases, including a 70-DFB composition. [Block matmul](../../test/python/test_external_matmul.py) passes 118 cases across 1x1, 1x2, and 2x2 tile blocks, both storage backends, tensor backing, reset/reconfiguration, and native gated-MLP composition. |
+| External C++ compute | [Elementwise](../../test/python/test_external_dfb_reuse.py) passes 98 Blackhole BF16/FP32 cases, including a 70-DFB composition. [Block matmul](../../test/python/test_external_matmul.py) passes 148 Blackhole cases: 118 BF16/FP32 cases plus 30 BF16 by BFP4_B/BFP8_B cases across Metal DFB and compiler-managed SRAM storage, including DRAM, interleaved SRAM, and three sharded tensor layouts. |
 | Tensor-backed storage | 46 Blackhole BF16/FP32 device cases cover compiler-owned and tensor-backed storage, height/width/block sharding, shard orientation, byte offsets, replacement, and repeated execution. |
 | Allocation groups | Four Blackhole BF16/FP32 device cases cover shared-state handoff and different member capacities. |
 | Local PipeNet | 46 Blackhole BF16/FP32 device cases cover DRAM/SRAM tensors, transfer protocols, reset and reconfiguration, repeated invocation, typed external calls, and receiver indices above the Metal descriptor limit; Wormhole support is compile-only. |
 | Allocation | 20,888 compile-only generated placements covering both strategies, conflicts, alignment, reuse enabled and disabled, determinism, and exact budget boundaries; a focused fragmented graph verifies distinct strategy results |
-| Wormhole | Compile-only allocation, typed external descriptor, and UNPACK/MATH/PACK target compilation; negative reset and reconfiguration diagnostics |
+| Wormhole | N150 device correctness for 424 sub-tile cases and 12 native/external 70-DFB compositions; local PipeNet remains compile-only, and reset/reconfiguration is rejected. |
 | Runtime placement and resources | Runtime-unit evidence for one-device and device-domain descriptors, replicated mesh placement, lockstep arena binding, external fabric bindings, PipeNet resource composition, resource lifetimes, and program hashes; 18 Blackhole device-correctness cases for typed external calls with semaphores, runtime arguments, defines, repeated invocations, BF16/FP32, DRAM/SRAM, generic/specialized kernels, and both memory models |
 | Invalid contracts | Compiler diagnostics for malformed metadata, unsupported transactions and tile forms, unknown external effects, numeric external DFB indices, storage ownership, and budget overflow |
 

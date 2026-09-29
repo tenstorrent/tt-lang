@@ -3638,6 +3638,20 @@ validateCompilerSRAMComputeTileType(const ttl::ComputeTargetEnvironment &target,
   return target.validateKernelTileType(tile, failureReason);
 }
 
+static LogicalResult validateCompilerSRAMExternalComputeTileType(
+    const ttl::ComputeTargetEnvironment &target, Type elementType,
+    std::string &failureReason) {
+  auto tile = dyn_cast_if_present<ttcore::TileType>(elementType);
+  if (!tile || (tile.getDataType() != ttcore::DataType::Float32 &&
+                tile.getDataType() != ttcore::DataType::BFloat16 &&
+                tile.getDataType() != ttcore::DataType::BFP_BFloat4 &&
+                tile.getDataType() != ttcore::DataType::BFP_BFloat8)) {
+    failureReason = "requires BF16, FP32, BFP4_B, or BFP8_B tiles";
+    return failure();
+  }
+  return target.validateKernelTileType(tile, failureReason);
+}
+
 static LogicalResult
 validateCompilerSRAMDFBType(Operation *operation, ttkernel::CBType buffer,
                             const CompilerL1Allocation &allocation) {
@@ -4086,7 +4100,7 @@ static LogicalResult validateCompilerSRAMModule(ModuleOp module) {
           if (threadType &&
               threadType.getValue() == ttkernel::ThreadType::Compute) {
             computeTargetFailureReason.clear();
-            if (failed(validateCompilerSRAMComputeTileType(
+            if (failed(validateCompilerSRAMExternalComputeTileType(
                     **computeTarget, allocation.elementType,
                     computeTargetFailureReason))) {
               operation->emitOpError("compiler-sram compute descriptor ")
