@@ -926,8 +926,9 @@ def TTLVerifyPipeNetSchedule
     wait for the post, and pipe lowering emits it without a receiver readiness
     signal by the same rule. Such a send still requires its corresponding post,
     and a send operation that also sends on a pipe without this property waits
-    for every post. A destination that the verifier cannot enumerate is treated
-    as overlapping every destination on its device. A receiver wait observes
+    for every post. A destination that the verifier cannot enumerate, including
+    one whose enclosing loops or executions exceed 1048576, is treated as
+    overlapping every destination on its device. A receiver wait observes
     the send associated with the exact receive handle it consumes. Repeated
     waits on one handle observe the same completed transfer and do not require
     additional sends. Posting a reservation does not wait for payload, and a

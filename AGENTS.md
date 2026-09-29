@@ -137,6 +137,10 @@ itself cannot carry the information.
   logical devices, schedule events) must stay near-linear in the enumerated
   count. Do not compare occurrences pairwise; index them (for example by grid
   cell or hash) so each occurrence is checked against a bounded neighborhood.
+  The neighborhood must not grow with an unbounded quantity such as tensor rank.
+- Repeated identical occurrences, such as one region received in every
+  iteration, share one index bucket; deduplicate them before comparing
+  occurrences within a bucket.
 - When a count follows user input without a natural bound, such as a trip count
   or a device-domain extent, bound it with a named constant and emit a
   diagnostic before materializing the enumeration.

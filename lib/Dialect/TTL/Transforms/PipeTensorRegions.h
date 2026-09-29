@@ -73,10 +73,11 @@ struct TensorRegionOccurrences {
 /// Occurrences of tensors with different tile-grid shapes are treated as
 /// overlapping. The global tensor index and device are not compared.
 ///
-/// Runs in time linear in the occurrence counts (times 3^rank) plus the
-/// overlapping pairs visited. Occurrence counts follow user loop trip counts
-/// and have no bound, so overlap checks must go through this index and must
-/// not compare occurrences pairwise.
+/// Occurrences in one tile grid are indexed by cells as large as the largest
+/// region in at most four dimensions, so each occurrence is compared only with
+/// occurrences in at most 81 neighboring cells, plus the overlapping pairs
+/// visited. Occurrence counts follow user loop trip counts, so overlap checks
+/// must go through this index and must not compare occurrences pairwise.
 bool forEachOverlappingOccurrencePair(
     const TensorRegionOccurrences &lhs, const TensorRegionOccurrences &rhs,
     llvm::function_ref<bool(std::size_t, std::size_t)> visit);
@@ -97,10 +98,10 @@ bool tensorRegionDestinationsMayAlias(const TensorRegionOccurrences &lhs,
                                       const TensorRegionOccurrences &rhs);
 
 /// For each destination, return whether its occurrences are pairwise disjoint
-/// and no other destination may alias it. Runs in time linear in the total
-/// occurrence count (times 3^rank) plus the overlapping pairs; schedule
-/// verification passes one destination per expanded receive, so this must not
-/// compare destinations pairwise.
+/// and no other destination may alias it. Uses the cell index of
+/// `forEachOverlappingOccurrencePair` over the distinct starts of every
+/// destination; schedule verification passes one destination per expanded
+/// receive, so this must not compare destinations pairwise.
 SmallVector<bool> computeDisjointTensorRegionDestinations(
     ArrayRef<TensorRegionOccurrences> destinations);
 
@@ -122,15 +123,20 @@ struct TensorSliceOccurrences {
   SmallVector<SmallVector<int64_t>> inductionValues;
 };
 
+/// Largest number of loop iterations, and of executions, enumerated for one
+/// tensor-slice receive.
+constexpr std::uint64_t kMaxEnumeratedTensorSliceOccurrences = 1ULL << 20;
+
 /// Return the start indices of `slice` for each of its
 /// `expectedExecutionCount` executions at `location`, in execution order.
 /// Enclosing `scf.for` loops whose induction variables are not evaluable are
 /// enumerated, and enclosing `scf.if` conditions select the executing
 /// occurrences. A slice outside every enumerated loop repeats its single start.
 /// Fails when a loop bound, condition, or start index cannot be evaluated,
-/// when the enumeration count differs from `expectedExecutionCount`, or when an
-/// occurrence leaves the tensor tile grid. The failure is reported through
-/// `emitError` when it is provided.
+/// when the enumeration count differs from `expectedExecutionCount`, when an
+/// occurrence leaves the tensor tile grid, or when the enclosing loops or
+/// `expectedExecutionCount` exceed `kMaxEnumeratedTensorSliceOccurrences`. The
+/// failure is reported through `emitError` when it is provided.
 FailureOr<TensorSliceOccurrences> enumerateTensorSliceOccurrences(
     TensorSliceOp slice, const LaunchExecutionLocation &location,
     const LaunchNodeDomainState &state, std::uint64_t expectedExecutionCount,

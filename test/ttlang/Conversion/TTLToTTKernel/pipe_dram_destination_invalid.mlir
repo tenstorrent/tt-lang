@@ -710,3 +710,109 @@ module attributes {
     return
   }
 }
+
+// -----
+
+// A receive loop with more iterations than the enumeration bound is rejected
+// before its occurrences are enumerated.
+
+#bound_layout = #ttl.layout<
+  shape = [64, 32], element_type = !ttcore.tile<32x32, bf16>,
+  buffer = dram, grid = [1, 1], memory = interleaved>
+#bound_domain = #ttl.device_domain<components = <name = "device", extent = [2]>>
+#bound_transfer = #ttl.device_transfer<
+  domain = #bound_domain,
+  edge = <source = <coordinates = [0]>, destination = <coordinates = [1]>>>
+
+module attributes {
+  ttl.launch_grid = [1, 2], ttl.target_arch = #ttcore.arch<blackhole>
+} {
+  func.func @over_bound_sender(
+      %input: tensor<2x1x!ttcore.tile<32x32, bf16>, #bound_layout>)
+      attributes {
+        ttl.base_cta_index = 2 : i32,
+        ttl.crta_indices = [0 : i32],
+        ttl.kernel_thread = #ttkernel.thread<noc>,
+        ttl.noc_index = 0 : i32
+      } {
+    %send_dfb = ttl.bind_cb {cb_index = 0, block_count = 2}
+        {dfb_id = 0 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %pipe = ttl.create_pipe src(0, 0) dst(0, 1) to(0, 1) net 0 {
+        deviceTransfer = #bound_transfer}
+        : !ttl.pipe<src(0, 0) dst(0, 1) to(0, 1) net 0>
+    %zero = arith.constant 0 : index
+    %count = arith.constant 1048577 : index
+    %one = arith.constant 1 : index
+    %input_slice = ttl.tensor_slice %input[%zero, %zero]
+        : tensor<2x1x!ttcore.tile<32x32, bf16>, #bound_layout>
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>, #bound_layout>
+    ttl.if_src %pipe
+        : !ttl.pipe<src(0, 0) dst(0, 1) to(0, 1) net 0> {
+      scf.for %iteration = %zero to %count step %one {
+        %reserved = ttl.cb_reserve %send_dfb
+            : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+            -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+        %read = ttl.copy %input_slice, %send_dfb
+            : (tensor<1x1x!ttcore.tile<32x32, bf16>, #bound_layout>,
+               !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>)
+            -> !ttl.transfer_handle<read>
+        ttl.wait %read : !ttl.transfer_handle<read>
+        %send = ttl.copy %send_dfb, %pipe
+            : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,
+               !ttl.pipe<src(0, 0) dst(0, 1) to(0, 1) net 0>)
+            -> !ttl.transfer_handle<write>
+        ttl.wait %send : !ttl.transfer_handle<write>
+      }
+    }
+    return
+  }
+
+  func.func @over_bound_receiver(
+      %output: tensor<2x1x!ttcore.tile<32x32, bf16>, #bound_layout>)
+      attributes {
+        ttl.base_cta_index = 2 : i32,
+        ttl.crta_indices = [1 : i32],
+        ttl.kernel_thread = #ttkernel.thread<noc>,
+        ttl.noc_index = 1 : i32
+      } {
+    %readback_dfb = ttl.bind_cb {cb_index = 1, block_count = 2}
+        {dfb_id = 1 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %pipe = ttl.create_pipe src(0, 0) dst(0, 1) to(0, 1) net 0 {
+        deviceTransfer = #bound_transfer}
+        : !ttl.pipe<src(0, 0) dst(0, 1) to(0, 1) net 0>
+    %zero = arith.constant 0 : index
+    %count = arith.constant 1048577 : index
+    %one = arith.constant 1 : index
+    %core_y = ttl.core_y : index
+    ttl.if_dst %pipe
+        : !ttl.pipe<src(0, 0) dst(0, 1) to(0, 1) net 0> {
+      scf.for %iteration = %zero to %count step %one {
+        // expected-error @below {{pipe receive tensor_slice enumeration supports at most 1048576 loop iterations and executions}}
+        %output_slice = ttl.tensor_slice %output[%core_y, %zero]
+            : tensor<2x1x!ttcore.tile<32x32, bf16>, #bound_layout>
+            -> tensor<1x1x!ttcore.tile<32x32, bf16>, #bound_layout>
+        %receive = ttl.copy %pipe, %output_slice
+            : (!ttl.pipe<src(0, 0) dst(0, 1) to(0, 1) net 0>,
+               tensor<1x1x!ttcore.tile<32x32, bf16>, #bound_layout>)
+            -> !ttl.receive_request
+        ttl.wait %receive : !ttl.receive_request
+        %reserved = ttl.cb_reserve %readback_dfb
+            : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+            -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+        %read = ttl.copy %output_slice, %readback_dfb
+            : (tensor<1x1x!ttcore.tile<32x32, bf16>, #bound_layout>,
+               !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>)
+            -> !ttl.transfer_handle<read>
+        ttl.wait %read : !ttl.transfer_handle<read>
+      }
+    }
+    return
+  }
+}
+
+// -----
+
+// Each device sends before it posts its own receive, which the schedule
+// verifier accepts because every iteration writes a distinct DRAM tile. The
