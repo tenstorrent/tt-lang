@@ -14,13 +14,12 @@ module attributes {ttl.memory_model = "compiler-sram", ttl.l1_arena_bytes = 8 : 
 
 // -----
 
-// A small tile is outside the address-based compute contract.
-module attributes {ttl.memory_model = "compiler-sram", ttl.l1_arena_bytes = 65536 : i64, ttl.dfb_allocations = [{dfb_index = 0 : i64, element_type = !ttcore.tile<16x32, bf16>, page_size = 1024 : i64, num_tiles = 1 : i64, block_count = 1 : i64, l1_allocation_bytes = 1024 : i64, l1_offset = 0 : i64, l1_payload_offset = 64 : i64, storage_capacity_pages = 1 : i64}]} {
-  func.func @small_tile() attributes {ttkernel.thread = #ttkernel.thread<compute>} {
-    %storage = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<1, !ttcore.tile<16x32, bf16>>
-    %zero = arith.constant 0 : index
-    // expected-error @below {{compiler-sram compute requires 32x32 BF16 or FP32 tiles}}
-    ttkernel.copy_tile_init(%storage) : (!ttkernel.cb<1, !ttcore.tile<16x32, bf16>>) -> ()
+// Address-based compute requires tiled storage.
+module attributes {ttl.memory_model = "compiler-sram", ttl.l1_arena_bytes = 65536 : i64, ttl.dfb_allocations = [{dfb_index = 0 : i64, element_type = f32, page_size = 4 : i64, num_tiles = 1 : i64, block_count = 1 : i64, l1_allocation_bytes = 4 : i64, l1_offset = 0 : i64, l1_payload_offset = 64 : i64, storage_capacity_pages = 1 : i64}]} {
+  func.func @scalar_storage() attributes {ttkernel.thread = #ttkernel.thread<compute>} {
+    %storage = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<1, f32>
+    // expected-error @below {{compiler-sram compute requires BF16 or FP32 tiles}}
+    ttkernel.copy_tile_init(%storage) : (!ttkernel.cb<1, f32>) -> ()
     return
   }
 }
@@ -130,8 +129,19 @@ module attributes {ttl.memory_model = "compiler-sram", ttl.l1_arena_bytes = 6553
 // Compute descriptors require a supported tile type in the allocation table.
 module attributes {ttl.memory_model = "compiler-sram", ttl.l1_arena_bytes = 65536 : i64, ttl.dfb_allocations = [{dfb_index = 0 : i64, block_count = 1 : i64, l1_allocation_bytes = 4096 : i64, l1_offset = 0 : i64, l1_payload_offset = 64 : i64, num_tiles = 1 : i64, element_type = !ttcore.tile<32x32, si32>, page_size = 4096 : i64, storage_capacity_pages = 1 : i64}]} {
   func.func @descriptor_unsupported_element_type() attributes {ttkernel.thread = #ttkernel.thread<compute>} {
-    // expected-error @below {{'ttkernel.opaque_call' op compiler-sram compute descriptors require 32x32 BF16 or FP32 tiles}}
+    // expected-error @below {{'ttkernel.opaque_call' op compiler-sram compute descriptor requires BF16 or FP32 tiles}}
     ttkernel.opaque_call "describe" template_args [#ttkernel.dfb_descriptor<0, 1, 1, 4096>] () {dfb_resource_indices = array<i32: 0>, header = "describe.hpp"} : () -> ()
+    return
+  }
+}
+
+// -----
+
+// Compute descriptors must satisfy the shared compute-target dimension contract.
+module attributes {ttl.memory_model = "compiler-sram", ttl.l1_arena_bytes = 65536 : i64, ttl.target_arch = #ttcore.arch<blackhole>, ttl.dfb_allocations = [{dfb_index = 0 : i64, block_count = 1 : i64, element_type = !ttcore.tile<8x16, bf16>, l1_allocation_bytes = 256 : i64, l1_offset = 0 : i64, l1_payload_offset = 64 : i64, num_tiles = 1 : i64, page_size = 256 : i64, storage_capacity_pages = 1 : i64}]} {
+  func.func @descriptor_unsupported_dimensions() attributes {ttkernel.thread = #ttkernel.thread<compute>} {
+    // expected-error @below {{'ttkernel.opaque_call' op compiler-sram compute descriptor tile shape 8x16 is not supported by the current compute LLKs; supported shapes are 1x32, 2x32, 4x32, 8x32, 16x16, 16x32, 32x16, and 32x32}}
+    ttkernel.opaque_call "describe" template_args [#ttkernel.dfb_descriptor<0, 1, 1, 256>] () {dfb_resource_indices = array<i32: 0>, header = "describe.hpp"} : () -> ()
     return
   }
 }
@@ -238,7 +248,7 @@ module attributes {ttl.memory_model = "compiler-sram", ttl.l1_arena_bytes = 6553
   func.func @integer_tile() attributes {ttkernel.thread = #ttkernel.thread<compute>} {
     %storage = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<1, !ttcore.tile<32x32, si32>>
     %zero = arith.constant 0 : index
-    // expected-error @below {{compiler-sram compute requires 32x32 BF16 or FP32 tiles}}
+    // expected-error @below {{compiler-sram compute requires BF16 or FP32 tiles}}
     ttkernel.copy_tile_init(%storage) : (!ttkernel.cb<1, !ttcore.tile<32x32, si32>>) -> ()
     return
   }
