@@ -291,12 +291,21 @@ CircularBuffer = DataflowBuffer
 
 
 @dataclass(frozen=True)
+class SRAMReceiverLocation:
+    """One destination node and logical device for a computed PipeNet address."""
+
+    node: Tuple[int, int]
+    device: Tuple[int, ...] = ()
+
+
+@dataclass(frozen=True)
 class SRAMReceiverTarget:
-    """A sender runtime argument's destination DFB, node, and logical device."""
+    """A sender runtime argument and every destination that consumes its base."""
 
     dfb_index: int
     node: Tuple[int, int]
     device: Tuple[int, ...] = ()
+    receivers: Tuple[SRAMReceiverLocation, ...] = ()
 
 
 @dataclass(frozen=True)

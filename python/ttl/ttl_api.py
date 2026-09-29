@@ -94,6 +94,7 @@ from .dataflow_buffer import (
     SRAMBackingHandoff,
     SRAMReconfigurationReset,
     SRAMNodeLayout,
+    SRAMReceiverLocation,
     SRAMReceiverTarget,
     get_cb_count,
 )
@@ -2193,6 +2194,15 @@ def _compile_ttnn_kernel(
                     dfb_index=int(DictAttr(target)["dfb_index"]),
                     node=tuple(DenseI64ArrayAttr(DictAttr(target)["node"])),
                     device=tuple(DenseI64ArrayAttr(DictAttr(target)["device"])),
+                    receivers=tuple(
+                        SRAMReceiverLocation(
+                            node=tuple(DenseI64ArrayAttr(DictAttr(receiver)["node"])),
+                            device=tuple(
+                                DenseI64ArrayAttr(DictAttr(receiver)["device"])
+                            ),
+                        )
+                        for receiver in ArrayAttr(DictAttr(target)["receivers"])
+                    ),
                 )
                 for target in ArrayAttr(target_attr)
             ]

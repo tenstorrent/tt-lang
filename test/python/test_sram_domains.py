@@ -10,6 +10,7 @@ import pytest
 
 from ttl._sram_domains import (
     node_domains,
+    receiver_base,
     validate_node_layouts,
     validate_receiver_targets,
 )
@@ -17,6 +18,7 @@ from ttl.dataflow_buffer import (
     DFBStorageSegment,
     PhysicalDFBConfig,
     SRAMNodeLayout,
+    SRAMReceiverLocation,
     SRAMReceiverTarget,
 )
 
@@ -176,3 +178,79 @@ def test_independent_address_requires_device_coordinate():
     tensor = SimpleNamespace(is_per_core_allocated=lambda: True)
     with pytest.raises(ValueError, match="requires a logical device coordinate"):
         tensor_base(object(), tensor, (0, 0), None)
+
+
+def test_receiver_base_rejects_tensor_absent_from_destination_device():
+    config = replace(
+        make_config(),
+        l1_payload_offset=None,
+        l1_allocation_bytes=None,
+        storage_segments=(DFBStorageSegment(nodes=((0, 0),), tensor_index=0),),
+    )
+    tensor = SimpleNamespace(
+        is_per_core_allocated=lambda: False,
+        device_coords=lambda: [(0, 0)],
+        buffer_address=lambda: 4096,
+    )
+    target = SRAMReceiverTarget(0, (0, 0), (0, 1))
+    spec = SimpleNamespace(
+        sram_receiver_targets=[target], pipe_computed_address_dfb_indices=[0]
+    )
+    with pytest.raises(ValueError, match="destination device"):
+        validate_receiver_targets([spec], [config], [tensor])
+    with pytest.raises(ValueError, match="destination device"):
+        receiver_base(object(), target, [config], {}, [tensor], (0, 0))
+
+
+@pytest.mark.parametrize("second_base", [4096, 8192])
+def test_multicast_receiver_bases_must_match(second_base):
+    config = replace(
+        make_config(),
+        l1_payload_offset=None,
+        l1_allocation_bytes=None,
+        storage_segments=(DFBStorageSegment(nodes=((0, 0), (1, 0)), tensor_index=0),),
+    )
+    tensor = SimpleNamespace(
+        is_per_core_allocated=lambda: True,
+        device_coords=lambda: [(0, 0)],
+        experimental_per_core_buffer_address=lambda device, core: (
+            4096 if core == (0, 0) else second_base
+        ),
+    )
+    ttnn_api = SimpleNamespace(
+        MeshCoordinate=lambda coordinate: coordinate,
+        CoreCoord=lambda column, row: (column, row),
+    )
+    target = SRAMReceiverTarget(
+        0,
+        (0, 0),
+        (0, 0),
+        receivers=(
+            SRAMReceiverLocation((0, 0), (0, 0)),
+            SRAMReceiverLocation((1, 0), (0, 0)),
+        ),
+    )
+    if second_base == 4096:
+        assert receiver_base(ttnn_api, target, [config], {}, [tensor], (0, 0)) == 4096
+    else:
+        with pytest.raises(ValueError, match="different physical SRAM addresses"):
+            receiver_base(ttnn_api, target, [config], {}, [tensor], (0, 0))
+
+
+def test_receiver_target_validates_all_multicast_destinations():
+    config = replace(
+        make_config(),
+        l1_payload_offset=None,
+        l1_allocation_bytes=None,
+        storage_segments=(DFBStorageSegment(nodes=((0, 0),), tensor_index=0),),
+    )
+    target = SRAMReceiverTarget(
+        0,
+        (0, 0),
+        receivers=(SRAMReceiverLocation((0, 0)), SRAMReceiverLocation((1, 0))),
+    )
+    spec = SimpleNamespace(
+        sram_receiver_targets=[target], pipe_computed_address_dfb_indices=[0]
+    )
+    with pytest.raises(ValueError, match="no tensor-backed storage segment"):
+        validate_receiver_targets([spec], [config])

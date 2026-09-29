@@ -137,7 +137,7 @@ Per-node DFB placement requires an exact launch grid. The compiler groups multic
 
 Tensor backing with independently addressed payloads requires local access on each executing node. Access that requires a common address across nodes retains uniform allocation.
 
-For direct per-core tensor access, the runtime binds each kernel descriptor to the address on its device and node, including operations with no DFBs. Tensor-backed PipeNet receivers use the destination address; the runtime does not cache one common base for these receivers.
+For direct per-core tensor access, the runtime binds each kernel descriptor to the address on its device and node, including operations with no DFBs. A computed PipeNet transfer uses one address for every destination. The compiler records each destination device and node; the runtime checks tensor device coverage and requires their physical payload addresses to match before dispatch. It does not cache one common tensor base across transfers.
 
 ```text
 domains = merge overlapping multicast receiver groups
@@ -268,22 +268,21 @@ External calls can declare `DFBEffect` entries for protocol operations. These ef
 Local PipeNets use the existing transfer schedule, transport, capacity, and synchronization protocols. Finalized DFB storage determines a receiver's address: compiler-owned payloads use the arena base plus `l1_payload_offset`; tensor-backed payloads use the retained tensor base plus their declared byte offset. Neither requires a TT-Metal DFB descriptor. Producer and wait launch domains include explicit DFB operations and external-call `DFBEffect` declarations through the shared DFB access interface.
 
 ```text
-bindLocalPipeReceivers(allocation, computedReceivers):
-    arena = reserveZeroedArena(allocation.arenaBytes)
+bindComputedPipeReceivers(allocation, computedTransfers):
+    validate tensor-backed destinations exist on their declared devices
+    arenas = reserveZeroedArenas(allocation.domains)
+    for each transfer in computedTransfers:
+        addresses = resolve physical payload address at every destination
+        require all addresses are equal
+        address[transfer] = addresses[0]
     pipeResources = allocatePipeScratchAndSynchronization()
-    for each receiver in computedReceivers:
-        if receiver has tensor backing:
-            address[receiver] = retainedTensorBase(receiver) + receiver.byteOffset
-        else:
-            address[receiver] = arena.base + receiver.l1_payload_offset
-        require address[receiver] fits the device address type
-    append tensor addresses, receiver addresses, pipe resource addresses, arena.base
-    retain arena and pipeResources until device completion
+    append tensor addresses, receiver addresses, pipe resource addresses, arena bases
+    retain arenas and pipeResources until device completion
 ```
 
 The finalized `ttl.crta_indices` list determines the tensor-address prefix even when a tensor-backed DFB outlives its original function operand. Cache identity includes tensor-backed receiver addresses, while ownership accounting excludes caller-owned tensors. The 32- or 64-index TT-Metal DFB limit does not apply to these logical DFBs; PipeNet transport and semaphore limits are unchanged.
 
-Generated inter-device transfers use the same receiver address rule. In uniform mode, the arena has one common address on participating devices. In per-node mode, receiver metadata identifies the destination device and node; the runtime uses that node's arena or tensor base and payload offset. Generated fabric requires a computed receiver address and diagnoses other cases before transfer lowering. Local PipeNets can use receiver publication, including when Metal shared descriptors can change backing storage. Fabric routing resolves device targets independently of these storage decisions.
+Generated inter-device transfers use the same receiver address rule. In uniform mode, the arena has one common address on participating devices. In per-node mode, receiver metadata identifies every destination device and node; the runtime uses each destination's arena or tensor base and payload offset. Generated fabric requires a computed receiver address and diagnoses other cases before transfer lowering. Local PipeNets can use receiver publication, including when Metal shared descriptors can change backing storage. Fabric routing resolves device targets independently of these storage decisions.
 
 ```text
 for each logicalDevice:

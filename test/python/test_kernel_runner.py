@@ -44,6 +44,7 @@ from ttl.dataflow_buffer import (
     SRAMBackingHandoff,
     SRAMReconfigurationReset,
     SRAMNodeLayout,
+    SRAMReceiverLocation,
     SRAMReceiverTarget,
 )
 from ttl.domains import DeviceDomain
@@ -10435,8 +10436,13 @@ def test_independent_sram_binds_each_device(monkeypatch, placement_mode):
         kwargs["device_domain"] = DeviceDomain((1, 2))
     elif placement_mode == "selected":
         kwargs["mesh_program_placements"] = [kernel_runner.MeshProgramPlacement((0, 1))]
+    spec = replace(
+        _kernel_spec(KernelKind.COMPUTE),
+        pipe_computed_address_dfb_indices=[0],
+        sram_receiver_targets=[SRAMReceiverTarget(0, (0, 0))],
+    )
     result = kernel_runner.run_kernel_on_device(
-        kernel_specs=[_kernel_spec(KernelKind.COMPUTE)],
+        kernel_specs=[spec],
         tensors=[_FakeTensor(mesh_device)],
         cb_configs=[config],
         core_ranges=_FakeCoreRanges(),
@@ -10453,6 +10459,9 @@ def test_independent_sram_binds_each_device(monkeypatch, placement_mode):
         assert (
             program.kernels[0].common_runtime_args[-1]
             == 0x8000 + 0x1000 * coordinate[1]
+        )
+        assert (
+            program.kernels[0].common_runtime_args[0] == 0x8040 + 0x1000 * coordinate[1]
         )
         assert ("TTLANG_SRAM_DFB_0_PAYLOAD_OFFSET", "64") in program.kernels[0].defines
         assert program.cbs == []
@@ -10576,6 +10585,62 @@ def test_independent_sram_receiver_uses_destination_device_and_core():
     )
 
 
+def test_multicast_address_mismatch_precedes_pipe_resource_creation(monkeypatch):
+    fake_ttnn = _FakeTTNN()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    monkeypatch.setattr(kernel_runner, "build_tensor_accessor_args", lambda tensors: [])
+    monkeypatch.setattr(
+        kernel_runner,
+        "get_cached_runtime_resources",
+        lambda *args, **kwargs: pytest.fail("invalid address created pipe resources"),
+    )
+    config = replace(
+        _compiler_l1_config(),
+        storage_index=0,
+        l1_payload_offset=None,
+        l1_allocation_bytes=None,
+        storage_segments=(DFBStorageSegment(nodes=((0, 0), (1, 0)), tensor_index=0),),
+        sram_node_layouts=(
+            SRAMNodeLayout((0, 0), 0, False, 64, 0),
+            SRAMNodeLayout((1, 0), 0, False, 64, 0),
+        ),
+    )
+    tensor = SimpleNamespace(
+        is_per_core_allocated=lambda: True,
+        device_coords=lambda: [(0, 0)],
+        experimental_per_core_buffer_address=lambda device, core: (
+            4096 if core.x == 0 else 8192
+        ),
+    )
+    arena = SimpleNamespace(device_coords=lambda: [(0, 0)])
+    target = SRAMReceiverTarget(
+        0,
+        (0, 0),
+        (0, 0),
+        (
+            SRAMReceiverLocation((0, 0), (0, 0)),
+            SRAMReceiverLocation((1, 0), (0, 0)),
+        ),
+    )
+    spec = replace(
+        _kernel_spec(KernelKind.COMPUTE),
+        pipe_computed_address_dfb_indices=[0],
+        sram_receiver_targets=[target],
+    )
+    with pytest.raises(ValueError, match="different physical SRAM addresses"):
+        kernel_runner._run_kernel_on_device_impl(
+            kernel_specs=[spec],
+            tensors=[tensor],
+            cb_configs=[config],
+            core_ranges=_FakeCoreRanges((((0, 0), (1, 0)),)),
+            compiler_l1_arena_bytes=64,
+            compiler_l1_arena=None,
+            arena_completion_state=None,
+            pipe_computed_address_dfb_indices=(0,),
+            sram_node_arenas={(0, 0): arena, (1, 0): arena},
+        )
+
+
 def test_independent_sram_rejects_kernel_outside_domains_before_allocation(monkeypatch):
     fake_ttnn = _FakeTTNN()
     monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
@@ -10612,7 +10677,9 @@ def test_emitted_runner_preserves_sram_domains_and_receiver_targets(monkeypatch)
         storage_index=0,
         sram_node_layouts=(SRAMNodeLayout((0, 0), 64, True, 2112, 0),),
     )
-    target = SRAMReceiverTarget(0, (0, 0), (0, 1))
+    target = SRAMReceiverTarget(
+        0, (0, 0), (0, 1), (SRAMReceiverLocation((0, 0), (0, 1)),)
+    )
     spec = replace(
         _kernel_spec(KernelKind.COMPUTE),
         pipe_computed_address_dfb_indices=[0],

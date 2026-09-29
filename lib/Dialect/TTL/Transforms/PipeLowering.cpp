@@ -4859,8 +4859,8 @@ static bool usesSenderReadyCounter(
 }
 
 static SmallVector<PipeCounterLocation>
-getCompletionCounterLocations(const PipeTransferAllocationUnit &unit,
-                              const PipeGraph &pipeGraph) {
+getReceiverLocations(const PipeTransferAllocationUnit &unit,
+                     const PipeGraph &pipeGraph) {
   SmallVector<PipeCounterLocation> locations;
   for (PipeReceiverEndpointId endpointId :
        pipeGraph.getPipeReceiverEndpoints(unit.transferNodeId)) {
@@ -4872,7 +4872,7 @@ getCompletionCounterLocations(const PipeTransferAllocationUnit &unit,
       locations.push_back(location);
     }
   }
-  assert(!locations.empty() && "pipe completion counter has no destination");
+  assert(!locations.empty() && "pipe transfer has no destination");
   return locations;
 }
 
@@ -5061,6 +5061,25 @@ buildComputedAddressPlan(MutableArrayRef<PipeTransferAllocationUnit> units,
           llvm::append_range(deviceCoordinates, coordinates.asArrayRef());
         }
       }
+      SmallVector<Attribute> receivers;
+      for (const PipeCounterLocation &location :
+           getReceiverLocations(unit, pipeGraph)) {
+        SmallVector<int64_t> receiverDeviceCoordinates;
+        if (auto device = location.device) {
+          for (auto coordinates : device.getCoordinates()) {
+            llvm::append_range(receiverDeviceCoordinates,
+                               coordinates.asArrayRef());
+          }
+        }
+        receivers.push_back(targetBuilder.getDictionaryAttr({
+            targetBuilder.getNamedAttr("node",
+                                       targetBuilder.getDenseI64ArrayAttr(
+                                           {location.nodeX, location.nodeY})),
+            targetBuilder.getNamedAttr(
+                "device",
+                targetBuilder.getDenseI64ArrayAttr(receiverDeviceCoordinates)),
+        }));
+      }
       auto target = targetBuilder.getDictionaryAttr({
           targetBuilder.getNamedAttr(
               "dfb_index",
@@ -5071,6 +5090,8 @@ buildComputedAddressPlan(MutableArrayRef<PipeTransferAllocationUnit> units,
                                           receiverEndpoint->receiver.y})),
           targetBuilder.getNamedAttr(
               "device", targetBuilder.getDenseI64ArrayAttr(deviceCoordinates)),
+          targetBuilder.getNamedAttr("receivers",
+                                     targetBuilder.getArrayAttr(receivers)),
       });
       auto &targets = plan.receiverTargets[*maybeSenderFunc];
       auto existing = llvm::find(targets, target);
@@ -5256,7 +5277,7 @@ LogicalResult buildPipeResourcePlan(
     }
     group.unitIndices.push_back(indexedUnit.index());
     for (PipeCounterLocation location :
-         getCompletionCounterLocations(indexedUnit.value(), pipeGraph)) {
+         getReceiverLocations(indexedUnit.value(), pipeGraph)) {
       if (!llvm::is_contained(group.locations, location)) {
         group.locations.push_back(location);
       }

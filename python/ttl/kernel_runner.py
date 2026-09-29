@@ -1960,6 +1960,7 @@ def build_kernel_descriptors(
     sram_configs: Sequence[PhysicalDFBConfig] = (),
     sram_mesh_coordinate: Optional[Tuple[int, ...]] = None,
     compiler_sram: bool = False,
+    sram_receiver_bases: Optional[Dict[Tuple[Tuple[int, ...], int, int], int]] = None,
 ) -> List[Any]:
     """
     Build kernel descriptors for ttnn.generic_op.
@@ -2048,6 +2049,13 @@ def build_kernel_descriptors(
             spec.pipe_computed_address_dfb_indices
         ):
             if sram_node_arenas:
+                if sram_receiver_bases is not None:
+                    computed_address_base_args.append(
+                        sram_receiver_bases[
+                            (sram_mesh_coordinate, kernel_spec_index, target_index)
+                        ]
+                    )
+                    continue
                 from ._sram_domains import receiver_base
 
                 computed_address_base_args.append(
@@ -4762,6 +4770,56 @@ def configure_routing_plane_runtime_args(
     )
 
 
+def _validate_sram_receiver_bases(
+    kernel_specs,
+    configs,
+    arenas,
+    tensors,
+    device_domain,
+    mesh_program_placements,
+):
+    if not arenas or not any(spec.sram_receiver_targets for spec in kernel_specs):
+        return {}
+    from ._sram_domains import receiver_base
+
+    if device_domain is not None:
+        mesh_coordinates = [
+            coordinate
+            for coordinate, _ in _iter_device_domain_coordinates(
+                device_domain, mesh_program_placements
+            )
+        ]
+    elif mesh_program_placements is not None:
+        mesh_coordinates = sorted(
+            {
+                tuple(coordinate)
+                for placement in mesh_program_placements
+                for coordinate in _build_mesh_coordinate_range(placement)
+            }
+        )
+    else:
+        mesh_coordinates = [
+            tuple(coordinate)
+            for coordinate in next(iter(arenas.values())).device_coords()
+        ]
+    if not mesh_coordinates:
+        raise ValueError("per-node SRAM storage has no selected device coordinates")
+    addresses = {}
+    for spec_index, spec in enumerate(kernel_specs):
+        for target_index, target in enumerate(spec.sram_receiver_targets):
+            receivers = target.receivers or (target,)
+            if all(receiver.device for receiver in receivers):
+                address = receiver_base(ttnn, target, configs, arenas, tensors, None)
+                for mesh_coordinate in mesh_coordinates:
+                    addresses[(mesh_coordinate, spec_index, target_index)] = address
+                continue
+            for mesh_coordinate in mesh_coordinates:
+                addresses[(mesh_coordinate, spec_index, target_index)] = receiver_base(
+                    ttnn, target, configs, arenas, tensors, mesh_coordinate
+                )
+    return addresses
+
+
 def _run_kernel_on_device_impl(
     kernel_specs: List[KernelSpec],
     tensors: List[Any],
@@ -4843,6 +4901,14 @@ def _run_kernel_on_device_impl(
 
     compiler_l1 = compiler_l1_arena_bytes is not None
     sram_node_arenas = sram_node_arenas or {}
+    sram_receiver_bases = _validate_sram_receiver_bases(
+        kernel_specs,
+        cb_configs,
+        sram_node_arenas,
+        tensors,
+        device_domain,
+        mesh_program_placements,
+    )
 
     if runtime_resource_cache is not None:
         _release_portable_runtime_resources_impl(runtime_resource_cache)
@@ -4988,6 +5054,7 @@ def _run_kernel_on_device_impl(
             sram_configs=cb_configs,
             sram_mesh_coordinate=mesh_coordinate,
             compiler_sram=compiler_l1,
+            sram_receiver_bases=sram_receiver_bases,
             pipe_computed_address_base_addresses=pipe_computed_address_base_addresses,
             extra_common_runtime_args=(
                 pipe_runtime_resources.extra_common_runtime_args
@@ -5227,6 +5294,7 @@ def _run_kernel_on_device_impl(
 def _validate_sram_node_domain_requirements(
     cb_configs: Sequence[PhysicalDFBConfig],
     kernel_specs: Sequence[KernelSpec],
+    tensors: Sequence[Any],
     core_ranges: Any,
 ) -> Dict[Tuple[int, int], int]:
     if not any(config.sram_node_layouts for config in cb_configs):
@@ -5243,7 +5311,7 @@ def _validate_sram_node_domain_requirements(
             for core in ttnn.corerange_to_cores(core_ranges, row_wise=True)
         ),
     )
-    validate_receiver_targets(kernel_specs, cb_configs)
+    validate_receiver_targets(kernel_specs, cb_configs, tensors)
     for spec in kernel_specs:
         kernel_ranges = core_ranges if spec.core_ranges is None else spec.core_ranges
         kernel_nodes = {
@@ -5294,7 +5362,7 @@ def run_kernel_on_device(
     for physical_index, config in enumerate(cb_configs):
         _validate_physical_dfb_config(config, physical_index)
     sram_node_sizes = _validate_sram_node_domain_requirements(
-        cb_configs, kernel_specs, core_ranges
+        cb_configs, kernel_specs, tensors, core_ranges
     )
     compiler_l1_arena_bytes = _get_compiler_l1_arena_bytes(
         cb_configs, memory_model, sram_reconfiguration_resets
@@ -5688,7 +5756,9 @@ def emit_runner_source(
     lines.append("from ttl.dataflow_buffer import SRAMBackingHandoff")
     lines.append("from ttl.dataflow_buffer import SRAMReconfigurationReset")
     lines.append("from ttl.dataflow_buffer import SRAMNodeLayout")
-    lines.append("from ttl.dataflow_buffer import SRAMReceiverTarget")
+    lines.append(
+        "from ttl.dataflow_buffer import SRAMReceiverLocation, SRAMReceiverTarget"
+    )
     lines.append("from ttl.domains import DeviceDomain")
     lines.append("from ttl.kernel import Kernel, KernelKind")
     lines.append("from ttl.layouts import get_tensor_configuration")

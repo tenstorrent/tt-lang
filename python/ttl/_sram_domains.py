@@ -106,7 +106,15 @@ def node_domains(configs):
     return [tuple(sorted(nodes)) for _, nodes in sorted(groups.items())]
 
 
-def validate_receiver_targets(kernel_specs, configs):
+def tensor_devices(tensor):
+    try:
+        return {tuple(coordinate) for coordinate in tensor.device_coords()}
+    except (AttributeError, RuntimeError, TypeError, ValueError) as error:
+        raise ValueError("SRAM tensor has invalid device coordinates") from error
+
+
+def validate_receiver_targets(kernel_specs, configs, tensors=None):
+    devices_by_tensor_index = {}
     for spec in kernel_specs:
         if len(spec.sram_receiver_targets) != len(
             spec.pipe_computed_address_dfb_indices
@@ -120,32 +128,70 @@ def validate_receiver_targets(kernel_specs, configs):
             if target.dfb_index != index or not 0 <= index < len(configs):
                 raise ValueError("SRAM receiver target references an invalid DFB")
             config = configs[index]
-            layout = next(
-                (
-                    layout
-                    for layout in config.sram_node_layouts
-                    if layout.node == target.node
-                ),
-                None,
-            )
-            if layout is None or (
-                config.l1_payload_offset is not None and not layout.payload_present
+            receivers = target.receivers or (target,)
+            if target.receivers and not any(
+                receiver.node == target.node and receiver.device == target.device
+                for receiver in receivers
             ):
-                raise ValueError(
-                    "SRAM receiver target has no payload on its destination node"
-                )
-            if config.l1_payload_offset is None and not any(
-                segment.is_tensor_backed and target.node in segment.nodes
-                for segment in config.storage_segments
+                raise ValueError("SRAM receiver target is absent from its receiver set")
+            if len({(receiver.node, receiver.device) for receiver in receivers}) != len(
+                receivers
             ):
-                raise ValueError(
-                    "SRAM receiver target has no tensor-backed storage segment "
-                    "on its destination node"
+                raise ValueError("SRAM receiver target contains duplicate destinations")
+            for receiver in receivers:
+                layout = next(
+                    (
+                        layout
+                        for layout in config.sram_node_layouts
+                        if layout.node == receiver.node
+                    ),
+                    None,
                 )
+                if layout is None or (
+                    config.l1_payload_offset is not None and not layout.payload_present
+                ):
+                    raise ValueError(
+                        "SRAM receiver target has no payload on its destination node"
+                    )
+                if config.l1_payload_offset is not None:
+                    continue
+                segment = next(
+                    (
+                        segment
+                        for segment in config.storage_segments
+                        if segment.is_tensor_backed and receiver.node in segment.nodes
+                    ),
+                    None,
+                )
+                if segment is None:
+                    raise ValueError(
+                        "SRAM receiver target has no tensor-backed storage segment "
+                        "on its destination node"
+                    )
+                if tensors is None or not receiver.device:
+                    continue
+                tensor_index = segment.tensor_index
+                if tensor_index is None or not 0 <= tensor_index < len(tensors):
+                    raise ValueError(
+                        "SRAM receiver target references an invalid tensor"
+                    )
+                tensor = tensors[tensor_index]
+                if tensor is None:
+                    raise ValueError("SRAM receiver target references an absent tensor")
+                if tensor_index not in devices_by_tensor_index:
+                    devices_by_tensor_index[tensor_index] = tensor_devices(tensor)
+                if receiver.device not in devices_by_tensor_index[tensor_index]:
+                    raise ValueError(
+                        "SRAM receiver tensor backing is absent from destination device"
+                    )
 
 
 def tensor_base(ttnn_api, tensor, node, device_coordinate):
     if not tensor.is_per_core_allocated():
+        if device_coordinate is not None and device_coordinate not in tensor_devices(
+            tensor
+        ):
+            raise ValueError("SRAM tensor has no storage on destination device")
         return int(tensor.buffer_address())
     if device_coordinate is None:
         raise ValueError(
@@ -160,20 +206,29 @@ def tensor_base(ttnn_api, tensor, node, device_coordinate):
 
 def receiver_base(ttnn_api, target, configs, arenas, tensors, mesh_coordinate):
     config = configs[target.dfb_index]
-    device_coordinate = target.device or mesh_coordinate
-    if config.l1_payload_offset is None:
-        segment = next(
-            segment
-            for segment in config.storage_segments
-            if target.node in segment.nodes
+    addresses = []
+    for receiver in target.receivers or (target,):
+        device_coordinate = receiver.device or mesh_coordinate
+        if config.l1_payload_offset is None:
+            segment = next(
+                segment
+                for segment in config.storage_segments
+                if receiver.node in segment.nodes
+            )
+            tensor = tensors[segment.tensor_index]
+            offset = segment.byte_offset
+        else:
+            tensor = arenas[receiver.node]
+            offset = next(
+                layout.payload_offset
+                for layout in config.sram_node_layouts
+                if layout.node == receiver.node
+            )
+        addresses.append(
+            tensor_base(ttnn_api, tensor, receiver.node, device_coordinate) + offset
         )
-        tensor = tensors[segment.tensor_index]
-        offset = segment.byte_offset
-    else:
-        tensor = arenas[target.node]
-        offset = next(
-            layout.payload_offset
-            for layout in config.sram_node_layouts
-            if layout.node == target.node
+    if any(address != addresses[0] for address in addresses[1:]):
+        raise ValueError(
+            "SRAM multicast receivers have different physical SRAM addresses"
         )
-    return tensor_base(ttnn_api, tensor, target.node, device_coordinate) + offset
+    return addresses[0]
