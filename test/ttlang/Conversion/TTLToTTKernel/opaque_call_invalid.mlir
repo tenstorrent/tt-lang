@@ -41,3 +41,15 @@ module attributes {ttl.memory_model = "compiler-sram", ttl.l1_arena_bytes = 0 : 
     return
   }
 }
+
+// -----
+
+// A DFB function argument lowers to a Metal index instead of an SRAM address.
+module attributes {ttl.memory_model = "compiler-sram", ttl.l1_arena_bytes = 2112 : i64, ttl.dfb_allocations = [{block_count = 1 : i32, dfb_index = 0 : i32, element_type = !ttcore.tile<32x32, bf16>, l1_allocation_bytes = 2048 : i64, l1_offset = 0 : i64, l1_payload_offset = 64 : i64, num_tiles = 1 : i32, page_size = 2048 : i32, storage_index = 0 : i32}]} {
+  func.func @compiler_sram_numeric_dfb_function_argument() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %dfb = ttl.bind_cb {cb_index = 0, block_count = 1} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
+    // expected-error @below {{compiler-sram external calls cannot pass DFB function arguments; use ttl.dfb_descriptor() as a template argument}}
+    ttl.opaque_call "consume" (%dfb) {header = "consume.hpp"} : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>) -> ()
+    return
+  }
+}

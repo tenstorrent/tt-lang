@@ -6,10 +6,79 @@
 
 import pytest
 
-from ttl.dataflow_buffer import DFBStorageSegment, PhysicalDFBConfig
+from ttl.dataflow_buffer import (
+    DFBStorageSegment,
+    PhysicalDFBConfig,
+    SRAMBackingHandoff,
+    SRAMReconfigurationReset,
+)
 from ttl.dialects import ttcore  # noqa: F401
 from ttl.ir import Context, Module
-from ttl.ttl_api import _resolve_dfb_configs
+from ttl.ttl_api import _extract_sram_reconfiguration_resets, _resolve_dfb_configs
+
+
+def test_sram_backing_handoff_metadata_is_preserved():
+    with Context():
+        module = Module.parse(
+            "module attributes {ttl.compiler_sram_reconfiguration_resets = "
+            "[{ordinal = 2 : i64, dfb_indices = array<i32: 0>, "
+            "backing_handoffs = [{from_dfb_index = 0 : i32, "
+            "to_dfb_index = 1 : i32, node = [0, 1]}]}]} {}"
+        )
+
+        assert _extract_sram_reconfiguration_resets(module) == (
+            SRAMReconfigurationReset(2, (0,), (SRAMBackingHandoff(0, 1, (0, 1)),)),
+        )
+
+
+def test_sram_backing_handoff_metadata_requires_pair_and_node():
+    with Context():
+        module = Module.parse(
+            "module attributes {ttl.compiler_sram_reconfiguration_resets = "
+            "[{ordinal = 0 : i64, dfb_indices = array<i32: 0>, "
+            "backing_handoffs = [{from_dfb_index = 0 : i32, "
+            "to_dfb_index = 1 : i32}]}]} {}"
+        )
+
+        with pytest.raises(ValueError, match="is missing 'node'"):
+            _extract_sram_reconfiguration_resets(module)
+
+
+def test_sram_shared_owner_resolution_uses_matching_handoff():
+    source = """module attributes {
+      ttl.memory_model = "compiler-sram",
+      ttl.l1_arena_bytes = 2112 : i64,
+      ttl.compiler_sram_reconfiguration_resets = [{
+        ordinal = 0 : i64, dfb_indices = array<i32: 0>,
+        backing_handoffs = [{from_dfb_index = 0 : i32,
+                             to_dfb_index = 1 : i32, node = [0, 0]}]
+      }],
+      ttl.dfb_allocations = [
+        {dfb_index = 0 : i32, storage_index = 3 : i32,
+         element_type = !ttcore.tile<32x32, bf16>, page_size = 2048 : i32,
+         num_tiles = 1 : i32, block_count = 1 : i32,
+         storage_capacity_pages = 1 : i32, l1_offset = 0 : i64,
+         storage_segments = [{nodes = [[0, 0]], tensor_backing =
+           #ttl.tensor_backing<tensor_index = 0, byte_offset = 0,
+                               byte_size = 2048>}]},
+        {dfb_index = 1 : i32, storage_index = 3 : i32,
+         element_type = !ttcore.tile<32x32, bf16>, page_size = 2048 : i32,
+         num_tiles = 1 : i32, block_count = 1 : i32,
+         storage_capacity_pages = 1 : i32, l1_offset = 0 : i64,
+         allocation_nodes = [[0, 0]], l1_payload_offset = 64 : i64,
+         l1_allocation_bytes = 2048 : i64}
+      ]
+    } {}"""
+    with Context():
+        assert len(_resolve_dfb_configs(Module.parse(source))) == 2
+        without_handoff = source.replace(
+            "dfb_indices = array<i32: 0>,\n"
+            "        backing_handoffs = [{from_dfb_index = 0 : i32,\n"
+            "                             to_dfb_index = 1 : i32, node = [0, 0]}]",
+            "dfb_indices = array<i32: 0>",
+        )
+        with pytest.raises(ValueError, match="matching reconfiguration handoff"):
+            _resolve_dfb_configs(Module.parse(without_handoff))
 
 
 def _entry(
@@ -23,12 +92,15 @@ def _entry(
     l1_offset=None,
     l1_payload_offset=None,
     l1_allocation_bytes=None,
+    storage_capacity_pages=None,
 ):
     """Build one textual physical-allocation metadata entry."""
 
     storage_field = (
         "" if storage_index is None else f"storage_index = {storage_index} : i32, "
     )
+    if storage_capacity_pages is not None:
+        storage_field += f"storage_capacity_pages = {storage_capacity_pages} : i32, "
     l1_fields = ""
     for field_name, field_value in (
         ("l1_offset", l1_offset),
@@ -87,6 +159,25 @@ def test_storage_indices_are_preserved():
         assert _resolve_dfb_configs(module) == [
             PhysicalDFBConfig(0, 1, "bfloat16", 2, 2048, None, storage_index=3),
             PhysicalDFBConfig(1, 1, "bfloat16", 2, 2048, None, storage_index=3),
+        ]
+
+
+def test_storage_capacity_is_preserved():
+    with Context():
+        module = _module(
+            [_entry(0, num_tiles=1, block_count=2, storage_capacity_pages=4)]
+        )
+
+        assert _resolve_dfb_configs(module) == [
+            PhysicalDFBConfig(
+                0,
+                1,
+                "bfloat16",
+                2,
+                2048,
+                None,
+                storage_capacity_pages=4,
+            )
         ]
 
 
@@ -220,6 +311,49 @@ def test_tensor_backing_segments_preserve_nodes_and_tensor_range():
         ]
 
 
+def test_compiler_l1_tensor_backing_preserves_state_and_omits_arena_payload():
+    with Context():
+        module = Module.parse(
+            """module attributes {ttl.memory_model = "compiler-sram", ttl.l1_arena_bytes = 32 : i64, ttl.dfb_allocations = [{
+              block_count = 1 : i32,
+              dfb_index = 0 : i32,
+              element_type = !ttcore.tile<32x32, bf16>,
+              l1_offset = 0 : i64,
+              num_tiles = 1 : i32,
+              page_size = 2048 : i32,
+              storage_index = 0 : i32,
+              storage_capacity_pages = 1 : i32,
+              storage_segments = [{
+                tensor_backing = #ttl.tensor_backing<
+                  tensor_index = 2, byte_offset = 2048, byte_size = 2048>,
+                nodes = [[0, 0]]
+              }]
+            }]} {}"""
+        )
+
+        assert _resolve_dfb_configs(module) == [
+            PhysicalDFBConfig(
+                0,
+                1,
+                "bfloat16",
+                1,
+                2048,
+                (32, 32),
+                (
+                    DFBStorageSegment(
+                        nodes=((0, 0),),
+                        tensor_index=2,
+                        byte_offset=2048,
+                        byte_size=2048,
+                    ),
+                ),
+                storage_index=0,
+                l1_offset=0,
+                storage_capacity_pages=1,
+            )
+        ]
+
+
 # Physical allocation metadata preserves exact and empty launch-node domains.
 @pytest.mark.parametrize(
     ("allocation_nodes", "expected"),
@@ -323,10 +457,23 @@ def test_missing_complete_allocations_are_rejected():
         ([_entry(0, block_count=0)], "block_count must be positive"),
         ([_entry(0, page_size=0)], "page_size must be positive"),
         ([_entry(0, storage_index=-1)], "storage_index must be a nonnegative"),
+        (
+            [_entry(0, num_tiles=2, block_count=2, storage_capacity_pages=3)],
+            "storage_capacity_pages must cover the 4-page logical capacity",
+        ),
+        (
+            [
+                "{dfb_index = 0 : i32, storage_capacity_pages = "
+                "2147483648 : i64, num_tiles = 1 : i32, "
+                "element_type = bf16, block_count = 2 : i32, "
+                "page_size = 2048 : i32}"
+            ],
+            "storage_capacity_pages must be less than 2\\^31",
+        ),
         ([_entry(0, element_type="i1")], "Unrecognized MLIR scalar element type"),
         (
             [_entry(0, l1_offset=0)],
-            "must contain all compiler-sram allocation fields",
+            "requires tensor backing",
         ),
         (
             [
@@ -337,7 +484,7 @@ def test_missing_complete_allocations_are_rejected():
                     l1_allocation_bytes=4096,
                 )
             ],
-            "compiler-sram offsets must be nonnegative",
+            "l1_offset must be nonnegative",
         ),
         (
             [

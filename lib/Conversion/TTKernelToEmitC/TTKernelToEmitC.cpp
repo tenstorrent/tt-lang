@@ -9,6 +9,7 @@
 #include "ttlang/Dialect/TTKernel/IR/TTKernelOps.h"
 #include "ttlang/Dialect/TTKernel/IR/TTKernelOpsTypes.h"
 #include "ttlang/Dialect/TTL/IR/TTL.h"
+#include "ttlang/Dialect/TTL/IR/TTLOps.h"
 
 #include "mlir/Conversion/ArithToEmitC/ArithToEmitC.h"
 #include "mlir/Conversion/MemRefToEmitC/MemRefToEmitC.h"
@@ -28,6 +29,7 @@
 #include "mlir/Target/Cpp/CppEmitter.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringExtras.h"
@@ -43,7 +45,9 @@
 #include <functional>
 #include <limits>
 #include <optional>
+#include <set>
 #include <string>
+#include <tuple>
 #include <type_traits>
 #include <utility>
 
@@ -114,9 +118,12 @@ struct CompilerL1Allocation {
   int64_t pageSizeBytes;
   int64_t pagesPerBlock;
   int64_t blockCount;
+  int64_t storageCapacityPages;
   int64_t stateOffset;
   int64_t payloadOffset;
   int64_t allocationBytes;
+  int64_t tensorIndex;
+  ArrayAttr launchNodes;
   Type elementType;
 };
 
@@ -124,6 +131,31 @@ static bool isRepresentableMetadataInteger(IntegerAttr value) {
   return value &&
          (value.getType().isIndex() || value.getType().isSignlessInteger()) &&
          value.getValue().isSignedIntN(64);
+}
+
+static bool hasValidLaunchNodes(ArrayAttr nodes) {
+  if (!nodes || nodes.empty()) {
+    return false;
+  }
+  llvm::SmallDenseSet<std::pair<int64_t, int64_t>, 8> coordinates;
+  for (Attribute node : nodes) {
+    auto coordinatePair = dyn_cast<ArrayAttr>(node);
+    if (!coordinatePair || coordinatePair.size() != 2) {
+      return false;
+    }
+    auto nodeX = dyn_cast<IntegerAttr>(coordinatePair[0]);
+    auto nodeY = dyn_cast<IntegerAttr>(coordinatePair[1]);
+    if (!isRepresentableMetadataInteger(nodeX) ||
+        !isRepresentableMetadataInteger(nodeY) || nodeX.getInt() < 0 ||
+        nodeY.getInt() < 0) {
+      return false;
+    }
+    std::pair<int64_t, int64_t> coordinate{nodeX.getInt(), nodeY.getInt()};
+    if (!coordinates.insert(coordinate).second) {
+      return false;
+    }
+  }
+  return true;
 }
 
 static FailureOr<CompilerL1Allocation>
@@ -141,6 +173,10 @@ parseCompilerL1Allocation(Attribute attribute) {
       dictionary
           ? dictionary.getAs<IntegerAttr>(ttl::kDFBAllocationBlockCountField)
           : IntegerAttr();
+  auto storageCapacity =
+      dictionary
+          ? dictionary.getAs<IntegerAttr>(ttl::kDFBAllocationCapacityPagesField)
+          : IntegerAttr();
   auto stateOffset =
       dictionary
           ? dictionary.getAs<IntegerAttr>(ttl::kDFBAllocationStateOffsetField)
@@ -152,6 +188,12 @@ parseCompilerL1Allocation(Attribute attribute) {
   auto allocationBytes =
       dictionary ? dictionary.getAs<IntegerAttr>(ttl::kDFBAllocationBytesField)
                  : IntegerAttr();
+  auto storageSegments = dictionary
+                             ? dictionary.getAs<ArrayAttr>("storage_segments")
+                             : ArrayAttr();
+  auto allocationNodes = dictionary
+                             ? dictionary.getAs<ArrayAttr>("allocation_nodes")
+                             : ArrayAttr();
   auto elementType =
       dictionary
           ? dictionary.getAs<TypeAttr>(ttl::kDFBAllocationElementTypeField)
@@ -159,35 +201,117 @@ parseCompilerL1Allocation(Attribute attribute) {
   if (!isRepresentableMetadataInteger(pageSize) ||
       !isRepresentableMetadataInteger(pagesPerBlock) ||
       !isRepresentableMetadataInteger(blockCount) ||
-      !isRepresentableMetadataInteger(stateOffset) ||
-      !isRepresentableMetadataInteger(payloadAddress) ||
-      !isRepresentableMetadataInteger(allocationBytes) || !elementType) {
+      !isRepresentableMetadataInteger(storageCapacity) ||
+      !isRepresentableMetadataInteger(stateOffset) || !elementType) {
     return failure();
+  }
+  if ((dictionary.get(ttl::kDFBAllocationPayloadOffsetField) &&
+       !payloadAddress) ||
+      (dictionary.get(ttl::kDFBAllocationBytesField) && !allocationBytes) ||
+      (dictionary.get("storage_segments") && !storageSegments)) {
+    return failure();
+  }
+  bool hasArenaPayload = payloadAddress && allocationBytes && !storageSegments;
+  bool hasTensorPayload =
+      storageSegments && !payloadAddress && !allocationBytes;
+  if (!hasArenaPayload && !hasTensorPayload) {
+    return failure();
+  }
+  if (dictionary.get("allocation_nodes") &&
+      !hasValidLaunchNodes(allocationNodes)) {
+    return failure();
+  }
+  ttl::TensorBackingAttr tensorBacking;
+  ArrayAttr launchNodes = allocationNodes;
+  if (hasArenaPayload) {
+    if (!isRepresentableMetadataInteger(payloadAddress) ||
+        !isRepresentableMetadataInteger(allocationBytes)) {
+      return failure();
+    }
+  } else {
+    if (storageSegments.size() != 1) {
+      return failure();
+    }
+    auto segment = dyn_cast<DictionaryAttr>(storageSegments[0]);
+    tensorBacking =
+        segment ? segment.getAs<ttl::TensorBackingAttr>("tensor_backing")
+                : ttl::TensorBackingAttr();
+    launchNodes = segment ? segment.getAs<ArrayAttr>("nodes") : ArrayAttr();
+    if (!tensorBacking || !hasValidLaunchNodes(launchNodes)) {
+      return failure();
+    }
   }
 
   constexpr uint64_t maxAddress = std::numeric_limits<uint32_t>::max();
   int64_t stateOffsetValue = stateOffset.getInt();
-  int64_t payloadAddressValue = payloadAddress.getInt();
+  int64_t payloadAddressValue =
+      payloadAddress ? payloadAddress.getInt() : stateOffsetValue;
+  int64_t storageCapacityValue = storageCapacity.getInt();
   if (pageSize.getInt() <= 0 || pagesPerBlock.getInt() <= 0 ||
       blockCount.getInt() <= 0 || stateOffsetValue < 0 ||
-      allocationBytes.getInt() <= 0 || payloadAddressValue < stateOffsetValue ||
+      storageCapacityValue <= 0 ||
       static_cast<uint64_t>(pageSize.getInt()) > maxAddress ||
       static_cast<uint64_t>(pagesPerBlock.getInt()) > maxAddress ||
       static_cast<uint64_t>(blockCount.getInt()) > maxAddress ||
       static_cast<uint64_t>(stateOffsetValue) >
-          maxAddress - ttl::kCompilerSRAMControlRecordBytes + 1 ||
-      static_cast<uint64_t>(payloadAddressValue) > maxAddress ||
-      static_cast<uint64_t>(allocationBytes.getInt()) > maxAddress) {
+          maxAddress - ttl::kCompilerSRAMControlRecordBytes + 1) {
+    return failure();
+  }
+  if (hasArenaPayload &&
+      (allocationBytes.getInt() <= 0 ||
+       payloadAddressValue < stateOffsetValue ||
+       static_cast<uint64_t>(payloadAddressValue) > maxAddress ||
+       static_cast<uint64_t>(allocationBytes.getInt()) > maxAddress)) {
+    return failure();
+  }
+  std::optional<uint64_t> logicalCapacity =
+      llvm::checkedMulUnsigned(static_cast<uint64_t>(pagesPerBlock.getInt()),
+                               static_cast<uint64_t>(blockCount.getInt()));
+  if (!logicalCapacity ||
+      static_cast<uint64_t>(storageCapacityValue) < *logicalCapacity ||
+      static_cast<uint64_t>(storageCapacityValue) >= (uint64_t{1} << 31)) {
     return failure();
   }
 
-  return CompilerL1Allocation{pageSize.getInt(),
-                              pagesPerBlock.getInt(),
-                              blockCount.getInt(),
-                              stateOffsetValue,
-                              payloadAddressValue - stateOffsetValue,
-                              allocationBytes.getInt(),
-                              elementType.getValue()};
+  return CompilerL1Allocation{
+      pageSize.getInt(),
+      pagesPerBlock.getInt(),
+      blockCount.getInt(),
+      storageCapacityValue,
+      stateOffsetValue,
+      tensorBacking ? tensorBacking.getByteOffset()
+                    : payloadAddressValue - stateOffsetValue,
+      hasArenaPayload ? allocationBytes.getInt() : 0,
+      tensorBacking ? tensorBacking.getTensorIndex() : -1,
+      launchNodes,
+      elementType.getValue()};
+}
+
+static FailureOr<int64_t>
+getCompilerL1TensorCommonArgIndex(Operation *operation,
+                                  const CompilerL1Allocation &allocation) {
+  if (allocation.tensorIndex < 0) {
+    return int64_t{-1};
+  }
+  auto function = operation->getParentOfType<func::FuncOp>();
+  auto tensorIndices =
+      function ? function->getAttrOfType<ArrayAttr>(ttl::kCRTAIndicesAttrName)
+               : ArrayAttr();
+  if (!tensorIndices) {
+    return failure();
+  }
+  for (auto [commonArgIndex, attribute] : llvm::enumerate(tensorIndices)) {
+    auto tensorIndex = dyn_cast<IntegerAttr>(attribute);
+    if (!isRepresentableMetadataInteger(tensorIndex) ||
+        tensorIndex.getInt() < 0 ||
+        tensorIndex.getInt() > std::numeric_limits<int32_t>::max()) {
+      return failure();
+    }
+    if (tensorIndex.getInt() == allocation.tensorIndex) {
+      return static_cast<int64_t>(commonArgIndex);
+    }
+  }
+  return failure();
 }
 
 static CompilerL1Allocation getCompilerL1Allocation(Operation *operation,
@@ -220,7 +344,7 @@ static bool isCompilerL1ComputeOperation(Operation *operation) {
       ttkernel::CopyTileInitOp, ttkernel::CopyTileOp,
       ttkernel::BinaryOpInitCommonOp, ttkernel::AddTilesInitOp,
       ttkernel::AddTilesOp, ttkernel::MulTilesInitOp, ttkernel::MulTilesOp,
-      ttkernel::PackTileOp>(operation);
+      ttkernel::PackTileOp, ttkernel::PackWaitedTileOp>(operation);
 }
 
 // FPU, SFPU, and init calls without DFB operands use no descriptor state.
@@ -378,10 +502,16 @@ static std::string ensureCBDeclaration(Value cb, Operation *useOp,
     assert(index && "compiler-sram requires statically bound storage");
     CompilerL1Allocation allocation =
         getCompilerL1Allocation(useOp, index.getInt());
+    FailureOr<int64_t> tensorCommonArgIndex =
+        getCompilerL1TensorCommonArgIndex(useOp, allocation);
+    assert(succeeded(tensorCommonArgIndex) &&
+           "compiler-sram tensor argument must be validated before conversion");
     bufferType =
         (Twine("ttlang::l1::Buffer<") + Twine(allocation.pageSizeBytes) + ", " +
          Twine(allocation.pagesPerBlock) + ", " + Twine(allocation.blockCount) +
-         ", " + Twine(allocation.payloadOffset) + ">")
+         ", " + Twine(allocation.storageCapacityPages) + ", " +
+         Twine(allocation.payloadOffset) + ", " + Twine(*tensorCommonArgIndex) +
+         ">")
             .str();
   }
   std::string cbDecl = bufferType + " " + cbName + "({});";
@@ -640,16 +770,24 @@ getCompilerL1GeometryTemplateArguments(const CompilerL1Allocation &allocation,
   return (Twine("static_cast<uint32_t>(") +
           datatypeToDataformatStr(tile.getDataType()) + "), " +
           Twine(allocation.pageSizeBytes) + ", " +
-          Twine(allocation.pagesPerBlock) + ", " + Twine(allocation.blockCount))
+          Twine(allocation.pagesPerBlock) + ", " +
+          Twine(allocation.blockCount) + ", " +
+          Twine(allocation.storageCapacityPages))
       .str();
 }
 
 static std::string
-getCompilerL1OperandTypeName(const CompilerL1Allocation &allocation,
+getCompilerL1OperandTypeName(Operation *operation,
+                             const CompilerL1Allocation &allocation,
                              ttcore::TileType tile, bool directToDestination) {
+  FailureOr<int64_t> tensorCommonArgIndex =
+      getCompilerL1TensorCommonArgIndex(operation, allocation);
+  assert(succeeded(tensorCommonArgIndex) &&
+         "compiler-sram tensor argument must be validated before conversion");
   return (Twine("ttlang::l1::Operand<") +
           getCompilerL1GeometryTemplateArguments(allocation, tile) + ", " +
           Twine(allocation.payloadOffset) + ", " +
+          Twine(*tensorCommonArgIndex) + ", " +
           (directToDestination ? "true>" : "false>"))
       .str();
 }
@@ -662,13 +800,19 @@ getCompilerL1DFBDescriptorTypeName(Operation *operation,
   auto function = operation->getParentOfType<func::FuncOp>();
   auto threadType = function->getAttrOfType<ttkernel::ThreadTypeAttr>(
       ttkernel::ThreadTypeAttr::name);
+  FailureOr<int64_t> tensorCommonArgIndex =
+      getCompilerL1TensorCommonArgIndex(operation, allocation);
+  assert(succeeded(tensorCommonArgIndex) &&
+         "compiler-sram tensor argument must be validated before conversion");
   if (!threadType || threadType.getValue() != ttkernel::ThreadType::Compute) {
     return (Twine("ttlang::l1::DFBDescriptor<") +
             Twine(descriptor.getPageSizeBytes()) + ", " +
             Twine(descriptor.getPagesPerBlock()) + ", " +
             Twine(descriptor.getBlockCount()) + ", " +
+            Twine(allocation.storageCapacityPages) + ", " +
             Twine(allocation.stateOffset) + ", " +
-            Twine(allocation.payloadOffset) + ">")
+            Twine(allocation.payloadOffset) + ", " +
+            Twine(*tensorCommonArgIndex) + ">")
         .str();
   }
   auto tile = cast<ttcore::TileType>(allocation.elementType);
@@ -681,6 +825,7 @@ getCompilerL1DFBDescriptorTypeName(Operation *operation,
           getCompilerL1GeometryTemplateArguments(allocation, tile) + ", " +
           Twine(allocation.stateOffset) + ", " +
           Twine(allocation.payloadOffset) + ", " +
+          Twine(*tensorCommonArgIndex) + ", " +
           (directToDestination ? "true>" : "false>"))
       .str();
 }
@@ -1065,8 +1210,8 @@ static void emitCompilerL1ComputeCall(Operation *operation,
     bool directToDestination =
         directOperands &&
         llvm::is_contained(directOperands.asArrayRef(), *identity);
-    std::string operandType =
-        getCompilerL1OperandTypeName(allocation, tile, directToDestination);
+    std::string operandType = getCompilerL1OperandTypeName(
+        operation, allocation, tile, directToDestination);
     auto constructor = emitc::CallOpaqueOp::create(
         rewriter, operation->getLoc(),
         TypeRange{emitc::OpaqueType::get(operation->getContext(), operandType)},
@@ -1093,6 +1238,8 @@ static void emitCompilerL1ComputeCall(Operation *operation,
     callee = "l1_compute_context.matmulBlockInitShort";
   } else if (isa<ttkernel::ExperimentalMatmulBlockOp>(operation)) {
     callee = "ttlang::l1::target::matmul_block_strided";
+  } else if (isa<ttkernel::PackWaitedTileOp>(operation)) {
+    callee = "ttlang::l1::target::pack_waited_tile";
   }
   auto call = rewriter.replaceOpWithNewOp<emitc::CallOpaqueOp>(
       operation, resultTypes, callee, ArrayAttr(), templateArgs, operands);
@@ -3516,6 +3663,81 @@ static LogicalResult validateCompilerSRAMModule(ModuleOp module) {
           "compiler-sram requires finalized allocation metadata");
       return failure();
     }
+    using BackingHandoff = std::tuple<unsigned, unsigned, int64_t, int64_t>;
+    std::set<BackingHandoff> backingHandoffs;
+    llvm::SmallDenseSet<int64_t, 8> resetOrdinals;
+    Attribute resetMetadata =
+        module->getAttr(ttl::kCompilerSRAMReconfigurationResetsAttrName);
+    if (resetMetadata && !isa<ArrayAttr>(resetMetadata)) {
+      module.emitOpError(
+          "contains malformed compiler-sram reconfiguration reset metadata");
+      return failure();
+    }
+    if (auto resetEntries = dyn_cast_if_present<ArrayAttr>(resetMetadata)) {
+      for (Attribute resetAttribute : resetEntries) {
+        auto reset = dyn_cast<DictionaryAttr>(resetAttribute);
+        auto ordinal =
+            reset ? reset.getAs<IntegerAttr>("ordinal") : IntegerAttr();
+        auto indices = reset ? reset.getAs<DenseI32ArrayAttr>("dfb_indices")
+                             : DenseI32ArrayAttr();
+        if (!isRepresentableMetadataInteger(ordinal) || ordinal.getInt() < 0 ||
+            !indices || !resetOrdinals.insert(ordinal.getInt()).second) {
+          module.emitOpError("contains malformed compiler-sram reconfiguration "
+                             "reset metadata");
+          return failure();
+        }
+        for (int32_t index : indices.asArrayRef()) {
+          if (index < 0 || static_cast<uint64_t>(index) >= allocations.size()) {
+            module.emitOpError(
+                "contains invalid compiler-sram reconfiguration reset index");
+            return failure();
+          }
+        }
+        auto handoffs = reset.get("backing_handoffs");
+        if (handoffs && !isa<ArrayAttr>(handoffs)) {
+          module.emitOpError(
+              "contains malformed compiler-sram backing handoff");
+          return failure();
+        }
+        ArrayAttr handoffArray =
+            handoffs ? cast<ArrayAttr>(handoffs) : ArrayAttr();
+        std::set<BackingHandoff> handoffsInReset;
+        for (Attribute handoffAttribute :
+             handoffArray ? handoffArray.getValue() : ArrayRef<Attribute>()) {
+          auto handoff = dyn_cast<DictionaryAttr>(handoffAttribute);
+          auto from = handoff ? handoff.getAs<IntegerAttr>("from_dfb_index")
+                              : IntegerAttr();
+          auto to = handoff ? handoff.getAs<IntegerAttr>("to_dfb_index")
+                            : IntegerAttr();
+          auto node = handoff ? handoff.getAs<ArrayAttr>("node") : ArrayAttr();
+          if (!isRepresentableMetadataInteger(from) ||
+              !isRepresentableMetadataInteger(to) || from.getInt() < 0 ||
+              to.getInt() < 0 || from.getInt() == to.getInt() ||
+              static_cast<uint64_t>(from.getInt()) >= allocations.size() ||
+              static_cast<uint64_t>(to.getInt()) >= allocations.size() ||
+              !node || node.size() != 2 ||
+              !isRepresentableMetadataInteger(dyn_cast<IntegerAttr>(node[0])) ||
+              !isRepresentableMetadataInteger(dyn_cast<IntegerAttr>(node[1]))) {
+            module.emitOpError(
+                "contains malformed compiler-sram backing handoff");
+            return failure();
+          }
+          int64_t nodeX = cast<IntegerAttr>(node[0]).getInt();
+          int64_t nodeY = cast<IntegerAttr>(node[1]).getInt();
+          BackingHandoff identity{static_cast<unsigned>(from.getInt()),
+                                  static_cast<unsigned>(to.getInt()), nodeX,
+                                  nodeY};
+          if (nodeX < 0 || nodeY < 0 ||
+              !llvm::is_contained(indices.asArrayRef(), from.getInt()) ||
+              !handoffsInReset.insert(identity).second) {
+            module.emitOpError(
+                "contains invalid compiler-sram backing handoff");
+            return failure();
+          }
+          backingHandoffs.insert(identity);
+        }
+      }
+    }
     auto arenaBytes =
         module->getAttrOfType<IntegerAttr>(ttl::kL1ArenaBytesAttrName);
     if (!isRepresentableMetadataInteger(arenaBytes) ||
@@ -3534,6 +3756,7 @@ static LogicalResult validateCompilerSRAMModule(ModuleOp module) {
     }
     SmallVector<CompilerL1Allocation> parsedAllocations;
     SmallVector<uint64_t> controlStarts;
+    llvm::DenseMap<int64_t, SmallVector<unsigned>> allocationsByStorageIndex;
     uint64_t controlEnd = 0;
     for (auto [index, attribute] : llvm::enumerate(allocations)) {
       FailureOr<CompilerL1Allocation> allocation =
@@ -3542,8 +3765,9 @@ static LogicalResult validateCompilerSRAMModule(ModuleOp module) {
         module.emitOpError("compiler-sram allocation entry ")
             << index
             << " must define element_type, positive uint32 page_size, "
-               "num_tiles, block_count, and l1_allocation_bytes values with "
-               "representable ordered SRAM offsets";
+               "num_tiles, block_count, storage_capacity_pages, and either "
+               "an arena payload or tensor backing with valid launch "
+               "nodes and representable SRAM offsets";
         return failure();
       }
       auto identity = cast<DictionaryAttr>(attribute).getAs<IntegerAttr>(
@@ -3574,7 +3798,88 @@ static LogicalResult validateCompilerSRAMModule(ModuleOp module) {
             << index << " has an unaligned control record";
         return failure();
       }
-      controlStarts.push_back(allocation->stateOffset);
+      auto dictionary = cast<DictionaryAttr>(attribute);
+      auto storageIndex =
+          dictionary.getAs<IntegerAttr>(ttl::kDFBAllocationStorageIndexField);
+      if (dictionary.get(ttl::kDFBAllocationStorageIndexField) &&
+          !storageIndex) {
+        module.emitOpError("compiler-sram allocation entry ")
+            << index << " has an invalid storage_index";
+        return failure();
+      }
+      if (storageIndex && (!isRepresentableMetadataInteger(storageIndex) ||
+                           storageIndex.getInt() < 0)) {
+        module.emitOpError("compiler-sram allocation entry ")
+            << index << " has an invalid storage_index";
+        return failure();
+      }
+      if (storageIndex) {
+        SmallVector<unsigned> &ownerAllocations =
+            allocationsByStorageIndex[storageIndex.getInt()];
+        for (unsigned previousIndex : ownerAllocations) {
+          const CompilerL1Allocation &previous =
+              parsedAllocations[previousIndex];
+          if ((allocation->tensorIndex >= 0 || previous.tensorIndex >= 0) &&
+              (allocation->tensorIndex != previous.tensorIndex ||
+               allocation->payloadOffset != previous.payloadOffset)) {
+            if (!allocation->launchNodes || !previous.launchNodes) {
+              module.emitOpError("compiler-sram storage owner ")
+                  << storageIndex.getInt()
+                  << " changes payload backing without exact launch nodes";
+              return failure();
+            }
+            llvm::SmallDenseSet<std::pair<int64_t, int64_t>, 8> previousNodes;
+            for (Attribute node : previous.launchNodes) {
+              auto coordinates = cast<ArrayAttr>(node);
+              previousNodes.insert(
+                  {cast<IntegerAttr>(coordinates[0]).getInt(),
+                   cast<IntegerAttr>(coordinates[1]).getInt()});
+            }
+            for (Attribute node : allocation->launchNodes) {
+              auto coordinates = cast<ArrayAttr>(node);
+              int64_t nodeX = cast<IntegerAttr>(coordinates[0]).getInt();
+              int64_t nodeY = cast<IntegerAttr>(coordinates[1]).getInt();
+              if (!previousNodes.contains({nodeX, nodeY})) {
+                continue;
+              }
+              if (backingHandoffs.find({previousIndex,
+                                        static_cast<unsigned>(index), nodeX,
+                                        nodeY}) != backingHandoffs.end() ||
+                  backingHandoffs.find({static_cast<unsigned>(index),
+                                        previousIndex, nodeX, nodeY}) !=
+                      backingHandoffs.end()) {
+                continue;
+              }
+              module.emitOpError("compiler-sram storage owner ")
+                  << storageIndex.getInt()
+                  << " has different payload backing on a shared launch "
+                     "node without a matching reconfiguration handoff";
+              return failure();
+            }
+          }
+        }
+        if (ownerAllocations.empty()) {
+          controlStarts.push_back(allocation->stateOffset);
+        } else {
+          const CompilerL1Allocation &first =
+              parsedAllocations[ownerAllocations.front()];
+          if (allocation->stateOffset != first.stateOffset ||
+              allocation->storageCapacityPages != first.storageCapacityPages ||
+              allocation->pageSizeBytes != first.pageSizeBytes ||
+              allocation->elementType != first.elementType ||
+              (allocation->tensorIndex < 0 && first.tensorIndex < 0 &&
+               (allocation->payloadOffset != first.payloadOffset ||
+                allocation->allocationBytes != first.allocationBytes))) {
+            module.emitOpError("compiler-sram storage owner ")
+                << storageIndex.getInt()
+                << " has inconsistent allocation metadata";
+            return failure();
+          }
+        }
+        ownerAllocations.push_back(index);
+      } else {
+        controlStarts.push_back(allocation->stateOffset);
+      }
       controlEnd =
           std::max(controlEnd, static_cast<uint64_t>(allocation->stateOffset) +
                                    ttl::kCompilerSRAMControlRecordBytes);
@@ -3593,6 +3898,43 @@ static LogicalResult validateCompilerSRAMModule(ModuleOp module) {
       }
     }
     for (auto [index, allocation] : llvm::enumerate(parsedAllocations)) {
+      std::optional<uint64_t> logicalPayloadBytes = llvm::checkedMulUnsigned(
+          static_cast<uint64_t>(allocation.pageSizeBytes),
+          static_cast<uint64_t>(allocation.pagesPerBlock) *
+              static_cast<uint64_t>(allocation.blockCount));
+      std::optional<uint64_t> storageBytes = llvm::checkedMulUnsigned(
+          static_cast<uint64_t>(allocation.pageSizeBytes),
+          static_cast<uint64_t>(allocation.storageCapacityPages));
+      if (!logicalPayloadBytes || !storageBytes) {
+        module.emitOpError("compiler-sram allocation entry ")
+            << index << " payload size overflows 64-bit arithmetic";
+        return failure();
+      }
+      if (allocation.tensorIndex >= 0) {
+        if (static_cast<uint64_t>(allocation.storageCapacityPages) !=
+            static_cast<uint64_t>(allocation.pagesPerBlock) *
+                static_cast<uint64_t>(allocation.blockCount)) {
+          module.emitOpError("compiler-sram allocation entry ")
+              << index
+              << " tensor-backed storage capacity differs from its "
+                 "DFB capacity";
+          return failure();
+        }
+        auto dictionary = cast<DictionaryAttr>(allocations[index]);
+        auto segments = dictionary.getAs<ArrayAttr>("storage_segments");
+        auto segment = cast<DictionaryAttr>(segments[0]);
+        auto backing = segment.getAs<ttl::TensorBackingAttr>("tensor_backing");
+        if (static_cast<uint64_t>(allocation.payloadOffset) %
+                    static_cast<uint64_t>(allocation.pageSizeBytes) !=
+                0 ||
+            static_cast<uint64_t>(backing.getByteSize()) !=
+                *logicalPayloadBytes) {
+          module.emitOpError("compiler-sram allocation entry ")
+              << index << " tensor backing differs from its DFB capacity";
+          return failure();
+        }
+        continue;
+      }
       uint64_t payloadAddress =
           allocation.stateOffset + allocation.payloadOffset;
       if (payloadAddress < controlEnd ||
@@ -3602,20 +3944,7 @@ static LogicalResult validateCompilerSRAMModule(ModuleOp module) {
             << *payloadAlignment << "-byte-aligned offset";
         return failure();
       }
-      std::optional<uint64_t> blockBytes = llvm::checkedMulUnsigned(
-          static_cast<uint64_t>(allocation.pageSizeBytes),
-          static_cast<uint64_t>(allocation.pagesPerBlock));
-      std::optional<uint64_t> payloadBytes =
-          blockBytes
-              ? llvm::checkedMulUnsigned(
-                    *blockBytes, static_cast<uint64_t>(allocation.blockCount))
-              : std::nullopt;
-      if (!payloadBytes) {
-        module.emitOpError("compiler-sram allocation entry ")
-            << index << " payload size overflows 64-bit arithmetic";
-        return failure();
-      }
-      if (*payloadBytes > static_cast<uint64_t>(allocation.allocationBytes) ||
+      if (*storageBytes > static_cast<uint64_t>(allocation.allocationBytes) ||
           payloadAddress > static_cast<uint64_t>(arenaBytes.getInt()) ||
           static_cast<uint64_t>(allocation.allocationBytes) >
               static_cast<uint64_t>(arenaBytes.getInt()) - payloadAddress) {
@@ -3656,6 +3985,14 @@ static LogicalResult validateCompilerSRAMModule(ModuleOp module) {
         if (failed(validateCompilerSRAMDFBType(
                 operation, cast<ttkernel::CBType>(getCompileArg.getType()),
                 parsedAllocations[index]))) {
+          return WalkResult::interrupt();
+        }
+        if (failed(getCompilerL1TensorCommonArgIndex(
+                operation, parsedAllocations[index]))) {
+          operation->emitOpError(
+              "compiler-sram tensor backing requires a non-negative 32-bit "
+              "ttl.crta_indices entry for tensor ")
+              << parsedAllocations[index].tensorIndex;
           return WalkResult::interrupt();
         }
       }
@@ -3713,6 +4050,14 @@ static LogicalResult validateCompilerSRAMModule(ModuleOp module) {
           }
           CompilerL1Allocation allocation =
               getCompilerL1Allocation(operation, index);
+          if (failed(
+                  getCompilerL1TensorCommonArgIndex(operation, allocation))) {
+            operation->emitOpError(
+                "compiler-sram tensor backing requires a non-negative 32-bit "
+                "ttl.crta_indices entry for tensor ")
+                << allocation.tensorIndex;
+            return WalkResult::interrupt();
+          }
           if (descriptor.getPageSizeBytes() != allocation.pageSizeBytes ||
               descriptor.getPagesPerBlock() != allocation.pagesPerBlock ||
               descriptor.getBlockCount() != allocation.blockCount) {
@@ -3765,6 +4110,18 @@ static LogicalResult validateCompilerSRAMModule(ModuleOp module) {
           return WalkResult::interrupt();
         }
       }
+      if (isa<ttkernel::OpaqueCallOp>(operation) &&
+          (llvm::any_of(operation->getOperands(),
+                        [](Value value) {
+                          return isa<ttkernel::CBType>(value.getType());
+                        }) ||
+           llvm::any_of(operation->getResults(), [](Value value) {
+             return isa<ttkernel::CBType>(value.getType());
+           }))) {
+        operation->emitOpError(
+            "compiler-sram external calls cannot pass or return DFB values");
+        return WalkResult::interrupt();
+      }
       if (!supported) {
         operation->emitOpError()
             << "has no compiler-sram lowering for " << operation->getName()
@@ -3786,10 +4143,16 @@ static LogicalResult validateCompilerSRAMModule(ModuleOp module) {
         }
         CompilerL1Allocation allocation =
             getCompilerL1Allocation(operation, *identity);
-        if (pageCount.getSExtValue() != allocation.pagesPerBlock) {
+        int64_t pageCountValue = pageCount.getSExtValue();
+        bool isOneBlock = pageCountValue == allocation.pagesPerBlock;
+        bool isCompleteTensorCapacity =
+            allocation.tensorIndex >= 0 && pageCountValue > 0 &&
+            pageCountValue % allocation.pagesPerBlock == 0 &&
+            pageCountValue / allocation.pagesPerBlock == allocation.blockCount;
+        if (!isOneBlock && !isCompleteTensorCapacity) {
           operation->emitOpError(
-              "compiler-sram requires full-block synchronization to "
-              "preserve contiguous acquisitions");
+              "compiler-sram requires one complete block or the complete "
+              "tensor-backed capacity per synchronization operation");
           return WalkResult::interrupt();
         }
       }

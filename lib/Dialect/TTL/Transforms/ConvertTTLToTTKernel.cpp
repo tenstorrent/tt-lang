@@ -1615,10 +1615,11 @@ struct DFBSynchronizationLoweringPlan {
   DenseMap<int64_t, int64_t> stateOffsetByReconfiguration;
   DenseMap<int64_t, SmallVector<int32_t>> resetDFBsByReconfiguration;
   DenseMap<int32_t, Type> dfbTypesByIndex;
+  DenseMap<int32_t, uint32_t> dfbStateOffsetsByIndex;
   SmallVector<int32_t> allDFBIndices;
   int64_t scratchBaseOffset = 0;
   int64_t scratchBytes = 0;
-  int64_t synchronizedResetCount = 0;
+  int64_t synchronizationRecordCount = 0;
   uint64_t allDFBMask = 0;
   bool compilerSRAM = false;
 };
@@ -1642,7 +1643,7 @@ buildDFBSynchronizationLoweringPlan(ModuleOp module) {
 
   DFBSynchronizationLoweringPlan plan;
   plan.compilerSRAM = usesCompilerSRAM(module);
-  plan.synchronizedResetCount = static_cast<int64_t>(orderedResets.size());
+  plan.synchronizationRecordCount = static_cast<int64_t>(orderedResets.size());
   for (auto [resetIndex, reset] : llvm::enumerate(orderedResets)) {
     plan.stateOffsetByReset.try_emplace(
         reset, static_cast<int64_t>(resetIndex) * kDFBResetStateBytes);
@@ -1684,6 +1685,8 @@ buildDFBSynchronizationLoweringPlan(ModuleOp module) {
     }
     plan.scratchBytes +=
         static_cast<int64_t>(reconfigurations.size()) * kDFBResetStateBytes;
+    plan.synchronizationRecordCount +=
+        static_cast<int64_t>(reconfigurations.size());
 
     if (auto entries = module->getAttrOfType<ArrayAttr>(
             kCompilerSRAMReconfigurationResetsAttrName)) {
@@ -1751,6 +1754,28 @@ buildDFBSynchronizationLoweringPlan(ModuleOp module) {
     if (inserted) {
       plan.allDFBIndices.push_back(index);
     }
+    if (plan.compilerSRAM && plan.synchronizationRecordCount != 0) {
+      auto allocations =
+          module->getAttrOfType<ArrayAttr>(kDFBAllocationsAttrName);
+      auto allocation =
+          allocations && static_cast<uint64_t>(index) < allocations.size()
+              ? dyn_cast<DictionaryAttr>(allocations[index])
+              : DictionaryAttr();
+      auto stateOffset =
+          allocation
+              ? allocation.getAs<IntegerAttr>(kDFBAllocationStateOffsetField)
+              : IntegerAttr();
+      if (!stateOffset ||
+          (!stateOffset.getType().isIndex() &&
+           !stateOffset.getType().isSignlessInteger()) ||
+          stateOffset.getValue().isNegative() ||
+          !stateOffset.getValue().isIntN(32)) {
+        bind.emitOpError("requires a representable compiler-sram state offset");
+        return WalkResult::interrupt();
+      }
+      plan.dfbStateOffsetsByIndex.try_emplace(
+          index, static_cast<uint32_t>(stateOffset.getValue().getZExtValue()));
+    }
     if (!plan.compilerSRAM) {
       int32_t targetMaxDFBIndices = getTargetMaxDFBIndices(bind);
       if (index >= targetMaxDFBIndices) {
@@ -1796,13 +1821,13 @@ buildDFBSynchronizationLoweringPlan(ModuleOp module) {
 
 static void applyDFBSynchronizationLoweringPlanAttributes(
     ModuleOp module, const DFBSynchronizationLoweringPlan &plan) {
-  if (plan.synchronizedResetCount == 0) {
+  if (plan.synchronizationRecordCount == 0) {
     module->removeAttr(kDFBResetCountAttrName);
     return;
   }
   Builder builder(module.getContext());
   module->setAttr(kDFBResetCountAttrName,
-                  builder.getI64IntegerAttr(plan.synchronizedResetCount));
+                  builder.getI64IntegerAttr(plan.synchronizationRecordCount));
 }
 
 static void emitDFBSynchronizationBarrier(Operation *operation,
@@ -1820,6 +1845,22 @@ static void emitDFBSynchronizationBarrier(Operation *operation,
       getRequiredDFBIndicesAttr(requiredDFBIndices, rewriter));
 }
 
+static Value
+buildCompilerSRAMStateAddress(Operation *operation, uint32_t stateOffset,
+                              ConversionPatternRewriter &rewriter) {
+  Location location = operation->getLoc();
+  Value arenaCommonArgIndex = ttk::GetCompileArgValOp::create(
+      rewriter, location, rewriter.getI32Type(), 0);
+  Value arenaBase = ttk::GetCommonArgValOp::create(
+      rewriter, location, rewriter.getI32Type(), arenaCommonArgIndex);
+  if (stateOffset == 0) {
+    return arenaBase;
+  }
+  Value offset =
+      arith::ConstantIntOp::create(rewriter, location, stateOffset, 32);
+  return arith::AddIOp::create(rewriter, location, arenaBase, offset);
+}
+
 static LogicalResult
 lowerCompilerSRAMSynchronization(Operation *operation, int64_t stateOffset,
                                  ArrayRef<int32_t> resetDFBIndices,
@@ -1830,11 +1871,11 @@ lowerCompilerSRAMSynchronization(Operation *operation, int64_t stateOffset,
   emitDFBSynchronizationBarrier(operation, synchronizationAddress,
                                 resetDFBIndices, rewriter);
   for (int32_t index : resetDFBIndices) {
-    auto typeIt = plan.dfbTypesByIndex.find(index);
-    assert(typeIt != plan.dfbTypesByIndex.end() &&
+    auto stateOffsetIt = plan.dfbStateOffsetsByIndex.find(index);
+    assert(stateOffsetIt != plan.dfbStateOffsetsByIndex.end() &&
            "planned compiler-sram synchronization must reference known DFBs");
-    Value stateAddress = ttk::GetCompileArgValOp::create(
-        rewriter, operation->getLoc(), typeIt->second, index);
+    Value stateAddress = buildCompilerSRAMStateAddress(
+        operation, stateOffsetIt->second, rewriter);
     ttk::OpaqueCallOp::create(
         rewriter, operation->getLoc(), TypeRange{},
         rewriter.getStringAttr("ttlang::l1::resetState"),
@@ -2038,6 +2079,14 @@ static LogicalResult validateCompilerL1ExternalCalls(ModuleOp module) {
     if (call.hasUnknownDFBAccess()) {
       call.emitOpError(
           "compiler-sram requires typed DFB effects for external calls");
+      return WalkResult::interrupt();
+    }
+    if (llvm::any_of(call.getArgOperands(), [](Value argument) {
+          return isa<CircularBufferType>(argument.getType());
+        })) {
+      call.emitOpError("compiler-sram external calls cannot pass DFB function "
+                       "arguments; use ttl.dfb_descriptor() as a template "
+                       "argument");
       return WalkResult::interrupt();
     }
     if (std::optional<ArrayAttr> templateArgs = call.getTemplateArgs()) {
@@ -3223,6 +3272,69 @@ validateTileOperationsForTarget(ModuleOp module,
   return failure(hasErrors);
 }
 
+static LogicalResult addCompilerL1TensorRuntimeArgs(ModuleOp module) {
+  auto memoryModel = module->getAttrOfType<StringAttr>(kMemoryModelAttrName);
+  if (!memoryModel || memoryModel.getValue() != kCompilerSRAMMemoryModel) {
+    return success();
+  }
+
+  SmallVector<std::pair<func::FuncOp, SmallVector<int64_t>>> plans;
+  for (func::FuncOp function : module.getOps<func::FuncOp>()) {
+    SmallVector<int64_t> backingTensorIndices;
+    function.walk([&](BindCBOp bind) {
+      TensorBackingAttr backing = bind.getTensorBackingAttr();
+      if (backing &&
+          !llvm::is_contained(backingTensorIndices, backing.getTensorIndex())) {
+        backingTensorIndices.push_back(backing.getTensorIndex());
+      }
+    });
+    if (backingTensorIndices.empty()) {
+      continue;
+    }
+    for (int64_t tensorIndex : backingTensorIndices) {
+      if (tensorIndex > std::numeric_limits<int32_t>::max()) {
+        function.emitOpError(
+            "tensor backing index exceeds 32-bit runtime metadata");
+        return failure();
+      }
+    }
+    auto currentIndices =
+        function->getAttrOfType<ArrayAttr>(kCRTAIndicesAttrName);
+    if (!currentIndices) {
+      function.emitOpError() << "missing " << kCRTAIndicesAttrName;
+      return failure();
+    }
+    SmallVector<int64_t> indices;
+    for (Attribute attribute : currentIndices) {
+      auto index = dyn_cast<IntegerAttr>(attribute);
+      if (!index ||
+          !(index.getType().isIndex() || index.getType().isSignlessInteger()) ||
+          !index.getValue().isSignedIntN(32) || index.getInt() < 0) {
+        function.emitOpError() << kCRTAIndicesAttrName
+                               << " must contain non-negative 32-bit integers";
+        return failure();
+      }
+      indices.push_back(index.getInt());
+    }
+    for (int64_t backingTensorIndex : backingTensorIndices) {
+      if (!llvm::is_contained(indices, backingTensorIndex)) {
+        indices.push_back(backingTensorIndex);
+      }
+    }
+    plans.push_back({function, std::move(indices)});
+  }
+
+  OpBuilder builder(module.getContext());
+  for (auto &[function, indices] : plans) {
+    SmallVector<Attribute> attributes;
+    for (int64_t index : indices) {
+      attributes.push_back(builder.getI32IntegerAttr(index));
+    }
+    function->setAttr(kCRTAIndicesAttrName, builder.getArrayAttr(attributes));
+  }
+  return success();
+}
+
 struct TTLConvertTTLToTTKernelPass
     : impl::TTLConvertTTLToTTKernelBase<TTLConvertTTLToTTKernelPass> {
   using TTLConvertTTLToTTKernelBase::TTLConvertTTLToTTKernelBase;
@@ -3270,10 +3382,13 @@ struct TTLConvertTTLToTTKernelPass
       signalPassFailure();
       return;
     }
-
     FailureOr<GraphPipeNetForeachPlans> graphForeachPlans =
         buildGraphPipeNetForeachPlans(mod);
     if (failed(graphForeachPlans)) {
+      signalPassFailure();
+      return;
+    }
+    if (failed(addCompilerL1TensorRuntimeArgs(mod))) {
       signalPassFailure();
       return;
     }

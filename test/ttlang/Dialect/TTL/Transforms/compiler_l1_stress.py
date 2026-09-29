@@ -46,19 +46,22 @@ def make_module(events, architecture, unknown=False):
 
 
 def run_compiler(modules, reuse, allocation_strategy="first-fit-decreasing"):
-    result = subprocess.run(
-        [
-            "ttlang-opt",
-            "--split-input-file",
-            f"-pass-pipeline=builtin.module(ttl-finalize-dfb-indices{{memory-model=compiler-sram reuse-user-dfbs={str(reuse).lower()} sram-allocation-strategy={allocation_strategy}}})",
-        ],
-        input="\n// -----\n".join(modules),
-        text=True,
-        capture_output=True,
-        timeout=90,
-    )
-    assert result.returncode == 0, result.stderr
-    return result.stdout
+    outputs = []
+    for module_offset in range(0, len(modules), 512):
+        result = subprocess.run(
+            [
+                "ttlang-opt",
+                "--split-input-file",
+                f"-pass-pipeline=builtin.module(ttl-finalize-dfb-indices{{memory-model=compiler-sram reuse-user-dfbs={str(reuse).lower()} sram-allocation-strategy={allocation_strategy}}})",
+            ],
+            input="\n// -----\n".join(modules[module_offset : module_offset + 512]),
+            text=True,
+            capture_output=True,
+            timeout=90,
+        )
+        assert result.returncode == 0, result.stderr
+        outputs.append(result.stdout)
+    return "\n// -----\n".join(outputs)
 
 
 def make_control_prefix_module(architecture, count):

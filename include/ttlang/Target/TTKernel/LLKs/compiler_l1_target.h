@@ -12,6 +12,10 @@ namespace ttlang::l1::target {
 inline uint32_t arenaBase() {
   return get_common_arg_val<uint32_t>(get_compile_time_arg_val(0));
 }
+/// Returns the common runtime argument selected for tensor-backed storage.
+inline uint32_t commonArg(uint32_t index) {
+  return get_common_arg_val<uint32_t>(index);
+}
 inline uint32_t load(uint32_t address) {
   // Blackhole RISC caches are not coherent across processors on a node.
   asm volatile("fence" ::: "memory");

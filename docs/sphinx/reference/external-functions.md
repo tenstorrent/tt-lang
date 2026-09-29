@@ -265,7 +265,7 @@ addresses.
 | Python argument | Generated C++ argument | Restrictions |
 | --- | --- | --- |
 | Scalar value | Scalar parameter | Uses the kernel runtime-argument convention. |
-| DFB | `metal-cb`: physical DFB index; `compiler-sram`: address-bound DFB operand. | Declares a direct dependency on that DFB. |
+| DFB | Physical DFB index. | Valid only with `metal-cb`; `compiler-sram` uses `ttl.dfb_descriptor(dfb)` in `template_args`. |
 | Base tensor | Typed tensor accessor | Data movement accepts device DRAM or SRAM; compute accepts sharded SRAM. |
 | `ttl.raw_addr(tensor)` | `uint32_t` buffer address | Supported in compute and data-movement kernels. |
 
