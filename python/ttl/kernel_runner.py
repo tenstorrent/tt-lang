@@ -208,6 +208,14 @@ def _validate_physical_dfb_config(
             f"DFB[{config.dfb_index}] storage segments must cover its exact "
             "allocation nodes"
         )
+    if (
+        config.address_scope == DFBAddressScope.REMOTE_UNIFORM
+        and len({segment.is_tensor_backed for segment in config.storage_segments}) > 1
+    ):
+        raise ValueError(
+            f"DFB[{config.dfb_index}] address_scope='remote_uniform' cannot "
+            "mix tensor-backed and scratch storage segments"
+        )
 
 
 def _get_dfb_allocation(config: PhysicalDFBConfig) -> _DFBAllocation:
@@ -4634,6 +4642,30 @@ def _validate_dfb_reconfiguration_plan(
         _validate_tensor_backing_aliases(
             tensors, current_tensor_configurations.values()
         )
+
+    active_configurations = {}
+    for boundary_ordinal in (None, *boundary_ordinals):
+        active_configurations.update(configurations_by_entry[boundary_ordinal])
+        sources_by_storage = {}
+        remote_uniform_storage_indices = set()
+        for config in active_configurations.values():
+            storage_index = _physical_dfb_storage_index(config)
+            sources = sources_by_storage.setdefault(storage_index, set())
+            if config.storage_segments:
+                sources.update(
+                    segment.is_tensor_backed for segment in config.storage_segments
+                )
+            else:
+                sources.add(False)
+            if config.address_scope == DFBAddressScope.REMOTE_UNIFORM:
+                remote_uniform_storage_indices.add(storage_index)
+        for storage_index in remote_uniform_storage_indices:
+            if len(sources_by_storage[storage_index]) > 1:
+                raise ValueError(
+                    f"storage[{storage_index}] address_scope='remote_uniform' "
+                    "cannot mix tensor-backed and scratch storage across "
+                    "active DFB configurations"
+                )
 
 
 def _validate_remote_uniform_tensor_backing(
