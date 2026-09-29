@@ -24,8 +24,10 @@ class DFBReset:
     compiler-owned kernel. A call to ``ttl.reset_dfbs`` or
     ``ttl.reset_all_dfbs`` is replicated to those three logical kernels. A
     declaration may execute once or once per iteration of the same immutable
-    sequential loop nest in every participant. Runtime lowering is supported
-    only on Blackhole.
+    sequential loop with a compile-time-known trip count in every
+    participant. Whether it executes may depend on the launch node but not on
+    runtime values. A reset under a runtime condition or in nested loops is a
+    compilation error. Runtime lowering is supported only on Blackhole.
     """
 
     participants: tuple[KernelSelector, ...]
