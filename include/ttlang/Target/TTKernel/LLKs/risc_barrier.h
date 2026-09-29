@@ -47,10 +47,11 @@
 #define TTLANG_RISC_BARRIER_PACK
 #endif
 
-#if !defined(TTLANG_RISC_BARRIER_DM0) && !defined(TTLANG_RISC_BARRIER_DM1) && \
-    !defined(TTLANG_RISC_BARRIER_UNPACK) &&                                   \
+#if !defined(TTLANG_RISC_BARRIER_DM0) && !defined(TTLANG_RISC_BARRIER_DM1) &&  \
+    !defined(TTLANG_RISC_BARRIER_UNPACK) &&                                    \
     !defined(TTLANG_RISC_BARRIER_MATH) && !defined(TTLANG_RISC_BARRIER_PACK)
-#error "risc_barrier supports only the Tensix worker RISCs (DM0, DM1, UNPACK, MATH, PACK)"
+#error                                                                         \
+    "risc_barrier supports only the Tensix worker RISCs (DM0, DM1, UNPACK, MATH, PACK)"
 #endif
 
 namespace ttlang::detail {
