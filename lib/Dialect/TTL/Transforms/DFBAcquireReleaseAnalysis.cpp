@@ -71,21 +71,16 @@ static bool protocolUseMatchesAcquire(DFBAcquireInterval interval,
   return !foundDependency;
 }
 
-// The closest acquisition in the operation's block or an enclosing block
-// selects the DFB pointer used by a direct pipe send.
-bool isNearestDFBAcquireWaitImpl(Operation *operation, Value dfb) {
+// Whether a wait on `dfb` precedes `operation` in its block or precedes one of
+// its ancestors in the ancestor's block, so it dominates `operation`.
+static bool hasDominatingDFBWait(Operation *operation, Value dfb) {
   for (Operation *current = operation; current && !isa<func::FuncOp>(current);
        current = current->getParentOp()) {
     for (Operation *previous = current->getPrevNode(); previous;
          previous = previous->getPrevNode()) {
-      if (auto wait = dyn_cast<CBWaitOp>(previous)) {
-        if (wait.getCb() == dfb) {
-          return true;
-        }
-      } else if (auto reserve = dyn_cast<CBReserveOp>(previous)) {
-        if (reserve.getCb() == dfb) {
-          return false;
-        }
+      if (auto wait = dyn_cast<CBWaitOp>(previous);
+          wait && wait.getCb() == dfb) {
+        return true;
       }
     }
   }
@@ -105,13 +100,14 @@ static bool directDFBUseMatchesAcquire(DFBAcquireInterval interval,
     return true;
   }
 
-  // Pipe planning uses the nearest preceding acquisition to select the read
-  // or write pointer. Classify ownership by the same acquisition.
+  // A pipe send reads through the read pointer only after a wait on the DFB;
+  // otherwise pipe lowering sends the reserved block through the write
+  // pointer.
   bool readsWaitedBlock = copy.getSrc() == interval.dfb;
   if (readsWaitedBlock &&
       isa<PipeType, SelectedPipeSrcType, SelectedPipeDstType>(
           copy.getDst().getType())) {
-    readsWaitedBlock = isNearestDFBAcquireWaitImpl(copy, interval.dfb);
+    readsWaitedBlock = hasDominatingDFBWait(copy, interval.dfb);
   }
   switch (interval.kind) {
   case DFBAcquireReleaseKind::Producer:
@@ -421,10 +417,6 @@ static bool sameBlockReleaseMayOwnAcquire(DFBAcquireInterval interval,
 
 } // namespace
 
-bool isNearestDFBAcquireWait(Operation *operation, Value dfb) {
-  return isNearestDFBAcquireWaitImpl(operation, dfb);
-}
-
 bool isDFBAcquireOp(Operation *op) { return isa<CBReserveOp, CBWaitOp>(op); }
 
 bool isDFBReleaseOp(Operation *op) { return isa<CBPushOp, CBPopOp>(op); }
@@ -570,8 +562,14 @@ planCoalescedAcquireGroups(Block &block, DFBAcquireReleaseKind kind) {
     if (group.acquires.size() < 2) {
       continue;
     }
+    // A release after the next same-kind acquisition belongs to that
+    // acquisition, so a member without its own release leaves the group
+    // unmerged.
     for (Operation *op = group.acquires.back()->getNextNode(); op;
          op = op->getNextNode()) {
+      if (isAcquire(op) && getDFBAcquireDFB(op) == dfb) {
+        break;
+      }
       if (erasedReleases.contains(op) || !isRelease(op) ||
           getDFBReleaseDFB(op) != dfb) {
         continue;
