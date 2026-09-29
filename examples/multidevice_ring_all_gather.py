@@ -38,7 +38,7 @@ import torch
 import ttl
 import ttnn
 
-from ttlang_test_utils import open_fabric_mesh, to_dram
+from ttlang_test_utils import get_fabric_mesh_shape, open_fabric_mesh, to_dram
 from utils.correctness import assert_allclose
 
 TILE_SIZE = 32
@@ -202,17 +202,24 @@ def expected_destination(
     return expected
 
 
+# Discovered mesh shapes whose reshaped (N, 1) line has linked ends, so the
+# line is a ring and every hop, including the wrap, is one fabric hop.
+RING_MESH_SHAPES = ((2, 2), (2, 4), (4, 2))
+
+
 @contextmanager
 def open_ring_mesh(fabric_config=ttnn.FabricConfig.FABRIC_2D):
-    """Open every discovered device as an (N, 1) mesh.
+    """Open every discovered device as an (N, 1) mesh whose line is a ring.
 
-    TT-Metal orders the line so that its ends are linked on 2x2 and 2x4
-    meshes, which makes the line a ring.
+    Raises ValueError for a discovered shape outside RING_MESH_SHAPES.
     """
+    discovered_shape = tuple(get_fabric_mesh_shape(fabric_config=fabric_config))
+    if discovered_shape not in RING_MESH_SHAPES:
+        raise ValueError(
+            f"the ring all-gather needs a 2x2 or 2x4 mesh; found {discovered_shape}"
+        )
     with open_fabric_mesh(fabric_config=fabric_config) as mesh_device:
-        device_count = prod(mesh_device.shape)
-        if tuple(mesh_device.shape) != (device_count, 1):
-            mesh_device.reshape(ttnn.MeshShape((device_count, 1)))
+        mesh_device.reshape(ttnn.MeshShape((prod(discovered_shape), 1)))
         yield mesh_device
 
 

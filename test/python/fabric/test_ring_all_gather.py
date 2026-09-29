@@ -4,14 +4,16 @@
 
 """Device correctness of the ring all-gather relay lowering example."""
 
-from math import prod
-
 import pytest
 import torch
 
 ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
 
-from examples.multidevice_ring_all_gather import open_ring_mesh, run_ring_all_gather
+from examples.multidevice_ring_all_gather import (
+    RING_MESH_SHAPES,
+    open_ring_mesh,
+    run_ring_all_gather,
+)
 from ttlang_test_utils import get_fabric_mesh_shape
 
 pytestmark = pytest.mark.multi_device
@@ -26,11 +28,9 @@ pytestmark = pytest.mark.multi_device
     ids=["one-chunk-per-lane", "two-by-two-chunks-per-lane", "four-chunks-one-lane"],
 )
 def test_ring_all_gather(torch_dtype, m_tiles, k_shard_tiles, lanes, chunk_shape):
-    device_count = prod(
-        get_fabric_mesh_shape(fabric_config=ttnn.FabricConfig.FABRIC_2D)
-    )
-    if device_count < 3:
-        pytest.skip("the ring all-gather requires at least three devices")
+    mesh_shape = tuple(get_fabric_mesh_shape(fabric_config=ttnn.FabricConfig.FABRIC_2D))
+    if mesh_shape not in RING_MESH_SHAPES:
+        pytest.skip("the ring all-gather needs a 2x2 or 2x4 mesh")
     with open_ring_mesh() as mesh_device:
         run_ring_all_gather(
             mesh_device,
