@@ -39,6 +39,9 @@ class DFBAddressScope(Enum):
     LOCAL = "local"
     REMOTE_UNIFORM = "remote_uniform"
 
+    def _operation_identity_capture(self) -> tuple[str, str]:
+        return ("dfb-address-scope", self.value)
+
 
 def _resolve_address_scope(value: Any, context: str) -> Optional[DFBAddressScope]:
     if value is None or isinstance(value, DFBAddressScope):
