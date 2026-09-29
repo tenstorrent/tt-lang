@@ -492,9 +492,9 @@ planCoalescedAcquireGroups(Block &block, DFBAcquireReleaseKind kind) {
     return kind == DFBAcquireReleaseKind::Producer ? isa<CBPushOp>(op)
                                                    : isa<CBPopOp>(op);
   };
-  // The plan replays the pass's in-place rewrite: releases a merge erases are
-  // absent for later groups, and the release it keeps carries the merged
-  // tile count.
+  // The plan replays the pass's in-place rewrite: releases erased by an
+  // earlier merge are absent from later groups, and the retained release
+  // carries the merged tile count.
   llvm::DenseSet<Operation *> merged;
   llvm::DenseSet<Operation *> erasedReleases;
   llvm::DenseSet<Operation *> countedReleases;
