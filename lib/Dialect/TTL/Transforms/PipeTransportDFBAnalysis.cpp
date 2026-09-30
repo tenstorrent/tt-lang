@@ -268,13 +268,19 @@ analyzePipeTransportDFBOwnership(const PipeTransferNode &transferNode,
   PipeReceiverEndpointId endpointId = transferNode.receiverEndpoints.front();
   const PipeReceiverEndpoint &endpoint =
       pipeGraph.getPipeReceiverEndpoint(endpointId);
+  if (!endpoint.hasDFBDestination()) {
+    reason = "transport-owned DFB storage requires a DFB receiver";
+    return failure();
+  }
+  const PipeReceiverDFBDestination &dfbDestination =
+      endpoint.getDFBDestination();
   if (transferNode.pipe.srcX == endpoint.receiver.x &&
       transferNode.pipe.srcY == endpoint.receiver.y) {
     reason = "transport storage cannot alias source and destination nodes";
     return failure();
   }
-  if (!endpoint.receiverDFBInfo.hasStaticTileOffset ||
-      endpoint.receiverDFBInfo.staticTileOffset != 0) {
+  if (!dfbDestination.receiverDFBInfo.hasStaticTileOffset ||
+      dfbDestination.receiverDFBInfo.staticTileOffset != 0) {
     reason = "transport storage requires a zero receiver tile offset";
     return failure();
   }
@@ -292,14 +298,21 @@ analyzePipeTransportDFBOwnership(const PipeTransferNode &transferNode,
     return failure();
   }
 
+  Value sourceDFB = isa<CircularBufferType>(sendOp.getSrc().getType())
+                        ? sendOp.getSrc()
+                        : getAttachedCB(sendOp.getSrc());
   Value receiverDFB = getAttachedCB(postOp.getDst());
-  if (!receiverDFB || receiverDFB == sendOp.getSrc()) {
+  if (!sourceDFB || sourceDFB != sendOp.getSrc()) {
+    reason = "transport storage requires a complete source DFB block";
+    return failure();
+  }
+  if (!receiverDFB || receiverDFB == sourceDFB) {
     reason = "transport storage requires distinct source and destination DFBs";
     return failure();
   }
 
   FailureOr<PipeTransportDFBUse> source = analyzePipeTransportDFBUse(
-      sendLoop, sendOp.getSrc(), PipeTransportDFBRole::Source, transferNode.id,
+      sendLoop, sourceDFB, PipeTransportDFBRole::Source, transferNode.id,
       pipeGraph, reason);
   if (failed(source) || !hasPrivatePipeTransportDFBViews(*source, pipeGraph)) {
     if (succeeded(source)) {

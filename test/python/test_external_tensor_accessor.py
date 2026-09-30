@@ -889,8 +889,11 @@ def test_external_compute_tensor_accessors_prune_specialized_subsets(
     assert_allclose(ttnn.to_torch(second_out).float(), second_host.float())
 
 
+@pytest.mark.parametrize(
+    "dynamic_noc", [False, True], ids=["static-noc", "dynamic-noc"]
+)
 def test_external_compute_tensor_accessor_emitted_runner(
-    accessor_device, monkeypatch, tmp_path
+    accessor_device, monkeypatch, tmp_path, dynamic_noc
 ):
     """Emitted and ME2E runners preserve compute-local tensor metadata."""
 
@@ -919,7 +922,7 @@ def test_external_compute_tensor_accessor_emitted_runner(
     operation = _make_local_tensor_accessor_copy(
         _page_size_bytes(ttnn.DataType.BFLOAT16, ttnn.TILE_LAYOUT)
     )
-    operation(inp, out)
+    operation(inp, out, **({"options": "--ttl-dynamic-noc"} if dynamic_noc else {}))
     assert runner_path.exists()
 
     module_spec = importlib.util.spec_from_file_location(
@@ -954,26 +957,28 @@ def test_external_compute_tensor_accessor_emitted_runner(
     me2e_kernel_dir.mkdir()
     me2e_noc_kernels = []
     me2e_compute_kernel = None
-    for kernel_index, (
+    for (
         kernel_path_and_thread,
         tensor_indices,
         local_indices,
-    ) in enumerate(
-        zip(
-            runner_module.KERNEL_PATHS,
-            runner_module.KERNEL_TENSOR_INDICES,
-            runner_module.KERNEL_LOCAL_TENSOR_INDICES,
-            strict=True,
-        )
+    ) in zip(
+        runner_module.KERNEL_PATHS,
+        runner_module.KERNEL_TENSOR_INDICES,
+        runner_module.KERNEL_LOCAL_TENSOR_INDICES,
+        strict=True,
     ):
         kernel_path, thread_type = kernel_path_and_thread
         if thread_type == "compute":
             kernel_name = "compute"
             me2e_thread_type = ThreadType.COMPUTE
         else:
-            kernel_name = {0: "reader", 1: "writer"}[
-                runner_module.KERNEL_NOC_INDICES[kernel_index]
-            ]
+            source_name = os.path.splitext(os.path.basename(kernel_path))[0]
+            if "_dm_read_" in source_name:
+                kernel_name = "reader"
+            elif "_dm_write_" in source_name:
+                kernel_name = "writer"
+            else:
+                pytest.fail(f"unrecognized data-movement kernel {source_name}")
             me2e_thread_type = ThreadType.NOC
         copied_kernel_path = me2e_kernel_dir / f"{kernel_name}.cpp"
         shutil.copyfile(kernel_path, copied_kernel_path)

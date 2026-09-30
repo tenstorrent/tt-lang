@@ -34,6 +34,10 @@ constexpr uint32_t packStateWord = 2;
 constexpr uint32_t releaseWord = 3;
 constexpr uint32_t stateWordCount = 4;
 constexpr uint32_t participantCount = 3;
+// Participant and release words alternate between entryComplete and
+// exitComplete. The runtime zero-fills them when it allocates the reset state,
+// and a completed barrier leaves every word at exitComplete. Neither value
+// satisfies an entry wait, so consecutive barriers need no reset round.
 constexpr uint32_t entryComplete = 1;
 constexpr uint32_t exitComplete = 2;
 
@@ -126,16 +130,10 @@ FORCE_INLINE void exit(volatile uint32_t tt_l1_ptr *synchronizationState) {
   storeStateWord(&synchronizationState[arrivalWord], exitComplete);
   while (loadStateWord(&synchronizationState[releaseWord]) != exitComplete) {
   }
-  storeStateWord(&synchronizationState[arrivalWord], 0);
-  while (loadStateWord(&synchronizationState[releaseWord]) != 0) {
-  }
 #elif defined(TTL_DFB_RESET_DM1)
   while (!participantsHaveState(synchronizationState, exitComplete)) {
   }
   storeStateWord(&synchronizationState[releaseWord], exitComplete);
-  while (!participantsHaveState(synchronizationState, 0)) {
-  }
-  storeStateWord(&synchronizationState[releaseWord], 0);
 #endif
 }
 

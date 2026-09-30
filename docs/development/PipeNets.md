@@ -6,8 +6,9 @@ compiler and the simulator consume the same operation-level PipeNet
 collection described in [Operation PipeNets](#operation-pipenets).
 
 A node is a Tensix unit identified by one coordinate in the operation's launch
-grid. A dataflow buffer (DFB) is the user-visible payload buffer used by
-producer, consumer, and pipe transfer code. A pipe-coupled operation is
+grid. A dataflow buffer (DFB) is the user-visible L1 payload buffer used by
+producer, consumer, and pipe transfer code. Fabric receives may also target
+an interleaved DRAM tensor region. A pipe-coupled operation is
 an operation whose legality depends on a PipeNet role, such as a
 pipe-typed `ttl.copy` or a DFB wait whose producer is PipeNet-routed.
 NoC refers to TT-Metal network-on-chip operations used for remote SRAM
@@ -240,9 +241,9 @@ TTKernel conversion uses three representations:
 The immutable tables become bit-packed C++ template arguments stored outside
 the kernel stack. Inside a callback loop, `ttl.select_pipe_src` or
 `ttl.select_pipe_dst` represents the current transfer and the endpoint role
-that selected it. Copying from a DFB to that value sends data; copying from that
-value to a DFB receives data. Launch-domain verification proves that the
-callback executes on the required endpoint.
+that selected it. Copying from a DFB to that value sends data; copying from
+that value to a receiver destination receives data. Launch-domain
+verification proves that the callback executes on the required endpoint.
 
 PipeGraph enumerates transfers while proving protocol schedules. It retains
 one compiler-only transfer node for each combination of device edge and node
@@ -258,6 +259,10 @@ distinct transfer node, so each record retains its own address-sequence proof
 and runtime resources.
 
 ## Semantics
+
+The `RA/RP`, `CA/RP`, and `CA/CC` modes below describe L1 DFB destinations.
+Fabric transfers to DRAM tensor regions are specified under
+[Fabric integration](#fabric-integration).
 
 Lowering selects the destination-address mechanism independently from
 the sender synchronization mechanism:
@@ -632,6 +637,10 @@ receiver post from `ttl.copy(pipe, dst_blk)`, and
 that can complete the receive.
 
 ## Pipe transfer resource model and TTKernel lowering
+
+The DFB resource model in this section applies to L1 destinations. The DRAM
+destination protocol and address computation are specified under
+[Fabric integration](#fabric-integration).
 
 Pipe lowering first expands high-level pipe operations to Pipe Transfer IR:
 
@@ -1138,12 +1147,12 @@ pipe in isolation. A producer reservation contributes its span once even when
 multiple receive posts share it. Its matching push commits that span to the DFB
 ring. Consumer waits and pops do not participate in address-sequence
 construction because only the reserve/push sequence determines the write
-addresses. For `RP`, a reserve does not complete until the DFB has enough free
-blocks, and the sender does not transfer data until that reserve posts
-readiness. After an advance reaches the physical DFB end, the next reserve may
-select the first block safely even when the consumer is in another kernel
-thread. Fabric transport implements this admission relation with cumulative
-global readiness counters. The computed address sequence identifies the
+addresses. For an L1 DFB destination under `RP`, a reserve does not complete
+until the DFB has enough free blocks, and the sender does not transfer data
+until that reserve posts readiness. After an advance reaches the physical DFB
+end, the next reserve may select the first block safely even when the consumer
+is in another kernel thread. Fabric `CLA/RP` implements this admission relation
+with cumulative global readiness counters. The computed address sequence identifies the
 reserved slot; the receiver post confirms that the reservation completed
 before the sender uses that address.
 
@@ -1215,8 +1224,8 @@ DFB geometry, one sender function, one send with its corresponding posts, and
 supported 32-bit address arithmetic. For a collective, `RA/RP` is available
 only after the independent one-class address proof succeeds.
 
-Protocol selection consumes these graph facts without adding another address
-proof:
+For L1 DFB destinations, protocol selection consumes these graph facts
+without adding another address proof:
 
 ```text
 for T in pipe_graph.transfer_nodes:
@@ -1247,11 +1256,11 @@ for T in pipe_graph.transfer_nodes:
 ```
 
 The current capacity proof restricts `CC` to intra-device point-to-point NoC
-transfers, so intra-device collectives select `CA/RP` or `RA/RP`. `FABRIC` is
-the routing-plane implementation of `CA/RP`: the receiver remotely increments
-a cumulative sender-readiness counter after reserving its DFB block, and the
-sender remotely increments a cumulative receiver-completion counter with the
-final payload packet. See the
+transfers, so intra-device collectives select `CA/RP` or `RA/RP`. For an L1 DFB,
+`FABRIC` implements `CLA/RP`: the receiver increments a cumulative
+sender-readiness counter after reserving its DFB block, and the sender
+increments a cumulative receiver-completion counter after the payload write.
+DRAM destinations use the separate `CDA/RP` or `CDA/NR` rules below. See the
 [fabric synchronization protocol](PipesOnFabric.md#fabric-pipenet-synchronization-protocol).
 
 ##### Partial-overlap example
@@ -1897,6 +1906,7 @@ at the construction source location.
     -> ttl-finalize-dfb-indices
     -> ttl-annotate-cb-associations
     -> ttl-verify-dfb-spsc                       (read-only analysis)
+    -> ttl-verify-dfb-lifecycle                  (read-only analysis)
     -> ttl-erase-pipenet-scopes                  (transform)
     -> ttl-validate-cb-budget                    (read-only analysis)
     -> convert-ttl-to-ttkernel
@@ -1905,9 +1915,9 @@ at the construction source location.
 ```
 
 `ttl-insert-cb-sync` first makes every DFB lifecycle operation explicit.
-`ttl-verify-pipenet-guards` then uses each DFB's unique provisional index to
-compare producer and consumer domains. This occurs before final DFB index reuse
-so independent logical DFBs are not grouped by a shared physical index.
+`ttl-verify-pipenet-guards` then uses each DFB's logical identity to compare
+producer and consumer domains. This occurs before final DFB index reuse, so
+independent logical DFBs are not grouped by a shared physical index.
 `ttl-verify-pipenet-schedule` follows it so invalid launch domains are diagnosed
 before schedule construction. Both verifiers inspect the high-level pipe
 schedule before later transformations modify it, and diagnostics therefore use
@@ -1939,9 +1949,10 @@ may execute there.
 - `setToEntryState`: the entry block of every kernel function starts
   at the full launch grid (`ttl.launch_grid` module attribute).
 - `visitOperation`: identity for most ops; pipe-typed `ttl.copy`
-  operations check their `before` domain against the pipe role, and
-  `ttl.cb_push` / `ttl.cb_wait` operations are recorded for the later
-  DFB producer-domain check.
+  operations check their `before` domain against the pipe role. Direct
+  `ttl.cb_wait` operations and `push` effects from `DFBAccessOpInterface`
+  operations, including external calls, are recorded for the later DFB
+  producer-domain check.
 - `visitRegionBranchControlFlowTransfer`: when entering a region of
   `scf.if`, `affine.if`, `ttl.if_src`, `ttl.if_dst`, or
   `ttl.pipenet_scope`, the lattice at the region entry is set to `current`
@@ -1972,15 +1983,14 @@ the role required by the op:
 | `ttl.copy(pipe, buffer)` | `pipe.dst` (receiver set) |
 | `ttl.if_src %pipe` body | `pipe.src` (the operation executes its body only at the source coordinate) |
 | `ttl.if_dst %pipe` body | `pipe.dst` (the operation executes its body only in the destination range) |
-| `cb_wait` on pipe-coupled DFB | union of producer domains across all `cb_push` to the same DFB index |
+| `cb_wait` on pipe-coupled DFB | union of domains for direct and external `push` effects on the same logical DFB |
 
 DFB wait checking is module-global: producer domains accumulate by
-provisional DFB index across every `cb_push` the analysis visits, then a
-post-pass walks recorded `cb_wait` uses and checks each against the union. The
-frontend and compiler-created DFBs have unique provisional indices before
-physical allocation. A `cb_wait` in one kernel function is therefore checked
-against `cb_push` domains for the same logical DFB in other kernel functions,
-without combining independent DFBs that later reuse one physical index.
+logical DFB identity across every direct or externally declared `push` effect
+the analysis visits, then a post-pass checks recorded `cb_wait` uses against
+the union. A `cb_wait` in one kernel function is therefore checked against
+producer domains for the same logical DFB in other kernel functions, without
+combining independent DFBs that later reuse one physical index.
 
 `ttl-verify-pipenet-schedule` reuses the launch-node domains but constructs a
 separate event graph. Its correspondence rules are directional:
@@ -2015,7 +2025,7 @@ queries.
 
 ### Pipe transfer and receiver-address graph
 
-`PipeGraph` is the source of truth for logical pipe connectivity, transfer
+For L1 destinations, `PipeGraph` records logical pipe connectivity, transfer
 definitions, receiver DFB ownership, and receiver address sequences. Its
 relationships are:
 
@@ -2205,8 +2215,8 @@ note: suggested guard: `net_0.is_src()`
 | pipe schedule contains a wait-for cycle | Same-thread ordering creates a wait-for cycle not matched by a more specific diagnostic. | reorder same-thread sends and receives so all required receive posts happen before dependent sends |
 | collective pipe receiver payload layouts are incompatible | Collective endpoints use incompatible DFB element types, block sizes, reserve spans, or destination subviews. | use compatible receiver payload layouts, or use separate point-to-point transfers |
 | collective pipe receiver address sequences are not proven equal | The graph cannot prove one pointwise destination-address class over all occurrences of a collective transfer. | use receiver schedules that produce the same address for every occurrence, or use separate point-to-point transfers |
-| this `cb_wait` reads from a dataflow buffer that no other thread fills | A `cb_wait` references a DFB index that no `cb_push` anywhere in the module writes to. | check that another `@ttl.compute()` or `@ttl.datamovement()` thread reserves and pushes the same buffer |
-| this `cb_wait` runs on launched nodes where no thread pushes data to the buffer (would deadlock) | A `cb_wait` is reachable from nodes outside the union of `cb_push` producer domains for the same DFB index. | guard the wait with the same `if net.is_active(): ...` role condition the producer uses |
+| this `cb_wait` reads from a dataflow buffer that no other thread fills | A `cb_wait` references a logical DFB with no direct or externally declared `push` effect anywhere in the module. | check that another `@ttl.compute()` or `@ttl.datamovement()` thread reserves and pushes the same buffer |
+| this `cb_wait` runs on launched nodes where no thread pushes data to the buffer (would deadlock) | A `cb_wait` is reachable from nodes outside the union of direct and externally declared `push` producer domains for the same logical DFB. | guard the wait with the same `if net.is_active(): ...` role condition the producer uses |
 | could not statically analyze the PipeNet guard around this op | A surrounding condition uses runtime values or arithmetic the verifier can't enumerate per coordinate (e.g. multiplying a node coordinate by a runtime value). | rewrite using `net.is_src()` / `net.is_dst()` / `net.is_active()`, or compare `ttl.node(dims=2)` coordinates against integer constants |
 
 Internal-invariant diagnostics also exist (`references unknown PipeNet
@@ -2314,7 +2324,7 @@ that the two diverge:
 | Send/post and send/wait correspondence | yes (`ttl-verify-pipenet-schedule`) | runtime only |
 | Same-thread PipeNet wait-for cycles | yes (`ttl-verify-pipenet-schedule`) | runtime only |
 | `ttl.pipenet_scope` domain is a subset of declared role union | yes | no |
-| `cb_wait` covered by `cb_push` producer domain | yes (static) | runtime only (deadlock detector in `greenlet_scheduler.py`) |
+| `cb_wait` covered by direct or externally declared `push` producer domain | yes (static) | runtime only (deadlock detector in `greenlet_scheduler.py`) |
 | Unanalyzable coordinate-dependent condition diagnosed | yes | no |
 | Missing/malformed `ttl.launch_grid`, unknown PipeNet ids | yes | n/a (no IR) |
 
@@ -2625,18 +2635,160 @@ The shared graph and proof must preserve these fabric invariants:
 * corresponding send and receiver-post declarations identify the same logical
   device transfer;
 * fabric transfers require a proven computed receiver address;
-* each receiver post publishes readiness with a reverse-route atomic increment
-  of the sender's cumulative readiness counter, and the sender waits for the
-  corresponding count before writing;
-* the final payload packet increments a cumulative completion counter on the
-  receiver, and the receiver waits for the corresponding count before
-  consuming the DFB block;
-* readiness and completion counters use remotely addressable synchronization
-  storage;
+* fabric receiver posts publish readiness with a reverse-route atomic increment,
+  and senders wait for the corresponding cumulative ready count before writing,
+  unless every transfer occurrence has a statically disjoint DRAM region;
+* receiver pops do not return capacity for reuse by another fabric transfer in
+  the same invocation;
+* fabric completion uses remotely addressable synchronization storage;
 * `CC` capacity counters are not selected for fabric transfers.
 
-The complete operation sequence and generated C++ calls are described in the
-[fabric synchronization protocol](PipesOnFabric.md#fabric-pipenet-synchronization-protocol).
+For the receiver post, payload completion, and generated C++ calls for each
+fabric protocol, see the
+[fabric PipeNet synchronization protocol](PipesOnFabric.md#fabric-pipenet-synchronization-protocol).
+
+### Computed DRAM tensor destinations
+
+A fabric pipe receive may store its payload in a receiver-coordinate-resolved
+region of an interleaved DRAM tensor rather than a receiver DFB. `CLA/RP` and
+`CDA/RP` refine `CA/RP` by identifying L1 and DRAM destinations. `CDA/NR`
+omits receiver rendezvous when the destination cannot be reused during the
+invocation. Routing-plane flow control does not make reused storage safe.
+
+| Protocol | Destination address | Send condition | Transport |
+| --- | --- | --- | --- |
+| `RA/RP` | Receiver publishes its reserved L1 DFB address. | Every required receiver has posted. | NoC |
+| `CA/RP` | Sender computes the reserved L1 DFB address. | Every required receiver has posted. | NoC |
+| `CA/CC` | Sender computes the L1 DFB slot address. | The receiver has available DFB capacity. | NoC |
+| `CLA/RP` | Sender computes an L1 DFB slot address. | Every required receiver has posted. | Fabric |
+| `CDA/RP` | Sender computes a DRAM tensor-region address. | Every required receiver has posted. | Fabric |
+| `CDA/NR` | Sender computes a DRAM tensor-region address. | No receiver readiness condition; the destination is disjoint for the invocation. | Fabric |
+
+| Protocol event or property | `RA/RP` | `CA/RP` | `CA/CC` | `CLA/RP` | `CDA/RP` | `CDA/NR` |
+| --- | --- | --- | --- | --- | --- | --- |
+| Receiver reserves a destination DFB block | Yes | Yes | Yes | Yes | No | No |
+| Receiver publishes the destination address | Yes | No | No | No | No | No |
+| Sender waits for a receiver post | Yes | Yes | No | Yes | Yes | No |
+| Sender waits for reusable destination capacity | Through the receiver post | Through the receiver post | Yes | Through the receiver post | Through the receiver post | Not applicable |
+| Sender computes the destination address | No | Yes | Yes | Yes | Yes | Yes |
+| Destination storage | L1 DFB | L1 DFB | L1 DFB | L1 DFB | DRAM tensor region | DRAM tensor region |
+| Payload admission | Receiver post | Receiver post | Capacity counter | Receiver post and fabric flow control | Receiver post and fabric flow control | Disjoint destination and fabric flow control |
+| Receiver-visible completion | Completion notification after the payload is visible | Completion notification after the payload is visible | Completion counter after the payload is visible | Remote completion counter after the payload is visible | Remote completion counter after the payload is visible | Remote completion counter after the payload is visible |
+| Consumer returns capacity | No | No | Yes | No | No | No |
+| Storage reuse within one invocation | Receiver selects the reserved slot | Receiver selects the reserved slot | Sender reuses a slot after receiving a credit | A pop does not make an assigned slot available to another fabric transfer | Allowed after the completed payload has been read before the next post | Prohibited |
+
+The protocols have the following equivalent pseudocode. `complete` becomes
+observable only after the payload write is visible at the receiver.
+
+`RA/RP`:
+
+```text
+receiver: slot = reserve_dfb()
+receiver: publish_address(slot); post_to_sender()
+sender:   wait_for_post(); address = read_published_address()
+sender:   write_payload(address); complete()
+receiver: wait_for_completion(); consume(slot); pop_dfb()
+```
+
+`CA/RP`:
+
+```text
+receiver: slot = reserve_dfb(); post_to_sender()
+sender:   wait_for_post(); address = compute_dfb_slot_address()
+sender:   write_payload(address); complete()
+receiver: wait_for_completion(); consume(slot); pop_dfb()
+```
+
+`CA/CC`:
+
+```text
+sender:   wait_for_capacity_credit()
+sender:   address = compute_dfb_slot_address()
+sender:   write_payload(address); complete()
+receiver: slot = reserve_dfb(); wait_for_completion()
+receiver: consume(slot); pop_dfb(); return_capacity_credit()
+```
+
+Fabric `CLA/RP`:
+
+```text
+receiver: slot = reserve_assigned_dfb_block(); post_to_sender()
+sender:   wait_for_post()
+sender:   address = compute_l1_dfb_slot_address()
+sender:   fabric_write_payload(address); complete_remotely()
+receiver: wait_for_completion()
+receiver: consume(slot); pop_dfb()
+```
+
+Fabric `CDA/RP`:
+
+```text
+receiver: post_to_sender()
+sender:   wait_for_post()
+sender:   addresses = compute_dram_tensor_page_addresses()
+sender:   fabric_scatter_write_pages(addresses); complete_remotely()
+receiver: wait_for_completion(); read_region_into_local_dfb(); wait_for_read()
+receiver: compute(); pop_local_dfb(); repeat_or_finish()
+```
+
+Fabric `CDA/NR`:
+
+```text
+sender:   addresses = compute_disjoint_dram_tensor_page_addresses()
+sender:   fabric_scatter_write_pages(addresses); complete_remotely()
+receiver: wait_for_completion(); read_region_into_local_dfb(); wait_for_read()
+receiver: compute(); pop_local_dfb(); repeat_or_finish()
+```
+
+For `CDA/RP`, the sender computes each remote DRAM page address from the
+destination tensor metadata and tile coordinates resolved for each receiver
+node. Consecutive source pages are grouped into fabric scatter writes of up to
+four pages, subject to the active fabric packet-size limit. A multi-page
+transfer performs one ordered remote completion increment after all scatter
+writes. Payload packets and the completion increment use the same routing-plane
+connection, whose command order prevents completion from preceding a payload
+write. A one-page transfer uses one fused payload write and completion
+increment. The receiver waits for completion before reading the region. A
+region may be reused when the same sequential control context completes that
+read before posting the next transfer; otherwise transfers require disjoint
+regions. Each selected PipeNet record with varying destination coordinates uses
+independent sender-local occurrence state.
+
+For `CDA/NR`, the compiler omits the readiness counter and reverse fabric
+manager only when a point-to-point transfer writes statically disjoint DRAM
+regions throughout the invocation. The receiver declaration still creates the
+completion tokens consumed by `wait`.
+
+`ttl-verify-pipenet-schedule` and pipe lowering select `CDA/NR` with one
+shared rule: the same tensor-region occurrence enumeration, the same overlap
+test against other receive destinations of the tensor on the receiver device,
+and the same point-to-point, single-receiver condition. The schedule verifier
+models a `CDA/NR` send as not waiting for its receiver post, so no
+post-to-send wait-for edge exists for it. The post and send still pair
+one-to-one. Lowering selects one protocol per send operation, so a send
+operation that also sends on a transfer requiring readiness keeps its
+post-to-send edges. A destination that the verifier cannot enumerate, for
+example one reached through a helper call, is treated as overlapping every
+destination on its device, which keeps the readiness edges.
+
+This mechanism must remain within the existing proof sequence. Planning must
+prove:
+
+1. every transfer maps to an in-bounds destination tensor region resolved at
+   each receiver node;
+2. different transfers on the same device do not write overlapping regions;
+3. every destination has a positive statically proven transfer count, and a
+   repeated region is read completely before its next receiver post;
+4. the completion increment follows payload visibility;
+5. each consumer read follows the corresponding completion observation; and
+6. the destination tensor, completion storage, route, and fabric-manager
+   ownership remain live for the transfer interval.
+
+An opaque external call that declares only DFB effects and fabric-manager
+ownership does not establish these properties. It can measure hardware
+feasibility, but a production implementation must represent tensor-region
+transfers declaratively so `PipeGraph`, transport planning, resource planning,
+and schedule verification can validate them before lowering.
 
 ## Future work
 

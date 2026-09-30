@@ -420,7 +420,6 @@ The returned value establishes completion only for the selected request. Nonsele
 
 <!-- @spec:example pipe/wait_any_receive.py -->
 
-
 ### Group transfer
 
 When `ttl.copy` function is called multiple times, instead of waiting on each transfer handle, it is possible to group handles and wait on all handles at once. This is done by instantiating `ttl.GroupTransfer` object and then adding handles with its `add` function. Once all handles are added `wait_all` function is called to wait for all transfers to complete.

@@ -165,6 +165,12 @@ callback already determines one logical kernel. A top-level opaque call without
 a selector is invalid because the compiler cannot infer placement from C++
 code.
 
+`func_args`, `dfb_effects`, and `dfb_accesses` accept either a list used by
+every emitted call or a mapping from selected kernel selectors to lists. A
+mapping may omit a selected kernel; its emitted call then omits that keyword.
+`func_args` mappings may contain empty lists. Each listed `dfb_effects` or
+`dfb_accesses` value must be nonempty.
+
 The target backend assigns logical kernels to its supported kernel resources.
 Compilation fails when an operation requests more kernels of a kind than the
 target supports. Unified and explicit multi-kernel operations use the same
@@ -224,6 +230,7 @@ ordinals.
 | Python argument | Generated C++ argument |
 | --- | --- |
 | `int` | Signed integer constant |
+| `ttl.uint32(value)` | Unsigned 32-bit integer constant |
 | `bool` | Boolean constant |
 | `float` | Unsigned binary32 bit-pattern constant |
 | `ttl.dfb_descriptor(dfb)` | `ttlang::DFBDescriptor<index, pages_per_block, block_count, page_size>` type |
@@ -240,6 +247,7 @@ ttl.call_extern_func(
         ttl.dfb_descriptor(source_dfb),
         ttl.dfb_descriptor(destination_dfb),
         4,
+        ttl.uint32(0xFFFFFFFF),
         False,
     ],
     kernel=ttl.KernelKind.DATA_MOVEMENT,
@@ -248,8 +256,9 @@ ttl.call_extern_func(
 
 ## Function arguments
 
-`func_args` accepts lowered scalar values, DFBs, base tensors, and raw tensor
-addresses.
+`func_args` accepts a list of lowered scalar values, DFBs, base tensors, and raw
+tensor addresses. A kernel-specific mapping assigns a separate argument list to
+each selected logical kernel.
 
 | Python argument | Generated C++ argument | Restrictions |
 | --- | --- | --- |
@@ -299,11 +308,12 @@ unambiguous. Distinct formal parameters retain separate occurrences even when
 the caller supplies the same DFB for those parameters. A local alias does not
 create a distinct occurrence.
 
-`dfb_effects` is an optional call-wide list of synchronous DFB protocol actions
-in the exact order the external function executes them. Each action explicitly
-names one DFB dependency and has a positive, statically resolvable tile count no
-greater than the DFB capacity. A complete summary can provide the lifecycle
-proof needed for physical-index reuse:
+After kernel-specific selection, `dfb_effects` is an optional list of
+synchronous DFB protocol actions in the exact order that the emitted external
+call executes them. Each action explicitly names one DFB dependency and has a
+positive, statically resolvable tile count no greater than the DFB capacity. A
+complete summary can provide the lifecycle proof needed for physical-index
+reuse:
 
 ```python
 ttl.call_extern_func(
@@ -376,10 +386,11 @@ eligible for physical-index sharing. The boundary implementation must complete
 earlier interface work before publishing arrival. This does not validate the
 external function's internal queue protocol.
 
-`dfb_accesses` is an ordered list of synchronous, non-transactional access
-summaries. `ttl.DFBAccess.inspect(dfb)` states that the external function may
-read the selected DFB's descriptor or contents but does not publish, consume,
-or leave that DFB changed when it returns:
+After kernel-specific selection, `dfb_accesses` is an ordered list of
+synchronous, non-transactional access summaries. `ttl.DFBAccess.inspect(dfb)`
+states that the external function may read the selected DFB's descriptor or
+contents but does not publish, consume, or leave that DFB changed when it
+returns:
 
 ```python
 ttl.call_extern_func(

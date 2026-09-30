@@ -1252,7 +1252,6 @@ elif selected == 1:
         ttl.copy(second_result, output_tensor[0, 0]).wait()
 ```
 
-
 ### Group transfer
 
 When `ttl.copy` function is called multiple times, instead of waiting on each transfer handle, it is possible to group handles and wait on all handles at once. This is done by instantiating `ttl.GroupTransfer` object and then adding handles with its `add` function. Once all handles are added `wait_all` function is called to wait for all transfers to complete.
