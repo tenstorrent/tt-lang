@@ -22,10 +22,12 @@ class DFBReset:
     selectors. A ``KernelKind`` selects the operation's canonical kernel of
     that kind; a ``Kernel`` selects an explicit operation-local or
     compiler-owned kernel. A call to ``ttl.reset_dfbs`` or
-    ``ttl.reset_all_dfbs`` is replicated to those three logical kernels. A
-    declaration may execute once or once per iteration of the same immutable
-    sequential loop nest in every participant. Runtime lowering is supported
-    only on Blackhole.
+    ``ttl.reset_all_dfbs`` is replicated to those three logical kernels. On
+    each launch node, every participant executes a declaration at most once,
+    or once per iteration of one sequential loop with a compile-time-known trip
+    count. Whether it executes may depend on the launch node but not on runtime
+    values; a reset under a condition on a runtime value or in nested loops is
+    a compilation error. Runtime lowering is supported only on Blackhole.
     """
 
     participants: tuple[KernelSelector, ...]

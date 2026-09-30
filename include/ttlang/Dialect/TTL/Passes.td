@@ -1079,6 +1079,58 @@ def TTLVerifyDFBSPSC
   let dependentDialects = [];
 }
 
+def TTLVerifyDFBLifecycle
+    : Pass<"ttl-verify-dfb-lifecycle", "::mlir::ModuleOp"> {
+  let summary = "Verify DFB acquire/release order and capacity per launch node";
+  let description = [{
+    Checks, per launch node and DFB, that the `ttl.cb_reserve`/`ttl.cb_push`
+    and `ttl.cb_wait`/`ttl.cb_pop` sequences of all kernels are well formed:
+    a release never exceeds the preceding acquisitions of its kind, open
+    acquisitions never exceed the DFB capacity, no acquisition is open when
+    the kernel returns, and across kernels the blocks waited for or popped
+    never exceed the blocks pushed while the unpopped blocks fit the capacity.
+    Every kernel on a node waits at a synchronized reset or reconfiguration
+    until all of them arrive, so the waits and reserves before one must be
+    satisfied by the pushes and pops before it. A reset restores the physical
+    interfaces of its lowered mask and a reconfiguration the descriptors that
+    `ttl.dfb_reconfiguration_plan` installs at its boundary on the node; a
+    restored DFB's sequence between two restorations is checked on its own,
+    and every other DFB's sequence continues across the operation.
+
+    Nodes where an external call may perform undeclared protocol actions on a
+    DFB are not checked for it. There the pass warns when the DFB is waited
+    on, never popped, and its producer can push more blocks than its capacity
+    before a restoration, because published blocks stay in the DFB.
+
+    ```mlir
+    // Rejected: four blocks are pushed into a capacity-1 DFB that no
+    // kernel pops.
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 1} {dfb_id = 0 : index} : ...
+    scf.for %i = %c0 to %c4 step %c1 {
+      %slot = ttl.cb_reserve %cb : ...
+      ttl.cb_push %cb : ...
+    }
+    ```
+
+    A loop whose body contains a reset or reconfiguration is summarized from
+    its first iteration and one later iteration, so the cost does not depend
+    on the trip count. The later iterations share that summary only when every
+    condition on the loop index that controls protocol effects or barriers
+    compares the index with a value that is constant on the node and has one
+    outcome in every iteration after the first; otherwise every DFB of the
+    kernel is left unchecked.
+
+    Region execution per node comes from the launch-node domain and
+    execution-count analyses; sequences they cannot resolve are accepted.
+    Requires the finalized DFB indices and `ttl.dfb_allocations` metadata
+    emitted by `ttl-finalize-dfb-indices`, the `ttl.dfb_reconfiguration_plan`
+    it emits for a module with reconfigurations, and a valid
+    `ttl.launch_grid`.
+  }];
+
+  let dependentDialects = [];
+}
+
 def TTLErasePipeNetScopes
     : Pass<"ttl-erase-pipenet-scopes", "::mlir::ModuleOp"> {
   let summary = "Inline and erase `ttl.pipenet_scope` regions";
@@ -1150,6 +1202,15 @@ def TTLFinalizeDFBIndices
     different geometry or storage. A DFB with live protocol state crosses a
     reconfiguration unchanged and remains active in every epoch it spans, so
     its physical index cannot be reassigned at those boundaries.
+
+    Every participant must execute a synchronized reset or reconfiguration the
+    same compile-time-known number of times on each launch node: at most once,
+    or once per iteration of one sequential loop with a constant trip count.
+    The count may differ between launch nodes through conditions on the launch
+    node, but not through a loop bound or a runtime value. A reset or
+    reconfiguration under a condition on a runtime value, or in nested loops,
+    is rejected because the DFB lifecycle checks do not cover transactions
+    across it.
 
     Physical-index coloring and storage coloring enforce different contracts.
     A physical index identifies one active hardware descriptor and therefore
