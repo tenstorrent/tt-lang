@@ -271,7 +271,7 @@ tt-lang-sim examples/eltwise_add.py
 python -m pytest test/sim/
 ```
 
-The simulator typically supports more language features than the compiler at any given point — see the [functionality matrix](specs/TTLangSpecification.md#appendix-d-functionality-matrix) for current coverage. See the [programming guide](simulator.md) for debugger setup and more details.
+The simulator typically supports more language features than the compiler at any given point. See [implementation status](reference/implementation-status.md) for current coverage and the [simulator guide](simulator.md) for debugger setup and more details.
 
 ## Quick checks
 
