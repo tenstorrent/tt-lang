@@ -7,6 +7,54 @@ commit SHA reachable from public `main`. The default is the public workflow's
 exact SHA. This test establishes host program construction only. Device
 correctness and timing remain untested.
 
+## Using this during TT-Lang development
+
+Use these mocks to detect compiler/API, DFB planning, and kernel-generation
+failures encountered while constructing K3 programs. Both workflows must be
+merged and the credentials and execution runner configured before hosted runs
+are available; see the repository settings below.
+
+| Development task | How to run the check |
+| --- | --- |
+| Check a change merged into TT-Lang | A push to `main` automatically checks that exact compiler SHA; a daily run checks the workflow's `main` revision. |
+| Reproduce a failure or check an earlier merged commit | Manually dispatch the public workflow from `main` with a full SHA reachable from `main`. |
+| Check an unmerged TT-Lang change | Use the private local runner with a clean compiler checkout at the candidate commit; the hosted workflow rejects unmerged commits. |
+
+### Dispatch and inspect a merged compiler commit
+
+An authenticated repository member can use local `gh`. Replace the example SHA
+with the full compiler commit to check:
+
+```bash
+compiler_sha=bc36476bdb0c348f4cb272bc7e51292c1b844444
+gh workflow run k3-host-mock.yml --repo tenstorrent/tt-lang --ref main \
+  -f compiler_sha="$compiler_sha"
+gh api "repos/tenstorrent/tt-lang/commits/${compiler_sha}/status" \
+  --jq '.statuses[] | select(.context == "K3 host mock") | {state, description, target_url}'
+```
+
+The status appears on the requested compiler commit. Its `target_url` opens the
+public orchestration run. A successful result means all five pinned fixtures
+reached their first mock dispatch with zero exits and valid generated-kernel
+archives. This is a host-construction result; device correctness and timing
+still require separate tests. The status is not a required PR merge check.
+
+For a failure, open the public run first to distinguish dispatch/configuration
+failures from private build/mock failures. With private-repository access, find
+the private run matching the compiler SHA and correlation ID in its title.
+Its `k3-host-mock-private-results` artifact contains provenance, per-entry
+reports and logs, and generated-kernel archives, retained for seven days.
+
+### Check a compiler candidate before merging
+
+Private-repository members can follow the
+[local reproduction instructions](https://github.com/tenstorrent/tt-lang-ops-and-models/blob/main/ci/k3_host_mock/README.md#local-reproduction)
+with a clean checkout at their committed compiler candidate and the documented
+pinned model/dependency checkouts. This builds that candidate and runs the same
+five fixtures without hardware. Local preparation accepts a full candidate SHA
+without the hosted public-main restriction. Inspect its `summary.json`, reports,
+and generated kernels before continuing with device validation.
+
 The public workflow checks out its own trusted `main` revision, creates a
 repository-scoped GitHub App token, and dispatches
 `tenstorrent/tt-lang-ops-and-models`'s `k3-host-mock.yml` on private `main`. It
@@ -61,13 +109,6 @@ Private execution also requires a configured Linux x64 Docker runner with at
 least 16 GB RAM. Configuration is documented with the private runner. Both workflows must be
 reviewed and merged to their default branches before dispatching by filename.
 No repository secret contains a user's personal `gh` login.
-
-An authenticated repository member can manually dispatch using local `gh`:
-
-```bash
-gh workflow run k3-host-mock.yml --repo tenstorrent/tt-lang --ref main \
-  -f compiler_sha=bc36476bdb0c348f4cb272bc7e51292c1b844444
-```
 
 The initial status is separate from `check-all-green`. Public `main` currently
 requires `check-all-green` through ruleset 9293173. A new requirement for
