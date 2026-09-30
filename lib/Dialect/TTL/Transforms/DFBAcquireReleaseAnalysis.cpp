@@ -7,6 +7,7 @@
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 
+#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/BuiltinTypes.h"
@@ -70,6 +71,22 @@ static bool protocolUseMatchesAcquire(DFBAcquireInterval interval,
   return !foundDependency;
 }
 
+// Whether a wait on `dfb` precedes `operation` in its block or precedes one of
+// its ancestors in the ancestor's block, so it dominates `operation`.
+static bool hasDominatingDFBWait(Operation *operation, Value dfb) {
+  for (Operation *current = operation; current && !isa<func::FuncOp>(current);
+       current = current->getParentOp()) {
+    for (Operation *previous = current->getPrevNode(); previous;
+         previous = previous->getPrevNode()) {
+      if (auto wait = dyn_cast<CBWaitOp>(previous);
+          wait && wait.getCb() == dfb) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 // Operand roles and protocol effects identify the pointer side. Unclassified
 // direct accesses conservatively match both sides.
 static bool directDFBUseMatchesAcquire(DFBAcquireInterval interval,
@@ -83,11 +100,21 @@ static bool directDFBUseMatchesAcquire(DFBAcquireInterval interval,
     return true;
   }
 
+  // A pipe send reads through the read pointer only after a wait on the DFB;
+  // otherwise pipe lowering sends the reserved block through the write
+  // pointer.
+  bool readsWaitedBlock = copy.getSrc() == interval.dfb;
+  if (readsWaitedBlock &&
+      isa<PipeType, SelectedPipeSrcType, SelectedPipeDstType>(
+          copy.getDst().getType())) {
+    readsWaitedBlock = hasDominatingDFBWait(copy, interval.dfb);
+  }
   switch (interval.kind) {
   case DFBAcquireReleaseKind::Producer:
-    return copy.getDst() == interval.dfb;
+    return copy.getDst() == interval.dfb ||
+           (copy.getSrc() == interval.dfb && !readsWaitedBlock);
   case DFBAcquireReleaseKind::Consumer:
-    return copy.getSrc() == interval.dfb;
+    return readsWaitedBlock;
   }
   llvm_unreachable("unknown DFB acquire/release kind");
 }
@@ -238,9 +265,14 @@ static bool projectToIntervalOrderingBlock(DFBAcquireInterval interval,
   } else if (!isBefore(ordering.start, projected)) {
     return false;
   }
-  if (!ignoreBoundary && interval.kindBoundary &&
-      !isBefore(projected, interval.kindBoundary)) {
-    return false;
+  // `op` must also precede `kindBoundary`, compared through its ancestor in
+  // the block of `kindBoundary`.
+  if (!ignoreBoundary && interval.kindBoundary) {
+    Operation *reference =
+        interval.kindBoundary->getBlock()->findAncestorOpInBlock(*op);
+    if (!reference || !isBefore(reference, interval.kindBoundary)) {
+      return false;
+    }
   }
   return true;
 }
@@ -770,9 +802,14 @@ static void walkDFBAcquireOwnedUses(
     if (countsAsUse) {
       recordUse(user, projected);
     }
+    // Tensor views, transfer handles, and receive requests keep naming the
+    // acquired slot; a scalar read from the block does not.
     if (propagateResults) {
       for (Value result : user->getResults()) {
-        worklist.push_back(result);
+        if (isa<RankedTensorType, TransferHandleType, ReceiveRequestType,
+                ReadyReceiveType>(result.getType())) {
+          worklist.push_back(result);
+        }
       }
     }
     return true;
@@ -851,6 +888,20 @@ Operation *findLastDFBAcquireOwnedUse(DFBAcquireInterval interval) {
                             updateLatestUse(projected, last);
                           });
 
+  return last;
+}
+
+Operation *
+findLastDFBAcquireOwnedUseInAcquiringBlock(DFBAcquireInterval interval) {
+  Block *block = interval.acquire->getBlock();
+  Operation *last = interval.acquire;
+  walkDFBAcquireOwnedUses(interval, DFBUseTraversal::LazyTensorResults,
+                          [&](Operation *user, Operation *) {
+                            if (Operation *projected =
+                                    block->findAncestorOpInBlock(*user)) {
+                              updateLatestUse(projected, last);
+                            }
+                          });
   return last;
 }
 
@@ -1147,6 +1198,11 @@ DFBAcquireReleaseIndex::getReleases(DFBAcquireReleaseKind kind) const {
     }
   }
   return releases;
+}
+
+bool hasDFBProtocolEffectOn(Operation *operation, Value dfb,
+                            DFBProtocolEffectKind kind) {
+  return hasProtocolEffect(operation, dfb, kind);
 }
 
 } // namespace mlir::tt::ttl
