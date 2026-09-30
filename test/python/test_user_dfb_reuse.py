@@ -899,6 +899,41 @@ def _make_synchronized_reset_kernel(
     return synchronized_reset_kernel
 
 
+def _make_preserved_dfb_reset_kernel(data_format):
+    compute_kernel = ttl.Kernel(ttl.KernelKind.COMPUTE)
+    reader_kernel = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
+    writer_kernel = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
+    reset = ttl.DFBReset(
+        participants=(compute_kernel, reader_kernel, writer_kernel),
+    )
+
+    @ttl.operation(grid=(1, 1))
+    def preserved_dfb_reset_kernel(input_tensor, output_tensor):
+        preserved_dfb = ttl.make_dfb(data_format, shape=(1, 1), block_count=1)
+        output_dfb = ttl.make_dfb(data_format, shape=(1, 1), block_count=1)
+
+        @ttl.datamovement(kernel=reader_kernel)
+        def read():
+            with preserved_dfb.reserve() as destination:
+                ttl.copy(input_tensor[0, 0], destination).wait()
+            ttl.reset_all_dfbs(reset, preserve=[preserved_dfb])
+
+        @ttl.compute(kernel=compute_kernel)
+        def compute():
+            ttl.reset_all_dfbs(reset, preserve=[preserved_dfb])
+            with preserved_dfb.wait() as source:
+                with output_dfb.reserve() as destination:
+                    destination.store(source)
+
+        @ttl.datamovement(kernel=writer_kernel)
+        def write():
+            ttl.reset_all_dfbs(reset, preserve=[preserved_dfb])
+            with output_dfb.wait() as source:
+                ttl.copy(source, output_tensor[0, 0]).wait()
+
+    return preserved_dfb_reset_kernel
+
+
 def _make_repeated_synchronized_reset_kernel(data_format, reset_all):
     compute_kernel = ttl.Kernel(ttl.KernelKind.COMPUTE)
     reader_kernel = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
@@ -2099,6 +2134,39 @@ def test_synchronized_reset_terminates_producer_epoch(
         assert_allclose(actual, expected, rtol=0.05, atol=1.0)
     else:
         assert_allclose(actual, expected, rtol=1e-5, atol=1e-6)
+
+
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "f32"])
+@pytest.mark.parametrize(
+    ("memory_config", "to_device"),
+    [("dram", to_dram), ("l1", to_l1)],
+    ids=["dram", "l1"],
+)
+def test_reset_all_dfbs_preserves_listed_interface(
+    device,
+    dtype,
+    memory_config,
+    to_device,
+):
+    if ttl_api._detect_device_arch(device) != "blackhole":
+        pytest.skip("requires Blackhole DFB reset support")
+
+    data_format = "bf16" if dtype == torch.bfloat16 else "float32"
+    operation = _make_preserved_dfb_reset_kernel(data_format)
+    input_host = (
+        torch.arange(TILE * TILE, dtype=torch.float32).reshape(TILE, TILE) / 64
+    ).to(dtype)
+    input_tensor = to_device(input_host, device)
+    output_tensor = to_device(torch.zeros_like(input_host), device)
+
+    for _invocation_index in range(2):
+        operation(input_tensor, output_tensor, options="--ttl-reuse-user-dfbs")
+
+    actual = ttnn.to_torch(output_tensor).float()
+    if dtype == torch.bfloat16:
+        assert_allclose(actual, input_host.float(), rtol=0.05, atol=1.0)
+    else:
+        assert_allclose(actual, input_host.float(), rtol=1e-5, atol=1e-6)
 
 
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "f32"])

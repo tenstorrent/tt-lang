@@ -7,6 +7,8 @@
 import os
 from pathlib import Path
 
+import pytest
+
 from ttl.ttl_api import _write_kernel_to_tmp
 
 
@@ -54,5 +56,26 @@ def test_write_kernel_replaces_existing_file_atomically(monkeypatch):
     try:
         assert Path(_write_kernel_to_tmp("compute_fn", source)) == path
         assert observed_temp_source == [source]
+    finally:
+        _cleanup(path)
+
+
+@pytest.mark.parametrize(
+    ("verbose_value", "expects_output"),
+    [("0", False), ("1", True)],
+    ids=("disabled", "enabled"),
+)
+def test_write_kernel_respects_verbose_environment(
+    monkeypatch, capsys, verbose_value, expects_output
+):
+    source = "void kernel_main() {}\n"
+    user = f"ttlang-test-{os.getpid()}"
+    monkeypatch.setenv("USER", user)
+    monkeypatch.setenv("TTLANG_VERBOSE_KERNELS", verbose_value)
+
+    path = Path(_write_kernel_to_tmp("compute_fn", source))
+    try:
+        output = capsys.readouterr().out
+        assert (source in output) == expects_output
     finally:
         _cleanup(path)

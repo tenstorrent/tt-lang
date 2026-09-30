@@ -1612,12 +1612,18 @@ struct RawAddrLowering : OpConversionPattern<RawAddrOp> {
 
 struct DFBSynchronizationLoweringPlan {
   DenseMap<SynchronizedDFBResetAttr, int64_t> stateOffsetByReset;
-  DenseMap<Operation *, SmallVector<int32_t>> resetDFBsByOperation;
+  DenseMap<Operation *, uint64_t> resetMaskByOperation;
+  DenseMap<Operation *, uint64_t> preservedMaskByOperation;
+  DenseMap<int64_t, uint64_t> dfbMaskByAllocationGroup;
   int64_t scratchBaseOffset = 0;
   int64_t scratchBytes = 0;
   int64_t synchronizedResetCount = 0;
   uint64_t allDFBMask = 0;
 };
+
+static FailureOr<uint64_t>
+getExpandedDFBMask(ValueRange dfbs, Operation *operation,
+                   const DFBSynchronizationLoweringPlan &plan);
 
 static FailureOr<DFBSynchronizationLoweringPlan>
 buildDFBSynchronizationLoweringPlan(ModuleOp module) {
@@ -1666,7 +1672,12 @@ buildDFBSynchronizationLoweringPlan(ModuleOp module) {
           << getTargetDFBIndexCapacityDescription(bind);
       return WalkResult::interrupt();
     }
-    plan.allDFBMask |= uint64_t{1} << static_cast<unsigned>(index);
+    uint64_t dfbMask = uint64_t{1} << static_cast<unsigned>(index);
+    plan.allDFBMask |= dfbMask;
+    if (DFBAllocationGroupAttr allocationGroup =
+            bind.getAllocationGroupAttr()) {
+      plan.dfbMaskByAllocationGroup[allocationGroup.getOrdinal()] |= dfbMask;
+    }
     return WalkResult::advance();
   });
   if (allocationResult.wasInterrupted()) {
@@ -1674,15 +1685,27 @@ buildDFBSynchronizationLoweringPlan(ModuleOp module) {
   }
 
   WalkResult resetResult = module.walk([&](ResetDFBsOp reset) -> WalkResult {
-    FailureOr<SmallVector<int32_t>> indices =
-        getValidatedPhysicalDFBIndices(reset.getDfbs(), reset);
-    if (failed(indices)) {
+    FailureOr<uint64_t> mask = getExpandedDFBMask(reset.getDfbs(), reset, plan);
+    if (failed(mask)) {
       return WalkResult::interrupt();
     }
-    plan.resetDFBsByOperation.try_emplace(reset, std::move(*indices));
+    plan.resetMaskByOperation.try_emplace(reset, *mask);
     return WalkResult::advance();
   });
   if (resetResult.wasInterrupted()) {
+    return failure();
+  }
+  WalkResult resetAllResult =
+      module.walk([&](ResetAllDFBsOp reset) -> WalkResult {
+        FailureOr<uint64_t> mask =
+            getExpandedDFBMask(reset.getPreservedDfbs(), reset, plan);
+        if (failed(mask)) {
+          return WalkResult::interrupt();
+        }
+        plan.preservedMaskByOperation.try_emplace(reset, *mask);
+        return WalkResult::advance();
+      });
+  if (resetAllResult.wasInterrupted()) {
     return failure();
   }
   return plan;
@@ -1733,6 +1756,37 @@ static LogicalResult lowerDFBReset(Operation *operation,
   return success();
 }
 
+static FailureOr<uint64_t>
+getExpandedDFBMask(ValueRange dfbs, Operation *operation,
+                   const DFBSynchronizationLoweringPlan &plan) {
+  uint64_t dfbMask = 0;
+  for (Value dfb : dfbs) {
+    FailureOr<int32_t> dfbIndex = getValidatedDFBIndex(dfb, operation);
+    if (failed(dfbIndex)) {
+      return failure();
+    }
+    dfbMask |= uint64_t{1} << static_cast<unsigned>(*dfbIndex);
+    BindCBOp declaration = getDFBDeclaration(dfb);
+    if (!declaration) {
+      return operation->emitError("cannot resolve DFB declaration");
+    }
+    DFBAllocationGroupAttr allocationGroup =
+        declaration.getAllocationGroupAttr();
+    if (!allocationGroup) {
+      continue;
+    }
+    auto groupMask =
+        plan.dfbMaskByAllocationGroup.find(allocationGroup.getOrdinal());
+    if (groupMask == plan.dfbMaskByAllocationGroup.end()) {
+      return operation->emitError("allocation group ")
+             << allocationGroup
+             << " is absent from the DFB reset lowering plan";
+    }
+    dfbMask |= groupMask->second;
+  }
+  return dfbMask;
+}
+
 struct ResetDFBsLowering : OpConversionPattern<ResetDFBsOp> {
   ResetDFBsLowering(TypeConverter &typeConverter, MLIRContext *context,
                     const DFBSynchronizationLoweringPlan &plan)
@@ -1741,15 +1795,10 @@ struct ResetDFBsLowering : OpConversionPattern<ResetDFBsOp> {
   LogicalResult
   matchAndRewrite(ResetDFBsOp op, OpAdaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    auto indicesIt = plan.resetDFBsByOperation.find(op);
-    assert(indicesIt != plan.resetDFBsByOperation.end() &&
+    auto maskIt = plan.resetMaskByOperation.find(op);
+    assert(maskIt != plan.resetMaskByOperation.end() &&
            "reset operands must be present in the immutable lowering plan");
-    ArrayRef<int32_t> dfbIndices = indicesIt->second;
-    uint64_t dfbMask = 0;
-    for (int32_t dfbIndex : dfbIndices) {
-      dfbMask |= uint64_t{1} << static_cast<unsigned>(dfbIndex);
-    }
-    return lowerDFBReset(op, op.getReset(), dfbMask, plan, rewriter);
+    return lowerDFBReset(op, op.getReset(), maskIt->second, plan, rewriter);
   }
 
 private:
@@ -1764,7 +1813,11 @@ struct ResetAllDFBsLowering : OpConversionPattern<ResetAllDFBsOp> {
   LogicalResult
   matchAndRewrite(ResetAllDFBsOp op, OpAdaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    return lowerDFBReset(op, op.getReset(), plan.allDFBMask, plan, rewriter);
+    auto maskIt = plan.preservedMaskByOperation.find(op);
+    assert(maskIt != plan.preservedMaskByOperation.end() &&
+           "preserved DFBs must be present in the immutable lowering plan");
+    return lowerDFBReset(op, op.getReset(), plan.allDFBMask & ~maskIt->second,
+                         plan, rewriter);
   }
 
 private:
@@ -1821,11 +1874,13 @@ struct DFBReconfigurationLowering : OpConversionPattern<DFBReconfigurationOp> {
         rewriter, op.getLoc(),
         IntegerType::get(rewriter.getContext(), 32, IntegerType::Unsigned),
         runtimeArgIndex);
-    ttk::OpaqueCallOp::create(
+    auto reconfigurationCall = ttk::OpaqueCallOp::create(
         rewriter, op.getLoc(), TypeRange{},
         rewriter.getStringAttr("experimental::reconfigure_dfb_interfaces"),
         rewriter.getStringAttr("<cstdint>"), ValueRange{configurationAddress},
         ArrayAttr(), rewriter.getDenseI32ArrayAttr({0}), DenseI32ArrayAttr());
+    reconfigurationCall->setAttr(kDFBReconfigurationOrdinalAttrName,
+                                 rewriter.getI64IntegerAttr(ordinal));
     rewriter.eraseOp(op);
     return success();
   }

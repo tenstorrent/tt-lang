@@ -5,13 +5,14 @@
 #compute = #ttl.logical_kernel<kind = compute, identity = "compute", operation = "operation">
 #reader = #ttl.logical_kernel<kind = data_movement, identity = "reader", operation = "operation">
 #writer = #ttl.logical_kernel<kind = data_movement, identity = "writer", operation = "operation">
-#boundary = #ttl.dfb_reconfiguration<0, participants[#compute, #reader, #writer]>
+#boundary = #ttl.dfb_reconfiguration<0, participants[#compute, #reader, #writer], discard_dfb_state = true>
+#done = #ttl.dfb_reconfiguration<1, participants[#compute, #reader, #writer], discard_dfb_state = true>
 
 // CHECK: DFB logical_id=0 bounded=1
 // CHECK: epochs=[{accesses=[0, 1, 2, 3]
 // CHECK-SAME: entry_reconfiguration=initial
 // CHECK-SAME: active_configurations=[initial, 0]
-// CHECK-SAME: terminal_reconfiguration=none
+// CHECK-SAME: terminal_reconfiguration=1
 
 module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blackhole>} {
   func.func @compute() attributes {
@@ -38,6 +39,7 @@ module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blac
         dfb_effects [#ttl.dfb_protocol_effect<wait, 0, 1>,
                      #ttl.dfb_protocol_effect<pop, 0, 1>]
         () {header = "effects.hpp"} : () -> ()
+    ttl.dfb_reconfiguration #done
     return
   }
 
@@ -54,6 +56,7 @@ module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blac
     scf.if %active {
       ttl.dfb_reconfiguration #boundary
     }
+    ttl.dfb_reconfiguration #done
     return
   }
 
@@ -70,6 +73,7 @@ module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blac
     scf.if %active {
       ttl.dfb_reconfiguration #boundary
     }
+    ttl.dfb_reconfiguration #done
     return
   }
 }

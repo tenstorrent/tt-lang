@@ -9,7 +9,7 @@ import pytest
 from ttl.dataflow_buffer import DFBStorageSegment, PhysicalDFBConfig
 from ttl.dialects import ttcore  # noqa: F401
 from ttl.ir import Context, Module
-from ttl.ttl_api import _resolve_dfb_configs
+from ttl.ttl_api import _extract_dfb_reconfiguration_plan, _resolve_dfb_configs
 
 
 def _entry(
@@ -20,6 +20,7 @@ def _entry(
     block_count=2,
     page_size=2048,
     storage_index=None,
+    address_scope=None,
     l1_offset=None,
     l1_payload_offset=None,
     l1_allocation_bytes=None,
@@ -28,6 +29,9 @@ def _entry(
 
     storage_field = (
         "" if storage_index is None else f"storage_index = {storage_index} : i32, "
+    )
+    address_scope_field = (
+        "" if address_scope is None else f'address_scope = "{address_scope}", '
     )
     l1_fields = ""
     for field_name, field_value in (
@@ -38,7 +42,7 @@ def _entry(
         if field_value is not None:
             l1_fields += f"{field_name} = {field_value} : i64, "
     return (
-        f"{{dfb_index = {dfb_index} : i32, {storage_field}{l1_fields}"
+        f"{{dfb_index = {dfb_index} : i32, {storage_field}{address_scope_field}{l1_fields}"
         f"num_tiles = {num_tiles} : i32, "
         f"element_type = {element_type}, block_count = {block_count} : i32, "
         f"page_size = {page_size} : i32}}"
@@ -90,7 +94,62 @@ def test_storage_indices_are_preserved():
         ]
 
 
-def test_compiler_l1_offsets_are_preserved():
+def test_reconfiguration_epochs_inherit_physical_storage_index():
+    with Context():
+        module = Module.parse("""module attributes {
+              ttl.dfb_allocations = [{
+                block_count = 1 : i32,
+                dfb_index = 0 : i32,
+                element_type = bf16,
+                num_tiles = 1 : i32,
+                page_size = 2048 : i32,
+                storage_index = 3 : i32
+              }],
+              ttl.dfb_reconfiguration_plan = {
+                boundary_ordinals = array<i64: 7>,
+                dfbs = [{
+                  configurations = [{
+                    block_count = 1 : i32,
+                    element_type = bf16,
+                    num_tiles = 1 : i32,
+                    page_size = 2048 : i32
+                  }, {
+                    block_count = 1 : i32,
+                    element_type = f32,
+                    entry_reconfiguration = 7 : i64,
+                    num_tiles = 1 : i32,
+                    page_size = 4096 : i32
+                  }],
+                  dfb_index = 0 : i32
+                }]
+              }
+            } {}""")
+        physical_configs = _resolve_dfb_configs(module)
+        plan = _extract_dfb_reconfiguration_plan(module, physical_configs)
+
+        assert plan is not None
+        assert [epoch.config.storage_index for epoch in plan.dfb_epochs[0]] == [3, 3]
+
+
+@pytest.mark.parametrize("address_scope", ["local", "remote_uniform"])
+def test_address_scope_is_preserved(address_scope):
+    with Context():
+        module = _module([_entry(0, address_scope=address_scope)])
+
+        assert _resolve_dfb_configs(module) == [
+            PhysicalDFBConfig(
+                0,
+                1,
+                "bfloat16",
+                2,
+                2048,
+                None,
+                address_scope=address_scope,
+            )
+        ]
+
+
+def test_compiler_sram_offsets_are_preserved():
     with Context():
         module = _module(
             [
@@ -185,8 +244,7 @@ def test_compiler_sram_module_rejects_payload_past_arena():
 
 def test_tensor_backing_segments_preserve_nodes_and_tensor_range():
     with Context():
-        module = Module.parse(
-            """module attributes {ttl.dfb_allocations = [{
+        module = Module.parse("""module attributes {ttl.dfb_allocations = [{
               block_count = 1 : i32,
               dfb_index = 0 : i32,
               element_type = !ttcore.tile<32x32, bf16>,
@@ -197,8 +255,7 @@ def test_tensor_backing_segments_preserve_nodes_and_tensor_range():
                   tensor_index = 2, byte_offset = 2048, byte_size = 2048>,
                 nodes = [[1, 0], [0, 0]]
               }]
-            }]} {}"""
-        )
+            }]} {}""")
 
         assert _resolve_dfb_configs(module) == [
             PhysicalDFBConfig(
@@ -323,63 +380,11 @@ def test_missing_complete_allocations_are_rejected():
         ([_entry(0, block_count=0)], "block_count must be positive"),
         ([_entry(0, page_size=0)], "page_size must be positive"),
         ([_entry(0, storage_index=-1)], "storage_index must be a nonnegative"),
+        (
+            [_entry(0, address_scope="operation_uniform")],
+            "address_scope must be 'local' or 'remote_uniform'",
+        ),
         ([_entry(0, element_type="i1")], "Unrecognized MLIR scalar element type"),
-        (
-            [_entry(0, l1_offset=0)],
-            "must contain all compiler-sram allocation fields",
-        ),
-        (
-            [
-                _entry(
-                    0,
-                    l1_offset=-1,
-                    l1_payload_offset=64,
-                    l1_allocation_bytes=4096,
-                )
-            ],
-            "compiler-sram offsets must be nonnegative",
-        ),
-        (
-            [
-                _entry(
-                    0,
-                    l1_offset=64,
-                    l1_payload_offset=32,
-                    l1_allocation_bytes=4096,
-                )
-            ],
-            "l1_payload_offset must not precede l1_offset",
-        ),
-        (
-            [_entry(0, l1_offset=64, l1_payload_offset=68, l1_allocation_bytes=4096)],
-            "payload must follow all control records",
-        ),
-        (
-            [
-                _entry(0, l1_offset=0, l1_payload_offset=16, l1_allocation_bytes=4096),
-                _entry(1, l1_offset=8, l1_payload_offset=32, l1_allocation_bytes=4096),
-                _entry(2, l1_offset=16, l1_payload_offset=32, l1_allocation_bytes=4096),
-            ],
-            "payload must follow all control records",
-        ),
-        (
-            [
-                _entry(0, l1_offset=0, l1_payload_offset=32, l1_allocation_bytes=4096),
-                _entry(1, l1_offset=4, l1_payload_offset=32, l1_allocation_bytes=4096),
-            ],
-            "control records overlap",
-        ),
-        (
-            [
-                _entry(
-                    0,
-                    l1_offset=0,
-                    l1_payload_offset=64,
-                    l1_allocation_bytes=1024,
-                )
-            ],
-            "l1_allocation_bytes must cover the 4096-byte payload",
-        ),
         ([_entry(0), _entry(0)], "duplicate dfb_index 0"),
         ([_entry(1)], "dense physical index range"),
         (
@@ -400,12 +405,7 @@ def test_missing_complete_allocations_are_rejected():
 )
 def test_invalid_complete_physical_allocations_are_rejected(allocations, message):
     with Context():
-        memory_model = (
-            "compiler-sram"
-            if any("l1_offset" in entry for entry in allocations)
-            else None
-        )
-        module = _module(allocations, memory_model=memory_model)
+        module = _module(allocations)
 
         with pytest.raises(ValueError, match=message):
             _resolve_dfb_configs(module)

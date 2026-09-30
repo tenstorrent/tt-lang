@@ -48,6 +48,14 @@ lifecycle is complete or ends at a synchronized boundary that is explicitly
 allowed to discard its state. [DFB lifecycle](#dfb-lifecycle) and
 [Index reuse](#index-reuse) define these rules in detail.
 
+## User-managed synchronization
+
+By default, release inference inserts missing push/pop operations and acquire coalescing combines compatible queue-operation groups. These transformations also inspect explicit releases to determine which accesses belong to each acquired slot.
+
+An external C++ consumer can wait and pop internally without exposing those actions as protocol metadata. For example, a program may reserve a DFB, fill it through external C++, push it, then call an external consumer in the same conditional region. Release inference can mistake that consumer for a write-side use that must precede the push.
+
+`--no-ttl-auto-sync-user-dfbs` disables release inference, its access-order checks, and acquire coalescing for user-managed DFBs. The program supplies their complete reserve/push/wait/pop sequence and synchronization, including operations inside external C++. Compiler-created DFBs retain automatic synchronization, identified with the existing `ttl.compiler_allocated` marker. Conditional receive-completion, SPSC, allocation, and capacity checks remain enabled. Storage reuse still requires the existing lifetime and allocation-group contracts.
+
 ## Tensor-backed storage
 
 `ttl.make_tensor_backed_dfb` binds a DFB's complete capacity to a byte range
@@ -143,6 +151,8 @@ canonicalize, cse                  (Module) Fold selected record tables
 ttkernel-cleanup                  (Module) Optimize writes with resolved endpoints
 ttkernel-finalize-tensor-runtime-args (Module) Finalize tensor and DFB argument indices
 canonicalize                       (Module) Remove obsolete argument expressions
+ttkernel-specialize-dfb-reconfiguration
+                                    (Module, specialized only) Resolve per-core reconfiguration descriptors
 ttkernel-annotate-dfb-use          (Module, specialized only) Record surviving physical DFB uses
 ```
 
@@ -150,6 +160,7 @@ Core specialization and DFB-use annotation are optional. [Initial receive
 batching](PipeReceiveBatching.md), record-loop unrolling,
 cleanup, and tensor runtime-argument finalization run in both modes. Finalization
 follows record-loop cleanup so eliminated uses cannot retain obsolete arguments;
+DFB reconfiguration specialization resolves each boundary's descriptor fields;
 annotation then records only surviving DFB uses on each clone's launch node.
 The Python kernel builder combines specialized clones only when their generated
 C++ and complete runtime descriptor metadata match, then dispatches the shared
@@ -211,6 +222,34 @@ source and restricts it to the exact launch nodes using that source. Sparse
 domains allocate one tensor shard per selected core rather than the area of
 their bounding rectangle.
 
+Each DFB declares the address requirement imposed by its users through
+`address_scope`, a `ttl.DFBAddressScope` (its string values are accepted). The
+default `LOCAL` scope permits different L1 addresses on different nodes. Use
+`REMOTE_UNIFORM` when code reads a DFB's local address and uses it as a remote
+NoC address: the runtime then creates one descriptor at the same L1 address on
+every allocated node, allocates it before every local-scope descriptor so it
+costs no padding, and never splits it per core; a program whose remote-uniform
+and local storage do not fit fails at descriptor construction. The scope does
+not change the DFB protocol, capacity, or synchronization. It restricts reuse
+in three ways. A `remote_uniform` DFB cannot share backing storage with a
+different physical DFB index, because that sharing would make its address
+depend on the other index's node domain. A local tensor-backed DFB cannot share
+a physical index with a `remote_uniform` DFB, because the shared index takes
+the stricter scope, which the tensor's own shard addresses cannot provide. DFBs
+with different storage sources, tensor backing or scratch, cannot share a
+`remote_uniform` physical index unless they run on the same nodes, because the
+index has one descriptor over all of its nodes.
+
+Operation tensors allocated per core bind each executing core's own shard
+address in its kernel descriptor, including the base address of a
+`TensorAccessor`. A kernel on an owner core may therefore access only its own
+shard of such a tensor unless every owner holds the same address; the runtime
+cannot check which shards a kernel reads. A core outside the shard grid
+addresses the tensor remotely and receives the one address every owner core
+holds, as a lockstep allocation would provide; descriptor construction fails
+when the owner addresses differ. Local access to a per-core tensor still
+requires a shard on every executing core.
+
 TT-Metal allocates static descriptor storage in descriptor order. It maintains
 one allocation frontier per core, and a descriptor shared by several cores
 starts at the greatest frontier among those cores. The runtime simulates these
@@ -224,13 +263,24 @@ exhaustion proves that no order fits; reaching the state limit reports a
 conservative failure and the best candidate's overflow.
 
 The usable interval for each core begins at the configured DFB allocator base
-and ends at the lowest live L1 tensor page. Subtracting only allocated page
-sizes would ignore allocator gaps and could overestimate the available range.
+and ends at the lowest live L1 tensor page. TT-Metal reports only lockstep
+allocations, so the runtime also bounds each core by the lowest per-core
+address of the per-core allocated operation and runtime-resource tensors it
+holds, taking the minimum across mesh devices as TT-Metal's circular-buffer
+validation does. Per-core allocations the runtime is not given remain visible
+only to that validation. Subtracting only allocated page sizes would ignore
+allocator gaps and could overestimate the available range.
 Tensor-backed and already allocated computed-address storage do not advance the
 static frontiers. For a multi-device mesh, tensor and runtime-resource
-allocations use common L1 addresses, while harvested worker mappings can
-differ. The runtime therefore applies the reference allocator's global minimum
-remaining interval to every logical core.
+allocations can constrain the usable interval differently on each logical
+core. When no per-core DFB placement is resolved, because the program carries
+neither per-core DFB use metadata, allocation domains, nor reconfiguration
+scratch segments, the runtime applies the reference allocator's global minimum
+remaining interval to every logical core. The compile-time budget is always
+this device-wide minimum, so a per-core tensor on a core the operation does not
+launch on can still lower it. Per-core limits taken from the reference
+allocator's pages assume that every device holds its lockstep L1 pages at the
+same addresses on the same logical cores as the reference device.
 The correctness invariant is that every surviving DFB access has one compatible
 descriptor on its launch core; conservative metadata preserves the
 whole-program descriptor behavior when this cannot be proved.
@@ -285,13 +335,33 @@ def make_reset_operation():
 reset_operation = make_reset_operation()
 ```
 
-The same `DFBReset` value identifies the three occurrences as one dynamic
-boundary. `ttl.reset_all_dfbs(reset_boundary)` provides the same boundary for
-every allocated physical DFB index. A declaration contains exactly one compute
-kernel and two data movement kernels. It executes once per dispatch and launch
-node, or once per iteration of the same immutable sequential loop nest in all
-participants. Conditional occurrences must use equivalent structured conditions
-on all participants and cannot form a repeated reset run.
+The same `DFBReset` value identifies the three occurrences as one synchronized
+reset. `ttl.reset_all_dfbs(reset_boundary)` resets every allocated DFB
+interface. `ttl.reset_all_dfbs(reset_boundary, preserve=[live_dfb])` leaves
+`live_dfb` unchanged while resetting the other interfaces. This form is useful
+when an operation retains one input or output across an internal reset but
+abandons temporary DFB state. `ttl.reset_dfbs(reset_boundary, dfbs=[...])`
+resets only the listed DFBs. Listing or preserving one member of an allocation
+group applies to every member because the group shares one L1 allocation.
+
+A declaration contains exactly one compute kernel and two data movement
+kernels. It executes once per dispatch and launch node, or once per iteration
+of the same immutable sequential loop nest in all participants. Conditional
+occurrences must use equivalent structured conditions on all participants and
+cannot form a repeated reset run.
+
+Canonical operation kernels can participate without explicit handles. This
+keeps composed operations on the target's canonical worker kernels:
+
+```python
+reset_boundary = ttl.DFBReset(
+    participants=(
+        ttl.KernelKind.COMPUTE,
+        ttl.KernelKind.DATA_MOVEMENT,
+        ttl.PIPE_SOURCE_KERNEL,
+    )
+)
+```
 
 The compiler treats the interval before the first reset, each interval between
 resets, and the interval after the last reset as separate allocation epochs.
@@ -415,7 +485,9 @@ preceding lifecycle with residual queue or per-RISC wait state. A producer may
 leave published pages available when their maximum occupancy does not exceed the
 DFB capacity. A reader may wait without popping when preceding publication is
 sufficient for the wait to complete. A named opaque external access may also end
-at the call when its last possible execution is proven to occur earlier.
+at the call when its last possible execution is proven to occur earlier. This
+remains valid when node-dependent control prevents an exact launch-node domain:
+every possible access must precede the state-discarding reconfiguration.
 `unknown_dfb_access` remains unbounded because it does not identify the affected
 DFBs. Reconfiguration does not clear payload bytes. Reassigning the physical
 index resets its occupancy, ring pointers, and interface initialization before
@@ -429,15 +501,17 @@ overwrite data still in use. Once both readers reach `ttl.reconfigure_dfbs(...)`
 its synchronization establishes that the reads are complete and its state reset
 makes a separate synchronized pop unnecessary.
 
-For a repeated state-discarding reconfiguration sequence, structured static
-loop bounds may locate a conditional external call between the same two
+For a repeated reconfiguration sequence, structured static loop bounds may
+locate a conditional external call between the same two
 reconfiguration calls in every iteration. The bounds contribute access ordering
 and maximum execution counts; the normal capacity, wait-progress, pointer
-ownership, and operation-order checks still apply. Every reconfiguration in the
-repeated sequence must permit state discard. A lifecycle that begins after a
-conditional non-repeated reconfiguration call must use the same condition so it
-cannot access a descriptor that was not configured. Accesses ended by a
-conditional state-discarding call must use that condition as well.
+ownership, and operation-order checks still apply. The reconfiguration that
+terminates each bounded external lifecycle must permit state discard and follow
+every possible access in that lifecycle. Other reconfigurations need not permit
+state discard. A lifecycle that begins after a conditional non-repeated
+reconfiguration call must use the same condition so it cannot access a
+descriptor that was not configured. Accesses ended by a conditional
+state-discarding call must use that condition as well.
 
 The allocation conflict graph permits two lifecycle epochs to share a physical
 index only when their per-node active epochs are disjoint and their static
@@ -479,6 +553,12 @@ GlobalSemaphore objects remain owned by the operation's serialized
 runtime-resource cache. Compatible calls reuse one generation. Incompatible
 replacement and owner destruction synchronize the device before releasing it;
 failed synchronization retains ownership.
+
+When `TT_METAL_ALLOCATOR_MODE_HYBRID=1` is set before device initialization,
+reconfiguration scratch and configuration tensors use independent per-core L1
+addresses to avoid cross-core free-space fragmentation; remote-uniform scratch
+keeps one address on every core. The default Metal allocator mode retains
+lockstep allocation for compatibility.
 
 Per-core L1 accounting uses target allocation quanta rather than logical byte
 counts. On each launch node it includes one aligned maximum allocation per
@@ -599,25 +679,27 @@ effects execute on the same hardware processors on every shared launched node.
 A happens-before relation proves zero occupancy but does not transfer
 ring-pointer state between processors.
 
-## Single-producer Single-consumer Semantics
+## DFB Queue Ownership
 
 ### Contract
 
-Each DFB has at most one producer thread and at most one consumer thread on
-each launched node. A *thread* here is a `func.func` carrying the
-`ttl.kernel_thread` attribute (compute, noc, ethernet); ops in untagged
-functions are outside the contract.
+On each launched node, a DFB has at most one producer kernel and at most one
+kernel that executes `pop`. A kernel here is a `func.func` carrying the
+`ttl.kernel_thread` attribute (compute, noc, or ethernet). Operations in
+untagged functions are outside this contract.
 
-Multiple producer or consumer threads may reference the same DFB index when the
-compiler can prove that their launch-node domains are disjoint. For example, a
-DFB may be consumed by a compute thread on PipeNet destination nodes and by a
-data-movement thread on PipeNet source nodes, provided no launched node belongs
-to both consumer domains.
+Reserve and push effects identify a producer because they grant and publish
+writable storage. A pop effect identifies the read-pointer owner because it
+releases pages for producer reuse. A wait effect only observes whether enough
+pages have been published. Multiple kernels may wait for and read the same
+pages; exactly one of them may pop those pages, and the program must ensure that
+the pop executes after every reader finishes.
 
-The rule is inherited from tt-metal: its CB protocol is not multi-writer safe on either side. Each CB has two shared counters in `dataflow_api.h`:
+This restriction follows from the two shared tt-metal counters in
+`dataflow_api.h`:
 
-- `pages_received`, incremented by `cb_push_back` (producer side),
-- `pages_acked`, incremented by `cb_pop_front` (consumer side).
+- `pages_received`, incremented by `cb_push_back`,
+- `pages_acked`, incremented by `cb_pop_front`.
 
 `cb_reserve_back` blocks until `pages_received - pages_acked < block_count`.
 `cb_wait_front` blocks until `pages_received > pages_acked`. The protocol is
@@ -625,9 +707,14 @@ correct only when at most one thread on a physical node writes each counter;
 the counters are not atomic with respect to multiple writers and carry no
 per-thread identity.
 
-### Violation
+Different producer or pop-owner kernels may reference the same DFB when their
+launch-node domains are disjoint. Every physical node still has one producer
+and one pop owner.
 
-A two-consumer DFB inside a stripe loop:
+### Invalid and valid multiple-reader protocols
+
+The following program has two pop owners because leaving each `wait` context
+pops the acquired pages:
 
 ```python
 buf = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
@@ -635,77 +722,56 @@ buf = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
 @ttl.compute()
 def compute():
     for _ in range(num_stripes):
-        with buf.reserve() as b:
-            b.store(...)
-        with buf.wait() as b:       # consumer A: compute
+        with buf.reserve() as block:
+            block.store(...)
+        with buf.wait() as block:
             ...
 
 @ttl.datamovement()
-def dm_read():
+def data_reader():
     for _ in range(num_stripes):
-        with buf.wait() as b:       # consumer B: dm_read
+        with buf.wait() as block:
             ...
 ```
 
-Per iteration, the producer pushes once (`pages_received += 1`) and each consumer pops once (`pages_acked += 2`). After iteration 0, the producer's `cb_reserve_back` on iteration 1 sees two free slots when only one has actually been consumed; it writes slot 0 while the late consumer is still reading slot 0's old data. The symmetric failure occurs with two producers: each `cb_push_back` advances the shared write pointer, and a consumer reads a partially-written slot.
+Each iteration pushes once but pops twice. The extra `pages_acked` increment
+can let the next reserve overwrite pages that one reader still uses. A
+single-iteration test may not expose the overwrite because the producer does
+not reserve the slot again.
 
-A single-iteration test masks this — exactly one push and two over-pops do not corrupt data when the producer never refills — so the rule must be enforced statically rather than left to test coverage.
+When readers consume independently, allocate one DFB per reader. When readers
+intentionally share published pages, use one pop owner and synchronize it with
+the other readers:
 
-### Correct form
-
-When two consumers or producers can execute on the same launched node, allocate
-one DFB per consumer thread (and symmetrically per producer thread). The
-producer writes the value into each DFB; each consumer reads its own. The
-sketch below is illustrative (no `@ttl.operation` wrapper, no tensor shape);
-for a runnable example see
-`test/python/test_store_patterns.py::store_then_forward_kernel`:
-
-```python
-buf_for_compute = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
-buf_for_dm     = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
-
-@ttl.compute()
-def compute():
-    for _ in range(num_stripes):
-        val = ...
-        with buf_for_compute.reserve() as b: b.store(val)
-        with buf_for_dm.reserve()     as b: b.store(val)
-        with buf_for_compute.wait()   as b: ...
-
-@ttl.datamovement()
-def dm_read():
-    for _ in range(num_stripes):
-        with buf_for_dm.wait() as b: ...
+```text
+producer:  reserve -> write -> push
+observer:                    wait -> read -> signal complete
+pop owner:                   wait -> read -> wait for observer -> pop
 ```
 
-Each `pages_received`/`pages_acked` pair is now driven by a single thread on
-each launched node.
-
-When the participating threads have disjoint launch-node domains, the same DFB
-index can be shared without duplicating storage. The verifier accepts this form
-because every physical node still observes a single producer and a single
-consumer for that DFB.
+For example, a reduction in which compute and data movement both read each
+published chunk uses the second form: one data-movement kernel owns the pop, and
+the protocol orders that pop after the compute read. The liveness analysis includes every
+wait and read when it proves that a pop or state-discarding reconfiguration ends
+the DFB lifecycle.
 
 ### Verification
 
-The `ttl-verify-dfb-spsc` module-level pass runs after
-`ttl-annotate-cb-associations`. It walks producer and consumer actions exposed
-through `DFBAccessOpInterface`, groups them by logical `dfb_id` and enclosing
-`ttl.kernel_thread`-tagged `func.func`, and tracks the launch-node domain for
-each participant. Concrete reserve, push, wait, and pop operations and external
-protocol summaries therefore use the same verification. Distinct logical DFBs
-remain separate after physical allocation assigns them the same `cb_index`.
+The `ttl-verify-dfb-spsc` module pass runs after
+`ttl-annotate-cb-associations`. It groups reserve and push effects by producer,
+groups pop effects by read-pointer owner, and tracks each participant's
+launch-node domain. Concrete DFB operations and external-call protocol effects
+use the same verification. Operations with an exact zero execution count do
+not participate.
 
-The pass rejects a DFB when two producer domains overlap or when two consumer
-domains overlap. If multiple threads participate and a coordinate-dependent
-predicate cannot be analyzed statically, the pass rejects the DFB rather than
-assuming disjointness. The diagnostic identifies the logical `dfb_id`, the
-role (producer or consumer), an overlapping launched node when available, the
-participating operation sites, and the originating `ttl.bind_cb`.
+The pass rejects overlapping producer domains and overlapping pop-owner
+domains. It also rejects multiple possible owners when a runtime predicate
+prevents the compiler from proving their domains disjoint. Diagnostics identify
+the logical `dfb_id`, participant role, relevant operation sites, and one
+overlapping launched node when available.
 
-The pass also rejects a logical DFB when a kernel thread waits on it and no
-producer is possible. A compiler-visible push proves a producer exists. An
-opaque external DFB dependency without an access contract may contain a push,
+A wait must also have a possible producer. A compiler-visible push establishes
+one. An external DFB dependency without an access contract may contain a push,
 and `unknown_dfb_access` may contain a push for any user-managed DFB. An
 explicit `inspect` contract excludes protocol actions. Reserving storage is
 insufficient: `ttl.cb_wait` observes pages published by a push. This structural
@@ -728,11 +794,11 @@ run unless the user sets it. When set, the compiler emits a warning and records
 
 See `test/ttlang/Dialect/TTL/Transforms/verify_dfb_spsc_invalid.mlir` and
 `verify_dfb_spsc_missing_producer_invalid.mlir` and
-`verify_dfb_spsc_unknown_access_invalid.mlir` for rejected patterns, and
-`verify_dfb_spsc.mlir` for accepted patterns.
+`verify_dfb_spsc_unknown_access_invalid.mlir` for rejected programs, and
+`verify_dfb_spsc.mlir` for accepted programs.
 
-The compiler does not currently auto-split overlapping multi-consumer DFBs;
-users must duplicate explicitly via `make_dataflow_buffer_like`. Tracked in
+The compiler does not currently split DFBs with multiple pop owners; users must
+duplicate them explicitly with `make_dataflow_buffer_like`. Tracked in
 [tenstorrent/tt-lang#581](https://github.com/tenstorrent/tt-lang/issues/581).
 
 ## Compiler-Created Intermediate DFB Insertion
@@ -1279,6 +1345,21 @@ The criteria are disjoint. DM-thread `ttl.copy` does not flow through
 `attach_cb` (it takes the DFB directly). Compute-kernel uses always go through
 `attach_cb` and never reference the DFB as a direct operand of a tile op.
 
+The Python frontend validates block acquisition before lowering a tensor
+copy: a DFB-to-tensor source must come from `wait()` and a tensor-to-DFB
+destination from `reserve()`. Lowering selects the pointer from the copy
+direction (`get_read_ptr` for DFB-to-tensor, `get_write_ptr` for
+tensor-to-DFB), so the opposite acquisition would address the wrong slot.
+This validation is frontend-only: the frontend builds a tensor copy on the
+DFB value itself rather than on the attached block, so tensor-to-DFB and
+DFB-to-tensor `ttl.copy` IR carries no acquisition information, and the
+supported pipeline produces these forms only through the Python frontend. Pipe receives
+into a `wait()` block are rejected by `CopyOp::verify`, which sees the
+attached block. A program that needs a produced block both in a tensor and in
+a consumer publishes the block and lets a second dataflow buffer's consumer
+perform the tensor copy from a `wait()` block, since a reserved block cannot
+be a tensor copy source and one DFB admits one consumer per node.
+
 #### Why two criteria
 
 Compute threads work through SSA tile handles
@@ -1600,8 +1681,10 @@ allocation group may combine scratch DFBs with different block shapes or block
 counts when their element types and page formats are identical. The physical
 descriptor then uses the largest total capacity. Synchronized reconfiguration
 may instead replace geometry, block count, and storage between disjoint epochs,
-but the element type and page format must remain identical. Every reuse
-mechanism requires each lifecycle to complete. Ordinary reuse also requires
+but the element type and page format must remain identical. The runtime
+reconfigures the DFB address, capacity, page geometry, and queue state; it does
+not rewrite the unpacker or packer format tables. Every reuse mechanism
+requires each lifecycle to complete. Ordinary reuse also requires
 matching write- and read-pointer runs unless a synchronized reset or
 state-discarding reconfiguration establishes empty state with the pointers at
 the descriptor base. The matched sequences must remain boundary-safe when

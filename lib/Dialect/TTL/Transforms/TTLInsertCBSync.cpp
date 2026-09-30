@@ -146,10 +146,10 @@ static bool isBeforeLocalKindBoundary(Operation *operation,
   return projected && projected->isBeforeInBlock(localKindBoundary);
 }
 
-static bool updateLocalSlotValuesAndTestUse(DFBAcquireInterval interval,
-                                            Operation *operation,
-                                            DenseSet<Value> &slotValues,
-                                            Operation *localKindBoundary) {
+static bool updateLocalSlotValuesAndTestUse(
+    DFBAcquireInterval interval, Operation *operation,
+    DenseSet<Value> &slotValues, Operation *localKindBoundary,
+    ArrayRef<Operation *> acquires, const DominanceInfo &dominanceInfo) {
   bool usesSlot = false;
   for (Value operand : operation->getOperands()) {
     if (slotValues.contains(operand)) {
@@ -173,20 +173,34 @@ static bool updateLocalSlotValuesAndTestUse(DFBAcquireInterval interval,
   if (!isBeforeLocalKindBoundary(operation, interval, localKindBoundary)) {
     return false;
   }
+  // A later acquisition owns dominated direct DFB accesses because it advances
+  // the queue pointer. SSA uses derived from this acquisition remain exact.
+  if (llvm::any_of(acquires, [&](Operation *otherAcquire) {
+        return otherAcquire != interval.acquire &&
+               getDFBAcquireDFB(otherAcquire) == interval.dfb &&
+               dominanceInfo.properlyDominates(interval.acquire,
+                                               otherAcquire) &&
+               dominanceInfo.properlyDominates(otherAcquire, operation);
+      })) {
+    return false;
+  }
   return operationMayDirectlyUseAcquiredDFBSlot(interval, operation);
 }
 
 static bool nestedRegionMayUseLocalSlot(DFBAcquireInterval interval,
                                         Operation *operation,
                                         DenseSet<Value> slotValues,
-                                        Operation *localKindBoundary) {
+                                        Operation *localKindBoundary,
+                                        ArrayRef<Operation *> acquires,
+                                        const DominanceInfo &dominanceInfo) {
   bool foundUse = false;
   operation->walk([&](Operation *nested) {
     if (nested == operation) {
       return;
     }
     foundUse |= updateLocalSlotValuesAndTestUse(interval, nested, slotValues,
-                                                localKindBoundary);
+                                                localKindBoundary, acquires,
+                                                dominanceInfo);
   });
   return foundUse;
 }
@@ -194,16 +208,19 @@ static bool nestedRegionMayUseLocalSlot(DFBAcquireInterval interval,
 static bool operationMayUseLocalSlot(DFBAcquireInterval interval,
                                      Operation *operation,
                                      DenseSet<Value> &slotValues,
-                                     Operation *localKindBoundary) {
+                                     Operation *localKindBoundary,
+                                     ArrayRef<Operation *> acquires,
+                                     const DominanceInfo &dominanceInfo) {
   if (updateLocalSlotValuesAndTestUse(interval, operation, slotValues,
-                                      localKindBoundary)) {
+                                      localKindBoundary, acquires,
+                                      dominanceInfo)) {
     for (Value result : operation->getResults()) {
       slotValues.insert(result);
     }
     return true;
   }
   if (nestedRegionMayUseLocalSlot(interval, operation, slotValues,
-                                  localKindBoundary)) {
+                                  localKindBoundary, acquires, dominanceInfo)) {
     for (Value result : operation->getResults()) {
       slotValues.insert(result);
     }
@@ -425,8 +442,9 @@ analyzeGuardedAcquireUses(DFBAcquireInterval interval, scf::IfOp guard,
 }
 
 static PlanningResult<GuardedLocalReleaseInfo> analyzeGuardedLocalReleases(
-    DFBAcquireInterval interval, ArrayRef<Operation *> releases,
-    DFBProtocolEffectKind releaseEffectKind, StringRef effectName) {
+    DFBAcquireInterval interval, ArrayRef<Operation *> acquires,
+    ArrayRef<Operation *> releases, DFBProtocolEffectKind releaseEffectKind,
+    StringRef effectName, const DominanceInfo &dominanceInfo) {
   GuardedLocalReleaseInfo info;
   Operation *localKindBoundary = findLocalKindBoundary(interval);
   DenseSet<Operation *> candidateReleases;
@@ -453,7 +471,7 @@ static PlanningResult<GuardedLocalReleaseInfo> analyzeGuardedLocalReleases(
       continue;
     }
     if (operationMayUseLocalSlot(interval, &operation, slotValues,
-                                 localKindBoundary)) {
+                                 localKindBoundary, acquires, dominanceInfo)) {
       info.lastLocalUse = &operation;
     }
   }
@@ -483,9 +501,13 @@ template <typename ConcreteReleaseOp>
 static PlanningResult<SmallVector<MissingReleasePlan>> planMissingReleases(
     ArrayRef<Operation *> acquires, ArrayRef<Operation *> releases,
     DFBProtocolEffectKind releaseEffectKind, StringRef effectName,
-    const DenseSet<Operation *> &acquisitionsRequiringExplicitRelease) {
+    const DenseSet<Operation *> &acquisitionsRequiringExplicitRelease,
+    const DominanceInfo &dominanceInfo, bool syncUserDFBs) {
   SmallVector<MissingReleasePlan> plans;
   for (Operation *acquire : acquires) {
+    if (!syncUserDFBs && isUserManagedDFB(getDFBAcquireDFB(acquire))) {
+      continue;
+    }
     DFBAcquireInterval interval = makeDFBAcquireInterval(acquire, acquires);
 
     // Tensor SSA uses can keep this acquired slot live past the next same-DFB
@@ -499,7 +521,8 @@ static PlanningResult<SmallVector<MissingReleasePlan>> planMissingReleases(
       Operation *externalKindBoundary =
           findGuardedExternalKindBoundary(interval, guard, acquires);
       auto localReleaseInfo = analyzeGuardedLocalReleases(
-          interval, releases, releaseEffectKind, effectName);
+          interval, acquires, releases, releaseEffectKind, effectName,
+          dominanceInfo);
       if (localReleaseInfo.isInvalidIR()) {
         const PlanningDiagnostic &diagnostic = localReleaseInfo.getInvalidIR();
         return PlanningResult<SmallVector<MissingReleasePlan>>::invalidIR(
@@ -778,6 +801,8 @@ validateConditionalReceiveReleases(ArrayRef<Operation *> pushes,
 
 struct TTLInsertCBSyncPass
     : public impl::TTLInsertCBSyncBase<TTLInsertCBSyncPass> {
+  using impl::TTLInsertCBSyncBase<TTLInsertCBSyncPass>::TTLInsertCBSyncBase;
+
   void runOnOperation() override {
     func::FuncOp func = getOperation();
 
@@ -813,9 +838,11 @@ struct TTLInsertCBSyncPass
     }
 
     const DenseSet<Operation *> noExplicitReleaseAcquisitions;
+    DominanceInfo dominanceInfo(func);
     auto producerPlan = planMissingReleases<CBPushOp>(
         operations.reserves, operations.producerProtocolReleases,
-        DFBProtocolEffectKind::Push, "push", conditionalReleasePlan->reserves);
+        DFBProtocolEffectKind::Push, "push", conditionalReleasePlan->reserves,
+        dominanceInfo, syncUserDFBs);
     if (producerPlan.isInvalidIR()) {
       const PlanningDiagnostic &diagnostic = producerPlan.getInvalidIR();
       diagnostic.operation->emitError(diagnostic.message);
@@ -824,7 +851,8 @@ struct TTLInsertCBSyncPass
     }
     auto consumerPlan = planMissingReleases<CBPopOp>(
         operations.waits, operations.consumerProtocolReleases,
-        DFBProtocolEffectKind::Pop, "pop", noExplicitReleaseAcquisitions);
+        DFBProtocolEffectKind::Pop, "pop", noExplicitReleaseAcquisitions,
+        dominanceInfo, syncUserDFBs);
     if (consumerPlan.isInvalidIR()) {
       const PlanningDiagnostic &diagnostic = consumerPlan.getInvalidIR();
       diagnostic.operation->emitError(diagnostic.message);

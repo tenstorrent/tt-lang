@@ -2,6 +2,29 @@
 // that cannot be relocated without deleting the external call.
 // RUN: ttlang-opt %s --split-input-file --pass-pipeline='builtin.module(func.func(ttl-insert-cb-sync))' --verify-diagnostics
 
+// A later acquisition does not make an earlier slot valid after publication.
+func.func @guarded_slot_used_after_publication_and_later_acquire(
+    %value: tensor<1x1x!ttcore.tile<32x32, bf16>>)
+    attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+  %condition = arith.constant true
+  %dfb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  scf.if %condition {
+    %first_reserved = ttl.cb_reserve %dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.store %value, %first_reserved : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>
+    // expected-error @below {{guarded local dataflow buffer push must follow all uses in its acquiring region}}
+    ttl.cb_push %dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    scf.if %condition {
+      %second_reserved = ttl.cb_reserve %dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+      ttl.opaque_call "fill_later_slot" dfb_dependencies(%dfb : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) () {header = "fill.hpp"} : () -> ()
+      ttl.cb_push %dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    }
+    ttl.store %value, %first_reserved : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>
+  }
+  func.return
+}
+
+// -----
+
 // A nested external push cannot satisfy an entry-block reserve.
 module {
   func.func @nested_external_push(%condition: i1) attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
@@ -192,6 +215,30 @@ module {
     }
     scf.if %condition {
       ttl.store %arg0, %view : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>
+    }
+    return
+  }
+}
+
+// -----
+
+// A later acquisition does not take ownership of tensor SSA values returned
+// by an earlier acquisition.
+module {
+  func.func @guarded_reserve_released_before_ssa_use_across_later_acquire(
+      %value: tensor<1x1x!ttcore.tile<32x32, bf16>>,
+      %condition: i1) attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+    %dfb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    scf.if %condition {
+      %first_reserved = ttl.cb_reserve %dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+      // expected-error @below {{guarded local dataflow buffer push must follow all uses in its acquiring region}}
+      ttl.cb_push %dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+      scf.if %condition {
+        %second_reserved = ttl.cb_reserve %dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+        ttl.opaque_call "fill_later_slot" dfb_dependencies(%dfb : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) () {header = "fill.hpp"} : () -> ()
+        ttl.cb_push %dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+      }
+      ttl.store %value, %first_reserved : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>
     }
     return
   }
