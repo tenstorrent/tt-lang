@@ -17,7 +17,7 @@ def main() -> None:
     for distribution in metadata.distributions():
         name = distribution.metadata["Name"]
         normalized = re.sub(r"[-_.]+", "-", name).lower()
-        if normalized.startswith(("nvidia-", "cuda-")) or normalized == "triton":
+        if normalized.startswith(("nvidia-", "cuda-")) or "triton" in normalized:
             gpu_packages.append(name)
     if gpu_packages:
         raise SystemExit(

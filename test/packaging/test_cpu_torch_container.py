@@ -30,6 +30,9 @@ CONTAINERS = REPO_ROOT / ".github" / "containers"
         (None, None, ["torch", "cuda-toolkit"], "cuda-toolkit"),
         (None, None, ["torch", "cuda-bindings"], "cuda-bindings"),
         (None, None, ["torch", "triton"], "triton"),
+        (None, None, ["torch", "pytorch-triton"], "pytorch-triton"),
+        (None, None, ["torch", "pytorch-triton-rocm"], "pytorch-triton-rocm"),
+        (None, None, ["torch", "PyTorch_TrItOn_ROCm"], "PyTorch_TrItOn_ROCm"),
     ],
 )
 def test_cpu_torch_check(monkeypatch, capsys, cuda, hip, packages, error):
@@ -110,9 +113,19 @@ def test_container_build_uses_and_checks_cpu_torch():
     for target in ("ird", "dist"):
         stage = dockerfile.split(f"FROM ${{BASE_IMAGE}} AS {target}\n")[1]
         stage = stage.split("\nFROM ")[0]
-        assert stage.index("-m pip install") < stage.index(
-            "$TTLANG_TOOLCHAIN_DIR/venv/bin/python /tmp/check-cpu-torch.py"
+        check_command = "$TTLANG_TOOLCHAIN_DIR/venv/bin/python /tmp/check-cpu-torch.py"
+        assert stage.index("-m pip install") < stage.index(check_command)
+        check_run = next(
+            line
+            for line in stage.replace("\\\n", "").splitlines()
+            if check_command in line
         )
+        assert check_run.startswith(
+            "RUN --mount=type=bind,source=.github/containers/check-cpu-torch.py,"
+            "target=/tmp/check-cpu-torch.py "
+        )
+        assert "COPY .github/containers/check-cpu-torch.py" not in stage
+        assert "rm /tmp/check-cpu-torch.py" not in stage
     uplift_paths = (REPO_ROOT / ".github/scripts/uplift-paths.sh").read_text()
     for helper in ("check-cpu-torch.py", "prepare-toolchain-venv.sh"):
         assert f".github/containers/{helper}" in uplift_paths
