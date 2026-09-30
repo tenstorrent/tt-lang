@@ -1454,6 +1454,8 @@ validateConditionalReceiveReleases(ArrayRef<Operation *> pushes,
 
 struct TTLInsertCBSyncPass
     : public impl::TTLInsertCBSyncBase<TTLInsertCBSyncPass> {
+  using impl::TTLInsertCBSyncBase<TTLInsertCBSyncPass>::TTLInsertCBSyncBase;
+
   void runOnOperation() override {
     func::FuncOp func = getOperation();
 
