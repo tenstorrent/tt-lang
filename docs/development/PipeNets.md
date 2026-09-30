@@ -2638,7 +2638,7 @@ The shared graph and proof must preserve these fabric invariants:
 * fabric receiver posts publish readiness with a reverse-route atomic increment,
   and senders wait for the corresponding cumulative ready count before writing,
   unless every transfer occurrence has a statically disjoint DRAM region;
-* receiver pops do not return capacity for reuse by another fabric transfer in
+* L1 DFB pops do not return capacity for reuse by another fabric transfer in
   the same invocation;
 * fabric completion uses remotely addressable synchronization storage;
 * `CC` capacity counters are not selected for fabric transfers.

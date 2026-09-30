@@ -439,6 +439,8 @@ coordinates. Host runtime binding accepts only source and destination pairs
 that the active TT-Metal control plane can route. The current implementation:
 
 - resolves logical endpoints to `FabricNodeId` values;
+- checks direct neighbors before choosing a shorter 1D ring route over a
+  closing link;
 - queries the outgoing direction along each resolved route and, when the
   target exposes link enumeration, the eligible injection links for its
   connection target;
@@ -454,9 +456,9 @@ that the active TT-Metal control plane can route. The current implementation:
   count for 1D routing.
 
 Together, the compiler's fabric route and Pipe module plans record logical
-route indices, source and destination TENSIX nodes, L1 address formulas,
-payload constraints, and synchronization objects. Host binding maps each
-logical route index to a connection slot and final physical target. Neither
+route indices, source and destination TENSIX nodes, destination address
+formulas, payload constraints, and synchronization objects. Host binding maps
+each logical route index to a connection slot and final physical target. Neither
 plan infers topology from a `DeviceDomain`.
 
 A future route optimizer belongs in this late planner. When the control plane
