@@ -2701,13 +2701,12 @@ buildDescriptors(ArrayRef<DFBPhysicalIndexAssignment> assignments,
                               });
         });
     // A configuration that an unproved node enters with retained state is
-    // installed on that node only when its geometry differs from a
-    // configuration the node already holds; otherwise the node keeps its
+    // installed on that node only when its geometry differs from the
+    // descriptor the node currently holds; otherwise the node keeps its
     // descriptor, pointers, and counters across the reconfiguration.
     struct RetainedConfigurationEntry {
       const DFBPhysicalIndexAssignment *candidate;
       const DFBPerNodeLifetime *lifetime;
-      SmallVector<std::optional<int64_t>> heldOrdinals;
     };
     SmallVector<RetainedConfigurationEntry> retainedConfigurationEntries;
     for (const DFBPhysicalIndexAssignment *indexedCandidate :
@@ -2767,7 +2766,6 @@ buildDescriptors(ArrayRef<DFBPhysicalIndexAssignment> assignments,
           LaunchNodeDomain nodeDomain;
           nodeDomain.nodes.insert(lifetime.node);
           if (lifetime.conservativeConfigurationEpochsClassified) {
-            SmallVector<std::optional<int64_t>> heldOrdinals;
             for (std::optional<int64_t> ordinal :
                  lifetime.conservativeConfigurationEpochs) {
               if (ordinal &&
@@ -2775,18 +2773,12 @@ buildDescriptors(ArrayRef<DFBPhysicalIndexAssignment> assignments,
                                      *ordinal)) {
                 continue;
               }
-              heldOrdinals.push_back(ordinal);
               if (failed(addConfiguration(candidate, ordinal, nodeDomain))) {
                 return failure();
               }
             }
-            assert((lifetime.retainedConfigurationEpochs.empty() ||
-                    !heldOrdinals.empty()) &&
-                   "a node enters its first configuration without retained "
-                   "state");
             if (!lifetime.retainedConfigurationEpochs.empty()) {
-              retainedConfigurationEntries.push_back(
-                  {&candidate, &lifetime, std::move(heldOrdinals)});
+              retainedConfigurationEntries.push_back({&candidate, &lifetime});
             }
           } else {
             if (failed(addConfiguration(candidate, std::nullopt, nodeDomain))) {
@@ -2821,27 +2813,32 @@ buildDescriptors(ArrayRef<DFBPhysicalIndexAssignment> assignments,
       }
     }
 
-    for (RetainedConfigurationEntry &entry : retainedConfigurationEntries) {
+    for (const RetainedConfigurationEntry &entry :
+         retainedConfigurationEntries) {
       LaunchNodeDomain nodeDomain;
       nodeDomain.nodes.insert(entry.lifetime->node);
-      for (int64_t ordinal : entry.lifetime->retainedConfigurationEpochs) {
-        auto retainedIt = findConfiguration(ordinal);
-        if (retainedIt == descriptor.epochConfigurations.end()) {
+      auto heldIt = descriptor.epochConfigurations.end();
+      for (std::optional<int64_t> ordinal :
+           entry.lifetime->conservativeConfigurationEpochs) {
+        auto configurationIt = findConfiguration(ordinal);
+        if (!ordinal ||
+            !llvm::is_contained(entry.lifetime->retainedConfigurationEpochs,
+                                *ordinal)) {
+          assert(configurationIt != descriptor.epochConfigurations.end() &&
+                 "every non-retained epoch has an installed configuration");
+          heldIt = configurationIt;
           continue;
         }
-        bool keepsDescriptor = llvm::all_of(
-            entry.heldOrdinals, [&](std::optional<int64_t> heldOrdinal) {
-              auto heldIt = findConfiguration(heldOrdinal);
-              return heldIt != descriptor.epochConfigurations.end() &&
-                     hasSameGeometry(*heldIt, *retainedIt);
-            });
-        if (keepsDescriptor) {
+        assert(heldIt != descriptor.epochConfigurations.end() &&
+               "a node enters its first configuration without retained state");
+        if (configurationIt == descriptor.epochConfigurations.end() ||
+            hasSameGeometry(*heldIt, *configurationIt)) {
           continue;
         }
         if (failed(addConfiguration(*entry.candidate, ordinal, nodeDomain))) {
           return failure();
         }
-        entry.heldOrdinals.push_back(ordinal);
+        heldIt = findConfiguration(ordinal);
       }
     }
 
