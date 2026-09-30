@@ -4,12 +4,11 @@
 
 // RUN: ttlang-opt %s -convert-ttl-to-ttkernel | FileCheck %s
 
-// Summary: Verify manager serialization remains disabled when a user loop has
-// an unknown trip count.
+// Summary: Verify manager serialization remains disabled when a user loop can
+// execute more times than the ownership generation counter can represent.
 
-// The compiler cannot bound the ownership generation or prove that it cannot
-// overflow. It therefore records manager interference for target binding and
-// allocates no local ownership semaphore.
+// The compiler records manager interference for target binding and allocates
+// no local ownership semaphore when the required generation can overflow.
 // CHECK-LABEL: module attributes
 // CHECK-SAME: ttl.pipe_sync_semaphore_count = 0 : i64
 // CHECK-LABEL: func.func @sender_node
@@ -32,7 +31,7 @@ module attributes {ttl.launch_grid = [2, 1], ttl.target_arch = #ttcore.arch<blac
     %3 = arith.index_cast %c1_i64 : i64 to index
     %4 = arith.cmpi eq, %1, %3 : index
     %loop_start = arith.constant 0 : index
-    %loop_end = ttl.core_x : index
+    %loop_end = arith.constant 2147483647 : index
     %loop_step = arith.constant 1 : index
     scf.for %iteration = %loop_start to %loop_end step %loop_step {
       scf.if %4 {
@@ -81,7 +80,7 @@ module attributes {ttl.launch_grid = [2, 1], ttl.target_arch = #ttcore.arch<blac
     %3 = arith.index_cast %c1_i64 : i64 to index
     %4 = arith.cmpi eq, %1, %3 : index
     %loop_start = arith.constant 0 : index
-    %loop_end = ttl.core_x : index
+    %loop_end = arith.constant 2147483647 : index
     %loop_step = arith.constant 1 : index
     scf.for %iteration = %loop_start to %loop_end step %loop_step {
       scf.if %4 {

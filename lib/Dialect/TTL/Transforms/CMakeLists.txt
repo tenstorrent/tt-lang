@@ -15,6 +15,7 @@ add_mlir_dialect_library(TTLangTTLTransforms
   DFBMaterialization.cpp
   DFBStateDiscard.cpp
   FabricManagerLifetimeAnalysis.cpp
+  FabricForwarderPlan.cpp
   PipeCapacityAnalysis.cpp
   PipeCounter.cpp
   DFBConcurrentKernelLivenessAnalysis.cpp

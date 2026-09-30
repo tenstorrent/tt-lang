@@ -7,6 +7,7 @@
 #include "CommonRuntimeArgLayout.h"
 #include "DFBAllocationLimits.h"
 #include "DFBStateDiscard.h"
+#include "FabricForwarderPlan.h"
 #include "FabricManagerLifetimeAnalysis.h"
 #include "PipeGraph.h"
 #include "PipeLowering.h"
@@ -15,6 +16,7 @@
 #include "PipeReceiveBatching.h"
 #include "PipeTransferExpansion.h"
 #include "ttlang/Dialect/TTKernel/Transforms/TTKernelCleanupPatterns.h"
+#include "ttlang/Dialect/TTL/Transforms/PipeConstants.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Affine/Transforms/Transforms.h"
@@ -52,6 +54,7 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/Support/Casting.h"
+#include "llvm/Support/CheckedArithmetic.h"
 #include <cstdint>
 #include <cstdlib>
 #include <limits>
@@ -70,7 +73,6 @@ namespace ttk = mlir::tt::ttkernel;
 
 constexpr llvm::StringLiteral kExpandLinearizeIndexAttr =
     "ttlang.expand_linearize_index";
-// PipeGraph is defined in PipeGraph.h.
 
 class TTLToTTKernelTypeConverter : public TypeConverter {
 public:
@@ -1304,16 +1306,20 @@ private:
 };
 
 struct PipeTransferPostLowering : OpConversionPattern<PipeTransferPostOp> {
-  PipeTransferPostLowering(const TypeConverter &typeConverter,
-                           MLIRContext *context,
-                           const PipeModulePlan &pipeModulePlan,
-                           const PipeCounterTableMap &postSequenceCounters,
-                           const PipeResourcePlan &pipeResourcePlan,
-                           const FabricRuntimeMap &fabricRuntime)
+  PipeTransferPostLowering(
+      const TypeConverter &typeConverter, MLIRContext *context,
+      const PipeModulePlan &pipeModulePlan,
+      const PipeCounterTableMap &postSequenceCounters,
+      const PipeResourcePlan &pipeResourcePlan,
+      const FabricRuntimeMap &fabricRuntime,
+      const FabricForwarderPlan &fabricForwarderPlan,
+      const FabricForwarderCounterExpectationMap &forwarderCounterExpectations)
       : OpConversionPattern(typeConverter, context),
         pipeModulePlan(pipeModulePlan),
         postSequenceCounters(postSequenceCounters),
-        pipeResourcePlan(pipeResourcePlan), fabricRuntime(fabricRuntime) {}
+        pipeResourcePlan(pipeResourcePlan), fabricRuntime(fabricRuntime),
+        fabricForwarderPlan(fabricForwarderPlan),
+        forwarderCounterExpectations(forwarderCounterExpectations) {}
 
   LogicalResult
   matchAndRewrite(PipeTransferPostOp op, OpAdaptor,
@@ -1326,7 +1332,8 @@ struct PipeTransferPostLowering : OpConversionPattern<PipeTransferPostOp> {
     // while the plan supplies the already-resolved receiver DFB.
     return lowerPipeTransferPost(
         op, op.getDst(), pipeModulePlan.getTransferPlan(op.getOperation()),
-        postSequenceCounters, pipeResourcePlan, fabricRuntime, rewriter);
+        postSequenceCounters, pipeResourcePlan, fabricRuntime,
+        fabricForwarderPlan, forwarderCounterExpectations, rewriter);
   }
 
 private:
@@ -1334,6 +1341,8 @@ private:
   const PipeCounterTableMap &postSequenceCounters;
   const PipeResourcePlan &pipeResourcePlan;
   const FabricRuntimeMap &fabricRuntime;
+  const FabricForwarderPlan &fabricForwarderPlan;
+  const FabricForwarderCounterExpectationMap &forwarderCounterExpectations;
 };
 
 struct PipeTransferSendLowering : OpConversionPattern<PipeTransferSendOp> {
@@ -1345,14 +1354,17 @@ struct PipeTransferSendLowering : OpConversionPattern<PipeTransferSendOp> {
       const PipeCounterProgressMap &senderCapacityCounters,
       const PipeCounterTableMap &fabricReadyCounters,
       const PipeComputedAddressCounterMap &computedAddressCounters,
-      const FabricRuntimeMap &fabricRuntime)
+      const FabricRuntimeMap &fabricRuntime,
+      const FabricForwarderPlan &fabricForwarderPlan,
+      const FabricForwarderCounterExpectationMap &forwarderCounterExpectations)
       : OpConversionPattern(typeConverter, context),
         pipeModulePlan(pipeModulePlan), pipeResourcePlan(pipeResourcePlan),
         pipeCapacityPlan(pipeCapacityPlan),
         senderCapacityCounters(senderCapacityCounters),
         fabricReadyCounters(fabricReadyCounters),
         computedAddressCounters(computedAddressCounters),
-        fabricRuntime(fabricRuntime) {}
+        fabricRuntime(fabricRuntime), fabricForwarderPlan(fabricForwarderPlan),
+        forwarderCounterExpectations(forwarderCounterExpectations) {}
 
   LogicalResult
   matchAndRewrite(PipeTransferSendOp op, OpAdaptor,
@@ -1369,7 +1381,8 @@ struct PipeTransferSendLowering : OpConversionPattern<PipeTransferSendOp> {
         op, sourceDFB, pipeModulePlan.getTransferPlan(op.getOperation()),
         pipeModulePlan.getTransportPlan(), pipeResourcePlan, pipeCapacityPlan,
         senderCapacityCounters, fabricReadyCounters, computedAddressCounters,
-        fabricRuntime, rewriter);
+        fabricRuntime, fabricForwarderPlan, forwarderCounterExpectations,
+        rewriter);
   }
 
 private:
@@ -1380,6 +1393,8 @@ private:
   const PipeCounterTableMap &fabricReadyCounters;
   const PipeComputedAddressCounterMap &computedAddressCounters;
   const FabricRuntimeMap &fabricRuntime;
+  const FabricForwarderPlan &fabricForwarderPlan;
+  const FabricForwarderCounterExpectationMap &forwarderCounterExpectations;
 };
 
 struct PipeTransferWaitLowering : OpConversionPattern<PipeTransferWaitOp> {
@@ -2490,13 +2505,32 @@ static LogicalResult lowerTTLOpsToTTKernel(
     return failure();
   }
 
+  FailureOr<PipeTransferNodeSet> computedAddressTransfers =
+      analyzeComputedAddressEligibility(mod, *pipeGraphOrErr,
+                                        pipeComputedAddresses);
+  if (failed(computedAddressTransfers)) {
+    return failure();
+  }
+
   FabricRoutePlan fabricRoutePlan;
   if (failed(
           buildFabricRoutePlan(mod, transferIndex, *pipeGraphOrErr,
                                foreachLoweringInfo, *externalManagerIntervals,
-                               !pipeGlobalSemaphoresOnly, fabricRoutePlan))) {
+                               *computedAddressTransfers, fabricRoutePlan))) {
     return failure();
   }
+
+  FailureOr<FabricForwarderPlan> maybeFabricForwarderPlan =
+      buildFabricForwarderPlan(mod, transferIndex, foreachLoweringInfo,
+                               *pipeGraphOrErr, fabricRoutePlan);
+  if (failed(maybeFabricForwarderPlan)) {
+    return failure();
+  }
+  FabricForwarderPlan fabricForwarderPlan =
+      std::move(*maybeFabricForwarderPlan);
+  applyFabricForwarderRoutes(fabricForwarderPlan, fabricRoutePlan);
+  finalizeFabricRoutePlan(fabricRoutePlan, *pipeGraphOrErr, foreachLoweringInfo,
+                          !pipeGlobalSemaphoresOnly);
 
   PipePlanningOptions pipePlanningOptions;
   FailureOr<DFBResetLoweringPlan> resetLoweringPlan =
@@ -2510,15 +2544,24 @@ static LogicalResult lowerTTLOpsToTTKernel(
   if (failed(userManagedPhysicalDFBIndices)) {
     return failure();
   }
-  pipePlanningOptions.enableComputedAddresses = pipeComputedAddresses;
+  pipePlanningOptions.computedAddressTransfers =
+      std::move(*computedAddressTransfers);
   pipePlanningOptions.enableCapacitySynchronization = pipeCapacitySync;
   pipePlanningOptions.counterAllocationPolicy =
       pipeGlobalSemaphoresOnly ? PipeCounterAllocationPolicy::GlobalOnly
                                : PipeCounterAllocationPolicy::LocalThenGlobal;
   pipePlanningOptions.fabricRoutePlan = &fabricRoutePlan;
-  pipePlanningOptions.trailingSramScratchBytes =
-      resetLoweringPlan->scratchBytes;
-  pipePlanningOptions.trailingSramScratchAlignment = 4;
+  std::optional<int64_t> trailingScratchBytes =
+      llvm::checkedAdd(fabricForwarderPlan.getSramScratchBytes(),
+                       resetLoweringPlan->scratchBytes);
+  if (!trailingScratchBytes) {
+    mod.emitOpError("compiler-managed L1 scratch size is too large");
+    return failure();
+  }
+  pipePlanningOptions.trailingSramScratchBytes = *trailingScratchBytes;
+  pipePlanningOptions.trailingSramScratchAlignment =
+      fabricForwarderPlan.empty() ? kDFBResetStateAlignmentBytes
+                                  : kPipeSramScratchAlignmentBytes;
   FailureOr<PipeModulePlan> maybePipeModulePlan =
       buildPipeModulePlan(mod, transferAnalysis, transferIndex, *pipeGraphOrErr,
                           pipeNetIndex, pipePlanningOptions);
@@ -2528,8 +2571,16 @@ static LogicalResult lowerTTLOpsToTTKernel(
   PipeModulePlan pipeModulePlan = std::move(*maybePipeModulePlan);
   annotateInitialPipeReceiveBatches(mod, foreachLoweringInfo, *pipeGraphOrErr,
                                     pipeModulePlan.getResourcePlan());
-  resetLoweringPlan->scratchBaseOffset =
-      pipeModulePlan.getTrailingSramScratchOffset();
+  fabricForwarderPlan.setSramScratchBaseOffset(
+      pipeModulePlan.getTrailingSramScratchOffset());
+  std::optional<int64_t> resetScratchOffset =
+      llvm::checkedAdd(pipeModulePlan.getTrailingSramScratchOffset(),
+                       fabricForwarderPlan.getSramScratchBytes());
+  if (!resetScratchOffset) {
+    mod.emitOpError("compiler-managed L1 scratch offset is too large");
+    return failure();
+  }
+  resetLoweringPlan->scratchBaseOffset = *resetScratchOffset;
   FailureOr<FinalizedDFBStorageFootprint> allocationFootprint =
       getFinalizedDFBStorageFootprint(mod);
   FailureOr<uint64_t> allocationBytes =
@@ -2542,8 +2593,13 @@ static LogicalResult lowerTTLOpsToTTKernel(
   }
   const PipeResourceRequirements &resourceRequirements =
       pipeModulePlan.getResourceRequirements();
+  // Fabric global semaphores force the runtime cache to rebuild zeroed scratch
+  // for every dispatch, so cumulative forwarder counters always start at zero.
+  assert((fabricForwarderPlan.empty() ||
+          resourceRequirements.globalSemaphoreCount > 0) &&
+         "fabric forwarder scratch requires fresh per-dispatch resources");
   if (resourceRequirements.sramScratchBytes < 0) {
-    mod.emitOpError("PipeNet and reset scratch allocation is negative");
+    mod.emitOpError("compiler-managed L1 scratch allocation is negative");
     return failure();
   }
   if (failed(validateCombinedDFBResourceL1Bytes(
@@ -2575,6 +2631,9 @@ static LogicalResult lowerTTLOpsToTTKernel(
                                         computedAddressCounters);
   FabricRuntimeMap fabricRuntime;
   initializeFabricRuntime(fabricRoutePlan, fabricRuntime);
+  FabricForwarderCounterExpectationMap forwarderCounterExpectations;
+  initializeFabricForwarderCounterExpectations(fabricForwarderPlan,
+                                               forwarderCounterExpectations);
   const PipeTransportPlan &pipeTransportPlan =
       pipeModulePlan.getTransportPlan();
   PipeTransportSlotCounterMap transportSlotCounters;
@@ -2594,11 +2653,12 @@ static LogicalResult lowerTTLOpsToTTKernel(
                              transportSlotCounters);
   patterns.add<PipeTransferPostLowering>(typeConverter, &ctx, pipeModulePlan,
                                          postSequenceCounters, pipeResourcePlan,
-                                         fabricRuntime);
+                                         fabricRuntime, fabricForwarderPlan,
+                                         forwarderCounterExpectations);
   patterns.add<PipeTransferSendLowering>(
       typeConverter, &ctx, pipeModulePlan, pipeResourcePlan, pipeCapacityPlan,
       senderCapacityCounters, fabricReadyCounters, computedAddressCounters,
-      fabricRuntime);
+      fabricRuntime, fabricForwarderPlan, forwarderCounterExpectations);
   patterns.add<PipeTransferWaitLowering>(typeConverter, &ctx, pipeModulePlan,
                                          pipeResourcePlan);
   patterns.add<PipeTransferWaitAnyLowering>(typeConverter, &ctx, pipeModulePlan,
