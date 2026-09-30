@@ -151,8 +151,8 @@ public:
                                primitive == ComputePrimitive::Subtract ||
                                primitive == ComputePrimitive::Multiply;
     bool isIntegerBroadcast = primitive == ComputePrimitive::Broadcast;
-    // TopK transposes u16 index tiles, and a fused-key transpose names the
-    // u32 pack buffer as its output so transpose_wh_init sees that buffer.
+    // TopK transposes u16 index tiles and packs fused keys into a u32 buffer
+    // named by the transpose output operand.
     bool isIntegerTranspose = primitive == ComputePrimitive::Transpose &&
                               tileType.getHeight() == 32 &&
                               tileType.getWidth() == 32;

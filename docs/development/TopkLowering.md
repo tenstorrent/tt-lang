@@ -20,6 +20,18 @@ leaves the datums in the low half of each 32-bit destination word.
 names a buffer of `u32` tiles. `rank_stamped` names a buffer whose values
 still carry rank tags. An absent attribute means plain tiles.
 
+The sort polarity is part of the packed representation. `topk_fuse` and
+`topk_stamp_local_positions` encode `largest` into the key bits, and every
+later stage and `topk_defuse` must decode with the same value. `ttl.topk_order`
+on a packed `ttl.bind_cb` records that polarity beside the payload, and each
+stage and helper carries its own `order`. `ttl-verify-topk-epoch` requires
+every `order` in one section to agree, requires a packed buffer to carry
+`ttl.topk_order`, and rejects a section that reads or stores a packed buffer
+of another order. The conversion to TTKernel derives `tie_order` from `order`
+on a `stable_sort` stage and `largest` from `order` on the helpers; the
+TTKernel verifiers reject a `tie_order` without `stable_sort` and a
+`stable_sort` without `tie_order`.
+
 Unstable mode keeps value tiles and index tiles in separate plain buffers. It
 does not emit fuse or defuse.
 
@@ -58,16 +70,37 @@ the same tie order, and `stable_sort` stays false. `topk_canonicalize_negzero_va
 is legal only beside a comparator-stable local sort; this lowering does not
 emit it.
 
-Fused mode sets the kernel attribute `fp32_dest_acc_en`. The lowering runs
-before `ttl-finalize-dfb-indices`, so the scratch buffers receive logical
-identities and L1 allocation entries. `ttl-set-compute-kernel-config` keeps
-the attribute as an explicit constraint.
+Fused stages report a 32-bit destination requirement through
+`TileExecutionInfo`. `ttl-set-compute-kernel-config` resolves it against the
+kernel policy and rejects an explicit `fp32_dest_acc_en = false`; the
+lowering does not rewrite that attribute. The lowering runs before
+`ttl-finalize-dfb-indices`, so the scratch buffers receive logical identities
+and L1 allocation entries.
+
+A transpose result carries the input element type, which is what the
+destination register holds. The transpose `output` operand names the buffer
+the section packs into. In fused mode that is the `u32` key buffer, so
+`transpose_wh_init` configures the packer for the keys that `topk_fuse`
+produces.
+
+## Code size
+
+Tile loops are unrolled: every merge, rebuild, and copy-across of an
+unchanged tile is its own destination-register section. The section count per
+row is about `width / 2` for the initial sort plus `2 * width` per merge
+iteration. At the 64-tile limit that is on the order of 800 sections, which
+is a concern for kernel binary size. Hardware coverage is limited to
+`width = 2`; `lower_topk.mlir` checks the merge and rebuild pairing at
+`width = 8`.
 
 ## Limits
 
 The verifier accepts `k` in {4, 8, 16, 32, 64}, a last-dimension `dim`,
 `sorted = true`, and a row width that is a power of two in [2, 64] tiles.
-`k` must divide the row width in elements. Each result must be stored once
+`k` must divide the row width in elements. The merge network selects whole
+tiles, so `k` below 32 runs the 32-wide network and the sorted result tile
+holds the requested `k` columns first; this matches the metal host op, which
+rounds `k` up to a tile before launching the kernel. Each result must be stored once
 into a reserved dataflow buffer of the result shape. A multiply of a result
 reads a compiler buffer filled by that store. The sequence is emitted at the
 first result store, so a reserve created after the operation still dominates

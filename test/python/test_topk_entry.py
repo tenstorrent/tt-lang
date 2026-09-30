@@ -110,5 +110,5 @@ def test_math_topk_emits_tensor_op():
 
 def test_math_topk_requires_indices():
     with _topk_module():
-        with pytest.raises(ValueError, match="indices tensor"):
+        with pytest.raises(TypeError, match="indices"):
             ttl.math.topk(None, 32)

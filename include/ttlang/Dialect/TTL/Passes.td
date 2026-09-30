@@ -938,6 +938,11 @@ def TTLVerifyTopkEpoch : Pass<"ttl-verify-topk-epoch", "::mlir::func::FuncOp"> {
     defuse do not share a section. Rank-stamped stages follow the same
     pattern with stamp and strip. A TopK stage or helper outside a
     destination-register section is rejected.
+
+    The sort polarity is an epoch invariant. Every stage and helper in one
+    section carries the same `order`, a fused-key or rank-stamped buffer
+    records that order in `ttl.topk_order`, and a section only reads or
+    stores such a buffer when the orders match.
   }];
   let dependentDialects = [];
 }

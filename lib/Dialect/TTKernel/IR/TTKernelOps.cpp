@@ -1151,8 +1151,8 @@ static LogicalResult verifyTopkRebuildOperands(TopkRebuildOp op) {
 
 LogicalResult TopkTileInitOp::verify() {
   return utils::verifyTopkMode(*this, /*stableSort=*/false, getFused(),
-                               getRankStamped(), /*tieOrderUnset=*/true,
-                               /*fp32DestAccEn=*/BoolAttr(), getTagBits());
+                               getRankStamped(), /*fp32DestAccEn=*/BoolAttr(),
+                               getTagBits());
 }
 
 LogicalResult TopkLocalSortOp::verify() {
@@ -1164,30 +1164,39 @@ LogicalResult TopkLocalSortOp::verify() {
       failed(verifyTopkLocalSortOperands(*this))) {
     return failure();
   }
+  if (failed(utils::verifyTopkTieOrder(*this, getStableSort(),
+                                       getTieOrder() == TopkTieOrder::Unset))) {
+    return failure();
+  }
   return utils::verifyTopkMode(*this, getStableSort(), getFused(),
-                               getRankStamped(),
-                               getTieOrder() == TopkTieOrder::Unset,
-                               getFp32DestAccEnAttr(), getTagBits());
+                               getRankStamped(), getFp32DestAccEnAttr(),
+                               getTagBits());
 }
 
 LogicalResult TopkMergeOp::verify() {
   if (failed(verifyTopkMergeOperands(*this))) {
     return failure();
   }
+  if (failed(utils::verifyTopkTieOrder(*this, getStableSort(),
+                                       getTieOrder() == TopkTieOrder::Unset))) {
+    return failure();
+  }
   return utils::verifyTopkMode(*this, getStableSort(), getFused(),
-                               getRankStamped(),
-                               getTieOrder() == TopkTieOrder::Unset,
-                               getFp32DestAccEnAttr(), getTagBits());
+                               getRankStamped(), getFp32DestAccEnAttr(),
+                               getTagBits());
 }
 
 LogicalResult TopkRebuildOp::verify() {
   if (failed(verifyTopkRebuildOperands(*this))) {
     return failure();
   }
+  if (failed(utils::verifyTopkTieOrder(*this, getStableSort(),
+                                       getTieOrder() == TopkTieOrder::Unset))) {
+    return failure();
+  }
   return utils::verifyTopkMode(*this, getStableSort(), getFused(),
-                               getRankStamped(),
-                               getTieOrder() == TopkTieOrder::Unset,
-                               getFp32DestAccEnAttr(), getTagBits());
+                               getRankStamped(), getFp32DestAccEnAttr(),
+                               getTagBits());
 }
 
 LogicalResult TopkDefuseTileOp::verify() {

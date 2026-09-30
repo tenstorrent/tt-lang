@@ -9,7 +9,8 @@
 // A fused or rank-stamped TopK representation lives in dataflow buffers, not
 // in one destination-register section. This pass rejects a section that packs
 // and unpacks that representation, a fused stage that does not stay on a
-// fused-key buffer, and any TopK stage left outside a register section.
+// fused-key buffer, a sort order that changes inside an epoch, and any TopK
+// stage left outside a register section.
 //
 //===----------------------------------------------------------------------===//
 
@@ -40,7 +41,7 @@ bool isTopkHelper(Operation *op) {
              TileTopkUint16MoveDestTileToPackHalfOp>(op);
 }
 
-TopkPayload payloadOf(Value storage) {
+BindCBOp bindOf(Value storage) {
   Value cb;
   if (storage && isa<CircularBufferType>(storage.getType())) {
     cb = storage;
@@ -53,7 +54,10 @@ TopkPayload payloadOf(Value storage) {
       cb = reserve.getCb();
     }
   }
-  auto bind = cb ? cb.getDefiningOp<BindCBOp>() : BindCBOp();
+  return cb ? cb.getDefiningOp<BindCBOp>() : BindCBOp();
+}
+
+TopkPayload payloadOf(BindCBOp bind) {
   if (!bind) {
     return TopkPayload::Plain;
   }
@@ -61,19 +65,43 @@ TopkPayload payloadOf(Value storage) {
   return attr ? attr.getValue() : TopkPayload::Plain;
 }
 
-TopkPayload sourcePayload(Operation *op) {
+TopkPayload payloadOf(Value storage) { return payloadOf(bindOf(storage)); }
+
+std::optional<TopkOrder> orderOf(BindCBOp bind) {
+  if (!bind) {
+    return std::nullopt;
+  }
+  auto attr = bind->getAttrOfType<TopkOrderAttr>(kTopkOrderAttrName);
+  return attr ? std::optional<TopkOrder>(attr.getValue()) : std::nullopt;
+}
+
+Value sourceStorage(Operation *op) {
   if (auto copy = dyn_cast<CopyTileOp>(op)) {
-    return payloadOf(copy.getSrc());
+    return copy.getSrc();
   }
   if (auto transpose = dyn_cast<TileTransposeOp>(op)) {
-    return payloadOf(transpose.getInput());
+    return transpose.getInput();
   }
-  return TopkPayload::Plain;
+  return Value();
+}
+
+TopkPayload sourcePayload(Operation *op) {
+  return payloadOf(sourceStorage(op));
+}
+
+std::optional<TopkOrder> orderOf(Operation *op) {
+  return TypeSwitch<Operation *, std::optional<TopkOrder>>(op)
+      .Case<TileTopkLocalSortOp, TileTopkMergeOp, TileTopkRebuildOp,
+            TileTopkFuseOp, TileTopkDefuseOp, TileTopkStampLocalPositionsOp>(
+          [](auto typed) { return std::optional<TopkOrder>(typed.getOrder()); })
+      .Default([](Operation *) { return std::nullopt; });
 }
 
 struct SectionOps {
   SmallVector<Operation *> stages;
   SmallVector<Operation *> helpers;
+  /// Stages and helpers that carry `order`, in program order.
+  SmallVector<Operation *> orderCarriers;
   SmallVector<Operation *> movement;
   SmallVector<TileStoreOp> stores;
 };
@@ -81,6 +109,11 @@ struct SectionOps {
 void collect(Operation *op, SectionOps &ops) {
   if (isa<DstSectionOp, TileRegsAcquireOp>(op)) {
     return;
+  }
+  if (isTopkStage(op) || isTopkHelper(op)) {
+    if (orderOf(op)) {
+      ops.orderCarriers.push_back(op);
+    }
   }
   if (isTopkStage(op)) {
     ops.stages.push_back(op);
@@ -122,9 +155,8 @@ LogicalResult checkPayloadAgreement(ArrayRef<Operation *> movement,
                                     TopkPayload expected, StringRef what) {
   for (Operation *op : movement) {
     if (sourcePayload(op) != expected) {
-      return op->emitOpError()
-             << what << " must read " << stringifyTopkPayload(expected)
-             << " tiles";
+      return op->emitOpError() << what << " must read "
+                               << stringifyTopkPayload(expected) << " tiles";
     }
   }
   return success();
@@ -134,9 +166,39 @@ LogicalResult checkStoreAgreement(ArrayRef<TileStoreOp> stores,
                                   TopkPayload expected, StringRef what) {
   for (TileStoreOp store : stores) {
     if (payloadOf(store.getView()) != expected) {
-      return store.emitOpError()
-             << what << " must store " << stringifyTopkPayload(expected)
-             << " tiles";
+      return store.emitOpError() << what << " must store "
+                                 << stringifyTopkPayload(expected) << " tiles";
+    }
+  }
+  return success();
+}
+
+/// Every packed buffer a section reads or stores must carry the section's
+/// order. Plain buffers carry no order and are not checked.
+LogicalResult verifyBufferOrderAgreement(const SectionOps &ops,
+                                         TopkOrder sectionOrder) {
+  auto check = [&](Operation *op, Value storage,
+                   StringRef verb) -> LogicalResult {
+    BindCBOp bind = bindOf(storage);
+    if (payloadOf(bind) == TopkPayload::Plain) {
+      return success();
+    }
+    std::optional<TopkOrder> bufferOrder = orderOf(bind);
+    if (bufferOrder && *bufferOrder == sectionOrder) {
+      return success();
+    }
+    return op->emitOpError()
+           << verb << " a " << stringifyTopkPayload(payloadOf(bind))
+           << " buffer whose order is not " << stringifyTopkOrder(sectionOrder);
+  };
+  for (Operation *op : ops.movement) {
+    if (failed(check(op, sourceStorage(op), "reads"))) {
+      return failure();
+    }
+  }
+  for (TileStoreOp store : ops.stores) {
+    if (failed(check(store, store.getView(), "stores into"))) {
+      return failure();
     }
   }
   return success();
@@ -176,6 +238,20 @@ LogicalResult verifySection(SectionOps ops, DenseSet<Operation *> &covered) {
     if (stageIsStable && isa<TileTopkLocalSortOp>(stage)) {
       hasStableLocalSort = true;
     }
+  }
+
+  std::optional<TopkOrder> sectionOrder;
+  for (Operation *op : ops.orderCarriers) {
+    std::optional<TopkOrder> order = orderOf(op);
+    if (!sectionOrder) {
+      sectionOrder = order;
+    } else if (*order != *sectionOrder) {
+      return op->emitOpError(
+          "TopK operations in one section must agree on order");
+    }
+  }
+  if (sectionOrder && failed(verifyBufferOrderAgreement(ops, *sectionOrder))) {
+    return failure();
   }
 
   bool hasFuse = false;
@@ -221,9 +297,8 @@ LogicalResult verifySection(SectionOps ops, DenseSet<Operation *> &covered) {
         "topk_strip_rank_tags");
   }
 
-  if (hasFuse &&
-      failed(checkStoreAgreement(ops.stores, TopkPayload::FusedKeys,
-                                 "topk_fuse"))) {
+  if (hasFuse && failed(checkStoreAgreement(ops.stores, TopkPayload::FusedKeys,
+                                            "topk_fuse"))) {
     return failure();
   }
   if (hasDefuse) {
@@ -311,14 +386,35 @@ struct TTLVerifyTopkEpochPass
     auto interrupt = [&](LogicalResult result) {
       return failed(result) ? WalkResult::interrupt() : WalkResult::advance();
     };
+    WalkResult buffers = func.walk([&](BindCBOp bind) {
+      bool packed = payloadOf(bind) != TopkPayload::Plain;
+      if (packed && !orderOf(bind)) {
+        bind.emitOpError() << "a " << stringifyTopkPayload(payloadOf(bind))
+                           << " buffer must carry " << kTopkOrderAttrName;
+        return WalkResult::interrupt();
+      }
+      if (!packed && orderOf(bind)) {
+        bind.emitOpError() << kTopkOrderAttrName
+                           << " applies only to a fused_keys or rank_stamped "
+                              "buffer";
+        return WalkResult::interrupt();
+      }
+      return WalkResult::advance();
+    });
+    if (buffers.wasInterrupted()) {
+      signalPassFailure();
+      return;
+    }
     if (func.walk([&](DstSectionOp section) {
-            SectionOps ops;
-            collectBlock(section.getBody().front(), ops);
-            return interrupt(verifySection(std::move(ops), covered));
-          }).wasInterrupted() ||
+              SectionOps ops;
+              collectBlock(section.getBody().front(), ops);
+              return interrupt(verifySection(std::move(ops), covered));
+            })
+            .wasInterrupted() ||
         func.walk([&](TileRegsAcquireOp acquire) {
-            return interrupt(verifyAcquire(acquire, covered));
-          }).wasInterrupted()) {
+              return interrupt(verifyAcquire(acquire, covered));
+            })
+            .wasInterrupted()) {
       signalPassFailure();
       return;
     }

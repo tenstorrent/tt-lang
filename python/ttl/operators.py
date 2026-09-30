@@ -2003,11 +2003,12 @@ def raw_element_write(block, *args):
 # destination registers are acquired.
 #
 # The slab helpers each mode requires (fuse/defuse, rank stamp/strip, and
-# negative-zero canonicalization) are emitted by the compiler around the
-# stages of a sync region and have no entry point here. ``order`` is the
-# required global result order, ``"descending"`` or ``"ascending"``; it sets
-# the helper polarity and the stable tie-break order. All stages on one slab
-# must agree on it and on the mode flags.
+# negative-zero canonicalization) have no entry point here. ``ttl-lower-topk``
+# emits them on the edges of the packed-key dataflow-buffer lifetime when it
+# lowers ``ttl.topk``. ``order`` is the required global result order,
+# ``"descending"`` or ``"ascending"``; it sets the helper polarity and the
+# stable tie-break order. All stages on one slab must agree on it and on the
+# mode flags.
 
 
 def _topk_index_operand(value):
@@ -2194,11 +2195,11 @@ def topk(
     values,
     k,
     *,
+    indices,
     dim=-1,
     largest=True,
     sorted=True,
     stable=False,
-    indices=None,
 ):
     """Return the ``k`` extreme values along the last dimension, and their indices.
 
@@ -2206,18 +2207,13 @@ def topk(
     not generate the reader that publishes it. ``stable`` selects fused-key
     sorting. ``sorted`` must be true.
     """
-    if indices is None:
-        raise ValueError(
-            "topk requires an indices tensor; the compiler does not generate "
-            "the identity-index reader yet"
-        )
     k_i = _get_constant_int(k)
     dim_i = _get_constant_int(dim)
     values_type = values.type
     indices_type = indices.type
     if not isinstance(values_type, RankedTensorType) or values_type.rank != 2:
         raise ValueError("topk values must be a rank-2 tensor")
-    height = _get_constant_int(values_type.shape[0])
+    height = values_type.shape[0]
     output_width = (k_i + 31) // 32
     values_result = RankedTensorType.get(
         [height, output_width], values_type.element_type

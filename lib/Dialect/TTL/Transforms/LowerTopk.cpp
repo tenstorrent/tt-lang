@@ -21,13 +21,13 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "ttlang/Dialect/TTCore/IR/TTCoreOpsTypes.h"
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsTypes.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/TTL/Passes.h"
 #include "ttlang/Dialect/TTL/Transforms/DFBMaterialization.h"
-#include "ttlang/Dialect/TTCore/IR/TTCoreOpsTypes.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -127,7 +127,8 @@ Value TopkLowering::indexConst(int64_t value) {
 }
 
 Value TopkLowering::i32Const(int64_t value) {
-  return arith::ConstantOp::create(builder, loc, builder.getI32IntegerAttr(value))
+  return arith::ConstantOp::create(builder, loc,
+                                   builder.getI32IntegerAttr(value))
       .getResult();
 }
 
@@ -142,10 +143,12 @@ Value TopkLowering::extract(Value tensor, Value row, int64_t column) {
       .getResult();
 }
 
-Value TopkLowering::transposeTile(Value inputTile, Value outputTile, Value dst) {
-  // The output tile is the circular buffer the transposed datum is packed
-  // into. Annotation reads that attachment to build transpose_wh_init.
-  return TileTransposeOp::create(builder, loc, outputTile.getType(), inputTile,
+Value TopkLowering::transposeTile(Value inputTile, Value outputTile,
+                                  Value dst) {
+  // The result describes the DST content, which keeps the input element type.
+  // `output` names the buffer the section packs into; in fused mode that is
+  // the u32 key buffer, and annotation reads it to build transpose_wh_init.
+  return TileTransposeOp::create(builder, loc, inputTile.getType(), inputTile,
                                  outputTile, dst)
       .getResult();
 }
@@ -162,8 +165,9 @@ Value TopkLowering::copyTile(Value tile, Type tileType, int64_t column,
 
 void TopkLowering::storeTile(Value tile, Value view, Value row, int64_t column,
                              Value dst) {
-  TileStoreOp::create(builder, loc, tile, view, ValueRange{row, indexConst(column)},
-                      dst, DFBTileStoreKind::Producer,
+  TileStoreOp::create(builder, loc, tile, view,
+                      ValueRange{row, indexConst(column)}, dst,
+                      DFBTileStoreKind::Producer,
                       /*row_prefix=*/UnitAttr());
 }
 
@@ -181,8 +185,8 @@ Bank TopkLowering::allocate(RankedTensorType type, TopkPayload payload) {
   OpBuilder::InsertionGuard guard(builder);
   BindCBOp bind = createCompilerAllocatedDFB(type, loc, kernel, builder);
   if (payload != TopkPayload::Plain) {
-    bind->setAttr(kTopkPayloadAttrName,
-                  TopkPayloadAttr::get(context, payload));
+    bind->setAttr(kTopkPayloadAttrName, TopkPayloadAttr::get(context, payload));
+    bind->setAttr(kTopkOrderAttrName, TopkOrderAttr::get(context, order));
   }
   return Bank{bind.getResult(), type};
 }
@@ -222,19 +226,19 @@ void TopkLowering::emitInitialSort(Value row, const Bank &valuesOut,
   for (int64_t column = 0; column < width; column += 2) {
     int64_t direction = ascending ? 1 : 0;
     emitSection([&] {
-      Value left = transposeTile(extract(values, row, column),
-                                 extract(valuesView, indexConst(0), column),
-                                 dst0);
-      Value right = transposeTile(
-          extract(values, row, column + 1),
-          extract(valuesView, indexConst(0), column + 1), dst1);
+      Value left =
+          transposeTile(extract(values, row, column),
+                        extract(valuesView, indexConst(0), column), dst0);
+      Value right =
+          transposeTile(extract(values, row, column + 1),
+                        extract(valuesView, indexConst(0), column + 1), dst1);
       Value indexLeft = extract(indices, row, column);
       Value indexRight = extract(indices, row, column + 1);
       Value indexLeftOut =
           indicesOut ? extract(indicesView, indexConst(0), column) : indexLeft;
-      Value indexRightOut = indicesOut
-                                ? extract(indicesView, indexConst(0), column + 1)
-                                : indexRight;
+      Value indexRightOut =
+          indicesOut ? extract(indicesView, indexConst(0), column + 1)
+                     : indexRight;
       transposeTile(indexLeft, indexLeftOut, dst2);
       transposeTile(indexRight, indexRightOut, dst3);
       if (fused) {
@@ -246,8 +250,8 @@ void TopkLowering::emitInitialSort(Value row, const Bank &valuesOut,
           /*fp32_dest_acc_en=*/BoolAttr(), /*stable_sort=*/false,
           /*fused=*/fused, /*rank_stamped=*/false, /*tag_bits=*/16);
       Type packedType = fused ? valuesOut.type.getElementType() : valueTile;
-      storeTile(fused ? placeholder(packedType) : left, valuesView, indexConst(0),
-                column, dst0);
+      storeTile(fused ? placeholder(packedType) : left, valuesView,
+                indexConst(0), column, dst0);
       storeTile(fused ? placeholder(packedType) : right, valuesView,
                 indexConst(0), column + 1, dst1);
       if (!fused) {
@@ -268,7 +272,8 @@ void TopkLowering::emitInitialSort(Value row, const Bank &valuesOut,
 }
 
 void TopkLowering::emitPhase(ArrayRef<TileUpdate> updates, const Bank &src,
-                             const Bank &dst, const std::optional<Bank> &indexSrc,
+                             const Bank &dst,
+                             const std::optional<Bank> &indexSrc,
                              const std::optional<Bank> &indexDst, bool rebuild,
                              int64_t iteration, bool &ascending) {
   Value srcTensor = waitAndAttach(src);
@@ -308,8 +313,8 @@ void TopkLowering::emitPhase(ArrayRef<TileUpdate> updates, const Bank &src,
       }
       if (rebuild) {
         TileTopkRebuildOp::create(
-            builder, loc, dst0, i32Const(direction), i32Const(iteration), kValue,
-            logkValue, i32Const(update.skipSecond ? 1 : 0), order,
+            builder, loc, dst0, i32Const(direction), i32Const(iteration),
+            kValue, logkValue, i32Const(update.skipSecond ? 1 : 0), order,
             /*fp32_dest_acc_en=*/BoolAttr(), /*stable_sort=*/false,
             /*fused=*/fused, /*rank_stamped=*/false, /*tag_bits=*/16);
       } else {
@@ -392,8 +397,10 @@ void TopkLowering::emitFusedExtract(Value row, const Bank &keys,
       copyTile(extract(keysTensor, indexConst(0), column), keyTile, column,
                dst0);
       TileTopkDefuseOp::create(builder, loc, dst0, i32Const(1), order);
-      storeTile(placeholder(valueTile), valuesView, indexConst(0), column, dst0);
-      storeTile(placeholder(indexTile), indicesView, indexConst(0), column, dst2);
+      storeTile(placeholder(valueTile), valuesView, indexConst(0), column,
+                dst0);
+      storeTile(placeholder(indexTile), indicesView, indexConst(0), column,
+                dst2);
     });
   }
   push(stagingValues);
@@ -422,9 +429,8 @@ LogicalResult TopkLowering::lower() {
   }
   auto valuesStore = dyn_cast<StoreOp>(*op.getResultValues().user_begin());
   auto indicesStore = dyn_cast<StoreOp>(*op.getResultIndices().user_begin());
-  auto valuesReserve = valuesStore
-                           ? findCBReserveForView(valuesStore.getView())
-                           : CBReserveOp();
+  auto valuesReserve =
+      valuesStore ? findCBReserveForView(valuesStore.getView()) : CBReserveOp();
   auto indicesReserve = indicesStore
                             ? findCBReserveForView(indicesStore.getView())
                             : CBReserveOp();
@@ -460,7 +466,9 @@ LogicalResult TopkLowering::lower() {
   indexTile = cast<RankedTensorType>(indices.getType()).getElementType();
   int64_t height = valuesType.getShape()[0];
   width = valuesType.getShape()[1];
-  k = op.getK();
+  // The merge network selects whole tiles. A request below one tile runs the
+  // 32-wide network; the sorted result tile holds the first k columns.
+  k = std::max<int64_t>(op.getK(), 32);
   largest = op.getLargest();
   fused = op.getStable();
   order = largest ? TopkOrder::Descending : TopkOrder::Ascending;
@@ -471,14 +479,12 @@ LogicalResult TopkLowering::lower() {
   int64_t logWidth = llvm::Log2_64(static_cast<uint64_t>(width));
   int64_t tilesPerSeq = outputWidth;
 
-  if (fused) {
-    kernel->setAttr(kFp32DestAccEnAttrName, builder.getBoolAttr(true));
-  }
-
-  Type packedTile = fused ? ttcore::TileType::get(
-                                context, cast<ttcore::TileType>(valueTile).getShape(),
-                                ttcore::DataType::UInt32)
-                          : valueTile;
+  Type packedTile =
+      fused
+          ? ttcore::TileType::get(context,
+                                  cast<ttcore::TileType>(valueTile).getShape(),
+                                  ttcore::DataType::UInt32)
+          : valueTile;
   auto scratchType = RankedTensorType::get({1, width}, packedTile);
   TopkPayload payload = fused ? TopkPayload::FusedKeys : TopkPayload::Plain;
   std::array<Bank, 2> valueBanks = {allocate(scratchType, payload),
@@ -550,10 +556,8 @@ LogicalResult TopkLowering::lower() {
     current = next;
 
     numSequences >>= 1;
-    int64_t targetTiles =
-        (numSequences == 1 && tilesPerSeq == 1) ? 1 : 2;
-    sequencesPerPair =
-        sequencesPerPair == 2 ? 2 : sequencesPerPair >> 1;
+    int64_t targetTiles = (numSequences == 1 && tilesPerSeq == 1) ? 1 : 2;
+    sequencesPerPair = sequencesPerPair == 2 ? 2 : sequencesPerPair >> 1;
     next = 1 - current;
     SmallVector<TileUpdate> rebuilds;
     int64_t selected[2] = {};
@@ -561,17 +565,15 @@ LogicalResult TopkLowering::lower() {
     for (int64_t sequence = 0; sequence < numSequences;
          sequence += (sequencesPerPair >> 1)) {
       for (int64_t tile = 0; tile < tilesPerSeq; ++tile) {
-        int64_t left =
-            ((sequence * (1LL << (iteration + 1)) * k) >> 5) + tile;
+        int64_t left = ((sequence * (1LL << (iteration + 1)) * k) >> 5) + tile;
         if (left >= width) {
           break;
         }
         selected[selectedCount++] = left;
         if (selectedCount == targetTiles) {
           bool skipSecond = targetTiles == 1;
-          rebuilds.push_back(
-              TileUpdate{selected[0], skipSecond ? selected[0] : selected[1],
-                         skipSecond});
+          rebuilds.push_back(TileUpdate{
+              selected[0], skipSecond ? selected[0] : selected[1], skipSecond});
           selectedCount = 0;
         }
       }
@@ -589,9 +591,8 @@ LogicalResult TopkLowering::lower() {
   if (fused) {
     stagingValues = allocate(RankedTensorType::get({1, outputWidth}, valueTile),
                              TopkPayload::Plain);
-    stagingIndices =
-        allocate(RankedTensorType::get({1, outputWidth}, indexTile),
-                 TopkPayload::Plain);
+    stagingIndices = allocate(
+        RankedTensorType::get({1, outputWidth}, indexTile), TopkPayload::Plain);
   }
 
   if (fused) {
@@ -612,15 +613,10 @@ LogicalResult TopkLowering::lower() {
 
 struct TTLLowerTopkPass : impl::TTLLowerTopkBase<TTLLowerTopkPass> {
   void runOnOperation() override {
+    func::FuncOp kernel = getOperation();
     SmallVector<TopkOp> ops;
-    getOperation().walk([&](TopkOp topk) { ops.push_back(topk); });
+    kernel.walk([&](TopkOp topk) { ops.push_back(topk); });
     for (TopkOp topk : ops) {
-      auto kernel = topk->getParentOfType<func::FuncOp>();
-      if (!kernel) {
-        topk.emitOpError("must be inside a function");
-        signalPassFailure();
-        return;
-      }
       if (failed(TopkLowering(topk, kernel).lower())) {
         signalPassFailure();
         return;

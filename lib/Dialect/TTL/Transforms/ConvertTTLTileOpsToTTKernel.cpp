@@ -1221,9 +1221,9 @@ struct TTLTileTopkToTTKernel : OpConversionPattern<SourceOp> {
   LogicalResult
   matchAndRewrite(SourceOp op, typename SourceOp::Adaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    bool largest = op.getOrder() == TopkOrder::Descending;
+    bool descending = op.getOrder() == TopkOrder::Descending;
     ttk::TopkTieOrder tieOrder =
-        getTTKernelTopkTieOrder(op.getStableSort(), largest);
+        getTTKernelTopkTieOrder(op.getStableSort(), descending);
     uint32_t tagBits = op.getTagBits();
     BoolAttr fp32DestAccEn = op.getFp32DestAccEnAttr();
     if constexpr (std::is_same_v<SourceOp, TileTopkLocalSortOp>) {
@@ -1231,19 +1231,19 @@ struct TTLTileTopkToTTKernel : OpConversionPattern<SourceOp> {
           rewriter, op.getLoc(), adaptor.getDstIndex(), adaptor.getDirection(),
           adaptor.getEndPhase(), adaptor.getStartPhase(), adaptor.getEndStep(),
           adaptor.getStartStep(), fp32DestAccEn, op.getStableSort(),
-          op.getFused(), op.getRankStamped(), tieOrder, tagBits, largest);
+          op.getFused(), op.getRankStamped(), tieOrder, tagBits);
     } else if constexpr (std::is_same_v<SourceOp, TileTopkMergeOp>) {
       TargetOp::create(rewriter, op.getLoc(), adaptor.getDstIndex(),
                        adaptor.getMergeIteration(), adaptor.getK(),
                        fp32DestAccEn, op.getStableSort(), op.getFused(),
-                       op.getRankStamped(), tieOrder, tagBits, largest,
+                       op.getRankStamped(), tieOrder, tagBits,
                        op.getDirection());
     } else {
       TargetOp::create(
           rewriter, op.getLoc(), adaptor.getDstIndex(), adaptor.getDirection(),
           adaptor.getMergeIteration(), adaptor.getK(), adaptor.getLogk(),
           adaptor.getSkipSecond(), fp32DestAccEn, op.getStableSort(),
-          op.getFused(), op.getRankStamped(), tieOrder, tagBits, largest);
+          op.getFused(), op.getRankStamped(), tieOrder, tagBits);
     }
     rewriter.eraseOp(op);
     return success();

@@ -231,6 +231,11 @@ constexpr llvm::StringLiteral
 /// stored in that dataflow buffer. Absent means plain value or index tiles.
 constexpr llvm::StringLiteral kTopkPayloadAttrName("ttl.topk_payload");
 
+/// Discardable `ttl.topk_order` on `ttl.bind_cb`. Required beside a fused-key
+/// or rank-stamped `ttl.topk_payload`: the packed representation encodes the
+/// sort polarity, so every stage and helper touching the buffer must match it.
+constexpr llvm::StringLiteral kTopkOrderAttrName("ttl.topk_order");
+
 /// Function attribute recording the first tensor-accessor argument index.
 /// CTA layout is [DFBs, compiler-defined arguments, tensor accessors].
 constexpr llvm::StringLiteral kBaseCTAIndexAttrName("ttl.base_cta_index");

@@ -75,6 +75,8 @@ static Value resolveOutputCB(Operation *computeOp, StringRef attrName) {
 
 // Arguments of topk_tile_init. The compute stages carry the same values so
 // one init can be shared or replaced when the configuration changes.
+// topk_uint16_move_dest_tile_to_pack_half is not covered: it is a standalone
+// SFPU call with no init.
 struct TopkInitConfig {
   bool fused = false;
   bool rankStamped = false;

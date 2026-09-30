@@ -3892,9 +3892,9 @@ mlir::LogicalResult mlir::tt::ttl::TileTopkLocalSortOp::verify() {
           *this, getStartPhase(), getEndPhase(), "start_phase", "end_phase"))) {
     return mlir::failure();
   }
-  return mlir::tt::utils::verifyTopkMode(
-      *this, getStableSort(), getFused(), getRankStamped(),
-      /*tieOrderUnset=*/false, getFp32DestAccEnAttr(), getTagBits());
+  return mlir::tt::utils::verifyTopkMode(*this, getStableSort(), getFused(),
+                                         getRankStamped(),
+                                         getFp32DestAccEnAttr(), getTagBits());
 }
 
 mlir::LogicalResult mlir::tt::ttl::TileTopkMergeOp::verify() {
@@ -3903,9 +3903,9 @@ mlir::LogicalResult mlir::tt::ttl::TileTopkMergeOp::verify() {
       mlir::failed(mlir::tt::utils::verifyTopkConstantK(*this, getK()))) {
     return mlir::failure();
   }
-  return mlir::tt::utils::verifyTopkMode(
-      *this, getStableSort(), getFused(), getRankStamped(),
-      /*tieOrderUnset=*/false, getFp32DestAccEnAttr(), getTagBits());
+  return mlir::tt::utils::verifyTopkMode(*this, getStableSort(), getFused(),
+                                         getRankStamped(),
+                                         getFp32DestAccEnAttr(), getTagBits());
 }
 
 mlir::LogicalResult mlir::tt::ttl::TileTopkRebuildOp::verify() {
@@ -3922,9 +3922,9 @@ mlir::LogicalResult mlir::tt::ttl::TileTopkRebuildOp::verify() {
           mlir::tt::utils::verifyTopkLogkMatchesK(*this, getK(), getLogk()))) {
     return mlir::failure();
   }
-  return mlir::tt::utils::verifyTopkMode(
-      *this, getStableSort(), getFused(), getRankStamped(),
-      /*tieOrderUnset=*/false, getFp32DestAccEnAttr(), getTagBits());
+  return mlir::tt::utils::verifyTopkMode(*this, getStableSort(), getFused(),
+                                         getRankStamped(),
+                                         getFp32DestAccEnAttr(), getTagBits());
 }
 
 mlir::LogicalResult mlir::tt::ttl::TileTopkDefuseOp::verify() {
@@ -3989,9 +3989,6 @@ mlir::LogicalResult mlir::tt::ttl::TopkOp::verify() {
 
   int64_t height = valuesType.getShape()[0];
   int64_t width = valuesType.getShape()[1];
-  if (height < 0) {
-    return emitOpError("height must be non-negative");
-  }
   if (width < 2 || width > 64 || (width & (width - 1)) != 0) {
     return emitOpError(
         "width in tiles must be a power of two in the range [2, 64]");

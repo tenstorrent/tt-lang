@@ -48,6 +48,66 @@ func.func @topk_fused_mode() attributes {ttkernel.thread = #ttkernel.thread<comp
 
 // -----
 
+// A descending order packs and unpacks with largest = true, the elided
+// default.
+// TTKERNEL-LABEL: func.func @topk_fused_mode_descending
+// TTKERNEL: ttkernel.topk_fuse_tile(%{{.*}}) : (index) -> ()
+// TTKERNEL-NEXT: ttkernel.topk_local_sort
+// TTKERNEL: ttkernel.topk_defuse_tile(%{{.*}}, %{{.*}}) : (index, i32) -> ()
+
+// CPP-LABEL: void kernel_main()
+// CPP: topk_fuse_tile<true>(
+// CPP-NEXT: topk_local_sort<false, DST_ACCUM_MODE, true>(
+// CPP: topk_defuse_tile<true>(
+func.func @topk_fused_mode_descending() attributes {ttkernel.thread = #ttkernel.thread<compute>} {
+  %dst = arith.constant 0 : index
+  %direction = arith.constant 0 : i32
+  %end_phase = arith.constant 4 : i32
+  %start_phase = arith.constant 0 : i32
+  %num_tiles = arith.constant 1 : i32
+  ttl.tile_regs_acquire
+  ttl.tile_topk_fuse dst[%dst] {order = #ttl.topk_order<descending>} : index
+  ttl.tile_topk_local_sort dst[%dst] direction = %direction
+      end_phase = %end_phase start_phase = %start_phase
+      {fused = true, order = #ttl.topk_order<descending>}
+      : (index, i32, i32, i32) -> ()
+  ttl.tile_topk_defuse dst[%dst] num_tiles = %num_tiles
+      {order = #ttl.topk_order<descending>} : (index, i32) -> ()
+  ttl.tile_regs_release
+  return
+}
+
+// -----
+
+// An ascending order stamps with largest = false.
+// TTKERNEL-LABEL: func.func @topk_rank_stamped_mode_ascending
+// TTKERNEL: ttkernel.topk_stamp_local_positions
+// TTKERNEL-SAME: largest = false
+// TTKERNEL-SAME: tag_bits = 8
+
+// CPP-LABEL: void kernel_main()
+// CPP: topk_stamp_local_positions<false, 8>(
+// CPP-NEXT: topk_local_sort<false, DST_ACCUM_MODE, false, true>(
+func.func @topk_rank_stamped_mode_ascending() attributes {ttkernel.thread = #ttkernel.thread<compute>} {
+  %dst = arith.constant 0 : index
+  %direction = arith.constant 0 : i32
+  %end_phase = arith.constant 4 : i32
+  %start_phase = arith.constant 0 : i32
+  ttl.tile_regs_acquire
+  ttl.tile_topk_stamp_local_positions dst[%dst]
+      {order = #ttl.topk_order<ascending>, tag_bits = 8 : i32} : index
+  ttl.tile_topk_local_sort dst[%dst] direction = %direction
+      end_phase = %end_phase start_phase = %start_phase
+      {order = #ttl.topk_order<ascending>,
+       rank_stamped = true, tag_bits = 8 : i32}
+      : (index, i32, i32, i32) -> ()
+  ttl.tile_topk_strip_rank_tags dst[%dst] {tag_bits = 8 : i32} : index
+  ttl.tile_regs_release
+  return
+}
+
+// -----
+
 // Rank-stamped mode lowers the explicit stamp and strip. Both helpers carry
 // tag_bits from the stages.
 // TTKERNEL-LABEL: func.func @topk_rank_stamped_mode

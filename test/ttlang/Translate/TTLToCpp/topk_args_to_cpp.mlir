@@ -11,9 +11,9 @@
 
 // TTKERNEL-LABEL: func.func @topk_stable
 // TTKERNEL: ttkernel.topk_tile_init()
-// TTKERNEL: ttkernel.topk_local_sort({{[^)]*}}) {largest = false, stable_sort = true, tie_order = #ttkernel.topk_tie_order<ascending>}
-// TTKERNEL: ttkernel.topk_merge({{[^)]*}}) {direction = true, largest = false, stable_sort = true, tie_order = #ttkernel.topk_tie_order<ascending>}
-// TTKERNEL: ttkernel.topk_rebuild({{[^)]*}}) {largest = false, stable_sort = true, tie_order = #ttkernel.topk_tie_order<ascending>}
+// TTKERNEL: ttkernel.topk_local_sort({{[^)]*}}) {stable_sort = true, tie_order = #ttkernel.topk_tie_order<ascending>}
+// TTKERNEL: ttkernel.topk_merge({{[^)]*}}) {direction = true, stable_sort = true, tie_order = #ttkernel.topk_tie_order<ascending>}
+// TTKERNEL: ttkernel.topk_rebuild({{[^)]*}}) {stable_sort = true, tie_order = #ttkernel.topk_tie_order<ascending>}
 // CPP-LABEL: void kernel_main()
 // CPP: topk_tile_init();
 // CPP: topk_local_sort<true, DST_ACCUM_MODE, false, false, TopkTieOrder::Ascending>(
@@ -45,14 +45,53 @@ func.func @topk_stable() attributes {ttkernel.thread = #ttkernel.thread<compute>
   return
 }
 
+// A descending order selects the descending tie order on every stage.
+// TTKERNEL-LABEL: func.func @topk_stable_descending
+// TTKERNEL: ttkernel.topk_local_sort({{[^)]*}}) {stable_sort = true, tie_order = #ttkernel.topk_tie_order<descending>}
+// TTKERNEL: ttkernel.topk_merge({{[^)]*}}) {stable_sort = true, tie_order = #ttkernel.topk_tie_order<descending>}
+// TTKERNEL: ttkernel.topk_rebuild({{[^)]*}}) {stable_sort = true, tie_order = #ttkernel.topk_tie_order<descending>}
+// CPP-LABEL: void kernel_main()
+// CPP: topk_local_sort<true, DST_ACCUM_MODE, false, false, TopkTieOrder::Descending>(
+// CPP: topk_merge<false, true, DST_ACCUM_MODE, false, false, TopkTieOrder::Descending>(
+// CPP: topk_rebuild<true, DST_ACCUM_MODE, false, false, TopkTieOrder::Descending>(
+func.func @topk_stable_descending() attributes {ttkernel.thread = #ttkernel.thread<compute>} {
+  %dst = arith.constant 0 : index
+  %dir = arith.constant 0 : i32
+  %end = arith.constant 4 : i32
+  %start = arith.constant 0 : i32
+  %iter = arith.constant 0 : i32
+  %k = arith.constant 32 : i32
+  %logk = arith.constant 5 : i32
+  %skip = arith.constant 0 : i32
+  ttl.tile_regs_acquire
+  ttl.tile_topk_local_sort dst[%dst] direction = %dir
+      end_phase = %end start_phase = %start
+      {stable_sort = true, order = #ttl.topk_order<descending>}
+      : (index, i32, i32, i32) -> ()
+  ttl.tile_topk_merge dst[%dst] iteration = %iter k = %k
+      {stable_sort = true, order = #ttl.topk_order<descending>}
+      : (index, i32, i32) -> ()
+  ttl.tile_topk_rebuild dst[%dst] direction = %dir
+      iteration = %iter k = %k logk = %logk skip_second = %skip
+      {stable_sort = true, order = #ttl.topk_order<descending>}
+      : (index, i32, i32, i32, i32, i32) -> ()
+  ttl.tile_regs_release
+  return
+}
+
+// Without stable_sort the order does not reach the stage: no tie_order is
+// emitted and the metal default applies.
 // TTKERNEL-LABEL: func.func @topk_fused_and_steps
 // TTKERNEL: ttkernel.topk_tile_init() {fused = true}
 // TTKERNEL: ttkernel.topk_local_sort(%{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}) {{[{].*}}fused = true
+// TTKERNEL-NOT: tie_order
 // TTKERNEL: ttkernel.topk_merge({{[^)]*}}) {{[{].*}}fused = true
+// TTKERNEL-NOT: tie_order
 // CPP-LABEL: void kernel_main()
 // CPP: topk_tile_init<true>();
 // CPP: topk_local_sort<false, DST_ACCUM_MODE, true>(
 // CPP: topk_merge<false, false, DST_ACCUM_MODE, true>(
+// CPP-NOT: TopkTieOrder
 func.func @topk_fused_and_steps() attributes {ttkernel.thread = #ttkernel.thread<compute>} {
   %dst = arith.constant 0 : index
   %dir = arith.constant 0 : i32

@@ -459,9 +459,9 @@ def TTKernel_ExperimentalMatmulBlockOp : TTKernel_FPUOp<"experimental.matmul_blo
 // first so the following default-valued attributes can take C++ defaults.
 // Absent `fp32_dest_acc_en` lowers to DST_ACCUM_MODE when a later template
 // argument is printed. `tag_bits` configures topk_tile_init; only topk_merge
-// also takes it as a call template parameter. `largest` is the kernel-wide
-// sort polarity; it is not a stage template parameter and only selects the
-// slab helpers that TTKernelInsertInits emits around the stages.
+// also takes it as a call template parameter. The sort polarity is not a
+// stage parameter: the slab helpers carry `largest`, and the stable tie order
+// is `tie_order`.
 defvar TTKernel_TopkModeAttrs = (ins
     OptionalAttr<BoolAttr>:$fp32_dest_acc_en,
     DefaultValuedAttr<BoolAttr, "false">:$stable_sort,
@@ -469,8 +469,7 @@ defvar TTKernel_TopkModeAttrs = (ins
     DefaultValuedAttr<BoolAttr, "false">:$rank_stamped,
     DefaultValuedAttr<TTKernel_TopkTieOrderAttr,
         "::mlir::tt::ttkernel::TopkTieOrder::Unset">:$tie_order,
-    DefaultValuedAttr<I32Attr, "16">:$tag_bits,
-    DefaultValuedAttr<BoolAttr, "true">:$largest);
+    DefaultValuedAttr<I32Attr, "16">:$tag_bits);
 
 def TTKernel_TopkTileInitOp : TTKernel_InitOp<"topk_tile_init"> {
     let summary = "TopK tile init function";
@@ -528,7 +527,7 @@ def TTKernel_TopkLocalSortOp
               /*fp32_dest_acc_en=*/::mlir::BoolAttr(),
               /*stable_sort=*/false, /*fused=*/false, /*rank_stamped=*/false,
               /*tie_order=*/::mlir::tt::ttkernel::TopkTieOrder::Unset,
-              /*tag_bits=*/16, /*largest=*/true);
+              /*tag_bits=*/16);
       }]>
     ];
 
@@ -566,7 +565,7 @@ def TTKernel_TopkMergeOp : TTKernel_SFPUOp<"topk_merge"> {
               /*fp32_dest_acc_en=*/::mlir::BoolAttr(),
               /*stable_sort=*/false, /*fused=*/false, /*rank_stamped=*/false,
               /*tie_order=*/::mlir::tt::ttkernel::TopkTieOrder::Unset,
-              /*tag_bits=*/16, /*largest=*/true, /*direction=*/false);
+              /*tag_bits=*/16, /*direction=*/false);
       }]>
     ];
 
@@ -602,7 +601,7 @@ def TTKernel_TopkRebuildOp : TTKernel_SFPUOp<"topk_rebuild"> {
               /*fp32_dest_acc_en=*/::mlir::BoolAttr(),
               /*stable_sort=*/false, /*fused=*/false, /*rank_stamped=*/false,
               /*tie_order=*/::mlir::tt::ttkernel::TopkTieOrder::Unset,
-              /*tag_bits=*/16, /*largest=*/true);
+              /*tag_bits=*/16);
       }]>
     ];
 

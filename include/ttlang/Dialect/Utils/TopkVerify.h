@@ -21,12 +21,22 @@ namespace mlir::tt::utils {
 // runtime range checks: solving integer ranges for every operand of every
 // TopK op repeats a whole-function dataflow solve.
 
-inline LogicalResult verifyTopkMode(Operation *op, bool stableSort, bool fused,
-                                    bool rankStamped, bool tieOrderUnset,
-                                    BoolAttr fp32DestAccEn, uint32_t tagBits) {
+/// The stable tie order is the global sort order. It is required with
+/// `stable_sort` and meaningless without it.
+inline LogicalResult verifyTopkTieOrder(Operation *op, bool stableSort,
+                                        bool tieOrderUnset) {
   if (stableSort && tieOrderUnset) {
     return op->emitOpError("stable_sort requires an explicit tie_order");
   }
+  if (!stableSort && !tieOrderUnset) {
+    return op->emitOpError("tie_order applies only to stable_sort");
+  }
+  return success();
+}
+
+inline LogicalResult verifyTopkMode(Operation *op, bool stableSort, bool fused,
+                                    bool rankStamped, BoolAttr fp32DestAccEn,
+                                    uint32_t tagBits) {
   if (fused && stableSort) {
     return op->emitOpError("fused and stable_sort are mutually exclusive");
   }

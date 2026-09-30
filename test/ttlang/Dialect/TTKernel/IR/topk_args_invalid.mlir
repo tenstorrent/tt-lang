@@ -17,6 +17,82 @@ func.func @topk_local_sort_stable_requires_tie_order() attributes {
 
 // -----
 
+// tie_order has no meaning outside a stable sort; a stray value is a mistake.
+func.func @topk_local_sort_tie_order_requires_stable_sort() attributes {
+    ttkernel.thread = #ttkernel.thread<compute>} {
+  %dst = arith.constant 0 : index
+  %dir = arith.constant 0 : i32
+  %end = arith.constant 4 : i32
+  %start = arith.constant 0 : i32
+  // expected-error @below {{tie_order applies only to stable_sort}}
+  ttkernel.topk_local_sort(%dst, %dir, %end, %start)
+      {tie_order = #ttkernel.topk_tie_order<descending>}
+      : (index, i32, i32, i32) -> ()
+  return
+}
+
+// -----
+
+func.func @topk_merge_stable_requires_tie_order() attributes {
+    ttkernel.thread = #ttkernel.thread<compute>} {
+  %dst = arith.constant 0 : index
+  %iter = arith.constant 0 : i32
+  %k = arith.constant 32 : i32
+  // expected-error @below {{stable_sort requires an explicit tie_order}}
+  ttkernel.topk_merge(%dst, %iter, %k) {stable_sort = true}
+      : (index, i32, i32) -> ()
+  return
+}
+
+// -----
+
+func.func @topk_merge_tie_order_requires_stable_sort() attributes {
+    ttkernel.thread = #ttkernel.thread<compute>} {
+  %dst = arith.constant 0 : index
+  %iter = arith.constant 0 : i32
+  %k = arith.constant 32 : i32
+  // expected-error @below {{tie_order applies only to stable_sort}}
+  ttkernel.topk_merge(%dst, %iter, %k)
+      {tie_order = #ttkernel.topk_tie_order<ascending>}
+      : (index, i32, i32) -> ()
+  return
+}
+
+// -----
+
+func.func @topk_rebuild_stable_requires_tie_order() attributes {
+    ttkernel.thread = #ttkernel.thread<compute>} {
+  %dst = arith.constant 0 : index
+  %dir = arith.constant 0 : i32
+  %iter = arith.constant 0 : i32
+  %k = arith.constant 32 : i32
+  %logk = arith.constant 5 : i32
+  %skip = arith.constant 0 : i32
+  // expected-error @below {{stable_sort requires an explicit tie_order}}
+  ttkernel.topk_rebuild(%dst, %dir, %iter, %k, %logk, %skip) {stable_sort = true}
+      : (index, i32, i32, i32, i32, i32) -> ()
+  return
+}
+
+// -----
+
+func.func @topk_rebuild_tie_order_requires_stable_sort() attributes {
+    ttkernel.thread = #ttkernel.thread<compute>} {
+  %dst = arith.constant 0 : index
+  %dir = arith.constant 0 : i32
+  %iter = arith.constant 0 : i32
+  %k = arith.constant 32 : i32
+  %logk = arith.constant 5 : i32
+  %skip = arith.constant 0 : i32
+  // expected-error @below {{tie_order applies only to stable_sort}}
+  ttkernel.topk_rebuild(%dst, %dir, %iter, %k, %logk, %skip)
+      {tie_order = #ttkernel.topk_tie_order<descending>}
+      : (index, i32, i32, i32, i32, i32) -> ()
+  return
+}
+
+// -----
+
 func.func @topk_merge_tag_bits_require_rank_stamped() attributes {
     ttkernel.thread = #ttkernel.thread<compute>} {
   %dst = arith.constant 0 : index
