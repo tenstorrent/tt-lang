@@ -71,6 +71,10 @@ def test_dfb_reconfiguration_abi_constants_match_sources():
     preserve_fifo_address = _extract_unsigned_constant(
         llk_source, "preserveFifoAddress"
     )
+    record_capacity = _extract_unsigned_constant(
+        llk_source, "configurationRecordCapacity"
+    )
+    words_per_dfb = _extract_unsigned_constant(llk_source, "configurationWordsPerDFB")
     compiler_words_per_core = _extract_unsigned_constant(
         allocation_source, "kDFBReconfigurationWordsPerCore"
     )
@@ -82,6 +86,8 @@ def test_dfb_reconfiguration_abi_constants_match_sources():
     )
     assert compiler_words_per_core == kernel_runner._DFB_RECONFIGURATION_WORDS_PER_CORE
     assert preserve_fifo_address == kernel_runner._DFB_RECONFIGURATION_PRESERVE_ADDRESS
+    assert record_capacity == kernel_runner._DFB_RECONFIGURATION_MAX_INDICES
+    assert words_per_dfb == kernel_runner._DFB_RECONFIGURATION_WORDS_PER_DFB
 
 
 class _FakeTensor:
