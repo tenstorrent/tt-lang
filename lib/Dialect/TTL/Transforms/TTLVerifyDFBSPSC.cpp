@@ -7,10 +7,10 @@
 //===----------------------------------------------------------------------===//
 //
 // Rejects waits without a push and modules in which a logical dataflow buffer
-// has more than one producer or read-pointer owner active on the same launched
+// has more than one producer or consumer kernel active on the same launched
 // node. Logical identity remains distinct when non-overlapping DFBs share a
-// physical `cb_index`. See `docs/development/DFBManagement.md` for the runtime
-// ownership contract.
+// physical `cb_index`. tt-metal CBs are single-producer single-consumer at the
+// API level; see `docs/development/DFBManagement.md` for the rationale.
 //
 //===----------------------------------------------------------------------===//
 
@@ -38,7 +38,7 @@ namespace mlir::tt::ttl {
 
 namespace {
 
-// A kernel thread that produces a dataflow buffer or advances its read pointer.
+// A kernel thread that produces or consumes a dataflow buffer.
 //
 // Multiple actions in the same thread are merged because SPSC is a thread-level
 // property, not an operation-level property.
@@ -49,7 +49,7 @@ struct DFBParticipant {
   Operation *unanalyzableOp = nullptr;
 };
 
-// Producers or read-pointer owners for one logical dataflow buffer.
+// Producers or consumers for one logical dataflow buffer.
 struct DFBParticipantSet {
   llvm::SmallMapVector<func::FuncOp, DFBParticipant, 2> participants;
 };
@@ -72,15 +72,9 @@ void addParticipant(DFBParticipantSet &set, func::FuncOp thread, Operation *op,
 
 void attachCommonNotes(InFlightDiagnostic &diag, Operation *bindSite,
                        llvm::StringRef role) {
-  if (role == "producer") {
-    diag.attachNote()
-        << "only one kernel may produce a DFB on each launched node; declare "
-           "one DFB per producer kernel";
-  } else {
-    diag.attachNote()
-        << "only one kernel may advance a DFB read pointer on each launched "
-           "node; declare one DFB per read-pointer owner kernel";
-  }
+  diag.attachNote() << "tt-metal CBs are single-producer single-consumer; "
+                       "allocate one DFB per "
+                    << role;
   if (bindSite) {
     diag.attachNote(bindSite->getLoc()) << "dataflow buffer declared here";
   }
@@ -90,13 +84,11 @@ void attachCommonNotes(InFlightDiagnostic &diag, Operation *bindSite,
 // contain one.
 LogicalResult
 verifyDFBWaitsHavePushes(ModuleOp module,
-                         const llvm::DenseMap<int64_t, BindCBOp> &bindSites,
-                         const DFBProtocolDomainState &state) {
+                         const llvm::DenseMap<int64_t, BindCBOp> &bindSites) {
   llvm::DenseSet<int64_t> pushedDFBs;
   llvm::SmallMapVector<int64_t, Operation *, 4> firstWaitByDFB;
   module.walk([&](DFBAccessOpInterface access) {
-    if (!getEnclosingKernelThread(access) ||
-        hasExactEmptyLaunchDomain(access, state)) {
+    if (!getEnclosingKernelThread(access)) {
       return;
     }
     for (const DFBProtocolEffect &effect : access.getDFBProtocolEffects()) {
@@ -114,11 +106,7 @@ verifyDFBWaitsHavePushes(ModuleOp module,
 
   bool sawError = false;
   for (auto [dfbId, waitOp] : firstWaitByDFB) {
-    bool hasOpaqueProducer = llvm::any_of(
-        opaqueProtocolCalls.lookup(dfbId), [&](OpaqueCallOp call) {
-          return !hasExactEmptyLaunchDomain(call, state);
-        });
-    if (pushedDFBs.contains(dfbId) || hasOpaqueProducer) {
+    if (pushedDFBs.contains(dfbId) || opaqueProtocolCalls.contains(dfbId)) {
       continue;
     }
     InFlightDiagnostic diag = waitOp->emitError()
@@ -228,31 +216,18 @@ struct TTLVerifyDFBSPSCPass
       signalPassFailure();
       return;
     }
-    if (!hasDFBProtocolEffect(module)) {
+    if (!hasDFBProtocolEffect(module, /*acquisitionsOnly=*/true)) {
       return;
     }
 
     DFBProtocolDomainState state;
-    state.initialize(module);
-    if (!state.hasLaunchGrid) {
-      // Release-only actions need a launch grid only when ownership is checked.
-      if (!hasDFBProtocolEffect(module, /*acquisitionsOnly=*/true)) {
-        return;
-      }
-      module.emitError()
-          << "ttl-verify-dfb-spsc requires a `ttl.launch_grid` module "
-             "attribute (an i64 array of length 2 with positive entries) "
-             "when verifying DFB acquire actions";
+    if (failed(
+            initializeDFBProtocolDomainState(module, getArgument(), state))) {
       signalPassFailure();
       return;
     }
 
-    if (failed(analyzeDFBProtocolDomains(module, state))) {
-      signalPassFailure();
-      return;
-    }
-
-    if (failed(verifyDFBWaitsHavePushes(module, *bindSites, state))) {
+    if (failed(verifyDFBWaitsHavePushes(module, *bindSites))) {
       signalPassFailure();
       return;
     }
@@ -261,8 +236,13 @@ struct TTLVerifyDFBSPSCPass
       return;
     }
 
+    if (failed(analyzeDFBProtocolDomains(module, state))) {
+      signalPassFailure();
+      return;
+    }
+
     llvm::MapVector<int64_t, DFBParticipantSet> producersByDFB;
-    llvm::MapVector<int64_t, DFBParticipantSet> readPointerOwnersByDFB;
+    llvm::MapVector<int64_t, DFBParticipantSet> consumersByDFB;
 
     auto record = [&](llvm::MapVector<int64_t, DFBParticipantSet> &perDFB,
                       Operation *op, Value cb) {
@@ -273,15 +253,8 @@ struct TTLVerifyDFBSPSCPass
       FailureOr<int64_t> dfbId = getDFBId(cb);
       assert(succeeded(dfbId) && "DFB identities were verified");
       DFBProtocolActionDomain actionDomain = state.getProtocolActionDomain(op);
-      LaunchNodeDomain refinedDomain =
-          refineLaunchNodeDomainFromExecutionCounts(op, actionDomain.domain,
-                                                    state);
-      if (refinedDomain.known && refinedDomain.nodes.empty()) {
-        return;
-      }
-      addParticipant(perDFB[*dfbId], thread, op, refinedDomain,
-                     refinedDomain.known ? nullptr
-                                         : actionDomain.unanalyzableOp);
+      addParticipant(perDFB[*dfbId], thread, op, actionDomain.domain,
+                     actionDomain.unanalyzableOp);
     };
 
     module.walk([&](Operation *op) {
@@ -292,8 +265,8 @@ struct TTLVerifyDFBSPSCPass
       for (const DFBProtocolEffect &effect : access.getDFBProtocolEffects()) {
         if (isProducerDFBProtocolEffect(effect.kind)) {
           record(producersByDFB, op, effect.dfb);
-        } else if (effect.kind == DFBProtocolEffectKind::Pop) {
-          record(readPointerOwnersByDFB, op, effect.dfb);
+        } else if (isConsumerDFBProtocolEffect(effect.kind)) {
+          record(consumersByDFB, op, effect.dfb);
         }
       }
     });
@@ -304,10 +277,10 @@ struct TTLVerifyDFBSPSCPass
           entry.first, entry.second, bindSites->lookup(entry.first), "producer",
           "performed a producer action");
     }
-    for (auto &entry : readPointerOwnersByDFB) {
+    for (auto &entry : consumersByDFB) {
       sawError |= verifyParticipantSet(
-          entry.first, entry.second, bindSites->lookup(entry.first),
-          "read-pointer owner", "advanced the read pointer");
+          entry.first, entry.second, bindSites->lookup(entry.first), "consumer",
+          "performed a consumer action");
     }
 
     if (sawError) {
