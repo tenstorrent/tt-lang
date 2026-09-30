@@ -29,6 +29,26 @@ module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
 
 // -----
 
+// A wait in a branch with exact zero executions needs no producer.
+// CHECK-LABEL: func.func @dead_wait
+module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
+  func.func @dead_wait(%runtime_condition: i1)
+      attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+    %dfb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 52 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %false = arith.constant false
+    %never = arith.andi %runtime_condition, %false : i1
+    scf.if %never {
+      %view = ttl.cb_wait %dfb
+          : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+          -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    }
+    func.return
+  }
+}
+
+// -----
+
 // An opaque external dependency may contain the producer protocol, so producer
 // absence cannot be proven without an access contract.
 // CHECK-LABEL: func.func @opaque_possible_producer

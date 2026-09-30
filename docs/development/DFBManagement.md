@@ -1383,6 +1383,64 @@ consecutive direct uses on the same DFB. Unifying would require changing every
 direct storage-accessing operation to take the attached tensor instead of the
 DFB.
 
+### Rejected held DFB blocks
+
+A block is held from its acquisition until its release. A later acquisition of
+the same DFB and kind can alias a held block, and the pass rejects the program
+instead of inserting a release in three cases, described below in order:
+
+- a nested region acquires the DFB again while the block is held;
+- a data-movement kernel, which reaches a DFB through one read or write
+  pointer, acquires it again while it holds an unmerged block;
+- a data-movement kernel holds acquisitions that `TTLCoalesceDFBAcquires`
+  merges into one and reaches a later merged block through that pointer.
+
+A block still acquired when a nested region acquires the same DFB with the same
+kind would alias that acquisition, since `cb_wait_front` and `cb_reserve_back`
+address the front or write slot. Let `B` be the region operation in the
+acquisition's block that contains the next same-kind acquisition. A release
+before `B` (at the same level or in the acquiring branch of a guarded
+acquisition) settles it. Otherwise `BoundaryPathEnumerator` enumerates the
+execution paths through `B`: at-most-once operations fork one path per region
+plus the skipped path when no region covers the rest, loop bodies are traversed
+once with every action repeated, operations mentioning neither the DFB nor a use
+of the block are skipped, paths in the same state merge, and more than
+`kMaxPaths` paths are rejected. Along a path, acquisitions of the interval's
+kind add tiles to the open count and releases subtract them; a release beyond
+the open count is unowned. A path releases the held block when its unowned
+releases total the block's tiles before its first acquisition. A tensor use of
+the block, or a direct DFB use before the path's first acquisition, is a use of
+the held block; one after the path's release is rejected. When every path
+releases the block, the releases stay and a use after `B` is rejected. When only
+some do and the block is not used inside or after `B`, those releases move after
+the last owned use before `B`; a guarded acquisition or a wait-any reservation
+is rejected instead. Repeated, partial, or excess releases, an unowned release
+after a path's first acquisition, a release after `B` that no later acquisition
+on its path owns (the frontend's with-exit release), and a use in or after `B`
+without a release on every path are rejected.
+
+A data-movement kernel addresses a DFB through one read or write pointer, so
+a block acquired there is used before the next same-kind acquisition or not
+at all. Without a release between the two acquisitions, the earlier one is
+rejected when it has no use (every copy meant for it would address the next
+block), when a release that no later acquisition owns follows the next
+acquisition, or when an operation other than a view or a transfer completion
+uses the earlier block after the next acquisition.
+
+Acquisitions that `TTLCoalesceDFBAcquires` merges into one multi-block
+acquisition (`planCoalescedAcquireGroups`) become slices of it. The DFB pointer
+names the first slice, so every access to the first merged block is correct,
+but only a pipe receive addresses a later slice through its block offset:
+element accesses, copies, and sends through the pointer reach the first slot.
+A later merged reservation may therefore be written only by pipe receives into
+its own view, and a later merged wait may not be read at all. In any kernel, a
+merged block without uses needs no release of its own, because the group's
+releases, one per member, become the merged release. The decision is taken before the
+coalescer runs from the same plan the coalescer applies, so it depends on the
+releases the program states; held reservations whose releases the pass would
+insert are treated as unmerged. Compute kernels may hold several blocks
+because their operations index each slice.
+
 ### Invariants on the inserted release
 
 For each acquire `A`, the inserted release `R_A` must satisfy:
@@ -1625,40 +1683,44 @@ transitive releases via group results.
 
 ### Detection algorithm
 
-Per block, pre-collect all acquires of the kind under consideration
-(`cb_wait` for the consumer pass; `cb_reserve` for the producer pass).
-For each candidate leader (in op order):
+`planCoalescedAcquireGroups` (`DFBAcquireReleaseAnalysis`) decides the groups
+of a block for one acquisition kind (`cb_wait` for consumers, `cb_reserve` for
+producers), and the pass applies exactly that plan. Clients that run before
+the pass, such as the data-movement rule of `ttl-insert-cb-sync`, ask the same
+function, so they cannot disagree with the rewrite. For each candidate leader
+in op order:
 
 ```
-if leader is already coalesced (num_tiles set) or already erased:
+if leader has num_tiles, is already merged, or is not a rank-2 [1, k] block:
   continue
 
 group = [leader]
 for op = leader.nextOp; op != nullptr; op = op.nextOp:
-  if op is a same-kind same-cb acquire with no num_tiles:
+  if op is a release an earlier group erases:
+    continue
+  if op is a same-kind same-cb acquire:
+    if it has num_tiles: break
     group.push_back(op); continue
-  if op is a same-kind acquire on a different DFB:
-    continue  # benign: cannot touch our DFB or our group's results
-  if mayReleaseDFB(op, cb=leader.cb, group):
+  if mayReleaseBeforeCoalescedRelease(op, cb, group):
     break
   # else: tolerate (different-DFB op, attach_cb, arith, ...)
 
 if group.size() < 2: continue
-match N releases on cb after the last group member, in op order
-apply rewrite, mark group members as erased
+match N releases on cb after the last member, skipping erased ones;
+  stop without a group at a release that carries num_tiles
+record the group; its members are merged, all but its last release are
+  erased, and the last carries the merged tile count
 ```
 
-Because the candidate set is fixed before any rewrite, acquires on a
-different DFB that the inner loop skips past (e.g., the matmul-style
-`a1, b1, a2, b2` interleave) still get a chance to lead their own group
-on a later iteration of the outer loop.
+Because every acquire of the block is a candidate, acquires on a different
+DFB that one leader's walk skips past (e.g., the matmul-style
+`a1, b1, a2, b2` interleave) still lead their own group later.
 
 ### Idempotency
 
-The coalesced acquire and release carry a `num_tiles` attribute, and
-`detectGroup` skips acquires that already have one. A second run of the
-pass therefore finds no candidate groups and is a no-op. The doubled-pass
-lit invocation
+The coalesced acquire and release carry a `num_tiles` attribute, and the plan
+skips acquires that already have one. A second run of the pass therefore finds
+no candidate groups and is a no-op. The doubled-pass lit invocation
 (`--pass-pipeline='builtin.module(func.func(ttl-coalesce-dfb-acquires,
 ttl-coalesce-dfb-acquires))'`) verifies this.
 

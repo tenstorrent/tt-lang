@@ -30,6 +30,42 @@ def TTLInsertCBSync
     destination reservation is not published automatically because only the
     selected request is known to be complete. Publication must be explicit and
     conditioned on the corresponding selection, or follow an exact wait.
+
+    A block still held when a nested region acquires the same DFB with the
+    same kind would alias that acquisition (`cb_wait_front` and
+    `cb_reserve_back` address the current slot). When the region releases
+    the block on some branches and never uses it afterwards, the release is
+    hoisted before the region:
+
+    ```mlir
+    %b0 = ttl.cb_wait %in : ...
+    ttl.store %b0, %slot : ...
+    scf.if %cond {
+      ttl.cb_pop %in : ...
+      %b1 = ttl.cb_wait %in : ...
+      ...
+    }
+    ```
+
+    becomes
+
+    ```mlir
+    %b0 = ttl.cb_wait %in : ...
+    ttl.store %b0, %slot : ...
+    ttl.cb_pop %in : ...
+    scf.if %cond {
+      %b1 = ttl.cb_wait %in : ...
+      ...
+    }
+    ```
+
+    The pass emits an error when the held block is used in or after the
+    region without a release on every branch, and, in data-movement kernels,
+    when a held block is not used before the next same-kind acquisition
+    unless the two acquisitions coalesce into one. The DFB pointer names the
+    first block of a coalesced acquisition, so in a data-movement kernel an
+    access to a later block is an error unless it is a pipe receive into that
+    block's view.
   }];
 
   let options = [
