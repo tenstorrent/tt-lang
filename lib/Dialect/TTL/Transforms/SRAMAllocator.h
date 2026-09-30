@@ -52,6 +52,47 @@ struct SRAMAllocationSolution {
   uint64_t arenaBytes = 0;
 };
 
+/// One physical SRAM location with its own data capacity.
+struct SRAMAllocationLocation {
+  uint64_t payloadBaseOffset = 0;
+  uint64_t budgetBytes = 0;
+};
+
+/// One storage owner's interval at one physical SRAM location.
+struct SRAMAllocationRegion {
+  unsigned ownerIndex = 0;
+  unsigned locationIndex = 0;
+  uint64_t bytes = 0;
+  std::optional<uint64_t> fixedOffset;
+};
+
+/// Regions in one group require the same offset relative to their pool bases.
+/// A caller requiring equal physical addresses must also supply equal bases.
+struct SRAMEqualOffsetGroup {
+  llvm::SmallVector<unsigned> regionIndices;
+};
+
+/// Locations backed by one reservation use its largest high-water mark.
+struct SRAMEqualCapacityGroup {
+  llvm::SmallVector<unsigned> locationIndices;
+};
+
+/// Placement input with per-location capacity and selected equal-offset groups.
+struct SRAMLocationAllocationProblem {
+  llvm::SmallVector<SRAMAllocationLocation> locations;
+  llvm::SmallVector<SRAMAllocationRegion> regions;
+  InterferenceGraph conflicts{0};
+  llvm::SmallVector<SRAMEqualOffsetGroup> equalOffsetGroups;
+  uint64_t alignmentBytes = 0;
+  llvm::SmallVector<SRAMEqualCapacityGroup> equalCapacityGroups;
+};
+
+/// Region offsets and the high-water mark at each physical location.
+struct SRAMLocationAllocationSolution {
+  llvm::SmallVector<uint64_t> offsets;
+  llvm::SmallVector<uint64_t> highWaterBytes;
+};
+
 enum class SRAMPlacementFailureKind {
   InvalidProblem,
   StrategyFailure,
@@ -114,11 +155,20 @@ public:
   allocateDomains(llvm::ArrayRef<SRAMAllocationDomainProblem> domains,
                   SRAMAllocationDomainFailure &failureDetail) const;
 
+  /// Returns per-location placement after validating the complete result.
+  FailureOr<SRAMLocationAllocationSolution>
+  allocateLocations(const SRAMLocationAllocationProblem &problem,
+                    SRAMPlacementFailure &failureDetail) const;
+
 private:
   /// A failed strategy must provide a nonempty reason.
   virtual FailureOr<SRAMAllocationSolution>
   allocateImpl(const SRAMAllocationProblem &problem,
                std::string &failureReason) const = 0;
+
+  virtual FailureOr<SRAMLocationAllocationSolution>
+  allocateLocationsImpl(const SRAMLocationAllocationProblem &problem,
+                        std::string &failureReason) const;
 };
 
 /// Creates a built-in allocator selected by its stable compiler option name.

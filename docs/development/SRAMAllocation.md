@@ -125,11 +125,29 @@ FailureOr<llvm::SmallVector<SRAMAllocationDomainSolution>>
 SRAMAllocator::allocateDomains(
     llvm::ArrayRef<SRAMAllocationDomainProblem> domains,
     SRAMAllocationDomainFailure &failureDetail) const;
+
+FailureOr<SRAMLocationAllocationSolution> SRAMAllocator::allocateLocations(
+    const SRAMLocationAllocationProblem &problem,
+    SRAMPlacementFailure &failureDetail) const;
 ```
 
 `SRAMAllocatorOptions::minimumArenaSearchLimit` is positive and bounds the `minimum-arena` strategy; the factory rejects zero. A solution contains one arena-relative byte offset per region and `arenaBytes`, the maximum payload end (zero for no regions). `allocate` validates the immutable problem, calls the strategy, and validates its solution before the caller changes IR. Validation checks offset count, alignment, budget, conflict disjointness, and the exact high-water mark. On failure, `SRAMPlacementFailure` reports the category, reason, and optional region index. A strategy implements `getName()` and private `allocateImpl()`; the factory gives it a stable option name. All strategies share the same input and validation contract.
 
 `allocateDomains` applies that contract to independently addressable layouts. Each domain maps its region indices to storage owners; the caller proves that domain bindings do not overlap. It validates all domains before placing any of them, then returns one placement and arena size per domain. A failure returns no partial result and identifies the domain, failure category, and affected storage owner when available. A control-only domain retains its aligned control prefix. The `minimum-arena` strategy's work limit applies to each domain separately.
+
+`allocateLocations` represents an owner by one region per physical location. Each location has its own payload base and capacity; each region has its own size and may have a fixed offset. A conflict prohibits overlap only at the same location. An equal-offset group requires selected regions to have one offset, without imposing that offset on other regions at their locations. Offsets are relative to the caller's pool bases: multicast address equality also requires those physical pool bases to match. An equal-capacity group represents a shared reservation whose capacity is the largest high-water mark of its member locations. The allocator minimizes the sum of reservation capacities, counting that largest mark once per member. This separates multicast address constraints from unrelated local storage and allows one owner to require different extents at different locations.
+
+```text
+validate locations, regions, conflicts, and equality groups
+combine each equal-offset group into one placement variable
+for each variable in placement order:
+    try aligned offsets at its locations' payload bases and after conflicts
+    require every member region to fit its location and capacity group
+    assign one offset to all member regions
+validate all offsets, conflicts, equality groups, and high-water marks
+```
+
+The greedy strategies select an offset from those candidates. `minimum-arena` searches aligned candidate offsets with a bounded branch-and-bound search; it returns a proven minimum only if that search completes. Validation is common to every strategy, including custom implementations. Existing custom scalar strategies remain valid; a strategy without a per-location implementation returns a typed strategy failure. This C++ placement API does not reserve device memory; a caller must realize its result under the matching owner and completion contracts.
 
 ### Per-Node Allocation Domains
 

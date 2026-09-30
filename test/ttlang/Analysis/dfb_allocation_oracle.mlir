@@ -1,5 +1,5 @@
 // Tests DFB index assignment and SRAM placement against independent exhaustive
-// oracles, and compares allocation-domain contracts.
+// oracles, including per-location placement and allocation-domain contracts.
 // RUN: ttlang-dfb-allocation-oracle-test | FileCheck %s
 
 // CHECK: solver_graphs=33868
@@ -28,6 +28,8 @@
 // CHECK-NEXT: sram_best_fit_worst_efficiency_basis_points=6666
 // CHECK-NEXT: sram_multi_order_large_cases=160
 // CHECK-NEXT: sram_domain_cases=10
+// CHECK-NEXT: sram_location_cases=39
+// CHECK-NEXT: sram_location_oracle_cases=324
 // CHECK-NEXT: target_capacities=32, 64, 32, 32
 // CHECK-NEXT: system_desc_num_cbs=64, 32
 // CHECK-NEXT: contract_cases=262144

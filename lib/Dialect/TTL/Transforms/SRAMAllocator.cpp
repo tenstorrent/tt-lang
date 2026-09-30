@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <cassert>
+#include <limits>
 
 namespace mlir::tt::ttl {
 namespace {
@@ -106,6 +107,238 @@ LogicalResult validateSolution(const SRAMAllocationProblem &problem,
   return success();
 }
 
+LogicalResult
+validateLocationProblem(const SRAMLocationAllocationProblem &problem,
+                        std::optional<unsigned> &failureRegionIndex,
+                        std::string &failureReason) {
+  if (!llvm::isPowerOf2_64(problem.alignmentBytes)) {
+    failureReason = "allocation alignment must be a nonzero power of two";
+    return failure();
+  }
+  uint64_t combinedBudgetBytes = 0;
+  for (const auto &location : problem.locations) {
+    if (location.payloadBaseOffset % problem.alignmentBytes != 0) {
+      failureReason =
+          "location payload base does not satisfy allocation alignment";
+      return failure();
+    }
+    if (location.payloadBaseOffset > location.budgetBytes) {
+      failureReason = "location payload base exceeds its SRAM budget";
+      return failure();
+    }
+    std::optional<uint64_t> nextCombinedBudget =
+        llvm::checkedAddUnsigned(combinedBudgetBytes, location.budgetBytes);
+    if (!nextCombinedBudget) {
+      failureReason = "combined SRAM location budgets overflow address space";
+      return failure();
+    }
+    combinedBudgetBytes = *nextCombinedBudget;
+  }
+  if (problem.conflicts.size() != problem.regions.size()) {
+    failureReason = "conflict graph size does not match the region count";
+    return failure();
+  }
+  llvm::DenseSet<std::pair<unsigned, unsigned>> ownerLocations;
+  for (auto [regionIndex, region] : llvm::enumerate(problem.regions)) {
+    if (region.locationIndex >= problem.locations.size()) {
+      failureRegionIndex = regionIndex;
+      failureReason = "region references an unknown SRAM location";
+      return failure();
+    }
+    if (region.bytes == 0 || region.bytes % problem.alignmentBytes != 0) {
+      failureRegionIndex = regionIndex;
+      failureReason = "region size does not satisfy allocation alignment";
+      return failure();
+    }
+    if (!ownerLocations.insert({region.ownerIndex, region.locationIndex})
+             .second) {
+      failureRegionIndex = regionIndex;
+      failureReason = "storage owner has duplicate regions at one location";
+      return failure();
+    }
+    if (!region.fixedOffset) {
+      continue;
+    }
+    const auto &location = problem.locations[region.locationIndex];
+    std::optional<uint64_t> end =
+        llvm::checkedAddUnsigned(*region.fixedOffset, region.bytes);
+    if (*region.fixedOffset < location.payloadBaseOffset ||
+        *region.fixedOffset % problem.alignmentBytes != 0 || !end ||
+        *end > location.budgetBytes) {
+      failureRegionIndex = regionIndex;
+      failureReason = "fixed region does not fit its SRAM location";
+      return failure();
+    }
+  }
+  for (unsigned leftIndex = 0; leftIndex < problem.regions.size();
+       ++leftIndex) {
+    for (unsigned rightIndex = leftIndex + 1;
+         rightIndex < problem.regions.size(); ++rightIndex) {
+      if (problem.conflicts.interferes(leftIndex, rightIndex) &&
+          problem.regions[leftIndex].locationIndex !=
+              problem.regions[rightIndex].locationIndex) {
+        failureRegionIndex = rightIndex;
+        failureReason = "conflicting regions must occupy the same location";
+        return failure();
+      }
+    }
+  }
+  llvm::DenseSet<unsigned> groupedRegions;
+  for (const auto &group : problem.equalOffsetGroups) {
+    if (group.regionIndices.size() < 2) {
+      failureReason = "equal-offset group must contain at least two regions";
+      return failure();
+    }
+    llvm::DenseSet<unsigned> locations;
+    std::optional<uint64_t> fixedOffset;
+    for (unsigned regionIndex : group.regionIndices) {
+      if (regionIndex >= problem.regions.size()) {
+        failureReason = "equal-offset group references an unknown region";
+        return failure();
+      }
+      if (!groupedRegions.insert(regionIndex).second) {
+        failureRegionIndex = regionIndex;
+        failureReason = "region belongs to multiple equal-offset groups";
+        return failure();
+      }
+      const auto &region = problem.regions[regionIndex];
+      if (!locations.insert(region.locationIndex).second) {
+        failureRegionIndex = regionIndex;
+        failureReason =
+            "equal-offset group contains multiple regions at one location";
+        return failure();
+      }
+      if (region.fixedOffset && fixedOffset &&
+          region.fixedOffset != fixedOffset) {
+        failureRegionIndex = regionIndex;
+        failureReason = "equal-offset group has incompatible fixed offsets";
+        return failure();
+      }
+      if (region.fixedOffset) {
+        fixedOffset = region.fixedOffset;
+      }
+    }
+  }
+  llvm::DenseSet<unsigned> groupedCapacityLocations;
+  for (const auto &group : problem.equalCapacityGroups) {
+    if (group.locationIndices.size() < 2) {
+      failureReason =
+          "equal-capacity group must contain at least two locations";
+      return failure();
+    }
+    uint64_t minimumBudget = std::numeric_limits<uint64_t>::max();
+    uint64_t maximumPayloadBase = 0;
+    for (unsigned locationIndex : group.locationIndices) {
+      if (locationIndex >= problem.locations.size()) {
+        failureReason =
+            "equal-capacity group references an unknown SRAM location";
+        return failure();
+      }
+      if (!groupedCapacityLocations.insert(locationIndex).second) {
+        failureReason =
+            "SRAM location belongs to multiple equal-capacity groups";
+        return failure();
+      }
+      const auto &location = problem.locations[locationIndex];
+      minimumBudget = std::min(minimumBudget, location.budgetBytes);
+      maximumPayloadBase =
+          std::max(maximumPayloadBase, location.payloadBaseOffset);
+    }
+    if (maximumPayloadBase > minimumBudget) {
+      failureReason =
+          "equal-capacity group payload base exceeds a member SRAM budget";
+      return failure();
+    }
+  }
+  return success();
+}
+
+LogicalResult
+validateLocationSolution(const SRAMLocationAllocationProblem &problem,
+                         const SRAMLocationAllocationSolution &solution,
+                         SRAMPlacementFailureKind &failureKind,
+                         std::optional<unsigned> &failureRegionIndex,
+                         std::string &failureReason) {
+  if (solution.offsets.size() != problem.regions.size() ||
+      solution.highWaterBytes.size() != problem.locations.size()) {
+    failureReason = "allocator returned an incorrect location result size";
+    return failure();
+  }
+  SmallVector<uint64_t> ends(problem.regions.size());
+  SmallVector<uint64_t> expectedHighWater;
+  expectedHighWater.reserve(problem.locations.size());
+  for (const auto &location : problem.locations) {
+    expectedHighWater.push_back(location.payloadBaseOffset);
+  }
+  for (auto [regionIndex, region] : llvm::enumerate(problem.regions)) {
+    uint64_t offset = solution.offsets[regionIndex];
+    const auto &location = problem.locations[region.locationIndex];
+    std::optional<uint64_t> end =
+        llvm::checkedAddUnsigned(offset, region.bytes);
+    if (offset < location.payloadBaseOffset ||
+        offset % problem.alignmentBytes != 0 || !end ||
+        (region.fixedOffset && offset != *region.fixedOffset)) {
+      failureRegionIndex = regionIndex;
+      failureReason = "allocator returned an invalid per-location offset";
+      return failure();
+    }
+    if (*end > location.budgetBytes) {
+      failureKind = SRAMPlacementFailureKind::BudgetExceeded;
+      failureRegionIndex = regionIndex;
+      failureReason = "placement exceeds SRAM location budget " +
+                      std::to_string(location.budgetBytes) + " bytes";
+      return failure();
+    }
+    ends[regionIndex] = *end;
+    expectedHighWater[region.locationIndex] =
+        std::max(expectedHighWater[region.locationIndex], *end);
+  }
+  for (const auto &group : problem.equalOffsetGroups) {
+    uint64_t offset = solution.offsets[group.regionIndices.front()];
+    for (unsigned regionIndex : llvm::drop_begin(group.regionIndices)) {
+      if (solution.offsets[regionIndex] != offset) {
+        failureRegionIndex = regionIndex;
+        failureReason = "allocator violated an equal-offset constraint";
+        return failure();
+      }
+    }
+  }
+  for (unsigned leftIndex = 0; leftIndex < problem.regions.size();
+       ++leftIndex) {
+    for (unsigned rightIndex = leftIndex + 1;
+         rightIndex < problem.regions.size(); ++rightIndex) {
+      if (!problem.conflicts.interferes(leftIndex, rightIndex)) {
+        continue;
+      }
+      if (ends[leftIndex] > solution.offsets[rightIndex] &&
+          ends[rightIndex] > solution.offsets[leftIndex]) {
+        failureRegionIndex = rightIndex;
+        failureReason = "allocator overlapped conflicting location regions";
+        return failure();
+      }
+    }
+  }
+  if (solution.highWaterBytes != expectedHighWater) {
+    failureReason = "allocator returned incorrect location high-water marks";
+    return failure();
+  }
+  for (const auto &group : problem.equalCapacityGroups) {
+    uint64_t capacity = 0;
+    for (unsigned locationIndex : group.locationIndices) {
+      capacity = std::max(capacity, solution.highWaterBytes[locationIndex]);
+    }
+    for (unsigned locationIndex : group.locationIndices) {
+      if (capacity > problem.locations[locationIndex].budgetBytes) {
+        failureKind = SRAMPlacementFailureKind::BudgetExceeded;
+        failureReason = "allocator returned an equal capacity that exceeds a "
+                        "location budget";
+        return failure();
+      }
+    }
+  }
+  return success();
+}
+
 } // namespace
 
 FailureOr<SRAMAllocationSolution>
@@ -181,6 +414,37 @@ SRAMAllocator::allocateDomains(
     result.push_back(std::move(placement));
   }
   return result;
+}
+
+FailureOr<SRAMLocationAllocationSolution>
+SRAMAllocator::allocateLocations(const SRAMLocationAllocationProblem &problem,
+                                 SRAMPlacementFailure &failureDetail) const {
+  failureDetail = {};
+  if (failed(validateLocationProblem(problem, failureDetail.regionIndex,
+                                     failureDetail.reason))) {
+    return failure();
+  }
+  failureDetail.kind = SRAMPlacementFailureKind::StrategyFailure;
+  auto solution = allocateLocationsImpl(problem, failureDetail.reason);
+  if (failed(solution)) {
+    assert(!failureDetail.reason.empty() &&
+           "failed SRAM strategy must explain its failure");
+    return failure();
+  }
+  failureDetail.kind = SRAMPlacementFailureKind::InvalidSolution;
+  if (failed(validateLocationSolution(problem, *solution, failureDetail.kind,
+                                      failureDetail.regionIndex,
+                                      failureDetail.reason))) {
+    return failure();
+  }
+  return solution;
+}
+
+FailureOr<SRAMLocationAllocationSolution>
+SRAMAllocator::allocateLocationsImpl(const SRAMLocationAllocationProblem &,
+                                     std::string &failureReason) const {
+  failureReason = "strategy does not support per-location SRAM allocation";
+  return failure();
 }
 
 FailureOr<std::unique_ptr<SRAMAllocator>>

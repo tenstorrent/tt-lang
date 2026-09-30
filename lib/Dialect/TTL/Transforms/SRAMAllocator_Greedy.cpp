@@ -3,6 +3,7 @@
 
 #include "SRAMAllocator.h"
 #include "SRAMAllocator_Internal.h"
+#include "SRAMAllocator_Location_Internal.h"
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/CheckedArithmetic.h"
@@ -169,6 +170,13 @@ public:
     return allocateDecreasing(problem, GreedyGapSelection::FirstFit,
                               failureReason);
   }
+
+  FailureOr<SRAMLocationAllocationSolution>
+  allocateLocationsImpl(const SRAMLocationAllocationProblem &problem,
+                        std::string &failureReason) const override {
+    return detail::allocateLocationsGreedy(
+        problem, GreedyGapSelection::FirstFit, false, failureReason);
+  }
 };
 
 class BestFitDecreasingAllocator final : public SRAMAllocator {
@@ -182,6 +190,13 @@ public:
                std::string &failureReason) const override {
     return allocateDecreasing(problem, GreedyGapSelection::BestFit,
                               failureReason);
+  }
+
+  FailureOr<SRAMLocationAllocationSolution>
+  allocateLocationsImpl(const SRAMLocationAllocationProblem &problem,
+                        std::string &failureReason) const override {
+    return detail::allocateLocationsGreedy(problem, GreedyGapSelection::BestFit,
+                                           false, failureReason);
   }
 };
 
@@ -203,6 +218,24 @@ private:
                            PlacementOrder::DegreeAware);
     if (succeeded(degreeAware) &&
         (failed(stable) || degreeAware->arenaBytes < stable->arenaBytes)) {
+      return degreeAware;
+    }
+    return stable;
+  }
+
+  FailureOr<SRAMLocationAllocationSolution>
+  allocateLocationsImpl(const SRAMLocationAllocationProblem &problem,
+                        std::string &failureReason) const override {
+    auto stable = detail::allocateLocationsGreedy(
+        problem, GreedyGapSelection::FirstFit, false, failureReason);
+    std::string degreeFailure;
+    auto degreeAware = detail::allocateLocationsGreedy(
+        problem, GreedyGapSelection::FirstFit, true, degreeFailure);
+    if (succeeded(degreeAware) &&
+        (failed(stable) || detail::getLocationReservationBytes(
+                               problem, degreeAware->highWaterBytes) <
+                               detail::getLocationReservationBytes(
+                                   problem, stable->highWaterBytes))) {
       return degreeAware;
     }
     return stable;

@@ -6,6 +6,7 @@
 #include "llvm/Support/raw_ostream.h"
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <utility>
 
@@ -15,6 +16,7 @@ using mlir::tt::ttl::InterferenceGraph;
 using mlir::tt::ttl::SRAMAllocationProblem;
 using mlir::tt::ttl::SRAMAllocationSolution;
 using mlir::tt::ttl::SRAMAllocator;
+using mlir::tt::ttl::SRAMLocationAllocationProblem;
 using mlir::tt::ttl::SRAMPlacementFailure;
 using mlir::tt::ttl::SRAMPlacementFailureKind;
 
@@ -62,6 +64,21 @@ bool rejects(SRAMAllocationProblem problem, SRAMAllocationSolution solution,
 } // namespace
 
 int main() {
+  SRAMLocationAllocationProblem locationProblem;
+  locationProblem.locations.push_back({0, 64});
+  locationProblem.regions.push_back({0, 0, 16, std::nullopt});
+  locationProblem.conflicts = InterferenceGraph(1);
+  locationProblem.alignmentBytes = 16;
+  FixedSolutionAllocator scalarOnly({{}, 0});
+  SRAMPlacementFailure locationFailure;
+  if (mlir::succeeded(
+          scalarOnly.allocateLocations(locationProblem, locationFailure)) ||
+      locationFailure.kind != SRAMPlacementFailureKind::StrategyFailure ||
+      locationFailure.reason !=
+          "strategy does not support per-location SRAM allocation") {
+    llvm::errs() << "scalar-only allocator did not reject location placement\n";
+    return 1;
+  }
   SRAMAllocationProblem problem = makeProblem();
   if (!rejects({}, {{}, 0}, SRAMPlacementFailureKind::InvalidProblem,
                "allocation alignment must be a nonzero power of two") ||
