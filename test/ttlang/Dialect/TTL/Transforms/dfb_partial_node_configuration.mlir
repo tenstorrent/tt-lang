@@ -1,8 +1,10 @@
-// A completed node must not suppress configuration of an unproved node.
+// A completed node must not suppress configuration of an unproved node. The
+// unproved node may retain state across the boundary, which does not discard
+// it, so the node keeps its initial descriptor and nothing is installed there.
 // RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{reuse-user-dfbs=true})' | FileCheck %s
 // RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{reuse-user-dfbs=true})' -debug-only=ttl-finalize-dfb-indices -o /dev/null 2>&1 | FileCheck %s --check-prefix=DEBUG
 
-// CHECK: ttl.dfb_reconfiguration_plan = {{.*}}nodes = {{\[\[0, 0\], \[1, 0\]\]}}{{.*}}entry_reconfiguration = 0 : i64{{.*}}nodes = {{\[\[1, 0\]\]}}
+// CHECK: ttl.dfb_reconfiguration_plan = {boundary_ordinals = array<i64: 0>, dfbs = [{configurations = [{block_count = 2 : i32, element_type = !ttcore.tile<32x32, bf16>, num_tiles = 1 : i32, page_size = 2048 : i32, storage_segments = [{nodes = {{\[\[}}0, 0], [1, 0{{\]\]}}}]}], dfb_index = 0 : i32}]}
 // DEBUG: node (0,0) lifecycle_completion=complete
 // DEBUG: node (1,0) lifecycle_completion=incomplete-use-order
 

@@ -4,6 +4,7 @@
 
 # REQUIRES: ttnn
 # RUN: env TTLANG_COMPILE_ONLY=1 not %python %s crossing-install 2>&1 | FileCheck %s --check-prefix=CROSSING-INSTALL
+# RUN: env TTLANG_COMPILE_ONLY=1 %python %s crossing-keep-state 2>&1 | FileCheck %s --check-prefix=CROSSING-KEEP-STATE
 # RUN: env TTLANG_COMPILE_ONLY=1 %python %s filled 2>&1 | FileCheck %s --check-prefix=FILLED
 # RUN: env TTLANG_COMPILE_ONLY=1 not %python %s overfilled 2>&1 | FileCheck %s --check-prefix=OVERFILLED
 # RUN: env TTLANG_COMPILE_ONLY=1 not %python %s overfilled-keep-state 2>&1 | FileCheck %s --check-prefix=OVERFILLED
@@ -17,6 +18,8 @@
 # CROSSING-INSTALL: error: logical DFB {{[0-9]+}} has capacity-unsafe producer and consumer transactions on core_x=1, core_y=0
 # CROSSING-INSTALL: note: the consumer pops 1 block(s) per launch, but the producer pushes 0 block(s) per launch
 # CROSSING-INSTALL: note: in the interval that starts at this synchronized reset or reconfiguration, which restores the DFB
+# CROSSING-KEEP-STATE-NOT: {{error|warning}}:
+# CROSSING-KEEP-STATE: COMPILED
 # FILLED-NOT: {{error|warning}}:
 # FILLED: COMPILED
 # OVERFILLED: error: logical DFB {{[0-9]+}} has transactions that cannot complete before a synchronized reset or reconfiguration on core_x=0, core_y=0
@@ -80,15 +83,16 @@ def _participants():
     )
 
 
-def make_crossing_install():
+def make_crossing_install(discard_dfb_state):
     # Node 0 completes a lifecycle on each side of the boundary. Node 1 pushes a
-    # block before it and pops it after it, but the plan installs the next
-    # descriptor on both nodes, so the reconfiguration restores the DFB on
-    # node 1 and discards that block.
+    # block before it and pops it after it. With state discard, the plan
+    # installs the next descriptor on both nodes, so the reconfiguration
+    # restores the DFB on node 1 and discards that block. Without it, node 1
+    # keeps its descriptor and the block across the boundary.
     compute_kernel, reader_kernel, writer_kernel = _participants()
     boundary = ttl.DFBReconfiguration(
         participants=(compute_kernel, reader_kernel, writer_kernel),
-        discard_dfb_state=True,
+        discard_dfb_state=discard_dfb_state,
     )
 
     @ttl.operation(grid=(2, 1))
@@ -311,7 +315,8 @@ def make_generations(pushes_per_generation):
 
 
 FACTORIES = {
-    "crossing-install": make_crossing_install,
+    "crossing-install": lambda: make_crossing_install(discard_dfb_state=True),
+    "crossing-keep-state": lambda: make_crossing_install(discard_dfb_state=False),
     "filled": lambda: make_fill(pushes=2, discard_dfb_state=True),
     "overfilled": lambda: make_fill(pushes=3, discard_dfb_state=True),
     "overfilled-keep-state": lambda: make_fill(pushes=3, discard_dfb_state=False),
