@@ -24,6 +24,7 @@ jobs:
     if: github.repository == 'tenstorrent/tt-lang' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 55
+    environment: k3-host-mock-dispatch
     permissions:
       contents: read
       statuses: write

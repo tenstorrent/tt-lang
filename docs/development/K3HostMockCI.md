@@ -31,12 +31,22 @@ can leave a pending status.
 An organization administrator installs a dedicated dispatch App with
 `Actions: write` and the mandatory `Metadata: read` permission on the private
 ops-and-models repository. `Actions: write` also permits reading workflow runs
-for polling. The public repository requires:
+for polling. A repository administrator creates environment
+`k3-host-mock-dispatch`, selects deployment branches and tags, and permits only
+the branch `main` with no tag or PR merge-ref rules. That environment contains:
 
-- Actions variable `K3_DISPATCH_APP_ID`.
-- Actions secret `K3_DISPATCH_APP_PRIVATE_KEY`.
-- Permission for this workflow's `GITHUB_TOKEN` to create commit statuses.
-- Permission to use the pinned official checkout and App-token actions.
+- Environment variable `K3_DISPATCH_APP_ID`.
+- Environment secret `K3_DISPATCH_APP_PRIVATE_KEY`.
+
+The App key must not be a repository or organization secret: existing public CI
+passes those secrets to reusable workflows with `secrets: inherit`. Environment
+secrets are available only to jobs referencing the environment after its branch
+restriction passes. The branch restriction is configured before adding the key;
+the "protected branches only" setting is insufficient when repositories use
+rulesets without classic branch protection.
+
+Repository policy must permit this workflow's `GITHUB_TOKEN` to create commit
+statuses and permit the pinned official checkout and App-token actions.
 
 The dispatch token is requested for only the private ops-and-models repository
 and only the Actions permission. It is present only in the trusted public
@@ -45,7 +55,8 @@ compiler/model execution or private artifacts. The public workflow does not use
 `pull_request_target`.
 
 The private repository additionally needs a separate App with `Contents: read`
-on its private dependency repository; its preparation job receives that credential.
+on its private dependency repository; only its source-preparation environment
+receives that credential.
 Private execution also requires a configured Linux x64 Docker runner with at
 least 16 GB RAM. Configuration is documented with the private runner. Both workflows must be
 reviewed and merged to their default branches before dispatching by filename.
@@ -82,3 +93,4 @@ GitHub API references:
 - [Reusable workflow access](https://docs.github.com/en/actions/reference/workflows-and-actions/reusing-workflow-configurations).
 - [Workflow dispatch](https://docs.github.com/en/rest/actions/workflows#create-a-workflow-dispatch-event).
 - [Commit status publication](https://docs.github.com/en/rest/commits/statuses#create-a-commit-status).
+- [Environment secrets and branch restrictions](https://docs.github.com/en/actions/reference/workflows-and-actions/deployments-and-environments).
