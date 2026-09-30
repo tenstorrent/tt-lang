@@ -250,6 +250,11 @@ struct ModuleState {
   /// Logical identities required by guard verification.
   const DFBLogicalIdentityAnalysis *dfbIdentities = nullptr;
   bool sawError = false;
+  /// When set, a launch node with more than
+  /// `kMaxPipeScheduleNodesPerLaunchNode` pipe events sets
+  /// `exceededScheduleNodeLimit` instead of emitting a diagnostic.
+  bool deferScheduleNodeLimit = false;
+  bool exceededScheduleNodeLimit = false;
   llvm::DenseMap<int64_t, LaunchNodeDomain> dfbProducerDomains;
   SmallVector<WaitUse> waitUses;
   SmallVector<PipeEvent> pipeEvents;
@@ -2747,6 +2752,10 @@ void verifyPipeScheduleCycles(ModuleOp module, ModuleState &state) {
                     std::optional<std::uint64_t> executionCountDivisor) {
                   std::size_t &scheduleNodeCount = scheduleNodeCounts[location];
                   if (scheduleNodeCount >= kMaxPipeScheduleNodesPerLaunchNode) {
+                    if (state.deferScheduleNodeLimit) {
+                      state.exceededScheduleNodeLimit = true;
+                      return WalkResult::interrupt();
+                    }
                     event.op->emitOpError()
                         << "cannot verify PipeNet synchronization because the "
                            "schedule contains more than "
@@ -3187,9 +3196,12 @@ struct TTLVerifyPipeNetGuardsPass
 };
 
 /// Build the transfer index and verify one immutable schedule-analysis module.
-LogicalResult verifyPipeScheduleModule(
-    ModuleOp module,
-    const PipeNetLaunchNodeDomainAnalysis &launchNodeAnalysis) {
+/// Returns false without a diagnostic when `deferScheduleNodeLimit` is set and
+/// a launch node exceeds `kMaxPipeScheduleNodesPerLaunchNode` pipe events
+/// before any other error.
+FailureOr<bool> verifyPipeScheduleModule(
+    ModuleOp module, const PipeNetLaunchNodeDomainAnalysis &launchNodeAnalysis,
+    bool deferScheduleNodeLimit) {
   const LaunchNodeDomainState &launchDomains = launchNodeAnalysis.getState();
   ValueOriginAnalysis valueOrigins(module);
   FailureOr<std::unique_ptr<PipeTransferIndex>> maybeTransfers =
@@ -3198,6 +3210,7 @@ LogicalResult verifyPipeScheduleModule(
     return failure();
   }
   ModuleState state(**maybeTransfers, launchDomains, valueOrigins);
+  state.deferScheduleNodeLimit = deferScheduleNodeLimit;
 
   module.walk([&](Operation *operation) {
     if (const PipeNetOperationDomainInfo *info =
@@ -3209,7 +3222,35 @@ LogicalResult verifyPipeScheduleModule(
   if (!state.sawError) {
     verifyPipeScheduleCycles(module, state);
   }
-  return state.sawError ? failure() : success();
+  if (state.sawError) {
+    return failure();
+  }
+  return !state.exceededScheduleNodeLimit;
+}
+
+/// Clone `module` with the static loops of `scope` expanded and verify its
+/// schedule. See `verifyPipeScheduleModule` for the result.
+FailureOr<bool> verifyExpandedPipeSchedule(ModuleOp module,
+                                           ScheduleLoopExpansion scope,
+                                           bool deferScheduleNodeLimit) {
+  OwningOpRef<ModuleOp> scheduleModule(module.clone());
+  FailureOr<bool> expanded =
+      expandStaticPipeScheduleLoops(*scheduleModule, scope);
+  if (failed(expanded)) {
+    return failure();
+  }
+  if (!*expanded) {
+    return false;
+  }
+  PipeNetLaunchNodeDomainAnalysis scheduleLaunchNodeAnalysis(*scheduleModule);
+  if (failed(validatePipeNetModule(*scheduleModule,
+                                   scheduleLaunchNodeAnalysis.getState(),
+                                   "ttl-verify-pipenet-schedule")) ||
+      !scheduleLaunchNodeAnalysis.isValid()) {
+    return failure();
+  }
+  return verifyPipeScheduleModule(*scheduleModule, scheduleLaunchNodeAnalysis,
+                                  deferScheduleNodeLimit);
 }
 
 struct TTLVerifyPipeNetSchedulePass
@@ -3235,30 +3276,18 @@ struct TTLVerifyPipeNetSchedulePass
     }
 
     // Invariant loops keep compact count analysis together, so corresponding
-    // sender and receiver loops use the same form.
-    OwningOpRef<ModuleOp> scheduleModule(module.clone());
-    FailureOr<bool> expandedAllLoops = expandStaticPipeScheduleLoops(
-        *scheduleModule, ScheduleLoopExpansion::AllStaticLoops);
-    if (failed(expandedAllLoops)) {
-      signalPassFailure();
-      return;
+    // sender and receiver loops use the same form. The compact form also
+    // applies when full expansion exceeds the expansion bounds or the
+    // per-node event limit.
+    FailureOr<bool> verifiedExpanded = verifyExpandedPipeSchedule(
+        module, ScheduleLoopExpansion::AllStaticLoops,
+        /*deferScheduleNodeLimit=*/true);
+    if (succeeded(verifiedExpanded) && !*verifiedExpanded) {
+      verifiedExpanded = verifyExpandedPipeSchedule(
+          module, ScheduleLoopExpansion::IterationDependentLoops,
+          /*deferScheduleNodeLimit=*/false);
     }
-    if (!*expandedAllLoops) {
-      scheduleModule = module.clone();
-      if (failed(expandStaticPipeScheduleLoops(
-              *scheduleModule,
-              ScheduleLoopExpansion::IterationDependentLoops))) {
-        signalPassFailure();
-        return;
-      }
-    }
-    PipeNetLaunchNodeDomainAnalysis scheduleLaunchNodeAnalysis(*scheduleModule);
-    if (failed(validatePipeNetModule(*scheduleModule,
-                                     scheduleLaunchNodeAnalysis.getState(),
-                                     "ttl-verify-pipenet-schedule")) ||
-        !scheduleLaunchNodeAnalysis.isValid() ||
-        failed(verifyPipeScheduleModule(*scheduleModule,
-                                        scheduleLaunchNodeAnalysis))) {
+    if (failed(verifiedExpanded)) {
       signalPassFailure();
       return;
     }
