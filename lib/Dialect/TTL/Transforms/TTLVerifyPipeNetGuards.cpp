@@ -255,10 +255,29 @@ struct ModuleState {
   /// `exceededScheduleNodeLimit` instead of emitting a diagnostic.
   bool deferScheduleNodeLimit = false;
   bool exceededScheduleNodeLimit = false;
+  /// Emitted unknown-guard diagnostics, keyed by what the diagnostic prints.
+  llvm::DenseSet<std::tuple<Location, OperationName, Location>>
+      emittedUnknownGuardDiagnostics;
   llvm::DenseMap<int64_t, LaunchNodeDomain> dfbProducerDomains;
   SmallVector<WaitUse> waitUses;
   SmallVector<PipeEvent> pipeEvents;
   llvm::DenseMap<Operation *, SmallVector<std::size_t>> pipeEventIndices;
+
+  /// Returns whether the unknown-guard diagnostic for `op` prints differently
+  /// from every one emitted so far: it prints the operation's location and
+  /// name and the guard's location. Diagnostics are grouped only when both
+  /// locations are file locations, since distinct operations can share an
+  /// unknown or name-only location.
+  bool shouldEmitUnknownGuardDiagnostic(Operation *op,
+                                        Operation *unanalyzableOp) {
+    if (!unanalyzableOp || !isa<FileLineColLoc>(op->getLoc()) ||
+        !isa<FileLineColLoc>(unanalyzableOp->getLoc())) {
+      return true;
+    }
+    return emittedUnknownGuardDiagnostics
+        .insert({op->getLoc(), op->getName(), unanalyzableOp->getLoc()})
+        .second;
+  }
 
   /// Diagnose malformed selected-pipe IR when this pass runs directly.
   void reportInvalidSelectedPipeDefinition(CopyOp copyOp) {
@@ -640,6 +659,10 @@ void checkKnownSubset(Operation *op, const LaunchNodeDomain &current,
     return;
   }
   if (!current.known) {
+    state.sawError = true;
+    if (!state.shouldEmitUnknownGuardDiagnostic(op, unanalyzableOp)) {
+      return;
+    }
     auto diag = op->emitOpError()
                 << "could not statically analyze the PipeNet guard "
                    "around this op; rewrite using `net.is_src()` / "
@@ -650,7 +673,6 @@ void checkKnownSubset(Operation *op, const LaunchNodeDomain &current,
       diag.attachNote(unanalyzableOp->getLoc())
           << "this expression is not statically analyzable";
     }
-    state.sawError = true;
     return;
   }
   LaunchNodeDomain extra = current.subtract(allowed);
