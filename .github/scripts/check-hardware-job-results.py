@@ -15,6 +15,9 @@ from typing import Any
 HARDWARE_JOB_NAME_MARKER = "Hardware Tests ("
 RUNNER_SETUP_STEP_NAME = "Set up runner"
 TESTS_COMPLETE_STEP_NAME = "Mark hardware tests complete"
+# The Jobs API can report a finished job before it records every step
+# conclusion; this exit code asks the caller to fetch the jobs again.
+PENDING_EXIT_CODE = 75
 FAILED_STEP_CONCLUSIONS = {
     "action_required",
     "cancelled",
@@ -28,6 +31,7 @@ class HardwareJobResult(Enum):
     SUCCESS = "success"
     RUNNER_SETUP_FAILURE = "runner_setup_failure"
     POST_SETUP_FAILURE = "post_setup_failure"
+    PENDING = "pending"
 
 
 def _load_jobs(jobs_json: str) -> list[dict[str, Any]]:
@@ -65,6 +69,9 @@ def _find_step(job: dict[str, Any], step_name: str) -> dict[str, Any] | None:
 
 
 def _classify_job(job: dict[str, Any]) -> tuple[HardwareJobResult, str]:
+    if any(step.get("conclusion") is None for step in job.get("steps", [])):
+        return HardwareJobResult.PENDING, "step results are not recorded yet"
+
     setup_step = _find_step(job, RUNNER_SETUP_STEP_NAME)
     if setup_step is None:
         return HardwareJobResult.POST_SETUP_FAILURE, "has no runner setup result"
@@ -103,17 +110,18 @@ def _hardware_jobs(jobs: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [job for job in jobs if HARDWARE_JOB_NAME_MARKER in str(job.get("name", ""))]
 
 
-def check_hardware_jobs(jobs: list[dict[str, Any]], expected_job_count: int) -> bool:
+def check_hardware_jobs(jobs: list[dict[str, Any]], expected_job_count: int) -> int:
     hardware_jobs = _hardware_jobs(jobs)
     if len(hardware_jobs) != expected_job_count:
         print(
             "::error::Expected "
             f"{expected_job_count} hardware jobs, found {len(hardware_jobs)}."
         )
-        return False
+        return 1
 
     successful_jobs = 0
     post_setup_failures = 0
+    pending_jobs = 0
     for job in sorted(hardware_jobs, key=lambda hardware_job: hardware_job["name"]):
         job_name = job["name"]
         result, description = _classify_job(job)
@@ -122,22 +130,31 @@ def check_hardware_jobs(jobs: list[dict[str, Any]], expected_job_count: int) -> 
             print(f"{job_name}: {description}.")
         elif result is HardwareJobResult.RUNNER_SETUP_FAILURE:
             print(f"::warning::{job_name}: {description}; hardware tests did not run.")
+        elif result is HardwareJobResult.PENDING:
+            pending_jobs += 1
+            print(f"{job_name}: {description}.")
         else:
             post_setup_failures += 1
             print(f"::error::{job_name}: {description}.")
 
     if post_setup_failures:
-        return False
+        return 1
+    if pending_jobs:
+        return PENDING_EXIT_CODE
     if successful_jobs == 0:
         print("::error::No hardware runner completed the test suite.")
-        return False
+        return 1
 
-    return True
+    return 0
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Check aggregate GitHub Actions hardware job results from stdin."
+        description=(
+            "Check aggregate GitHub Actions hardware job results from stdin. "
+            f"Exits {PENDING_EXIT_CODE} when a job's step results are not "
+            "recorded yet."
+        )
     )
     parser.add_argument(
         "--expected-job-count",
@@ -152,7 +169,7 @@ def main() -> int:
     except (OSError, ValueError, json.JSONDecodeError) as error:
         parser.error(str(error))
 
-    return 0 if check_hardware_jobs(jobs, arguments.expected_job_count) else 1
+    return check_hardware_jobs(jobs, arguments.expected_job_count)
 
 
 if __name__ == "__main__":
