@@ -411,7 +411,17 @@ FailureOr<FabricForwarderPlan> buildFabricForwarderPlan(
              "selected fabric route table must match its records");
       // Function-entry expectations cannot represent repeated helper calls or
       // control transfers that revisit a kernel block.
-      if (selectedEndpoint && function->hasAttr(kKernelThreadAttrName) &&
+      // Payload aggregation emits contiguous DFB writes; tensor regions require
+      // the direct transport's distributed page addressing.
+      bool supportsForwarderDestination =
+          !isSender ||
+          llvm::all_of(pipeGraph.getPipeTransferNodeIdsForProtocolOp(operation),
+                       [&](PipeTransferNodeId transferNode) {
+                         return pipeGraph.getProvenReceiverAddressEndpoint(
+                                    transferNode) != nullptr;
+                       });
+      if (selectedEndpoint && supportsForwarderDestination &&
+          function->hasAttr(kKernelThreadAttrName) &&
           function.getBody().hasOneBlock()) {
         candidate.emplace();
         candidate->function = function;
