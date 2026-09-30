@@ -127,6 +127,7 @@ void createTTLToTTKernelPipeline(OpPassManager &pm,
   }
   pm.addNestedPass<func::FuncOp>(createTTLAnnotateCBAssociations());
   pm.addPass(createTTLVerifyDFBSPSC());
+  pm.addPass(createTTLVerifyDFBLifecycle());
   pm.addPass(createTTLErasePipeNetScopes());
   {
     TTLValidateCBBudgetOptions budgetOpts;
@@ -139,6 +140,7 @@ void createTTLToTTKernelPipeline(OpPassManager &pm,
     ttkOpts.pipeComputedAddresses = options.pipeComputedAddresses;
     ttkOpts.pipeCapacitySync = options.pipeCapacitySync;
     ttkOpts.pipeGlobalSemaphoresOnly = options.pipeGlobalSemaphoresOnly;
+    ttkOpts.fabricMux = options.fabricMux;
     ttkOpts.l1BudgetOverride = options.l1BudgetOverride;
     pm.addPass(createTTLConvertTTLToTTKernel(ttkOpts));
   }
