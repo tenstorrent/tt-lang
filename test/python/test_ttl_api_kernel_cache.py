@@ -8,6 +8,7 @@ import functools
 import gc
 import itertools
 import threading
+from types import SimpleNamespace
 import weakref
 
 import pytest
@@ -15,12 +16,64 @@ import pytest
 import ttl.atom as atom_module
 import ttl.kernel_runner as kernel_runner
 import ttl.ttl_api as ttl_api
+from ttl.compiler_options import CompilerOptions
 
 
 @pytest.fixture(autouse=True)
 def _configure_fake_kernel_dispatch(monkeypatch):
     monkeypatch.delenv("TTLANG_COMPILE_ONLY", raising=False)
     monkeypatch.setattr(ttl_api, "_should_execute", lambda: True)
+
+
+def test_data_movement_configs_are_opt_in_and_preserve_default_roles(monkeypatch):
+    class ReaderConfigDescriptor:
+        pass
+
+    class WriterConfigDescriptor:
+        pass
+
+    class DataMovementConfigDescriptor:
+        def __init__(self, processor, noc, noc_mode):
+            self.processor = processor
+            self.noc = noc
+            self.noc_mode = noc_mode
+
+    riscv_0 = object()
+    riscv_1 = object()
+    noc_0 = object()
+    noc_1 = object()
+    dynamic_noc = object()
+    fake_ttnn = SimpleNamespace(
+        ReaderConfigDescriptor=ReaderConfigDescriptor,
+        WriterConfigDescriptor=WriterConfigDescriptor,
+        DataMovementConfigDescriptor=DataMovementConfigDescriptor,
+        DataMovementProcessor=SimpleNamespace(RISCV_0=riscv_0, RISCV_1=riscv_1),
+        NOC=SimpleNamespace(RISCV_0_default=noc_0, RISCV_1_default=noc_1),
+        NOC_MODE=SimpleNamespace(DM_DYNAMIC_NOC=dynamic_noc),
+    )
+    monkeypatch.setattr(ttl_api, "ttnn", fake_ttnn)
+
+    assert isinstance(
+        ttl_api._make_data_movement_config(0, dynamic_noc=False),
+        ReaderConfigDescriptor,
+    )
+    assert isinstance(
+        ttl_api._make_data_movement_config(1, dynamic_noc=False),
+        WriterConfigDescriptor,
+    )
+
+    ncrisc = ttl_api._make_data_movement_config(0, dynamic_noc=True)
+    assert (ncrisc.processor, ncrisc.noc, ncrisc.noc_mode) == (
+        riscv_1,
+        noc_0,
+        dynamic_noc,
+    )
+    brisc = ttl_api._make_data_movement_config(1, dynamic_noc=True)
+    assert (brisc.processor, brisc.noc, brisc.noc_mode) == (
+        riscv_0,
+        noc_1,
+        dynamic_noc,
+    )
 
 
 class _FakeMemoryConfig:
@@ -497,6 +550,28 @@ def test_cache_key_separates_math_fidelity(monkeypatch):
     assert hifi2_key != hifi4_key
 
 
+def test_operation_cache_separates_dynamic_noc_option(monkeypatch):
+    compile_calls = _install_recording_compile(monkeypatch)
+
+    @ttl_api.operation(grid=(1, 1))
+    def copy_kernel(input_tensor, output_tensor):
+        pass
+
+    default_result = copy_kernel(_FakeTensor(), _FakeTensor())
+    dynamic_result = copy_kernel(
+        _FakeTensor(), _FakeTensor(), options="--ttl-dynamic-noc"
+    )
+    repeated_dynamic_result = copy_kernel(
+        _FakeTensor(), _FakeTensor(), options="--ttl-dynamic-noc"
+    )
+
+    assert len(compile_calls) == 2
+    assert default_result != dynamic_result
+    assert dynamic_result == repeated_dynamic_result
+    assert compile_calls[0]["compile_options"]["compiler_options"].dynamic_noc is False
+    assert compile_calls[1]["compile_options"]["compiler_options"].dynamic_noc is True
+
+
 def test_operation_rejects_invalid_math_fidelity():
     with pytest.raises(ValueError, match="math_fidelity must be one of"):
         ttl_api.operation(grid=(1, 1), math_fidelity="HiFi5")
@@ -945,7 +1020,9 @@ def test_operation_cache_uses_l1_budget_without_owned_resources(monkeypatch):
     monkeypatch.setattr(
         ttl_api,
         "get_min_remaining_l1_excluding_cached_resources",
-        lambda resource_cache, selected_device: next(remaining_budgets),
+        lambda resource_cache, selected_device, per_core_l1_tensors: next(
+            remaining_budgets
+        ),
     )
 
     @ttl_api.operation(grid=(1, 1))
@@ -965,6 +1042,52 @@ def test_operation_cache_uses_l1_budget_without_owned_resources(monkeypatch):
     assert [
         call["compile_options"]["l1_budget_override"] for call in compile_calls
     ] == [98304, 98240]
+
+
+def test_l1_budget_forwards_operation_tensors(monkeypatch):
+    monkeypatch.setattr(
+        ttl_api, "is_ttnn_tensor", lambda arg: isinstance(arg, _FakeTensor)
+    )
+    device = _FakeDevice()
+    tensors = (_FakeTensor(device=device), _FakeTensor(device=device))
+    budget_calls = []
+
+    def record_budget(selected_device, *, per_core_l1_tensors):
+        budget_calls.append((selected_device, list(per_core_l1_tensors)))
+        return 98304
+
+    monkeypatch.setattr(ttl_api, "get_min_remaining_l1_for_device", record_budget)
+
+    assert ttl_api._resolve_l1_budget(tensors, CompilerOptions()) == 98304
+    assert budget_calls == [(device, list(tensors))]
+
+
+def test_l1_budget_propagates_budget_query_errors(monkeypatch):
+    monkeypatch.setattr(
+        ttl_api, "is_ttnn_tensor", lambda arg: isinstance(arg, _FakeTensor)
+    )
+    device = _FakeDevice()
+
+    def fail_budget(_device, *, per_core_l1_tensors):
+        raise ValueError("failed to query tensor per-core allocation")
+
+    monkeypatch.setattr(ttl_api, "get_min_remaining_l1_for_device", fail_budget)
+
+    with pytest.raises(ValueError, match="failed to query tensor per-core"):
+        ttl_api._resolve_l1_budget((_FakeTensor(device=device),), CompilerOptions())
+
+
+def test_l1_budget_rejects_tensors_on_different_devices(monkeypatch):
+    monkeypatch.setattr(
+        ttl_api, "is_ttnn_tensor", lambda arg: isinstance(arg, _FakeTensor)
+    )
+    monkeypatch.setattr(ttl_api, "_same_device", lambda first, second: False)
+
+    with pytest.raises(ValueError, match="different devices"):
+        ttl_api._resolve_l1_budget(
+            (_FakeTensor(device=_FakeDevice()), _FakeTensor(device=_FakeDevice())),
+            CompilerOptions(),
+        )
 
 
 def test_operation_cache_separates_device_derived_budget_contracts(monkeypatch):

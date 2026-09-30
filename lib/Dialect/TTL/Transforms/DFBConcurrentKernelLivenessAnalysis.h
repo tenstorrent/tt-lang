@@ -241,6 +241,11 @@ struct DFBPerNodeLifetime {
   bool inspectionOnly = false;
   bool terminalStateCanonical = false;
   SmallVector<DFBLifecycleEpoch, 0> epochs;
+  /// Configurations that may contain state when lifecycle completion fails.
+  /// Valid only when `conservativeConfigurationEpochsClassified`; otherwise
+  /// every configuration may contain state.
+  SmallVector<std::optional<int64_t>> conservativeConfigurationEpochs;
+  bool conservativeConfigurationEpochsClassified = false;
   DFBLifecycleCompletionProof completionProof;
 };
 
@@ -261,6 +266,7 @@ struct DFBLogicalLifecycle {
   SmallVector<DFBAccessOccurrence> accesses;
   bool hasOpaqueExternalAccess = false;
   bool accessCompletionProven = true;
+  bool lifecycleCompletionProven = false;
   LaunchNodeDomain launchDomain;
   SmallVector<DFBPerNodeLifetime, 0> nodeLifetimes;
   SmallVector<DFBPerNodeLifetime, 0> possibleNodeLifetimes;

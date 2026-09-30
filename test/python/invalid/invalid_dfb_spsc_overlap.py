@@ -14,8 +14,8 @@ DFB in strict mode because the consumer launch-node domains overlap. The
 relaxed RUN verifies the explicit external synchronization override.
 """
 
-# CHECK: logical DFB 0 has multiple consumer kernels active on the same launched node
-# CHECK: tt-metal CBs are single-producer single-consumer; allocate one DFB per consumer
+# CHECK: logical DFB 0 has multiple read-pointer owner kernels active on the same launched node
+# CHECK: only one kernel may advance a DFB read pointer on each launched node
 
 import os
 
