@@ -30,6 +30,7 @@
 // See `docs/development/DFBManagement.md`.
 //===----------------------------------------------------------------------===//
 
+#include "DFBAcquireReleaseAnalysis.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/TTL/Passes.h"
@@ -47,48 +48,6 @@ namespace mlir::tt::ttl {
 #include "ttlang/Dialect/TTL/Passes.h.inc"
 
 namespace {
-
-// Return true if `op` (sitting between two same-DFB acquires on `cb`) might
-// directly or transitively cause a release on `cb` before our coalesced
-// release executes -- i.e., it must terminate the candidate group. See
-// "DFB Acquire Coalescing" in `docs/development/DFBManagement.md` for the
-// correctness argument. Two locally-checkable conditions cover the cases
-// that matter:
-//
-//   1. The op operates on `cb` itself (uses `cb` as an operand) -- includes
-//      same-DFB releases (cb_pop / cb_push) and any other op that touches
-//      `cb` directly.
-//   2. The op consumes the SSA result of an in-progress group member,
-//      since that consume can flow into a release on `cb` somewhere
-//      downstream.
-//
-// Region-bearing ops are treated as opaque (terminate the group) because
-// their bodies might contain a release on `cb`.
-//
-// `ttl.attach_cb` is an SSA-only identity (lowering erases it) that always
-// references the group's results and `cb`; allow it explicitly.
-static bool mayReleaseDFB(Operation *op, Value cb,
-                          ArrayRef<Operation *> group) {
-  if (isa<AttachCBOp>(op)) {
-    return false;
-  }
-  if (op->getNumRegions() > 0) {
-    return true;
-  }
-  for (Value operand : op->getOperands()) {
-    if (operand == cb) {
-      return true;
-    }
-    for (Operation *member : group) {
-      assert(member->getNumResults() == 1 &&
-             "DFB acquire ops produce exactly one tensor result");
-      if (operand == member->getResult(0)) {
-        return true;
-      }
-    }
-  }
-  return false;
-}
 
 static RankedTensorType buildCoalescedType(RankedTensorType unitTy,
                                            int64_t totalTiles) {
@@ -114,136 +73,34 @@ createPerBlockSlice(OpBuilder &builder, Location loc, Value coalescedResult,
                                         offsets, sizes, strides);
 }
 
-// Maximal run of coalescable same-DFB acquires anchored at `start`,
-// in op order within the enclosing block. Already-coalesced acquires
-// (those with a `num_tiles` attribute) are not group members.
-template <typename AcquireOp>
-static SmallVector<AcquireOp> detectGroup(AcquireOp start) {
-  SmallVector<AcquireOp> group;
-  group.push_back(start);
-  Value cb = start.getCb();
-  SmallVector<Operation *> groupOps = {start.getOperation()};
-  for (Operation *cur = start->getNextNode(); cur; cur = cur->getNextNode()) {
-    if (auto next = dyn_cast<AcquireOp>(cur)) {
-      if (next.getCb() == cb) {
-        if (next.getNumTiles().has_value()) {
-          break;
-        }
-        group.push_back(next);
-        groupOps.push_back(cur);
-        continue;
-      }
-      // Different-CB acquire of the same kind -- doesn't touch our cb or
-      // our group's results; skip past.
-    }
-    if (mayReleaseDFB(cur, cb, groupOps)) {
-      break;
-    }
-  }
-  return group;
-}
-
-// The `count` releases on `cb` that the coalesced release will replace,
-// in op order. Empty result means the coalesce cannot proceed: either too
-// few releases are present, or one of them is already coalesced.
-template <typename ReleaseOp>
-static SmallVector<ReleaseOp> collectReleases(Operation *start, Value cb,
-                                              size_t count) {
-  SmallVector<ReleaseOp> releases;
-  for (Operation *op = start; op != nullptr; op = op->getNextNode()) {
-    auto release = dyn_cast<ReleaseOp>(op);
-    if (!release || release.getCb() != cb) {
-      continue;
-    }
-    if (release.getNumTiles().has_value()) {
-      return {};
-    }
-    releases.push_back(release);
-    if (releases.size() == count) {
-      return releases;
-    }
-  }
-  return {};
-}
-
+// Applies one planned group: the members become slices of one multi-block
+// acquisition at the leader, and the last replaced release carries the merged
+// tile count.
 template <typename AcquireOp, typename ReleaseOp>
-static bool tryCoalesceGroup(SmallVectorImpl<AcquireOp> &group,
-                             OpBuilder &builder) {
-  AcquireOp leader = group.front();
-  Value cb = leader.getCb();
+static void applyCoalescedGroup(const CoalescedAcquireGroup &group,
+                                OpBuilder &builder) {
+  auto leader = cast<AcquireOp>(group.acquires.front());
   auto unitTy = cast<RankedTensorType>(leader.getResult().getType());
-  if (unitTy.getRank() != 2 || unitTy.getShape()[0] != 1) {
-    return false;
-  }
   int64_t k = unitTy.getShape()[1];
-  int64_t N = static_cast<int64_t>(group.size());
-  int64_t totalTiles = N * k;
-
-  SmallVector<ReleaseOp> releases =
-      collectReleases<ReleaseOp>(group.back()->getNextNode(), cb, group.size());
-  if (releases.empty()) {
-    return false;
-  }
+  int64_t totalTiles = static_cast<int64_t>(group.acquires.size()) * k;
 
   builder.setInsertionPoint(leader);
-  Location loc = leader.getLoc();
-  RankedTensorType coalescedTy = buildCoalescedType(unitTy, totalTiles);
   IntegerAttr numTilesAttr = builder.getI64IntegerAttr(totalTiles);
-  AcquireOp coalesced =
-      AcquireOp::create(builder, loc, coalescedTy, cb, numTilesAttr);
-
-  for (size_t i = 0; i < group.size(); ++i) {
-    AcquireOp old = group[i];
+  AcquireOp coalesced = AcquireOp::create(
+      builder, leader.getLoc(), buildCoalescedType(unitTy, totalTiles),
+      leader.getCb(), numTilesAttr);
+  for (auto [index, member] : llvm::enumerate(group.acquires)) {
+    auto old = cast<AcquireOp>(member);
     builder.setInsertionPoint(old);
-    Location oldLoc = old.getLoc();
-    auto slice = createPerBlockSlice(builder, oldLoc, coalesced.getResult(),
-                                     unitTy, static_cast<int64_t>(i), k);
+    auto slice =
+        createPerBlockSlice(builder, old.getLoc(), coalesced.getResult(),
+                            unitTy, static_cast<int64_t>(index), k);
     old.getResult().replaceAllUsesWith(slice.getResult());
     old.erase();
   }
-
-  releases.back()->setAttr("num_tiles", numTilesAttr);
-  for (size_t i = 0; i + 1 < releases.size(); ++i) {
-    releases[i].erase();
-  }
-  return true;
-}
-
-// The candidate set is pre-collected for two reasons: an acquire on a
-// different DFB that `detectGroup` walked past as a non-member must still
-// be considered as the starting point of a separate group later; and the
-// outer iteration must not depend on `getNextNode()` after the rewrite
-// erases ops in place.
-template <typename AcquireOp, typename ReleaseOp>
-static void coalesceInBlock(Block &block, OpBuilder &builder,
-                            bool syncUserDFBs) {
-  SmallVector<AcquireOp> candidates;
-  for (Operation &op : block) {
-    if (auto acquire = dyn_cast<AcquireOp>(&op)) {
-      if (!syncUserDFBs && isUserManagedDFB(acquire.getCb())) {
-        continue;
-      }
-      candidates.push_back(acquire);
-    }
-  }
-  DenseSet<Operation *> erased;
-  for (AcquireOp leader : candidates) {
-    Operation *leaderOp = leader.getOperation();
-    if (erased.contains(leaderOp)) {
-      continue;
-    }
-    if (leader.getNumTiles().has_value()) {
-      continue;
-    }
-    SmallVector<AcquireOp> group = detectGroup<AcquireOp>(leader);
-    if (group.size() < 2) {
-      continue;
-    }
-    if (tryCoalesceGroup<AcquireOp, ReleaseOp>(group, builder)) {
-      for (AcquireOp member : group) {
-        erased.insert(member.getOperation());
-      }
-    }
+  group.releases.back()->setAttr("num_tiles", numTilesAttr);
+  for (Operation *release : ArrayRef(group.releases).drop_back()) {
+    cast<ReleaseOp>(release).erase();
   }
 }
 
@@ -255,13 +112,28 @@ struct TTLCoalesceDFBAcquiresPass
   void runOnOperation() override {
     func::FuncOp func = getOperation();
     OpBuilder builder(func.getContext());
+    // With sync-user-dfbs=false only compiler-created DFBs are coalesced.
+    auto isEligible = [&](const CoalescedAcquireGroup &group) {
+      Value dfb = group.acquires.front()->getOperand(0);
+      return syncUserDFBs || !isUserManagedDFB(dfb);
+    };
 
     func.walk([&](Block *block) {
       if (block->empty()) {
         return;
       }
-      coalesceInBlock<CBWaitOp, CBPopOp>(*block, builder, syncUserDFBs);
-      coalesceInBlock<CBReserveOp, CBPushOp>(*block, builder, syncUserDFBs);
+      for (const CoalescedAcquireGroup &group : planCoalescedAcquireGroups(
+               *block, DFBAcquireReleaseKind::Consumer)) {
+        if (isEligible(group)) {
+          applyCoalescedGroup<CBWaitOp, CBPopOp>(group, builder);
+        }
+      }
+      for (const CoalescedAcquireGroup &group : planCoalescedAcquireGroups(
+               *block, DFBAcquireReleaseKind::Producer)) {
+        if (isEligible(group)) {
+          applyCoalescedGroup<CBReserveOp, CBPushOp>(group, builder);
+        }
+      }
     });
   }
 };

@@ -387,15 +387,13 @@ struct ValidatedSynchronizedReset {
   SmallVector<StaticIterationDomain, 0> participantIterationDomains;
   SmallVector<unsigned> targetLogicalIndices;
   std::uint64_t executionCount = 1;
-  bool conditionalExecution = false;
 
   bool operator==(const ValidatedSynchronizedReset &rhs) const {
     return std::tie(reset, participantOperations, participantIterationDomains,
-                    targetLogicalIndices, executionCount,
-                    conditionalExecution) ==
+                    targetLogicalIndices, executionCount) ==
            std::tie(rhs.reset, rhs.participantOperations,
                     rhs.participantIterationDomains, rhs.targetLogicalIndices,
-                    rhs.executionCount, rhs.conditionalExecution);
+                    rhs.executionCount);
   }
 
   // Dispatch-wide partitioning is valid only for a single reset instance.
@@ -418,15 +416,12 @@ struct ValidatedDFBReconfiguration {
   SmallVector<Operation *> participantOperations;
   SmallVector<StaticIterationDomain, 0> participantIterationDomains;
   std::uint64_t executionCount = 1;
-  bool conditionalExecution = false;
 
   bool operator==(const ValidatedDFBReconfiguration &rhs) const {
     return std::tie(boundary, participantOperations,
-                    participantIterationDomains, executionCount,
-                    conditionalExecution) ==
+                    participantIterationDomains, executionCount) ==
            std::tie(rhs.boundary, rhs.participantOperations,
-                    rhs.participantIterationDomains, rhs.executionCount,
-                    rhs.conditionalExecution);
+                    rhs.participantIterationDomains, rhs.executionCount);
   }
 };
 
@@ -521,13 +516,6 @@ struct AccessRunUpperBound {
   std::uint64_t maximumExecutionCount = 0;
   StaticIterationDomain iterationDomain;
 };
-
-// The listed operations execute each nested region at most once per
-// invocation, so only enclosing loops can repeat an access.
-static bool executesRegionsAtMostOnce(Operation *operation) {
-  return isa<affine::AffineIfOp, scf::IfOp, scf::IndexSwitchOp,
-             scf::ExecuteRegionOp, IfSrcOp, IfDstOp>(operation);
-}
 
 // Computes a static execution-count upper bound inside a single-block function
 // and nested single-block affine/scf loops or at-most-once regions. CFGs, other
@@ -1962,9 +1950,6 @@ static LogicalResult validateDFBReconfigurationsAtNode(
     ValidatedDFBReconfiguration validated;
     validated.boundary = boundary;
     bool anyParticipantActive = false;
-    bool allParticipantsExact = true;
-    bool allParticipantsConditional = true;
-    Operation *referenceConditionalOperation = nullptr;
     std::optional<std::uint64_t> referenceExecutionCount;
     std::optional<StaticIterationDomain> referenceIterationDomain;
     for (LogicalKernelAttr participant : boundary.getParticipants()) {
@@ -1984,18 +1969,17 @@ static LogicalResult validateDFBReconfigurationsAtNode(
           continue;
         }
         participantMayBeActive = true;
-        if (!executionCount &&
-            !structurallyExecutesAtMostOnce(occurrence->operation)) {
+        // TODO: support reconfigurations under runtime conditions, which the
+        // DFB lifecycle verifier cannot yet check across.
+        if (!executionCount) {
           analysisFailure.set(
               occurrence->operation,
-              "DFB reconfiguration must execute at most once per dispatch "
-              "and launch node or once per iteration of nested sequential "
-              "loops with compile-time-known trip counts");
+              "DFB reconfiguration must execute a compile-time-known number of "
+              "times on each launch node; it may depend on the launch node "
+              "but not on runtime values");
           return failure();
         }
         activeOccurrences.push_back(occurrence);
-        allParticipantsExact &= executionCount.has_value();
-        allParticipantsConditional &= !executionCount.has_value();
       }
       anyParticipantActive |= participantMayBeActive;
       if (activeOccurrences.size() > 1) {
@@ -2015,48 +1999,42 @@ static LogicalResult validateDFBReconfigurationsAtNode(
       std::optional<std::uint64_t> executionCount =
           getExactExecutionCountAtLaunchNode(participantOperation, node,
                                              domainState);
+      assert(executionCount && "active occurrences have exact counts");
       StaticIterationDomain iterationDomain;
-      if (executionCount) {
-        if (*executionCount > 1) {
-          std::optional<StaticIterationDomain> uniformDomain =
-              getUniformStaticIterationDomain(participantOperation,
-                                              *executionCount);
-          if (!uniformDomain || uniformDomain->loops.empty()) {
-            analysisFailure.set(
-                participantOperation,
-                ("repeated DFB reconfiguration with exact count " +
-                 llvm::Twine(*executionCount) +
-                 " must execute once in every iteration of nested sequential "
-                 "loops with compile-time-known trip counts")
-                    .str());
-            return failure();
-          }
-          iterationDomain = std::move(*uniformDomain);
-        }
-        if (!referenceExecutionCount) {
-          referenceExecutionCount = executionCount;
-          referenceIterationDomain = iterationDomain;
-        } else if (*referenceExecutionCount != *executionCount ||
-                   !hasEquivalentIterationSequence(*referenceIterationDomain,
-                                                   iterationDomain)) {
+      if (*executionCount > 1) {
+        std::optional<StaticIterationDomain> uniformDomain =
+            getUniformStaticIterationDomain(participantOperation,
+                                            *executionCount);
+        if (!uniformDomain || uniformDomain->loops.empty()) {
           analysisFailure.set(
               participantOperation,
-              "DFB reconfiguration participants must use the same nested "
-              "loop trip-count sequence");
+              ("repeated DFB reconfiguration with exact count " +
+               llvm::Twine(*executionCount) +
+               " must execute once in every iteration of a sequential loop "
+               "with a constant trip count")
+                  .str());
           return failure();
         }
-      } else {
-        if (referenceConditionalOperation &&
-            !proveEquivalentConditionalExecutionAtLaunchNodes(
-                referenceConditionalOperation, node, participantOperation, node,
-                domainState)) {
-          analysisFailure.set(
-              participantOperation,
-              "DFB reconfiguration participants execute under different "
-              "structured conditions");
+        // TODO: support repeated reconfigurations in nested loops, which the
+        // DFB lifecycle verifier cannot yet check across.
+        if (uniformDomain->loops.size() > 1) {
+          analysisFailure.set(participantOperation,
+                              "repeated DFB reconfiguration must execute in "
+                              "one loop, not in nested loops");
           return failure();
         }
-        referenceConditionalOperation = participantOperation;
+        iterationDomain = std::move(*uniformDomain);
+      }
+      if (!referenceExecutionCount) {
+        referenceExecutionCount = executionCount;
+        referenceIterationDomain = iterationDomain;
+      } else if (*referenceExecutionCount != *executionCount ||
+                 !hasEquivalentIterationSequence(*referenceIterationDomain,
+                                                 iterationDomain)) {
+        analysisFailure.set(participantOperation,
+                            "DFB reconfiguration participants must use the "
+                            "same loop trip-count sequence");
+        return failure();
       }
       validated.participantIterationDomains.push_back(
           std::move(iterationDomain));
@@ -2075,14 +2053,6 @@ static LogicalResult validateDFBReconfigurationsAtNode(
           "one launch node");
       return failure();
     }
-    if (!allParticipantsExact && !allParticipantsConditional) {
-      analysisFailure.set(
-          validated.participantOperations.front(),
-          "DFB reconfiguration participants have inconsistent dynamic "
-          "instance counts");
-      return failure();
-    }
-    validated.conditionalExecution = allParticipantsConditional;
     validated.executionCount = referenceExecutionCount.value_or(1);
     validatedBoundaries.push_back(std::move(validated));
   }
@@ -2097,7 +2067,6 @@ static LogicalResult validateDFBReconfigurationsAtNode(
   if (repeatedReference) {
     for (const ValidatedDFBReconfiguration &boundary : validatedBoundaries) {
       bool sameRepeatedSequence =
-          !boundary.conditionalExecution &&
           boundary.executionCount == repeatedReference->executionCount &&
           boundary.participantIterationDomains ==
               repeatedReference->participantIterationDomains;
@@ -2170,9 +2139,6 @@ static LogicalResult validateSynchronizedResetsAtNode(
     ValidatedSynchronizedReset validated;
     validated.reset = reset;
     bool anyParticipantActive = false;
-    bool allParticipantsExact = true;
-    bool allParticipantsConditional = true;
-    Operation *referenceConditionalOperation = nullptr;
     std::optional<std::uint64_t> referenceExecutionCount;
     std::optional<StaticIterationDomain> referenceIterationDomain;
     bool hasReferenceTargetSet = false;
@@ -2192,18 +2158,17 @@ static LogicalResult validateSynchronizedResetsAtNode(
           continue;
         }
         participantMayBeActive = true;
-        if (!executionCount &&
-            !structurallyExecutesAtMostOnce(occurrence->operation)) {
+        // TODO: support synchronized resets under runtime conditions, which
+        // the DFB lifecycle verifier cannot yet check across.
+        if (!executionCount) {
           analysisFailure.set(
               occurrence->operation,
-              "synchronized DFB reset must execute at most once per dispatch "
-              "and launch node or once per iteration of an immutable "
-              "sequential structured loop nest");
+              "synchronized DFB reset must execute a compile-time-known number "
+              "of times on each launch node; it may depend on the launch node "
+              "but not on runtime values");
           return failure();
         }
         activeOccurrences.push_back(occurrence);
-        allParticipantsExact &= executionCount.has_value();
-        allParticipantsConditional &= !executionCount.has_value();
       }
       anyParticipantActive |= participantMayBeActive;
       if (activeOccurrences.size() > 1) {
@@ -2234,48 +2199,43 @@ static LogicalResult validateSynchronizedResetsAtNode(
       std::optional<std::uint64_t> executionCount =
           getExactExecutionCountAtLaunchNode(occurrence.operation, node,
                                              domainState);
+      assert(executionCount && "active occurrences have exact counts");
       StaticIterationDomain iterationDomain;
-      if (executionCount) {
-        if (*executionCount > 1) {
-          std::optional<StaticIterationDomain> uniformDomain =
-              getUniformStaticIterationDomain(occurrence.operation,
-                                              *executionCount);
-          if (!uniformDomain || uniformDomain->loops.empty()) {
-            analysisFailure.set(
-                occurrence.operation,
-                ("repeated synchronized DFB reset with exact count " +
-                 llvm::Twine(*executionCount) +
-                 " must execute once in every iteration of an immutable "
-                 "sequential structured loop nest")
-                    .str());
-            return failure();
-          }
-          iterationDomain = std::move(*uniformDomain);
-        }
-        if (!referenceExecutionCount) {
-          referenceExecutionCount = executionCount;
-          referenceIterationDomain = iterationDomain;
-        } else if (*referenceExecutionCount != *executionCount ||
-                   !hasEquivalentIterationSequence(*referenceIterationDomain,
-                                                   iterationDomain)) {
+      if (*executionCount > 1) {
+        std::optional<StaticIterationDomain> uniformDomain =
+            getUniformStaticIterationDomain(occurrence.operation,
+                                            *executionCount);
+        if (!uniformDomain || uniformDomain->loops.empty()) {
           analysisFailure.set(
               occurrence.operation,
-              "synchronized DFB reset participants must execute in the same "
-              "structured iteration sequence");
+              ("repeated synchronized DFB reset with exact count " +
+               llvm::Twine(*executionCount) +
+               " must execute once in every iteration of a sequential loop "
+               "with a constant trip count")
+                  .str());
           return failure();
         }
-      } else {
-        if (referenceConditionalOperation &&
-            !proveEquivalentConditionalExecutionAtLaunchNodes(
-                referenceConditionalOperation, node, occurrence.operation, node,
-                domainState)) {
-          analysisFailure.set(
-              occurrence.operation,
-              "synchronized DFB reset participants execute under different "
-              "structured conditions");
+        // TODO: support repeated synchronized resets in nested loops, which
+        // the DFB lifecycle verifier cannot yet check across.
+        if (uniformDomain->loops.size() > 1) {
+          analysisFailure.set(occurrence.operation,
+                              "repeated synchronized DFB reset must execute "
+                              "in one loop, not in nested loops");
           return failure();
         }
-        referenceConditionalOperation = occurrence.operation;
+        iterationDomain = std::move(*uniformDomain);
+      }
+      if (!referenceExecutionCount) {
+        referenceExecutionCount = executionCount;
+        referenceIterationDomain = iterationDomain;
+      } else if (*referenceExecutionCount != *executionCount ||
+                 !hasEquivalentIterationSequence(*referenceIterationDomain,
+                                                 iterationDomain)) {
+        analysisFailure.set(
+            occurrence.operation,
+            "synchronized DFB reset participants must execute in the same "
+            "structured iteration sequence");
+        return failure();
       }
       validated.participantOperations.push_back(occurrence.operation);
       validated.participantIterationDomains.push_back(
@@ -2297,14 +2257,6 @@ static LogicalResult validateSynchronizedResetsAtNode(
           "one launch node");
       return failure();
     }
-    if (!allParticipantsExact && !allParticipantsConditional) {
-      analysisFailure.set(
-          validated.participantOperations.front(),
-          "synchronized DFB reset participants have inconsistent dynamic "
-          "instance counts");
-      return failure();
-    }
-    validated.conditionalExecution = allParticipantsConditional;
     validated.executionCount = referenceExecutionCount.value_or(1);
     validatedResets.push_back(std::move(validated));
   }
@@ -4611,7 +4563,7 @@ tryComputeRepeatedResetLifetime(
 
   SmallVector<const ValidatedSynchronizedReset *> candidates;
   for (const ValidatedSynchronizedReset &reset : synchronizedResets) {
-    if (reset.executionCount <= 1 || reset.conditionalExecution ||
+    if (reset.executionCount <= 1 ||
         !llvm::is_contained(reset.targetLogicalIndices, logicalIndex)) {
       continue;
     }
@@ -4736,18 +4688,6 @@ tryComputeRepeatedResetLifetime(
       entryReconfigurationEvents = eventsIt->second;
     }
   }
-  if (entryReconfiguration && entryReconfiguration->conditionalExecution) {
-    for (const DFBAccessOccurrence *access : activeAccesses) {
-      auto runIt = accessRuns.find(access);
-      if (runIt == accessRuns.end() || !runIt->second.conditionalExecution ||
-          !proveEquivalentConditionalExecutionAtLaunchNodes(
-              access->operation, node,
-              entryReconfiguration->participantOperations.front(), node,
-              domainState)) {
-        return std::nullopt;
-      }
-    }
-  }
 
   SmallVector<DFBPerNodeLifetime, 0> intervalLifetimes;
   SmallVector<DFBPerNodeLifetimeDiagnostics, 0> intervalDiagnostics;
@@ -4807,11 +4747,6 @@ struct OrderedLifecycleBoundary {
   const ValidatedDFBReconfiguration *reconfiguration = nullptr;
   AccessEventSpan events;
 
-  bool isConditional() const {
-    return reset ? reset->conditionalExecution
-                 : reconfiguration->conditionalExecution;
-  }
-
   // Resets always restore interface state; reconfiguration may discard prior
   // logical state only when its declaration permits it.
   bool discardsDFBState() const {
@@ -4824,25 +4759,6 @@ struct OrderedLifecycleBoundary {
                  : reconfiguration->participantOperations.front();
   }
 };
-
-static Operation *findConditionalExecutionMismatch(
-    const OrderedLifecycleBoundary &boundary,
-    ArrayRef<const DFBAccessOccurrence *> accesses, LaunchNodeCoord node,
-    const AccessRuns &accessRuns, const LaunchNodeDomainState &domainState) {
-  if (!boundary.isConditional()) {
-    return nullptr;
-  }
-  for (const DFBAccessOccurrence *access : accesses) {
-    auto runIt = accessRuns.find(access);
-    if (runIt == accessRuns.end() || !runIt->second.conditionalExecution ||
-        !proveEquivalentConditionalExecutionAtLaunchNodes(
-            access->operation, node, boundary.getEvidenceOperation(), node,
-            domainState)) {
-      return access->operation;
-    }
-  }
-  return nullptr;
-}
 
 // Proves complete protocol intervals between lifecycle boundaries. A state-
 // discarding boundary may discard unread blocks or opaque external protocol
@@ -5123,14 +5039,6 @@ static DFBLifecycleCompletionProof computePerNodeLifetime(
         terminalBoundary &&
         (terminalBoundary->reset ||
          (terminalBoundary->discardsDFBState() && !hasLaterAccesses));
-    if (terminatesDFBState) {
-      if (Operation *conditionalMismatch = findConditionalExecutionMismatch(
-              *terminalBoundary, lifecycleAccesses, node, accessRuns,
-              domainState)) {
-        return {DFBLifecycleCompletionFailureReason::UnsupportedControlFlow,
-                conditionalMismatch};
-      }
-    }
     bool useExternalProducerBounds =
         terminalBoundary && terminalBoundary->reconfiguration &&
         terminatesDFBState && isExternalProducerOnlyProtocol(lifecycleAccesses);
@@ -5175,22 +5083,12 @@ static DFBLifecycleCompletionProof computePerNodeLifetime(
     epoch.inspectionOnly = epochLifetime.inspectionOnly;
     assert(firstBoundaryInterval &&
            "active lifecycle must have a first reconfiguration interval");
-    const OrderedLifecycleBoundary *entryBoundary = nullptr;
     for (unsigned boundaryIndex = 0; boundaryIndex < *firstBoundaryInterval;
          ++boundaryIndex) {
       if (const ValidatedDFBReconfiguration *entryReconfiguration =
               boundaries[boundaryIndex].reconfiguration) {
         epoch.entryReconfigurationOrdinal =
             entryReconfiguration->boundary.getOrdinal();
-        entryBoundary = &boundaries[boundaryIndex];
-      }
-    }
-    if (entryBoundary) {
-      if (Operation *conditionalMismatch = findConditionalExecutionMismatch(
-              *entryBoundary, lifecycleAccesses, node, accessRuns,
-              domainState)) {
-        return {DFBLifecycleCompletionFailureReason::UnsupportedControlFlow,
-                conditionalMismatch};
       }
     }
     epoch.activeConfigurationEpochs.push_back(
@@ -5215,9 +5113,6 @@ static DFBLifecycleCompletionProof computePerNodeLifetime(
     }
     if (terminalBoundary) {
       if (terminalBoundary->reset) {
-        if (terminalBoundary->reset->conditionalExecution) {
-          epochLifetime.conditionalExecutionProven = true;
-        }
         epoch.terminalResetOrdinal =
             terminalBoundary->reset->reset.getOrdinal();
       } else {

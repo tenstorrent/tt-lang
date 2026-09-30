@@ -125,6 +125,7 @@ void createTTLToTTKernelPipeline(OpPassManager &pm,
   }
   pm.addNestedPass<func::FuncOp>(createTTLAnnotateCBAssociations());
   pm.addPass(createTTLVerifyDFBSPSC());
+  pm.addPass(createTTLVerifyDFBLifecycle());
   pm.addPass(createTTLErasePipeNetScopes());
   {
     TTLValidateCBBudgetOptions budgetOpts;
@@ -137,6 +138,7 @@ void createTTLToTTKernelPipeline(OpPassManager &pm,
     ttkOpts.pipeComputedAddresses = options.pipeComputedAddresses;
     ttkOpts.pipeCapacitySync = options.pipeCapacitySync;
     ttkOpts.pipeGlobalSemaphoresOnly = options.pipeGlobalSemaphoresOnly;
+    ttkOpts.fabricMux = options.fabricMux;
     ttkOpts.l1BudgetOverride = options.l1BudgetOverride;
     pm.addPass(createTTLConvertTTLToTTKernel(ttkOpts));
   }
@@ -178,6 +180,7 @@ void buildTTKernelSpecializationPipeline(OpPassManager &pm) {
   pm.addPass(createCanonicalizerPass());
   pm.addPass(createCSEPass());
   buildTTKernelRecordCleanupPipeline(pm);
+  pm.addPass(createTTKernelSpecializeDFBReconfiguration());
   pm.addPass(createTTKernelAnnotateDFBUse());
 }
 
@@ -202,8 +205,9 @@ void registerTTLPipelines() {
   PassPipelineRegistration<>(
       "ttkernel-specialize-and-annotate-dfb-use",
       "Specialize kernels per launch coordinate, fold coordinate-dependent "
-      "control flow, compact tensor runtime arguments, and record surviving "
-      "DFB compile-time argument indices.",
+      "control flow, compact tensor runtime arguments, specialize DFB "
+      "reconfiguration calls, and record surviving DFB compile-time argument "
+      "indices.",
       buildTTKernelSpecializationPipeline);
 }
 

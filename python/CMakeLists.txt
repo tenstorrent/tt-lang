@@ -110,6 +110,8 @@ add_custom_target(TTLangGeneratedElementwise DEPENDS ${GENERATED_ELEMENTWISE_PY}
 
 # Python config file for various CMake-computed settings, e.g., device availability
 # (TTLANG_HAS_DEVICE and TTLANG_HAS_DEVICE_INT are set by top-level CMakeLists.txt)
+set(TTLANG_KERNEL_INCLUDE_DIR "include")
+set(TTLANG_KERNEL_HEADER_DIR "ttlang/Target/TTKernel/LLKs")
 configure_file(
   ${CMAKE_CURRENT_SOURCE_DIR}/ttl/config.py.in
   ${CMAKE_CURRENT_BINARY_DIR}/ttl/config.py
@@ -152,6 +154,14 @@ declare_mlir_python_sources(TTLangPythonCommon.Main
     layouts.py
     operators.py
     version.py
+)
+
+declare_mlir_python_sources(TTLangPythonCommon.KernelHeaders
+  ROOT_DIR "${PROJECT_SOURCE_DIR}"
+  ADD_TO_PARENT TTLangPythonCommon
+  SOURCES
+    ${TTLANG_KERNEL_INCLUDE_DIR}/${TTLANG_KERNEL_HEADER_DIR}/experimental_dfb_reset.h
+    ${TTLANG_KERNEL_INCLUDE_DIR}/${TTLANG_KERNEL_HEADER_DIR}/experimental_dfb_reconfiguration.h
 )
 
 # Add generated elementwise ops file and config file
