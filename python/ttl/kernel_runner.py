@@ -187,6 +187,11 @@ def _validate_physical_dfb_config(
                 f"DFB[{config.dfb_index}] storage segment {segment_position} "
                 "has no launch nodes"
             )
+        if not segment.is_tensor_backed and segment.byte_offset != 0:
+            raise ValueError(
+                f"DFB[{config.dfb_index}] local storage segment "
+                f"{segment_position} has byte offset {segment.byte_offset}"
+            )
         for node in segment.nodes:
             if node in seen_nodes:
                 raise ValueError(
@@ -202,6 +207,14 @@ def _validate_physical_dfb_config(
         raise ValueError(
             f"DFB[{config.dfb_index}] storage segments must cover its exact "
             "allocation nodes"
+        )
+    if (
+        config.address_scope == DFBAddressScope.REMOTE_UNIFORM
+        and len({segment.is_tensor_backed for segment in config.storage_segments}) > 1
+    ):
+        raise ValueError(
+            f"DFB[{config.dfb_index}] address_scope='remote_uniform' cannot "
+            "mix tensor-backed and scratch storage segments"
         )
 
 
@@ -1778,6 +1791,7 @@ class _DFBReconfigurationScratchSegment:
     tensor: Any
     nodes: Tuple[Tuple[int, int], ...]
     allocation_bytes: int
+    byte_offset: int = 0
 
 
 @dataclass
@@ -2052,6 +2066,7 @@ def build_kernel_descriptors(
     device_coordinates: Optional[List[int]] = None,
     descriptor_resource_plans: Optional[Sequence[_KernelDescriptorResourcePlan]] = None,
     dfb_reconfiguration_runtime_args: Optional[Dict[Tuple[int, int], List[int]]] = None,
+    descriptor_spec_indices: Optional[List[int]] = None,
 ) -> List[Any]:
     """
     Build kernel descriptors for ttnn.generic_op.
@@ -2079,6 +2094,8 @@ def build_kernel_descriptors(
             kernel_specs.
         dfb_reconfiguration_runtime_args: Per-core L1 configuration addresses
             in finalized boundary order.
+        descriptor_spec_indices: If provided, receives the source kernel spec
+            index for each emitted descriptor.
 
     Returns:
         List of ttnn.KernelDescriptor objects.
@@ -2228,6 +2245,8 @@ def build_kernel_descriptors(
                 kernel_descriptors.append(
                     ttnn.KernelDescriptor(**kernel_descriptor_args)
                 )
+                if descriptor_spec_indices is not None:
+                    descriptor_spec_indices.append(kernel_spec_index)
 
     return kernel_descriptors
 
@@ -2278,9 +2297,20 @@ def _allocate_l1_sharded_storage_tensor(
     *,
     zero_initialize: bool = False,
     per_core: bool = False,
+    range_lockstep: bool = False,
 ):
     """Allocate row-major L1 storage with one 4-byte element per storage word."""
-    aligned_bytes = _align_up(num_bytes, 32)
+    if per_core and range_lockstep:
+        raise ValueError(
+            "L1 storage cannot use per-core and range-lockstep allocation together"
+        )
+    # TT-Metal's L1 banking allocator uses DRAM alignment for its bank manager,
+    # and range allocation requires an extent that is a multiple of it. That
+    # alignment is coarser than the 32-byte page on some architectures.
+    storage_alignment = int(ttnn.get_dram_alignment())
+    if storage_alignment <= 0:
+        raise ValueError("TT-Metal reported an invalid L1 storage alignment")
+    aligned_bytes = _align_up(num_bytes, storage_alignment)
     elements_per_core = max(1, aligned_bytes // 4)
     num_cores = core_ranges.num_cores()
     shard_spec = ttnn.ShardSpec(
@@ -2295,6 +2325,8 @@ def _allocate_l1_sharded_storage_tensor(
     )
     if per_core:
         memory_config.experimental_set_per_core_allocation(True)
+    if range_lockstep:
+        memory_config.experimental_set_range_lockstep_allocation(True)
     allocator = ttnn.zeros if zero_initialize else ttnn.empty
     return allocator(
         (num_cores, elements_per_core),
@@ -2658,6 +2690,7 @@ def _runtime_resource_compatibility_key(
     dfb_reconfiguration_plan: Optional[DFBReconfigurationPlan],
     device: Optional[Any],
 ) -> Tuple[Tuple[Any, ...], Optional[Any]]:
+    _validate_remote_uniform_storage_sources(cb_configs)
     requires_device = (
         pipe_sram_scratch_bytes > 0
         or num_pipe_global_semaphores > 0
@@ -2676,7 +2709,9 @@ def _runtime_resource_compatibility_key(
         )
     tensor_address_key = []
     if dfb_reconfiguration_plan is not None:
-        _validate_dfb_reconfiguration_plan(tensors, dfb_reconfiguration_plan)
+        _validate_dfb_reconfiguration_plan(
+            tensors, dfb_reconfiguration_plan, cb_configs, core_ranges
+        )
         tensor_indices = sorted(
             {
                 segment.tensor_index
@@ -2765,6 +2800,7 @@ def _get_cached_runtime_resources_impl(
             pipe_resources.computed_address_dfb_allocation_bytes
         ),
         device=resource_device,
+        cb_configs=cb_configs,
     )
     if cache is not None:
         cache.compatibility_key = compatibility_key
@@ -2848,15 +2884,23 @@ def build_dfb_reconfiguration_runtime_resources(
     existing_backing_tensors: Optional[Dict[int, Any]] = None,
     existing_backing_allocation_bytes: Optional[Dict[int, int]] = None,
     device: Optional[Any] = None,
+    *,
+    cb_configs: Optional[List[PhysicalDFBConfig]] = None,
 ) -> DFBReconfigurationRuntimeResources:
     """Build storage and configuration resources for DFB reconfiguration."""
     if plan is None:
         return DFBReconfigurationRuntimeResources([], {}, [], {}, device)
+    if cb_configs is None:
+        raise ValueError(
+            "DFB reconfiguration runtime resources require the launch DFB "
+            "configurations"
+        )
 
     _ensure_ttnn()
     if ttnn is None:
         raise RuntimeError("ttnn is not available")
-    _validate_dfb_reconfiguration_plan(tensors, plan)
+    _validate_remote_uniform_storage_sources(cb_configs)
+    _validate_dfb_reconfiguration_plan(tensors, plan, cb_configs, core_ranges)
     resource_device = device if device is not None else _first_device(tensors)
     reusable_backing_tensors = dict(existing_backing_tensors or {})
     reusable_backing_allocation_bytes = dict(existing_backing_allocation_bytes or {})
@@ -2877,17 +2921,9 @@ def build_dfb_reconfiguration_runtime_resources(
     storage_index_by_dfb = {}
     scratch_layout_by_core_by_dfb = {}
     reconfigured_storage_indices = set()
-    tensor_backed_storage_indices = set()
     remote_uniform_storage_indices = set()
     for dfb_index, epochs in enumerate(plan.dfb_epochs):
-        storage_indices = {
-            _physical_dfb_storage_index(epoch.config) for epoch in epochs
-        }
-        if len(storage_indices) != 1:
-            raise ValueError(
-                f"DFB[{dfb_index}] configurations use different storage indices"
-            )
-        storage_index = storage_indices.pop()
+        storage_index = _physical_dfb_storage_index(epochs[0].config)
         storage_index_by_dfb[dfb_index] = storage_index
         if any(
             epoch.config.address_scope == DFBAddressScope.REMOTE_UNIFORM
@@ -2899,11 +2935,16 @@ def build_dfb_reconfiguration_runtime_resources(
             config = epoch.config
             allocation = _get_dfb_allocation(config)
             segments = config.storage_segments or (
-                DFBStorageSegment(nodes=tuple(core_keys)),
+                DFBStorageSegment(
+                    nodes=(
+                        config.allocation_nodes
+                        if config.allocation_nodes is not None
+                        else tuple(core_keys)
+                    )
+                ),
             )
             for segment in segments:
                 if segment.is_tensor_backed:
-                    tensor_backed_storage_indices.add(storage_index)
                     continue
                 outside_nodes = set(segment.nodes).difference(core_rows)
                 if outside_nodes:
@@ -2926,13 +2967,23 @@ def build_dfb_reconfiguration_runtime_resources(
         ):
             reconfigured_storage_indices.add(storage_index)
 
-    runtime_backed_storage_indices = set(tensor_backed_storage_indices)
-    runtime_backed_storage_indices.update(
-        storage_index_by_dfb[dfb_index]
-        for dfb_index in reusable_backing_tensors
-        if dfb_index in storage_index_by_dfb
-    )
-    runtime_backed_storage_indices.intersection_update(reconfigured_storage_indices)
+    hybrid_allocation = _per_core_l1_allocation_enabled()
+
+    # Runtime backing removes reconfigured scratch from the static program
+    # allocation, which cannot hold every epoch's capacity on every core. Local
+    # storage is backed as well once per-core addresses are available, because
+    # it then no longer needs the interval static descriptors reserve across
+    # every core of the storage index.
+    runtime_backed_storage_indices = set(reconfigured_storage_indices)
+    if hybrid_allocation:
+        runtime_backed_storage_indices.update(
+            storage_index_by_dfb[dfb_index]
+            for dfb_index, scratch_layout_by_core in (
+                scratch_layout_by_core_by_dfb.items()
+            )
+            if scratch_layout_by_core
+            and storage_index_by_dfb[dfb_index] not in remote_uniform_storage_indices
+        )
 
     required_layout_by_core_by_storage = {}
     for dfb_index, scratch_layout_by_core in scratch_layout_by_core_by_dfb.items():
@@ -2948,6 +2999,52 @@ def build_dfb_reconfiguration_runtime_resources(
                 max(current_size, scratch_bytes),
                 math.lcm(current_alignment, scratch_alignment),
             )
+
+    for dfb_index, config in enumerate(cb_configs):
+        storage_index = storage_index_by_dfb[dfb_index]
+        if storage_index not in runtime_backed_storage_indices:
+            continue
+        allocation = _get_dfb_allocation(config)
+        required_layout_by_core = required_layout_by_core_by_storage[storage_index]
+        # A core can carry the DFB at launch without appearing in any
+        # epoch, so the launch nodes join the epoch nodes rather than
+        # filtering against them; storage is reserved per core over both.
+        # Segments name each launch node's storage source, so only
+        # non-tensor-backed segment nodes need this storage.
+        if config.storage_segments:
+            launch_cores = {
+                node
+                for segment in config.storage_segments
+                if not segment.is_tensor_backed
+                for node in segment.nodes
+            }
+        elif config.allocation_nodes is not None:
+            launch_cores = set(config.allocation_nodes)
+        else:
+            # An unknown launch domain adds no core. A core that uses the
+            # DFB outside the epochs keeps a static descriptor for it,
+            # which local storage permits and a remote_uniform DFB rejects
+            # at descriptor construction.
+            launch_cores = set()
+        outside_nodes = launch_cores.difference(core_rows)
+        if outside_nodes:
+            outside_node = min(outside_nodes)
+            raise ValueError(
+                f"DFB[{dfb_index}] configuration references launch node "
+                f"{outside_node} outside the kernel grid"
+            )
+        scratch_layout_by_core = scratch_layout_by_core_by_dfb[dfb_index]
+        for core in launch_cores.union(scratch_layout_by_core):
+            current_size, current_alignment = required_layout_by_core.get(core, (0, 1))
+            required_layout_by_core[core] = (
+                max(current_size, allocation.total_size),
+                math.lcm(current_alignment, allocation.page_size),
+            )
+            if core not in scratch_layout_by_core:
+                scratch_layout_by_core[core] = (
+                    allocation.total_size,
+                    allocation.page_size,
+                )
 
     required_bytes_by_core_by_storage = {
         storage_index: {
@@ -2979,6 +3076,11 @@ def build_dfb_reconfiguration_runtime_resources(
             tensor_addresses_by_identity[tensor_identity] = addresses_by_core
         allocation_bytes = reusable_backing_allocation_bytes[dfb_index]
         required_bytes_by_core = required_bytes_by_core_by_storage[storage_index]
+        uniform_required_bytes = (
+            max(required_bytes_by_core.values())
+            if storage_index in remote_uniform_storage_indices
+            else None
+        )
         for core, required_bytes in required_bytes_by_core.items():
             if core not in addresses_by_core:
                 continue
@@ -2987,10 +3089,15 @@ def build_dfb_reconfiguration_runtime_resources(
                     f"storage[{storage_index}] PipeNet backing is smaller than "
                     f"its {required_bytes}-byte reconfiguration requirement"
                 )
+            backing_bytes = (
+                uniform_required_bytes
+                if uniform_required_bytes is not None
+                else required_bytes
+            )
             storage_core = (storage_index, core)
             previous = backing_by_storage_and_core.get(storage_core)
             if previous is not None and (
-                previous[0] is not existing_tensor or previous[1] != required_bytes
+                previous[0] is not existing_tensor or previous[1] != backing_bytes
             ):
                 raise ValueError(
                     f"storage[{storage_index}] has conflicting PipeNet backing "
@@ -2998,59 +3105,120 @@ def build_dfb_reconfiguration_runtime_resources(
                 )
             backing_by_storage_and_core[storage_core] = (
                 existing_tensor,
-                required_bytes,
+                backing_bytes,
+                0,
             )
 
-    pending_allocations = []
-    # One multi-format descriptor preserves the compiler-selected backing alias;
-    # separate descriptors would represent the same tensor as independent L1.
+    # Remote writers address remote-uniform storage locally, so it needs one
+    # common address across its cores. Local storage accepts independent
+    # per-core addresses, which only the hybrid allocator can produce.
+    per_core_storage_indices = (
+        set(required_bytes_by_core_by_storage).difference(
+            remote_uniform_storage_indices
+        )
+        if hybrid_allocation
+        else set()
+    )
+
+    pending_uniform_allocations = []
+    pending_local_members_by_core = {}
     for (
         storage_index,
         required_bytes_by_core,
     ) in required_bytes_by_core_by_storage.items():
-        cores_by_required_bytes = {}
+        unbacked_required_bytes_by_core = {}
         for core, required_bytes in required_bytes_by_core.items():
             if (storage_index, core) in backing_by_storage_and_core:
                 continue
-            cores_by_required_bytes.setdefault(required_bytes, []).append(core)
-        if storage_index in remote_uniform_storage_indices and cores_by_required_bytes:
-            # Remote writers address this storage with one base, so a partial
-            # PipeNet backing or several allocations would split its address.
-            if any(
+            unbacked_required_bytes_by_core[core] = required_bytes
+        if not unbacked_required_bytes_by_core:
+            continue
+        if storage_index in per_core_storage_indices:
+            for core, required_bytes in unbacked_required_bytes_by_core.items():
+                pending_local_members_by_core.setdefault(core, []).append(
+                    (storage_index, required_bytes)
+                )
+        else:
+            # Remote writers address remote-uniform storage with one base, so a
+            # PipeNet backing on only some of its cores would split its address.
+            if storage_index in remote_uniform_storage_indices and any(
                 index == storage_index for (index, _core) in backing_by_storage_and_core
             ):
                 raise ValueError(
                     f"storage[{storage_index}] address_scope='remote_uniform' "
                     "has PipeNet backing on only some of its launch nodes"
                 )
-            cores_by_required_bytes = {
-                max(cores_by_required_bytes): [
-                    core for cores in cores_by_required_bytes.values() for core in cores
-                ]
-            }
-        for required_bytes, cores in cores_by_required_bytes.items():
-            pending_allocations.append((storage_index, required_bytes, tuple(cores)))
-    # TT-Metal needs one common free address across all selected cores, so
-    # allocate the widest ranges before narrower allocations fragment them.
-    pending_allocations.sort(
+            # A uniformly addressed storage index must remain one TT-Metal
+            # allocation; splitting it by per-core capacity fragments the
+            # dependency-constrained L1 ranges the allocator searches.
+            pending_uniform_allocations.append(
+                (
+                    storage_index,
+                    max(unbacked_required_bytes_by_core.values()),
+                    tuple(unbacked_required_bytes_by_core),
+                )
+            )
+    # A uniform allocation needs one common free address across all its cores,
+    # so allocate the widest ranges before narrower allocations fragment them.
+    pending_uniform_allocations.sort(
         key=lambda allocation: (-len(allocation[2]), -allocation[1], allocation[0])
     )
 
-    # Independent per-core addresses avoid cross-core free-space fragmentation
-    # under the hybrid allocator, but remote-uniform storage must keep one
-    # address on every core because remote writers address it locally.
-    per_core_allocation = _per_core_l1_allocation_enabled()
     scratch_tensors = []
     owned_l1_buffer_addresses = set()
-    for storage_index, required_bytes, cores in pending_allocations:
+    # DFB starts need the allocator's address alignment, as static placement
+    # uses; member sizes are already rounded to their page sizes.
+    address_alignment = int(ttnn.get_dram_alignment())
+    if address_alignment <= 0:
+        raise ValueError("TT-Metal reported an invalid DFB address alignment")
+    # One arena per core keeps a core's local storage in a single allocation, so
+    # an earlier storage index cannot fragment the intervals a later one needs.
+    # Each core's arena comes from that core's own allocator, so arenas are
+    # allocated in core order only for determinism.
+    pending_local_arenas = []
+    for core, members in sorted(pending_local_members_by_core.items()):
+        next_offset = 0
+        packed_members = []
+        for storage_index, required_bytes in sorted(
+            members, key=lambda member: (-member[1], member[0])
+        ):
+            byte_offset = _align_up(next_offset, address_alignment)
+            packed_members.append((storage_index, required_bytes, byte_offset))
+            next_offset = byte_offset + required_bytes
+        pending_local_arenas.append((core, next_offset, packed_members))
+    for core, arena_bytes, packed_members in pending_local_arenas:
+        scratch_tensor = _allocate_l1_sharded_storage_tensor(
+            _make_singleton_core_ranges((core,)),
+            arena_bytes,
+            resource_device,
+            per_core=True,
+        )
+        scratch_tensors.append(scratch_tensor)
+        addresses_by_core = _l1_buffer_addresses_by_core(
+            scratch_tensor, resource_device
+        )
+        tensor_addresses_by_identity[id(scratch_tensor)] = addresses_by_core
+        if core not in addresses_by_core:
+            raise RuntimeError(
+                f"local DFB scratch arena has no L1 address for launch node {core}"
+            )
+        owned_l1_buffer_addresses.add(addresses_by_core[core])
+        for storage_index, required_bytes, byte_offset in packed_members:
+            backing_by_storage_and_core[(storage_index, core)] = (
+                scratch_tensor,
+                required_bytes,
+                byte_offset,
+            )
+
+    # Range lockstep narrows the allocator's dependency scan to the cores the
+    # allocation occupies, so per-core arenas elsewhere on the grid cannot
+    # prevent a uniform address from being placed.
+    for storage_index, required_bytes, cores in pending_uniform_allocations:
         scratch_tensor = _allocate_l1_sharded_storage_tensor(
             _make_singleton_core_ranges(sorted(cores)),
             required_bytes,
             resource_device,
-            per_core=(
-                per_core_allocation
-                and storage_index not in remote_uniform_storage_indices
-            ),
+            range_lockstep=True,
         )
         scratch_tensors.append(scratch_tensor)
         addresses_by_core = _l1_buffer_addresses_by_core(
@@ -3068,6 +3236,7 @@ def build_dfb_reconfiguration_runtime_resources(
             backing_by_storage_and_core[(storage_index, core)] = (
                 scratch_tensor,
                 required_bytes,
+                0,
             )
 
     scratch_segments_by_index = {}
@@ -3082,10 +3251,10 @@ def build_dfb_reconfiguration_runtime_resources(
         cores_by_tensor_identity = {}
         tensor_by_identity = {}
         for core in scratch_layout_by_core:
-            scratch_tensor, allocation_bytes = backing_by_storage_and_core[
+            scratch_tensor, allocation_bytes, byte_offset = backing_by_storage_and_core[
                 (storage_index, core)
             ]
-            backing_identity = (id(scratch_tensor), allocation_bytes)
+            backing_identity = (id(scratch_tensor), allocation_bytes, byte_offset)
             tensor_by_identity[backing_identity] = scratch_tensor
             cores_by_tensor_identity.setdefault(backing_identity, []).append(core)
         segments = tuple(
@@ -3093,6 +3262,7 @@ def build_dfb_reconfiguration_runtime_resources(
                 tensor=tensor_by_identity[backing_identity],
                 nodes=tuple(sorted(cores)),
                 allocation_bytes=backing_identity[1],
+                byte_offset=backing_identity[2],
             )
             for backing_identity, cores in sorted(
                 cores_by_tensor_identity.items(), key=lambda item: min(item[1])
@@ -3109,7 +3279,7 @@ def build_dfb_reconfiguration_runtime_resources(
                 )
                 tensor_addresses_by_identity[tensor_identity] = segment_addresses
             for core in segment.nodes:
-                addresses_by_core[core] = segment_addresses[core]
+                addresses_by_core[core] = segment_addresses[core] + segment.byte_offset
         scratch_addresses_by_index[dfb_index] = addresses_by_core
 
     for dfb_index, scratch_layout_by_core in scratch_layout_by_core_by_dfb.items():
@@ -3155,7 +3325,13 @@ def build_dfb_reconfiguration_runtime_resources(
             config = matching_epoch.config
             allocation = _get_dfb_allocation(config)
             segments = config.storage_segments or (
-                DFBStorageSegment(nodes=tuple(core_keys)),
+                DFBStorageSegment(
+                    nodes=(
+                        config.allocation_nodes
+                        if config.allocation_nodes is not None
+                        else tuple(core_keys)
+                    )
+                ),
             )
             records_by_core = {}
             for segment in segments:
@@ -3247,7 +3423,7 @@ def build_dfb_reconfiguration_runtime_resources(
         # Each core reads only its own configuration record, so the tensor
         # follows the scratch allocation mode; a lockstep allocation would need
         # one address free on every core and could fragment per-core L1.
-        if per_core_allocation:
+        if hybrid_allocation:
             memory_config.experimental_set_per_core_allocation(True)
         configuration_tensor = ttnn.from_torch(
             host_configuration,
@@ -4069,6 +4245,44 @@ def _physical_dfb_storage_index(config: PhysicalDFBConfig) -> int:
     return config.dfb_index if config.storage_index is None else config.storage_index
 
 
+def _validate_remote_uniform_storage_sources(
+    configs: Iterable[PhysicalDFBConfig],
+) -> None:
+    """Reject active tensor and scratch sources for one remote-uniform storage."""
+    source_entries = []
+    for config in configs:
+        if not config.storage_segments and config.allocation_nodes == ():
+            continue
+        storage_index = _physical_dfb_storage_index(config)
+        remote_uniform = config.address_scope == DFBAddressScope.REMOTE_UNIFORM
+        if config.storage_segments:
+            source_entries.extend(
+                (storage_index, segment.is_tensor_backed, remote_uniform)
+                for segment in config.storage_segments
+            )
+        else:
+            source_entries.append((storage_index, False, remote_uniform))
+    _reject_mixed_remote_uniform_sources(source_entries)
+
+
+def _reject_mixed_remote_uniform_sources(
+    source_entries: Iterable[Tuple[int, bool, bool]],
+) -> None:
+    sources_by_storage = {}
+    remote_uniform_storage_indices = set()
+    for storage_index, tensor_backed, remote_uniform in source_entries:
+        sources_by_storage.setdefault(storage_index, set()).add(tensor_backed)
+        if remote_uniform:
+            remote_uniform_storage_indices.add(storage_index)
+    for storage_index in sorted(remote_uniform_storage_indices):
+        if len(sources_by_storage[storage_index]) > 1:
+            raise ValueError(
+                f"storage[{storage_index}] address_scope='remote_uniform' "
+                "cannot mix tensor-backed and scratch storage across "
+                "active DFB configurations"
+            )
+
+
 def _shared_static_storage_size(
     member_indices: Sequence[int],
     allocations: Sequence[_DFBAllocation],
@@ -4201,6 +4415,7 @@ def _build_dfb_descriptors(
                     _physical_dfb_storage_index(cb_configs[dfb_index]),
                     id(segment.tensor),
                     segment.allocation_bytes,
+                    segment.byte_offset,
                 )
                 backing_group = reconfiguration_members_by_backing_by_core.setdefault(
                     backing_identity,
@@ -4270,11 +4485,13 @@ def _build_dfb_descriptors(
         _storage_index,
         _tensor_identity,
         allocation_bytes,
+        address_offset,
     ), backing_group in sorted(
         reconfiguration_members_by_backing_by_core.items(),
         key=lambda item: (
             item[0][0],
             item[0][2],
+            item[0][3],
             min(item[1].members_by_core),
         ),
     ):
@@ -4296,10 +4513,14 @@ def _build_dfb_descriptors(
             backing_descriptor = ttnn.cb_descriptor_from_sharded_tensor(
                 min(member_indices),
                 backing_group.tensor,
+                address_offset=address_offset,
                 total_size=allocation_bytes,
                 core_ranges=source_ranges,
             )
             descriptor.set_buffer_from_cb(backing_descriptor)
+            # set_buffer_from_cb copies only the buffer; the arena offset must be
+            # carried onto the launch descriptor itself.
+            descriptor.address_offset = address_offset
             descriptor_plans.append(
                 _DFBDescriptorPlan(
                     descriptor=descriptor,
@@ -4373,7 +4594,10 @@ def _build_dfb_descriptors(
 
 
 def _validate_dfb_reconfiguration_plan(
-    tensors: List[Any], plan: DFBReconfigurationPlan
+    tensors: List[Any],
+    plan: DFBReconfigurationPlan,
+    cb_configs: Optional[List[PhysicalDFBConfig]] = None,
+    core_ranges: Optional[Any] = None,
 ) -> None:
     """Validate every configuration before allocating runtime resources."""
     boundary_ordinals = plan.boundary_ordinals
@@ -4381,6 +4605,10 @@ def _validate_dfb_reconfiguration_plan(
         raise ValueError("DFB reconfiguration plan must contain a boundary")
     if len(set(boundary_ordinals)) != len(boundary_ordinals):
         raise ValueError("DFB reconfiguration boundary ordinals must be unique")
+    if cb_configs is not None and len(cb_configs) != len(plan.dfb_epochs):
+        raise ValueError(
+            "launch DFB configuration count does not match the reconfiguration plan"
+        )
 
     configurations_by_entry = {None: {}}
     configurations_by_entry.update({ordinal: {} for ordinal in boundary_ordinals})
@@ -4390,6 +4618,7 @@ def _validate_dfb_reconfiguration_plan(
                 f"DFB reconfiguration plan has no configurations for DFB[{dfb_index}]"
             )
         seen_entries = set()
+        storage_indices = set()
         for epoch in epochs:
             entry_ordinal = epoch.entry_reconfiguration_ordinal
             if entry_ordinal in seen_entries:
@@ -4414,7 +4643,21 @@ def _validate_dfb_reconfiguration_plan(
                 )
             _get_dfb_allocation(config)
             _validate_physical_dfb_config(config, dfb_index)
+            storage_indices.add(_physical_dfb_storage_index(config))
             configurations_by_entry[entry_ordinal][dfb_index] = config
+        if len(storage_indices) != 1:
+            raise ValueError(
+                f"DFB[{dfb_index}] configurations use different storage indices"
+            )
+        if cb_configs is not None:
+            launch_config = cb_configs[dfb_index]
+            if launch_config.dfb_index != dfb_index or _physical_dfb_storage_index(
+                launch_config
+            ) != next(iter(storage_indices)):
+                raise ValueError(
+                    f"launch DFB configuration {dfb_index} does not match the "
+                    "reconfiguration plan's physical or storage index"
+                )
 
     current_tensor_configurations = {}
 
@@ -4443,6 +4686,54 @@ def _validate_dfb_reconfiguration_plan(
         _validate_tensor_backing_aliases(
             tensors, current_tensor_configurations.values()
         )
+
+    active_sources_by_dfb_node: Dict[
+        Tuple[int, Optional[Tuple[int, int]]], Tuple[int, bool, bool]
+    ] = {}
+    program_nodes = (
+        _core_range_coordinates(core_ranges, label="program core ranges")
+        if core_ranges is not None
+        else None
+    )
+
+    def apply_sources(config: PhysicalDFBConfig) -> None:
+        dfb_index = config.dfb_index
+        storage_index = _physical_dfb_storage_index(config)
+        remote_uniform = config.address_scope == DFBAddressScope.REMOTE_UNIFORM
+        if config.storage_segments:
+            for segment in config.storage_segments:
+                for node in segment.nodes:
+                    active_sources_by_dfb_node[(dfb_index, node)] = (
+                        storage_index,
+                        segment.is_tensor_backed,
+                        remote_uniform,
+                    )
+        elif config.allocation_nodes is None or config.allocation_nodes == ():
+            for dfb_node in tuple(active_sources_by_dfb_node):
+                if dfb_node[0] == dfb_index:
+                    del active_sources_by_dfb_node[dfb_node]
+            if config.allocation_nodes is None:
+                for node in program_nodes if program_nodes is not None else (None,):
+                    active_sources_by_dfb_node[(dfb_index, node)] = (
+                        storage_index,
+                        False,
+                        remote_uniform,
+                    )
+        else:
+            for node in config.allocation_nodes:
+                active_sources_by_dfb_node[(dfb_index, node)] = (
+                    storage_index,
+                    False,
+                    remote_uniform,
+                )
+
+    if cb_configs is not None:
+        for config in cb_configs:
+            apply_sources(config)
+    for boundary_ordinal in (None, *boundary_ordinals):
+        for config in configurations_by_entry[boundary_ordinal].values():
+            apply_sources(config)
+        _reject_mixed_remote_uniform_sources(active_sources_by_dfb_node.values())
 
 
 def _validate_remote_uniform_tensor_backing(
@@ -4536,6 +4827,11 @@ def build_cb_descriptors(
     _ensure_ttnn()
     if ttnn is None:
         raise RuntimeError("ttnn is not available")
+    _validate_remote_uniform_storage_sources(cb_configs)
+    if dfb_reconfiguration_plan is not None:
+        _validate_dfb_reconfiguration_plan(
+            tensors, dfb_reconfiguration_plan, cb_configs, core_ranges
+        )
     _validate_remote_uniform_tensor_backing(
         tensors, cb_configs, dfb_reconfiguration_plan
     )
@@ -5108,6 +5404,7 @@ def _run_kernel_on_device_impl(
         )
 
     def build_device_program(device_coordinates=None):
+        descriptor_spec_indices = []
         kernel_descriptors = build_kernel_descriptors(
             kernel_specs=kernel_specs,
             tensors=tensors,
@@ -5132,6 +5429,7 @@ def _run_kernel_on_device_impl(
             dfb_reconfiguration_runtime_args=(
                 reconfiguration_resources.configuration_runtime_args
             ),
+            descriptor_spec_indices=descriptor_spec_indices,
         )
         program_descriptor = build_program_descriptor(
             kernel_descriptors=kernel_descriptors,
@@ -5140,7 +5438,7 @@ def _run_kernel_on_device_impl(
         )
         if normalized_program_hash is not None:
             program_descriptor.custom_program_hash = normalized_program_hash
-        return program_descriptor
+        return program_descriptor, descriptor_spec_indices
 
     if device_domain is not None:
         fabric_routes = kernel_fabric_routes or [[] for _ in kernel_specs]
@@ -5155,16 +5453,61 @@ def _run_kernel_on_device_impl(
         for mesh_coordinate, runtime_coordinates in _iter_device_domain_coordinates(
             device_domain, mesh_program_placements
         ):
-            device_program = build_device_program(runtime_coordinates)
+            device_program, descriptor_spec_indices = build_device_program(
+                runtime_coordinates
+            )
             program_descriptors[mesh_coordinate] = device_program
+            descriptor_specs = [
+                kernel_specs[index] for index in descriptor_spec_indices
+            ]
+            descriptor_routes = [
+                fabric_routes[index] for index in descriptor_spec_indices
+            ]
+            descriptor_runtime_arg_bases = [
+                spec.fabric_runtime_arg_base_common_index for spec in descriptor_specs
+            ]
+            descriptor_intervals = []
+            for descriptor_index, spec in enumerate(descriptor_specs):
+                descriptor_ranges = device_program.kernels[descriptor_index].core_ranges
+                intervals = []
+                for interval in spec.fabric_manager_intervals:
+                    if interval.launch_nodes is None:
+                        intervals.append(interval)
+                        continue
+                    launch_nodes = tuple(
+                        node
+                        for node in interval.launch_nodes
+                        if descriptor_ranges.contains(ttnn.CoreCoord(*node))
+                    )
+                    if launch_nodes:
+                        intervals.append(replace(interval, launch_nodes=launch_nodes))
+                descriptor_intervals.append(tuple(intervals))
+            active_interval_ids = {
+                interval.identity
+                for intervals in descriptor_intervals
+                for interval in intervals
+            }
+            descriptor_intervals = [
+                tuple(
+                    replace(
+                        interval,
+                        interfering_intervals=tuple(
+                            identity
+                            for identity in interval.interfering_intervals
+                            if identity in active_interval_ids
+                        ),
+                    )
+                    for interval in intervals
+                )
+                for intervals in descriptor_intervals
+            ]
             if not has_fabric_target_bindings:
                 configure_routing_plane_runtime_args(
                     program_descriptor=device_program,
-                    kernel_fabric_routes=fabric_routes,
-                    kernel_fabric_runtime_arg_base_common_indices=[
-                        spec.fabric_runtime_arg_base_common_index
-                        for spec in kernel_specs
-                    ],
+                    kernel_fabric_routes=descriptor_routes,
+                    kernel_fabric_runtime_arg_base_common_indices=(
+                        descriptor_runtime_arg_bases
+                    ),
                     mesh_device=mesh_device,
                     device_coordinates=mesh_coordinate,
                     grid_cols=grid_cols,
@@ -5175,13 +5518,11 @@ def _run_kernel_on_device_impl(
             fabric_binding_plans[mesh_coordinate] = _build_fabric_target_binding_plan(
                 ttnn_api=ttnn,
                 program_descriptor=device_program,
-                kernel_fabric_routes=fabric_routes,
-                kernel_fabric_runtime_arg_base_common_indices=[
-                    spec.fabric_runtime_arg_base_common_index for spec in kernel_specs
-                ],
-                kernel_fabric_manager_intervals=[
-                    spec.fabric_manager_intervals for spec in kernel_specs
-                ],
+                kernel_fabric_routes=descriptor_routes,
+                kernel_fabric_runtime_arg_base_common_indices=(
+                    descriptor_runtime_arg_bases
+                ),
+                kernel_fabric_manager_intervals=descriptor_intervals,
                 external_fabric_connections=external_fabric_connections,
                 mesh_device=mesh_device,
                 device_coordinates=mesh_coordinate,
@@ -5200,7 +5541,7 @@ def _run_kernel_on_device_impl(
             )
         program = build_device_mesh_program_descriptor(program_descriptors)
     else:
-        program_descriptor = build_device_program()
+        program_descriptor, _ = build_device_program()
         program = program_descriptor
         if mesh_program_placements is not None:
             program = build_mesh_program_descriptor(

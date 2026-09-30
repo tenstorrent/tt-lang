@@ -14,6 +14,11 @@
 // CHECK-LABEL: func.func @calls_unknown()
 // CHECK-SAME: ttl.used_dfb_indices = array<i32: 0, 1, 2>
 
+// The DFB reconfiguration caller-argument count is read at the compile-time
+// argument index just past the DFB indices, so it is not a DFB use.
+// CHECK-LABEL: func.func @compiler_defined_argument()
+// CHECK-SAME: ttl.used_dfb_indices = array<i32>
+
 // CHECK-LABEL: func.func @recursive()
 // CHECK-SAME: ttl.used_dfb_indices = array<i32: 0>
 
@@ -49,6 +54,13 @@ module attributes {ttl.dfb_allocations = [{}, {}, {}]} {
       ttl.base_cta_index = 5 : i32,
       ttkernel.thread = #ttkernel.thread<noc>} {
     func.call @unknown() : () -> ()
+    return
+  }
+
+  func.func @compiler_defined_argument() attributes {
+      ttl.base_cta_index = 4 : i32,
+      ttkernel.thread = #ttkernel.thread<noc>} {
+    %compiler_defined = ttkernel.get_compile_time_arg_val(3) : () -> i32
     return
   }
 

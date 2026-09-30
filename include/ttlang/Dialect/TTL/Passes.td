@@ -1674,6 +1674,39 @@ def TTKernelAnnotateDFBUse
   let dependentDialects = [];
 }
 
+def TTKernelSpecializeDFBReconfiguration
+    : Pass<"ttkernel-specialize-dfb-reconfiguration", "::mlir::ModuleOp"> {
+  let summary = "Specialize DFB reconfiguration descriptor fields";
+  let description = [{
+    Rewrites every `experimental::reconfigure_dfb_interfaces` call carrying
+    `ttl.dfb_reconfiguration_ordinal` and removes that attribute.
+
+    `ttl.dfb_reconfiguration_plan` determines which physical DFBs a boundary
+    reconfigures on each launch coordinate. For each entry in `dfbs` the pass
+    selects the configuration whose `entry_reconfiguration` matches the
+    ordinal, provided its `storage_segments` cover the coordinate or it
+    declares none. The selection becomes `template_args`
+    `[recordCount, (dfbIndex, totalBytes, numPages, pageBytes)...]`, where
+    `numPages` is `num_tiles * block_count` and `totalBytes` is
+    `numPages * page_size`. The specialized call reads no active masks and no
+    descriptor sizes from the runtime record.
+
+    A function with `ttl.core_coord` uses the selection for that coordinate. A
+    function without it may run on any node of `ttl.launch_grid`, so it uses
+    the static form only when every grid node yields the same selection, and
+    otherwise keeps the runtime form, which derives the reconfigured DFBs from
+    the active masks in the runtime record.
+
+    Each DFB's L1 address still comes from its runtime record word, because
+    tensor-backed storage binds a launch-time address, and storage without a
+    runtime-bound address requests preserving the address the interface
+    already holds.
+
+    Plan entries must have ascending, unique `dfb_index` values below the
+    64-record capacity of the runtime configuration area.
+  }];
+}
+
 def TTKernelFinalizeTensorRuntimeArgs
     : Pass<"ttkernel-finalize-tensor-runtime-args", "::mlir::ModuleOp"> {
   let summary = "Finalize tensor common runtime arguments";

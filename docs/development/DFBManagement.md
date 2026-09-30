@@ -146,6 +146,8 @@ canonicalize, cse                  (Module) Fold selected record tables
 ttkernel-cleanup                  (Module) Optimize writes with resolved endpoints
 ttkernel-finalize-tensor-runtime-args (Module) Finalize tensor and DFB argument indices
 canonicalize                       (Module) Remove obsolete argument expressions
+ttkernel-specialize-dfb-reconfiguration
+                                    (Module, specialized only) Resolve per-core reconfiguration descriptors
 ttkernel-annotate-dfb-use          (Module, specialized only) Record surviving physical DFB uses
 ```
 
@@ -153,6 +155,7 @@ Core specialization and DFB-use annotation are optional. [Initial receive
 batching](PipeReceiveBatching.md), record-loop unrolling,
 cleanup, and tensor runtime-argument finalization run in both modes. Finalization
 follows record-loop cleanup so eliminated uses cannot retain obsolete arguments;
+DFB reconfiguration specialization resolves each boundary's descriptor fields;
 annotation then records only surviving DFB uses on each clone's launch node.
 The Python kernel builder combines specialized clones only when their generated
 C++ and complete runtime descriptor metadata match, then dispatches the shared
@@ -546,11 +549,27 @@ runtime-resource cache. Compatible calls reuse one generation. Incompatible
 replacement and owner destruction synchronize the device before releasing it;
 failed synchronization retains ownership.
 
-When `TT_METAL_ALLOCATOR_MODE_HYBRID=1` is set before device initialization,
-reconfiguration scratch and configuration tensors use independent per-core L1
-addresses to avoid cross-core free-space fragmentation; remote-uniform scratch
-keeps one address on every core. The default Metal allocator mode retains
-lockstep allocation for compatibility.
+Reconfigured DFB storage without tensor backing is backed at runtime rather
+than by static descriptor storage. Each storage index is sized to the largest
+epoch and launch configuration on each core, rounded to its page sizes. The
+launch configuration adds its non-tensor-backed nodes, so a core that holds the
+DFB only at launch also receives storage.
+
+When `TT_METAL_ALLOCATOR_MODE_HYBRID` enables TT-Metal's hybrid allocator
+before device initialization, a program with a reconfiguration plan also backs
+at runtime every local storage index that some epoch holds in scratch, even
+when it is not reconfigured. A storage index whose epochs are all tensor-backed
+keeps a static descriptor on any launch node that no epoch covers. Each
+core then receives one per-core arena that packs its local storage indices at
+TT-Metal's DRAM alignment (32 bytes on Wormhole, 64 bytes on Blackhole), the
+alignment static DFB placement uses, and configuration tensors are allocated
+per core. Remote-uniform storage is never per core: each such storage index is
+one range-lockstep allocation over the cores that hold it, which gives it one
+address on those cores. The lockstep allocator reserves that interval only on
+the participating cores, so per-core allocations elsewhere on the grid do not
+constrain its address. In the default allocator mode every runtime-backed
+storage index is one range-lockstep allocation sized to its largest per-core
+requirement.
 
 Per-core L1 accounting uses target allocation quanta rather than logical byte
 counts. On each launch node it includes one aligned maximum allocation per

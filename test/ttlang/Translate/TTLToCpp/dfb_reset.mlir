@@ -14,8 +14,15 @@
 // CHECK: completeInterfaceWork();
 // CHECK: while (!participantsHaveState(synchronizationState, entryComplete))
 // CHECK: FORCE_INLINE void exit(volatile uint32_t tt_l1_ptr *synchronizationState)
-// CHECK: while (!participantsHaveState(synchronizationState, exitComplete))
-// CHECK: storeStateWord(&synchronizationState[releaseWord], 0);
+// CHECK-NOT: storeStateWord(&synchronizationState[arrivalWord], 0);
+// CHECK: storeStateWord(&synchronizationState[arrivalWord], exitComplete);
+// CHECK-NEXT: while (loadStateWord(&synchronizationState[releaseWord]) != exitComplete) {
+// CHECK-NEXT: }
+// CHECK-NEXT: #elif defined(TTL_DFB_RESET_DM1)
+// CHECK-NEXT: while (!participantsHaveState(synchronizationState, exitComplete))
+// CHECK: storeStateWord(&synchronizationState[releaseWord], exitComplete);
+// CHECK-NOT: participantsHaveState(synchronizationState, 0)
+// CHECK-NOT: storeStateWord(&synchronizationState[releaseWord], 0);
 // CHECK: FORCE_INLINE void applyMask(uint32_t activeMask, uint32_t firstDFBIndex)
 // CHECK: interface.fifo_rd_ptr = base;
 // CHECK: interface.fifo_wr_ptr = base;
