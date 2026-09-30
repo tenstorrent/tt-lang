@@ -752,16 +752,8 @@ struct TileStoreLowering : OpConversionPattern<TileStoreOp> {
       }
     }
 
-    // Linearize multi-dimensional CB indices to a flat tile index.
-    auto viewTy = mlir::cast<RankedTensorType>(op.getView().getType());
-    ValueRange indices = adaptor.getIndices();
-    Value cbTileIndex = affine::AffineLinearizeIndexOp::create(
-        rewriter, loc, indices, viewTy.getShape());
-
-    // If the view is a subblock slice, add the slice offset to produce
-    // the global DFB tile index.
-    cbTileIndex =
-        utils::addSliceOffset(op.getView(), cbTileIndex, rewriter, loc);
+    Value cbTileIndex = utils::computeDFBTileIndex(
+        op.getView(), adaptor.getIndices(), rewriter, loc);
 
     Value dstIndex = adaptor.getDstIndex();
 

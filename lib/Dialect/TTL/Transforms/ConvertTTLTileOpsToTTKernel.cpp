@@ -146,20 +146,8 @@ static FailureOr<Value> computeCBTileIndex(Value operand, OpBuilder &builder,
   if (!extractOp) {
     return failure();
   }
-
-  auto tensorTy =
-      mlir::dyn_cast<RankedTensorType>(extractOp.getTensor().getType());
-  if (!tensorTy) {
-    return failure();
-  }
-
-  // Linearize the extract indices within the immediate tensor's shape.
-  Value localIndex = affine::AffineLinearizeIndexOp::create(
-      builder, loc, extractOp.getIndices(), tensorTy.getShape());
-
-  // If the tensor comes from an extract_slice (subblocking), convert
-  // the local index to a global CB index by adding the slice offset.
-  return utils::addSliceOffset(extractOp.getTensor(), localIndex, builder, loc);
+  return utils::computeDFBTileIndex(extractOp.getTensor(),
+                                    extractOp.getIndices(), builder, loc);
 }
 
 /// Look up and convert a CB for an operand.
@@ -577,20 +565,6 @@ struct TTLTileBinaryFPUToTTKernel : OpConversionPattern<SourceOp> {
     }
     auto *typeConverter = this->getTypeConverter();
 
-    // Look up CBs for lhs and rhs.
-    auto lhsCB =
-        lookupAndConvertCB(op.getLhs(), funcOp, typeConverter, rewriter, loc);
-    auto rhsCB =
-        lookupAndConvertCB(op.getRhs(), funcOp, typeConverter, rewriter, loc);
-    if (failed(lhsCB) || failed(rhsCB)) {
-      return rewriter.notifyMatchFailure(op,
-                                         "cannot find/convert input CBs for "
-                                         "FPU binary");
-    }
-
-    // DST output index from the SSA operand (assigned by TTLAssignDST).
-    Value dstIdx = adaptor.getDstIndex();
-
     // Verify matching per-block tile counts (via tensor shape, not
     // ttk::CBType::getNumTiles() which includes block_count).
     auto lhsExtract = op.getLhs().template getDefiningOp<tensor::ExtractOp>();
@@ -610,17 +584,30 @@ struct TTLTileBinaryFPUToTTKernel : OpConversionPattern<SourceOp> {
               llvm::Twine(rhsTensorTy.getNumElements()));
     }
 
-    // FPU strategy selection proves that both extracts use the same tile
-    // coordinates before DST assignment can change operand provenance.
-    auto cbIdx = computeCBTileIndex(op.getLhs(), rewriter, loc);
-    if (failed(cbIdx)) {
-      return rewriter.notifyMatchFailure(
-          op, "cannot compute CB tile index from tensor.extract");
+    // Look up CBs for lhs and rhs.
+    auto lhsCB =
+        lookupAndConvertCB(op.getLhs(), funcOp, typeConverter, rewriter, loc);
+    auto rhsCB =
+        lookupAndConvertCB(op.getRhs(), funcOp, typeConverter, rewriter, loc);
+    if (failed(lhsCB) || failed(rhsCB)) {
+      return rewriter.notifyMatchFailure(op,
+                                         "cannot find/convert input CBs for "
+                                         "FPU binary");
     }
 
+    // DST output index from the SSA operand (assigned by TTLAssignDST).
+    Value dstIdx = adaptor.getDstIndex();
+
+    // Operands with the same local tile coordinates can come from slices at
+    // different DFB offsets, so each operand gets its own index.
+    Value lhsTileIndex = utils::computeDFBTileIndex(
+        lhsExtract.getTensor(), lhsExtract.getIndices(), rewriter, loc);
+    Value rhsTileIndex = utils::computeDFBTileIndex(
+        rhsExtract.getTensor(), rhsExtract.getIndices(), rewriter, loc);
+
     // Emit compute op (init inserted by ttkernel-insert-inits pass).
-    TTKernelComputeOp::create(rewriter, loc, *lhsCB, *rhsCB, *cbIdx, *cbIdx,
-                              dstIdx);
+    TTKernelComputeOp::create(rewriter, loc, *lhsCB, *rhsCB, lhsTileIndex,
+                              rhsTileIndex, dstIdx);
 
     rewriter.replaceOp(op, adaptor.getLhs());
     return success();
@@ -662,17 +649,12 @@ struct TTLTileCopyToTTKernel : OpConversionPattern<CopyTileOp> {
     if (auto extract = srcTensor.getDefiningOp<tensor::ExtractOp>()) {
       srcTensor = extract.getTensor();
     }
-    auto srcTensorTy = mlir::dyn_cast<RankedTensorType>(srcTensor.getType());
-    if (!srcTensorTy) {
+    if (!mlir::isa<RankedTensorType>(srcTensor.getType())) {
       return rewriter.notifyMatchFailure(
           op, "cannot determine source tensor shape for linearization");
     }
-    Value flatSrcIndex = affine::AffineLinearizeIndexOp::create(
-        rewriter, loc, srcIndices, srcTensorTy.getShape());
-
-    // If the source is a subblock slice, convert local to global DFB index.
-    flatSrcIndex =
-        utils::addSliceOffset(op.getSrc(), flatSrcIndex, rewriter, loc);
+    Value flatSrcIndex =
+        utils::computeDFBTileIndex(srcTensor, srcIndices, rewriter, loc);
 
     // Emit the copy from CB[flat_index] to DST[dst_index]
     // (init inserted by ttkernel-insert-inits pass).
