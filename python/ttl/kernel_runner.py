@@ -2584,10 +2584,9 @@ def build_pipe_runtime_resources(
     num_pipe_global_semaphores: int = 0,
     pipe_computed_address_dfb_indices: Optional[List[int]] = None,
     device: Optional[Any] = None,
+    initialize_sram_scratch: bool = False,
     kernel_specs: Optional[List[KernelSpec]] = None,
     dfb_reconfiguration_plan: Optional[DFBReconfigurationPlan] = None,
-    *,
-    zero_initialize_sram_scratch: bool = False,
 ) -> PipeRuntimeResources:
     """Allocate pipe resources and build their appended common runtime args."""
     computed_address_dfb_indices = list(pipe_computed_address_dfb_indices or [])
@@ -2634,7 +2633,7 @@ def build_pipe_runtime_resources(
         core_ranges=core_ranges,
         scratch_bytes=pipe_sram_scratch_bytes,
         device=resource_device,
-        zero_initialize=zero_initialize_sram_scratch,
+        zero_initialize=initialize_sram_scratch,
     )
     global_semaphores, global_semaphore_addresses = build_pipe_global_semaphores(
         tensors=tensors,
@@ -2800,9 +2799,7 @@ def _get_cached_runtime_resources_impl(
         dfb_reconfiguration_plan=dfb_reconfiguration_plan,
         # Fabric forwarders always allocate global completion semaphores, so
         # their presence requests zeroed cumulative-counter scratch.
-        zero_initialize_sram_scratch=(
-            num_dfb_resets > 0 or num_pipe_global_semaphores > 0
-        ),
+        initialize_sram_scratch=(num_dfb_resets > 0 or num_pipe_global_semaphores > 0),
     )
     reconfiguration_resources = build_dfb_reconfiguration_runtime_resources(
         tensors=tensors,

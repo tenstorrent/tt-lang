@@ -3320,8 +3320,9 @@ def test_build_pipe_runtime_resources_appends_global_semaphore_args(monkeypatch)
 
 
 @pytest.mark.parametrize("zero_initialize", [False, True])
+@pytest.mark.parametrize("call_style", ["keyword", "positional"])
 def test_build_pipe_runtime_resources_honors_scratch_initialization(
-    monkeypatch, zero_initialize
+    monkeypatch, zero_initialize, call_style
 ):
     observed_allocations = []
 
@@ -3336,13 +3337,22 @@ def test_build_pipe_runtime_resources_honors_scratch_initialization(
     core_ranges = object()
     device = object()
 
-    resources = kernel_runner.build_pipe_runtime_resources(
+    arguments = dict(
         tensors=[],
         core_ranges=core_ranges,
+        cb_configs=[],
         pipe_sram_scratch_bytes=16,
+        num_pipe_global_semaphores=0,
+        pipe_computed_address_dfb_indices=[],
         device=device,
-        zero_initialize_sram_scratch=zero_initialize,
+        initialize_sram_scratch=zero_initialize,
+        kernel_specs=[],
+        dfb_reconfiguration_plan=None,
     )
+    if call_style == "keyword":
+        resources = kernel_runner.build_pipe_runtime_resources(**arguments)
+    else:
+        resources = kernel_runner.build_pipe_runtime_resources(*arguments.values())
 
     assert len(resources.scratch_tensors) == 1
     assert resources.extra_common_runtime_args == [0x4000]
@@ -8512,7 +8522,7 @@ def test_cached_pipe_resources_initialize_stateful_scratch(monkeypatch):
     build_initialization = []
 
     def build_resources(**kwargs):
-        build_initialization.append(kwargs["zero_initialize_sram_scratch"])
+        build_initialization.append(kwargs["initialize_sram_scratch"])
         return kernel_runner.PipeRuntimeResources(
             scratch_tensors=[object()],
             global_semaphores=[],
