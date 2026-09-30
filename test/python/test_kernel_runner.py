@@ -6450,6 +6450,51 @@ def test_routing_plane_mux_allocation_failure_does_not_mutate_descriptor(
     assert not kernel.runtime_args
 
 
+def test_mux_binding_requires_mesh_device_before_mutation(monkeypatch):
+    fake_ttnn = _FakeTTNN()
+    destination = _FakeFabricNodeId(0, 1)
+    fake_ttnn.fabric_forwarding_links[destination] = [0]
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    kernel = _FakeTTNN.KernelDescriptor(
+        kernel_source="/tmp/kernel.cpp",
+        core_ranges=_make_fake_core_ranges((3, 0)),
+        compile_time_args=[],
+        common_runtime_args=[0],
+        config=object(),
+    )
+    program = _FakeTTNN.ProgramDescriptor(kernels=[kernel], cbs=[], semaphores=[])
+    source_nodes = tuple((node_x, 0) for node_x in range(4))
+    route = kernel_runner.FabricRouteSpec((0, 0), (0, 1), source_nodes, 0)
+    plan = kernel_runner._build_fabric_target_binding_plan(
+        fake_ttnn,
+        program,
+        [[route]],
+        [0],
+        _FakeMeshDevice(),
+        (0, 0),
+        4,
+        1,
+        [(_fabric_manager_interval("manager", launch_nodes=source_nodes),)],
+        kernel_fabric_mux_capable=[True],
+        mux_base_l1_address=0x10000,
+        mux_l1_end_address=0x20000,
+    )
+    assert plan.mux_groups
+
+    with pytest.raises(
+        ValueError, match="fabric mux target binding requires a mesh device"
+    ):
+        kernel_runner._apply_fabric_target_binding_plan(
+            fake_ttnn, program, plan, (0, 0)
+        )
+
+    assert program.kernels == [kernel]
+    assert program.semaphores == []
+    assert kernel.defines == []
+    assert kernel.common_runtime_args == [0]
+    assert not kernel.runtime_args
+
+
 def test_routing_plane_rejects_mux_kernel_semaphore_overcommit_before_mutation(
     monkeypatch,
 ):
@@ -7007,7 +7052,8 @@ def test_routing_plane_preflights_worker_semaphore_capacity(
         assert len(fake_ttnn.fabric_setup_calls) == 1
 
 
-def test_routing_plane_reserves_fixed_external_link(monkeypatch):
+@pytest.mark.parametrize("positional", [False, True], ids=["keyword", "positional"])
+def test_routing_plane_reserves_fixed_external_link(monkeypatch, positional):
     fake_ttnn = _FakeTTNN()
     monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
     program = _make_fake_fabric_program_at_node(3)
@@ -7026,37 +7072,44 @@ def test_routing_plane_reserves_fixed_external_link(monkeypatch):
         abi_identity="external-v1",
     )
 
-    kernel_runner.configure_routing_plane_runtime_args(
+    manager_intervals = [
+        (
+            _fabric_manager_interval(
+                "receiver", interfering_intervals=("external.external",)
+            ),
+        ),
+        (
+            _fabric_manager_interval(
+                "sender", interfering_intervals=("external.external",)
+            ),
+        ),
+        (
+            _fabric_manager_interval(
+                "external.external",
+                kind=kernel_runner.FabricManagerIntervalKind.EXTERNAL,
+                claim="external",
+                route_indices=(),
+                interfering_intervals=("receiver", "sender"),
+            ),
+        ),
+    ]
+    # Preserve main's positional order, including external fabric connections.
+    arguments = dict(
         program_descriptor=program,
         kernel_fabric_routes=[[route], [route], []],
         kernel_fabric_runtime_arg_base_common_indices=[0, 0, None],
-        kernel_fabric_manager_intervals=[
-            (
-                _fabric_manager_interval(
-                    "receiver", interfering_intervals=("external.external",)
-                ),
-            ),
-            (
-                _fabric_manager_interval(
-                    "sender", interfering_intervals=("external.external",)
-                ),
-            ),
-            (
-                _fabric_manager_interval(
-                    "external.external",
-                    kind=kernel_runner.FabricManagerIntervalKind.EXTERNAL,
-                    claim="external",
-                    route_indices=(),
-                    interfering_intervals=("receiver", "sender"),
-                ),
-            ),
-        ],
-        external_fabric_connections=(external_binding,),
         mesh_device=_FakeMeshDevice(),
         device_coordinates=(0, 0),
         grid_cols=2,
         grid_rows=1,
+        fabric_route_cache=None,
+        kernel_fabric_manager_intervals=manager_intervals,
+        external_fabric_connections=(external_binding,),
     )
+    if positional:
+        kernel_runner.configure_routing_plane_runtime_args(*arguments.values())
+    else:
+        kernel_runner.configure_routing_plane_runtime_args(**arguments)
 
     assert [call[2] for call in fake_ttnn.fabric_setup_calls] == [[0], [0]]
 

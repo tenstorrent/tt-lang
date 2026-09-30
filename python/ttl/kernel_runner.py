@@ -5223,8 +5223,9 @@ def configure_routing_plane_runtime_args(
     kernel_fabric_manager_intervals: Optional[
         List[Tuple[FabricManagerIntervalSpec, ...]]
     ] = None,
-    kernel_fabric_mux_capable: Optional[List[bool]] = None,
     external_fabric_connections: Tuple[FabricConnectionBinding, ...] = (),
+    *,
+    kernel_fabric_mux_capable: Optional[List[bool]] = None,
     mux_base_l1_address: Optional[int] = None,
     mux_l1_end_address: Optional[int] = None,
 ) -> None:

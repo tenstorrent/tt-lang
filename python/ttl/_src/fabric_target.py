@@ -1152,9 +1152,10 @@ def build_fabric_target_binding_plan(
     kernel_fabric_manager_intervals: Optional[
         List[Tuple[FabricManagerIntervalSpec, ...]]
     ] = None,
-    kernel_fabric_mux_capable: Optional[List[bool]] = None,
     external_fabric_connections: Tuple[Any, ...] = (),
     route_cache: Optional[FabricRouteCache] = None,
+    *,
+    kernel_fabric_mux_capable: Optional[List[bool]] = None,
     mux_base_l1_address: Optional[int] = None,
     mux_l1_end_address: Optional[int] = None,
 ) -> FabricTargetBindingPlan:
@@ -1593,10 +1594,16 @@ def apply_fabric_target_binding_plan(
     ttnn_api: Any,
     program_descriptor: Any,
     plan: FabricTargetBindingPlan,
-    mesh_device: Any,
     device_coordinates: Tuple[int, ...],
+    *,
+    mesh_device: Any = None,
 ) -> None:
-    """Apply a validated target-binding plan to one program descriptor."""
+    """Apply a validated target-binding plan to one program descriptor.
+
+    `mesh_device` is required when the plan contains fabric mux groups.
+    """
+    if plan.mux_groups and mesh_device is None:
+        raise ValueError("fabric mux target binding requires a mesh device")
     managers_by_request_index = {
         manager.request_index: manager for manager in plan.managers
     }
@@ -1825,8 +1832,9 @@ def configure_routing_plane_runtime_args(
     kernel_fabric_manager_intervals: Optional[
         List[Tuple[FabricManagerIntervalSpec, ...]]
     ] = None,
-    kernel_fabric_mux_capable: Optional[List[bool]] = None,
     external_fabric_connections: Tuple[Any, ...] = (),
+    *,
+    kernel_fabric_mux_capable: Optional[List[bool]] = None,
     mux_base_l1_address: Optional[int] = None,
     mux_l1_end_address: Optional[int] = None,
 ) -> None:
