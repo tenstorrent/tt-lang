@@ -123,11 +123,16 @@ RUN cmake -S "$TT_METAL_SOURCE_DIR" -B "$TT_METAL_BUILD_DIR" -G Ninja \
        /opt/ttlang-toolchain/venv/bin/python -c 'import ttnn'
 
 COPY package-emule-runtime.sh trim-emule-venv.sh /tmp/
+COPY --from=tt-lang-stack requirements.txt requirements-runtime.txt requirements-test.txt \
+    /runtime/requirements/
 RUN mkdir -p /runtime \
     && bash /tmp/package-emule-runtime.sh "$TT_METAL_SOURCE_DIR" /runtime/tt-metal \
     && cp "$TT_EMULE_RUNTIME_ROOT/stack.json" \
           "$TT_EMULE_RUNTIME_ROOT/source-manifest.json" /runtime/ \
     && bash /tmp/trim-emule-venv.sh /opt/ttlang-toolchain/venv/bin/python \
+    && /opt/ttlang-toolchain/venv/bin/python -m pip install --no-cache-dir \
+        -r /runtime/requirements/requirements-test.txt \
+    && /opt/ttlang-toolchain/venv/bin/python -m pip check \
     && rm -f /opt/ttlang-toolchain/bin/tt-triage \
     && rm -f /opt/ttlang-toolchain/venv/bin/python \
         /opt/ttlang-toolchain/venv/bin/python3 \

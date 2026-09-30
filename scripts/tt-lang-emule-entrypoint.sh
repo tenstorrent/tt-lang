@@ -75,6 +75,15 @@ if [ -z "$_ACTUAL_LLVM_SHA" ] || \
     exit 1
 fi
 
+for _REQUIREMENT in requirements.txt requirements-runtime.txt requirements-test.txt; do
+    if ! cmp -s "${TTLANG_SOURCE_DIR}/${_REQUIREMENT}" \
+        "/opt/tt-emule-runtime/requirements/${_REQUIREMENT}"; then
+        echo "tt-lang emule container: image Python requirements do not match the checkout: ${_REQUIREMENT}." >&2
+        echo "Rebuild with TTLANG_EMULE_REBUILD=1 scripts/install-tt-lang-emule.sh." >&2
+        exit 1
+    fi
+done
+
 readonly _COMPILER_MARKER="${TTLANG_BUILD_DIR}/.ttlang-emule-source-fingerprint"
 if [ "${TTLANG_EMULE_INSTALL:-0}" = "1" ]; then
     if [ -z "${TTLANG_EMULE_SOURCE_FINGERPRINT:-}" ] || \
@@ -92,6 +101,7 @@ if [ "${TTLANG_EMULE_INSTALL:-0}" = "1" ]; then
         -DTTLANG_USE_TOOLCHAIN=ON \
         -DTTLANG_USE_TOOLCHAIN_TTMETAL=OFF \
         -DTTLANG_INSTALL_DEV_REQUIREMENTS=OFF \
+        -DTTLANG_INSTALL_RUNTIME_REQUIREMENTS=OFF \
         -DTTLANG_TOOLCHAIN_DIR=/opt/ttlang-toolchain \
         -DTTLANG_EXTERNAL_TT_METAL_DIR="$TT_METAL_SOURCE_DIR" \
         -DTTLANG_EXTERNAL_TT_METAL_BUILD_DIR="$TT_METAL_BUILD_DIR" \

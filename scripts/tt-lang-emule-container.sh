@@ -44,10 +44,14 @@ readonly _TT_METAL_SOURCE_URL="$_MANIFEST_METAL_REPOSITORY"
 readonly _BASE_IMAGE="$_MANIFEST_BASE_IMAGE"
 readonly _REQUIRED_EMULE_FILE="$_MANIFEST_CLUSTER_DESCRIPTOR"
 readonly _PLATFORM="linux/amd64"
+readonly _REQUIREMENT_INPUTS=(
+    requirements.txt requirements-runtime.txt requirements-test.txt
+)
 readonly _IMAGE_INPUTS=(
     .github/containers/Dockerfile.emule
     .github/containers/package-emule-runtime.sh
     .github/containers/trim-emule-venv.sh
+    "${_REQUIREMENT_INPUTS[@]}"
 )
 
 _IMAGE_INPUT_ID="$(
@@ -375,6 +379,9 @@ if [ "$_BUILD_IMAGE" -eq 1 ]; then
     _TEMP_STACK_CONTEXT="$(mktemp -d "${TMPDIR:-/tmp}/tt-lang-stack-context.XXXXXX")"
     cp -- "$_STACK_MANIFEST" \
         "${_TEMP_STACK_CONTEXT}/tt-lang-emule-stack.json"
+    for _REQUIREMENT in "${_REQUIREMENT_INPUTS[@]}"; do
+        cp -- "${_REPO_ROOT}/${_REQUIREMENT}" "$_TEMP_STACK_CONTEXT/"
+    done
     echo "tt-lang-sim: building compiler + tt-emule image ${_IMAGE}" >&2
     "$_DOCKER" build \
         --platform "$_PLATFORM" \
