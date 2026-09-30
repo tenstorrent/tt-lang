@@ -124,12 +124,19 @@ verifyDFBWaitsHavePushes(ModuleOp module,
       }
     }
   });
-  llvm::DenseMap<int64_t, SmallVector<OpaqueCallOp>> opaqueProtocolCalls =
-      collectDFBsWithOpaqueProtocolActions(module, bindSites);
+  llvm::DenseSet<int64_t> opaqueProducerDFBs;
+  for (const auto &[dfbId, calls] :
+       collectDFBsWithOpaqueProtocolActions(module, bindSites)) {
+    if (llvm::any_of(calls, [&](OpaqueCallOp call) {
+          return !hasExactEmptyLaunchDomain(call, domainState);
+        })) {
+      opaqueProducerDFBs.insert(dfbId);
+    }
+  }
 
   bool sawError = false;
   for (auto [dfbId, waitOp] : firstWaitByDFB) {
-    if (pushedDFBs.contains(dfbId) || opaqueProtocolCalls.contains(dfbId)) {
+    if (pushedDFBs.contains(dfbId) || opaqueProducerDFBs.contains(dfbId)) {
       continue;
     }
     InFlightDiagnostic diag = waitOp->emitError()
