@@ -97,7 +97,9 @@ is a concern for kernel binary size. Hardware coverage is limited to
 
 The verifier accepts `k` in {4, 8, 16, 32, 64}, a last-dimension `dim`,
 `sorted = true`, and a row width that is a power of two in [2, 64] tiles.
-`k` must divide the row width in elements. The merge network selects whole
+`k` must divide the row width in elements. `ttl.math.topk` checks the same
+limits, plus a `u16` index block shaped like the values, and raises
+`ValueError` at the call site. The merge network selects whole
 tiles, so `k` below 32 runs the 32-wide network and the sorted result tile
 holds the requested `k` columns first; this matches the metal host op, which
 rounds `k` up to a tile before launching the kernel. Each result must be stored once

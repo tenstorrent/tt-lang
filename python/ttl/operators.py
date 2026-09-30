@@ -2008,7 +2008,9 @@ def raw_element_write(block, *args):
 # lowers ``ttl.topk``. ``order`` is the required global result order,
 # ``"descending"`` or ``"ascending"``; it sets the helper polarity and the
 # stable tie-break order. All stages on one slab must agree on it and on the
-# mode flags.
+# mode flags. ``direction`` is a different axis: it is the per-step bitonic
+# sort direction of the metal network, which alternates between steps, and
+# is not derived from ``order``.
 
 
 def _topk_index_operand(value):
@@ -2190,6 +2192,22 @@ def topk_rebuild(
     )
 
 
+_TOPK_K_VALUES = (4, 8, 16, 32, 64)
+_TOPK_MIN_WIDTH_TILES = 2
+_TOPK_MAX_WIDTH_TILES = 64
+
+
+def _topk_tile(tensor_type, what):
+    from ttl.dialects import ttcore
+
+    if not isinstance(tensor_type, RankedTensorType) or tensor_type.rank != 2:
+        raise ValueError(f"topk {what} must be a rank-2 block of tiles")
+    tile = ttcore.ir.TileType.maybe_downcast(tensor_type.element_type)
+    if tile is None:
+        raise ValueError(f"topk {what} must be a rank-2 block of tiles")
+    return tile
+
+
 @syntax("topk")
 def topk(
     values,
@@ -2201,20 +2219,65 @@ def topk(
     sorted=True,
     stable=False,
 ):
-    """Return the ``k`` extreme values along the last dimension, and their indices.
+    """Select the ``k`` largest or smallest values in each row, with their indices.
 
-    ``indices`` is the identity index tensor of ``values``. The compiler does
-    not generate the reader that publishes it. ``stable`` selects fused-key
-    sorting. ``sorted`` must be true.
+    Mirrors ``torch.topk`` on a block of ``(rows, width_tiles)`` tiles and
+    returns ``(top_values, top_indices)``.
+
+    ``indices`` must hold the column number of every element of ``values``
+    (``indices[r, c] == c``) as ``u16`` tiles, shaped like ``values``. The
+    kernel author reads it from a host tensor; the compiler does not generate
+    it.
+
+    ``k``, ``largest``, and ``stable`` are compile-time constants. ``k`` is one
+    of 4, 8, 16, 32, or 64. The row width is a power of two between 2 and 64
+    tiles. Only the last dimension (``dim=-1``) and ``sorted=True`` are
+    supported.
+
+    The results are whole tiles: ``(rows, ceil(k / 32))``. For ``k`` below 32
+    the first ``k`` columns of the single result tile hold the answer and the
+    rest are unspecified; slice on the host.
+
+    ``stable=True`` resolves ties by the lower index, like
+    ``torch.topk(stable=True)``. It sorts values and indices as one packed
+    key, which requires fp32 destination accumulation and two extra ``u32``
+    scratch buffers in L1.
     """
+    from ttl.dialects import ttcore
+
     k_i = _get_constant_int(k)
     dim_i = _get_constant_int(dim)
     values_type = values.type
     indices_type = indices.type
-    if not isinstance(values_type, RankedTensorType) or values_type.rank != 2:
-        raise ValueError("topk values must be a rank-2 tensor")
-    height = values_type.shape[0]
-    output_width = (k_i + 31) // 32
+    values_tile = _topk_tile(values_type, "values")
+    indices_tile = _topk_tile(indices_type, "indices")
+    if list(values_type.shape) != list(indices_type.shape):
+        raise ValueError(
+            "topk indices must have the shape of values, got "
+            f"{tuple(indices_type.shape)} and {tuple(values_type.shape)}"
+        )
+    indices_dtype = ttcore.DataType(indices_tile.data_type_as_int)
+    if indices_dtype != ttcore.DataType.UInt16:
+        raise ValueError(f"topk indices must be u16 tiles, got {indices_dtype.name}")
+    if dim_i not in (-1, 1):
+        raise ValueError(f"topk supports only the last dimension (dim=-1), got {dim_i}")
+    if not _get_constant_bool(sorted):
+        raise ValueError("topk sorted=False is not supported")
+    if k_i not in _TOPK_K_VALUES:
+        raise ValueError(f"topk k must be one of {_TOPK_K_VALUES}, got {k_i}")
+    height, width_tiles = values_type.shape
+    if (
+        width_tiles < _TOPK_MIN_WIDTH_TILES
+        or width_tiles > _TOPK_MAX_WIDTH_TILES
+        or width_tiles & (width_tiles - 1)
+    ):
+        raise ValueError(
+            "topk row width must be a power of two between "
+            f"{_TOPK_MIN_WIDTH_TILES} and {_TOPK_MAX_WIDTH_TILES} tiles, "
+            f"got {width_tiles}"
+        )
+    tile_width = values_tile.shape[1]
+    output_width = (k_i + tile_width - 1) // tile_width
     values_result = RankedTensorType.get(
         [height, output_width], values_type.element_type
     )
