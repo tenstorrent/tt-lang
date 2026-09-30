@@ -6,6 +6,9 @@ add_mlir_dialect_library(TTLangTTLTransforms
   SRAMAllocationReport.cpp
   SRAMAllocator.cpp
   SRAMAllocator_Greedy.cpp
+  SRAMAllocator_Location.cpp
+  SRAMAllocator_Location_Greedy.cpp
+  SRAMAllocator_Location_MinimumArena.cpp
   SRAMAllocator_MinimumArena.cpp
   ComputeOpCreationPlanning.cpp
   ComputeTarget.cpp
