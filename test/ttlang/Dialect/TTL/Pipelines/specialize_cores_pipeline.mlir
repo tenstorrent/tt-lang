@@ -73,4 +73,7 @@
 // DISABLED-NEXT: ttkernel-finalize-tensor-runtime-args
 // DISABLED-NEXT: canonicalize{{.*}}
 
-module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {}
+module attributes {
+  ttl.dfb_allocations = [],
+  ttl.launch_grid = [1 : i64, 1 : i64]
+} {}
