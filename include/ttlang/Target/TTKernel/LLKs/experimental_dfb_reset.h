@@ -85,28 +85,41 @@ FORCE_INLINE void completeInterfaceWork() {
   noc_async_full_barrier();
 #endif
 #if defined(TTL_DFB_RESET_UNPACK)
-  constexpr uint32_t waitResources = p_stall::UNPACK;
-#elif defined(TTL_DFB_RESET_PACK)
-  constexpr uint32_t waitResources = p_stall::PACK;
+  {
+    constexpr uint32_t waitResources = p_stall::UNPACK;
+    TTI_STALLWAIT(p_stall::STALL_TDMA, waitResources);
+    tensix_sync();
+  }
 #endif
-#if defined(TTL_DFB_RESET_UNPACK) || defined(TTL_DFB_RESET_PACK)
-  TTI_STALLWAIT(p_stall::STALL_TDMA, waitResources);
-  tensix_sync();
+#if defined(TTL_DFB_RESET_PACK)
+  {
+    constexpr uint32_t waitResources = p_stall::PACK;
+    TTI_STALLWAIT(p_stall::STALL_TDMA, waitResources);
+    tensix_sync();
+  }
+#endif
+}
+
+// A combined compute kernel owns both arrival words.
+FORCE_INLINE void
+publishState(volatile uint32_t tt_l1_ptr *synchronizationState,
+             uint32_t state) {
+#if defined(TTL_DFB_RESET_DM0)
+  storeStateWord(&synchronizationState[dm0StateWord], state);
+#endif
+#if defined(TTL_DFB_RESET_UNPACK)
+  storeStateWord(&synchronizationState[unpackStateWord], state);
+#endif
+#if defined(TTL_DFB_RESET_PACK)
+  storeStateWord(&synchronizationState[packStateWord], state);
 #endif
 }
 
 FORCE_INLINE void enter(volatile uint32_t tt_l1_ptr *synchronizationState) {
-#if defined(TTL_DFB_RESET_DM0)
-  constexpr uint32_t arrivalWord = dm0StateWord;
-#elif defined(TTL_DFB_RESET_UNPACK)
-  constexpr uint32_t arrivalWord = unpackStateWord;
-#elif defined(TTL_DFB_RESET_PACK)
-  constexpr uint32_t arrivalWord = packStateWord;
-#endif
   completeInterfaceWork();
 #if defined(TTL_DFB_RESET_DM0) || defined(TTL_DFB_RESET_UNPACK) ||             \
     defined(TTL_DFB_RESET_PACK)
-  storeStateWord(&synchronizationState[arrivalWord], entryComplete);
+  publishState(synchronizationState, entryComplete);
   while (loadStateWord(&synchronizationState[releaseWord]) != entryComplete) {
   }
 #elif defined(TTL_DFB_RESET_DM1)
@@ -118,16 +131,9 @@ FORCE_INLINE void enter(volatile uint32_t tt_l1_ptr *synchronizationState) {
 
 // DM1 cannot begin later work until every owner completes its interface reset.
 FORCE_INLINE void exit(volatile uint32_t tt_l1_ptr *synchronizationState) {
-#if defined(TTL_DFB_RESET_DM0)
-  constexpr uint32_t arrivalWord = dm0StateWord;
-#elif defined(TTL_DFB_RESET_UNPACK)
-  constexpr uint32_t arrivalWord = unpackStateWord;
-#elif defined(TTL_DFB_RESET_PACK)
-  constexpr uint32_t arrivalWord = packStateWord;
-#endif
 #if defined(TTL_DFB_RESET_DM0) || defined(TTL_DFB_RESET_UNPACK) ||             \
     defined(TTL_DFB_RESET_PACK)
-  storeStateWord(&synchronizationState[arrivalWord], exitComplete);
+  publishState(synchronizationState, exitComplete);
   while (loadStateWord(&synchronizationState[releaseWord]) != exitComplete) {
   }
 #elif defined(TTL_DFB_RESET_DM1)
@@ -145,23 +151,21 @@ FORCE_INLINE void applyMask(uint32_t activeMask, uint32_t firstDFBIndex) {
     if ((activeMask & 1U) != 0) {
       LocalCBInterface &interface = get_local_cb_interface(dfbIndex);
       const uint32_t base = interface.fifo_limit - interface.fifo_size;
-#if defined(TTL_DFB_RESET_DM1)
+#if defined(TTL_DFB_RESET_DM1) || defined(TTL_DFB_RESET_DM0) ||                \
+    defined(TTL_DFB_RESET_UNPACK)
       interface.fifo_rd_ptr = base;
+#endif
+#if defined(TTL_DFB_RESET_DM1) || defined(TTL_DFB_RESET_DM0) ||                \
+    defined(TTL_DFB_RESET_PACK)
       interface.fifo_wr_ptr = base;
+#endif
+#if defined(TTL_DFB_RESET_PACK)
+      interface.fifo_wr_tile_ptr = 0;
+#endif
       interface.tiles_acked_received_init = 0;
+#if defined(TTL_DFB_RESET_DM1)
       *get_cb_tiles_received_ptr(dfbIndex) = 0;
       *get_cb_tiles_acked_ptr(dfbIndex) = 0;
-#elif defined(TTL_DFB_RESET_DM0)
-      interface.fifo_rd_ptr = base;
-      interface.fifo_wr_ptr = base;
-      interface.tiles_acked_received_init = 0;
-#elif defined(TTL_DFB_RESET_UNPACK)
-      interface.fifo_rd_ptr = base;
-      interface.tiles_acked_received_init = 0;
-#elif defined(TTL_DFB_RESET_PACK)
-      interface.fifo_wr_ptr = base;
-      interface.fifo_wr_tile_ptr = 0;
-      interface.tiles_acked_received_init = 0;
 #endif
     }
     activeMask >>= 1;
