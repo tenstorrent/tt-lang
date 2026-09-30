@@ -1625,40 +1625,44 @@ transitive releases via group results.
 
 ### Detection algorithm
 
-Per block, pre-collect all acquires of the kind under consideration
-(`cb_wait` for the consumer pass; `cb_reserve` for the producer pass).
-For each candidate leader (in op order):
+`planCoalescedAcquireGroups` (`DFBAcquireReleaseAnalysis`) decides the groups
+of a block for one acquisition kind (`cb_wait` for consumers, `cb_reserve` for
+producers), and the pass applies exactly that plan. Clients that run before
+the pass, such as the data-movement rule of `ttl-insert-cb-sync`, ask the same
+function, so they cannot disagree with the rewrite. For each candidate leader
+in op order:
 
 ```
-if leader is already coalesced (num_tiles set) or already erased:
+if leader has num_tiles, is already merged, or is not a rank-2 [1, k] block:
   continue
 
 group = [leader]
 for op = leader.nextOp; op != nullptr; op = op.nextOp:
-  if op is a same-kind same-cb acquire with no num_tiles:
+  if op is a release an earlier group erases:
+    continue
+  if op is a same-kind same-cb acquire:
+    if it has num_tiles: break
     group.push_back(op); continue
-  if op is a same-kind acquire on a different DFB:
-    continue  # benign: cannot touch our DFB or our group's results
-  if mayReleaseDFB(op, cb=leader.cb, group):
+  if mayReleaseBeforeCoalescedRelease(op, cb, group):
     break
   # else: tolerate (different-DFB op, attach_cb, arith, ...)
 
 if group.size() < 2: continue
-match N releases on cb after the last group member, in op order
-apply rewrite, mark group members as erased
+match N releases on cb after the last member, skipping erased ones;
+  stop without a group at a release that carries num_tiles
+record the group; its members are merged, all but its last release are
+  erased, and the last carries the merged tile count
 ```
 
-Because the candidate set is fixed before any rewrite, acquires on a
-different DFB that the inner loop skips past (e.g., the matmul-style
-`a1, b1, a2, b2` interleave) still get a chance to lead their own group
-on a later iteration of the outer loop.
+Because every acquire of the block is a candidate, acquires on a different
+DFB that one leader's walk skips past (e.g., the matmul-style
+`a1, b1, a2, b2` interleave) still lead their own group later.
 
 ### Idempotency
 
-The coalesced acquire and release carry a `num_tiles` attribute, and
-`detectGroup` skips acquires that already have one. A second run of the
-pass therefore finds no candidate groups and is a no-op. The doubled-pass
-lit invocation
+The coalesced acquire and release carry a `num_tiles` attribute, and the plan
+skips acquires that already have one. A second run of the pass therefore finds
+no candidate groups and is a no-op. The doubled-pass lit invocation
 (`--pass-pipeline='builtin.module(func.func(ttl-coalesce-dfb-acquires,
 ttl-coalesce-dfb-acquires))'`) verifies this.
 
