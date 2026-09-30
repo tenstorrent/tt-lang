@@ -26,7 +26,7 @@ NODE_GRID = (4, 8)
 NODE_COUNT = NODE_GRID[0] * NODE_GRID[1]
 PEER_COUNT = NODE_COUNT - 1
 ALL_TO_ALL_EDGE_COUNT = NODE_COUNT * PEER_COUNT
-SINGLE_RECEIVER_COLLECTIVE_COUNT = 7
+MULTICAST_RECEIVER_COUNT = 7
 MAX_LOCAL_PIPE_KERNEL_BODY_BYTES = 6 * 1024
 MAX_DEVICE_PIPE_KERNEL_BODY_BYTES = 8 * 1024
 
@@ -50,31 +50,33 @@ ALL_TO_ALL_NET = ttl.PipeNet(
 DEVICE_DOMAIN = ttl.DeviceDomain(NODE_GRID)
 DEVICE_ALL_TO_ALL_NET = ttl.PipeNet(graph=ttl.TransferGraph.all_to_all(DEVICE_DOMAIN))
 
-SINGLE_RECEIVER_COLLECTIVE_NET = ttl.PipeNet(
+MULTICAST_COLLECTIVE_NET = ttl.PipeNet(
     [
-        ttl.Pipe(src=(node, 0), dst=(slice(node, node + 1), 1))
-        for node in range(SINGLE_RECEIVER_COLLECTIVE_COUNT)
+        ttl.Pipe(
+            src=(0, 0),
+            dst=(slice(0, MULTICAST_RECEIVER_COUNT), 1),
+        )
     ]
 )
 
 
-@ttl.operation(grid=(SINGLE_RECEIVER_COLLECTIVE_COUNT, 2))
-def compile_single_receiver_collective():
+@ttl.operation(grid=(MULTICAST_RECEIVER_COUNT, 2))
+def compile_multicast_collective():
     template = BFloat16Tensor()
     send_dfb = ttl.make_dataflow_buffer_like(template, shape=(1, 1), block_count=2)
     recv_dfb = ttl.make_dataflow_buffer_like(template, shape=(1, 1), block_count=2)
 
     @ttl.compute()
     def compute():
-        if SINGLE_RECEIVER_COLLECTIVE_NET.is_dst():
+        if MULTICAST_COLLECTIVE_NET.is_dst():
             with recv_dfb.wait() as _recv_blk:
                 pass
 
     @ttl.datamovement()
     def send_dm():
-        if SINGLE_RECEIVER_COLLECTIVE_NET.is_src():
+        if MULTICAST_COLLECTIVE_NET.is_src():
             with send_dfb.reserve() as send_blk:
-                SINGLE_RECEIVER_COLLECTIVE_NET.if_src(
+                MULTICAST_COLLECTIVE_NET.if_src(
                     lambda pipe: ttl.copy(send_blk, pipe).wait()
                 )
 
@@ -84,7 +86,7 @@ def compile_single_receiver_collective():
             with recv_dfb.reserve() as recv_blk:
                 ttl.copy(pipe, recv_blk).wait()
 
-        SINGLE_RECEIVER_COLLECTIVE_NET.if_dst(recv)
+        MULTICAST_COLLECTIVE_NET.if_dst(recv)
 
 
 @ttl.operation(grid=NODE_GRID)
@@ -198,7 +200,7 @@ if __name__ == "__main__":
             == ALL_TO_ALL_EDGE_COUNT
         )
         print(f"ALL-TO-ALL-EDGE-COUNT: {len(ALL_TO_ALL_NET.pipes)}")
-        compile_single_receiver_collective()
+        compile_multicast_collective()
         compile_all_to_all()
         compile_device_all_to_all()
 
@@ -227,7 +229,7 @@ if __name__ == "__main__":
 # CHECK-CPP: ALL-TO-ALL-EDGE-COUNT: 992
 # The generated kernels may compute record-table fields before their transport
 # operations; these checks require the independent code-generation features.
-# CHECK-CPP-DAG: {{noc[0-9]*\.async_write\(}}
+# CHECK-CPP-DAG: {{noc[0-9]*\.async_write(<[^>]*>)?\(}}
 # CHECK-CPP-DAG: {{noc[0-9]*\.async_write_multicast}}
 # CHECK-CPP-DAG: experimental::constant_table_lookup<
 # CHECK-CPP-DAG: tt::tt_fabric::RoutingPlaneConnectionManager
@@ -235,7 +237,7 @@ if __name__ == "__main__":
 # CHECK-CPP-DAG: send_payload_without_header_non_blocking_from_address
 # CHECK-CPP-DAG: experimental::routing_plane_atomic_inc
 
-# CHECK-LOOPS-COUNT-8: for (
+# CHECK-LOOPS-COUNT-6: for (
 # CHECK-LOOPS-NOT: for (
 
 # CHECK-SIZE: LOCAL-TABLE-DRIVEN-PIPE-KERNEL-BODY-BYTES: {{[0-9]+}} / 6144

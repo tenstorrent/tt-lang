@@ -318,21 +318,32 @@ getIntervalExecutionLocations(const FabricManagerIntervalPlan &interval,
   return locations;
 }
 
-static bool
-locationsAreUnique(ArrayRef<FabricManagerExecutionLocation> locations) {
-  return llvm::all_of(llvm::enumerate(locations), [&](auto indexedLocation) {
-    return !llvm::is_contained(locations.take_front(indexedLocation.index()),
-                               indexedLocation.value());
-  });
+using ExecutionLocationCounts =
+    llvm::DenseMap<std::tuple<Attribute, int64_t, int64_t>, std::uint64_t>;
+
+static ExecutionLocationCounts
+countExecutionLocations(ArrayRef<FabricManagerExecutionLocation> locations) {
+  ExecutionLocationCounts counts;
+  for (FabricManagerExecutionLocation location : locations) {
+    ++counts[{location.device, location.node.x, location.node.y}];
+  }
+  return counts;
+}
+
+static std::uint64_t getMaximumLocationMultiplicity(
+    ArrayRef<FabricManagerExecutionLocation> locations) {
+  std::uint64_t maximum = 1;
+  for (const auto &entry : countExecutionLocations(locations)) {
+    maximum = std::max(maximum, entry.second);
+  }
+  return maximum;
 }
 
 static bool
 executionLocationsEqual(ArrayRef<FabricManagerExecutionLocation> lhs,
                         ArrayRef<FabricManagerExecutionLocation> rhs) {
   return lhs.size() == rhs.size() &&
-         llvm::all_of(lhs, [&](FabricManagerExecutionLocation lhsLocation) {
-           return llvm::is_contained(rhs, lhsLocation);
-         });
+         countExecutionLocations(lhs) == countExecutionLocations(rhs);
 }
 
 static std::optional<std::uint64_t> getIntervalInvocationUpperBound(
@@ -369,17 +380,18 @@ static std::optional<std::uint64_t> getIntervalInvocationUpperBound(
 
 static std::optional<bool> getInvocationCounterRequirement(
     ArrayRef<std::size_t> receiverRuntimeIntervals,
-    ArrayRef<std::size_t> senderRuntimeIntervals, const FabricRoutePlan &plan,
+    ArrayRef<std::size_t> senderRuntimeIntervals,
+    ArrayRef<std::uint64_t> maximumLocationMultiplicities,
+    const FabricRoutePlan &plan,
     const llvm::SmallPtrSetImpl<Operation *> &generatedControlOps) {
-  assert(receiverRuntimeIntervals.size() == senderRuntimeIntervals.size() &&
-         "paired manager functions must have equal interval counts");
   std::uint64_t totalInvocationUpperBound = 0;
   // A runtime ordinal preserves the generation sequence when a conditional
   // skips one interval. Constants are sufficient only for one single-shot
   // interval.
   bool requiresInvocationCounter = receiverRuntimeIntervals.size() > 1;
-  for (auto [receiverRuntimeIndex, senderRuntimeIndex] :
-       llvm::zip_equal(receiverRuntimeIntervals, senderRuntimeIntervals)) {
+  for (auto [receiverRuntimeIndex, senderRuntimeIndex, maximumMultiplicity] :
+       llvm::zip_equal(receiverRuntimeIntervals, senderRuntimeIntervals,
+                       maximumLocationMultiplicities)) {
     std::optional<std::uint64_t> receiverUpperBound =
         getIntervalInvocationUpperBound(
             plan.runtimeIntervals[receiverRuntimeIndex], generatedControlOps);
@@ -389,13 +401,18 @@ static std::optional<bool> getInvocationCounterRequirement(
     if (!receiverUpperBound || receiverUpperBound != senderUpperBound) {
       return std::nullopt;
     }
+    std::optional<std::uint64_t> intervalUpperBound =
+        llvm::checkedMulUnsigned(*receiverUpperBound, maximumMultiplicity);
+    if (!intervalUpperBound) {
+      return std::nullopt;
+    }
     std::optional<std::uint64_t> newTotal = llvm::checkedAddUnsigned(
-        totalInvocationUpperBound, *receiverUpperBound);
+        totalInvocationUpperBound, *intervalUpperBound);
     if (!newTotal) {
       return std::nullopt;
     }
     totalInvocationUpperBound = *newTotal;
-    requiresInvocationCounter |= *receiverUpperBound > 1;
+    requiresInvocationCounter |= *intervalUpperBound > 1;
   }
 
   // Each invocation consumes two monotonically increasing generations. Leave
@@ -511,7 +528,9 @@ static void coalesceFabricRuntimeCandidates(
 
 static void coalesceUnserializedFabricRuntimeIntervals(FabricRoutePlan &plan) {
   // Each function has one host-specialized connection record set. Unserialized
-  // intervals in one block must share a manager or they reopen that set.
+  // intervals in one block must share a manager or they reopen that set, and a
+  // single interval is widened to its function-level enclosing operations so a
+  // loop does not reopen the set on every iteration.
   llvm::MapVector<Block *, SmallVector<FabricRuntimeCoalescingCandidate>>
       candidatesByBlock;
   for (auto [intervalIndex, interval] :
@@ -537,9 +556,7 @@ static void coalesceUnserializedFabricRuntimeIntervals(FabricRoutePlan &plan) {
   SmallVector<bool> removed(plan.runtimeIntervals.size());
   for (const auto &entry : candidatesByBlock) {
     ArrayRef<FabricRuntimeCoalescingCandidate> candidates = entry.second;
-    if (candidates.size() > 1) {
-      coalesceFabricRuntimeCandidates(candidates, plan, removed);
-    }
+    coalesceFabricRuntimeCandidates(candidates, plan, removed);
   }
 
   SmallVector<FabricRuntimeIntervalPlan> coalescedIntervals;
@@ -598,6 +615,7 @@ static void planFabricManagerOwnership(
           continue;
         }
         bool matches = true;
+        SmallVector<std::uint64_t> maximumLocationMultiplicities;
         for (auto [receiverRuntimeIndex, senderRuntimeIndex] : llvm::zip_equal(
                  receiverRuntimeIntervals, senderRuntimeIntervals)) {
           const FabricRuntimeIntervalPlan &receiverRuntime =
@@ -617,19 +635,19 @@ static void planFabricManagerOwnership(
           if (senderInterval.kind !=
                   FabricManagerIntervalKind::GeneratedSender ||
               receiverInterval.transferNodes != senderInterval.transferNodes ||
-              !locationsAreUnique(receiverLocations) ||
-              !locationsAreUnique(senderLocations) ||
               !executionLocationsEqual(receiverLocations, senderLocations) ||
               !intervalRoutesEqual(receiverInterval, senderInterval, plan)) {
             matches = false;
             break;
           }
+          maximumLocationMultiplicities.push_back(
+              getMaximumLocationMultiplicity(receiverLocations));
         }
         std::optional<bool> invocationCounterRequirement;
         if (matches) {
           invocationCounterRequirement = getInvocationCounterRequirement(
-              receiverRuntimeIntervals, senderRuntimeIntervals, plan,
-              generatedControlOps);
+              receiverRuntimeIntervals, senderRuntimeIntervals,
+              maximumLocationMultiplicities, plan, generatedControlOps);
           matches = invocationCounterRequirement.has_value();
         }
         if (matches) {
@@ -723,21 +741,22 @@ static void planFabricManagerOwnership(
   coalesceUnserializedFabricRuntimeIntervals(plan);
 }
 
-/// A statically enumerated sequence of disjoint DRAM regions cannot overwrite
-/// unconsumed receiver storage, so it needs completion notification but no
-/// receiver-to-sender readiness signal.
 static bool
 canOmitFabricReceiverRendezvous(const PipeTransferNode &transferNode,
                                 const PipeGraph &pipeGraph) {
-  if (!transferNode.deviceTransfer ||
-      transferNode.transferContract != PipeTransferContract::PointToPoint ||
-      transferNode.receiverEndpoints.size() != 1) {
-    return false;
+  bool hasSingleReceiver = transferNode.receiverEndpoints.size() == 1;
+  bool hasDisjointTensorRegionDestination = false;
+  if (hasSingleReceiver) {
+    const PipeReceiverEndpoint &endpoint = pipeGraph.getPipeReceiverEndpoint(
+        transferNode.receiverEndpoints.front());
+    hasDisjointTensorRegionDestination =
+        endpoint.hasTensorRegionDestination() && endpoint.executionCount &&
+        endpoint.getTensorRegionDestination().hasDisjointOccurrences;
   }
-  const PipeReceiverEndpoint &endpoint =
-      pipeGraph.getPipeReceiverEndpoint(transferNode.receiverEndpoints.front());
-  return endpoint.hasTensorRegionDestination() && endpoint.executionCount &&
-         endpoint.getTensorRegionDestination().hasDisjointOccurrences;
+  return canOmitFabricReceiverRendezvous(
+      static_cast<bool>(transferNode.deviceTransfer),
+      transferNode.transferContract == PipeTransferContract::PointToPoint,
+      hasSingleReceiver, hasDisjointTensorRegionDestination);
 }
 
 LogicalResult buildFabricRoutePlan(

@@ -24,6 +24,7 @@
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -75,6 +76,12 @@ LogicalResult
 verifyDeviceRefInDomain(DeviceDomainAttr domain, DeviceRefAttr deviceRef,
                         llvm::function_ref<InFlightDiagnostic()> emitError,
                         StringRef context, bool allowUpperBound = false);
+
+/// Return every device of `domain` in row-major component and axis order.
+SmallVector<DeviceRefAttr> enumerateDomainDevices(DeviceDomainAttr domain);
+
+/// Return the number of devices in `domain`, or failure when it overflows.
+FailureOr<std::uint64_t> getDomainDeviceCount(DeviceDomainAttr domain);
 
 /// Verify a transfer edge and its source/destination relation in `domain`.
 LogicalResult
@@ -1118,6 +1125,7 @@ FailureOr<SmallVector<int64_t>> getConstantDstWriteIndices(Operation *op);
 struct ReadyReceiveSelection {
   Operation *waitAny = nullptr;
   int64_t candidateIndex = 0;
+  std::size_t candidateCount = 0;
   bool selectedWhenTrue = true;
 };
 

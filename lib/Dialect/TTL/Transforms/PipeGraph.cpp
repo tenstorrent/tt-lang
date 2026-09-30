@@ -599,23 +599,97 @@ isBeforeInReceiverControlContext(Operation *before, Operation *after,
   return false;
 }
 
-/// Return true when `before` precedes `after` directly or before an enclosing
-/// runtime region containing `after`.
+// Return true when `before` is ordered before `after`, or before an ancestor
+// of `after` reached through parents that `mayProjectAfter` admits, in the
+// receiver control context.
+static bool isBeforeProjectionOf(
+    Operation *before, Operation *after,
+    const LaunchExecutionLocation &location,
+    const PipeGraphAnalysisState &analysisState,
+    llvm::function_ref<bool(Operation *nested, Operation *parent)>
+        mayProjectAfter) {
+  for (Operation *afterAncestor = after; afterAncestor;) {
+    if (isBeforeInReceiverControlContext(before, afterAncestor, location,
+                                         analysisState)) {
+      return true;
+    }
+    Operation *parent = afterAncestor->getParentOp();
+    if (!parent || !mayProjectAfter(afterAncestor, parent)) {
+      break;
+    }
+    afterAncestor = parent;
+  }
+  return false;
+}
+
+// Return true when `before` or one of its ancestors is ordered before a
+// projection of `after` that `mayProjectAfter` admits.
+static bool isAncestorBeforeProjectionOf(
+    Operation *before, Operation *after,
+    const LaunchExecutionLocation &location,
+    const PipeGraphAnalysisState &analysisState,
+    llvm::function_ref<bool(Operation *nested, Operation *parent)>
+        mayProjectAfter) {
+  for (Operation *beforeAncestor = before; beforeAncestor;
+       beforeAncestor = beforeAncestor->getParentOp()) {
+    if (isBeforeProjectionOf(beforeAncestor, after, location, analysisState,
+                             mayProjectAfter)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+static bool projectsThroughEveryParent(Operation *, Operation *) {
+  return true;
+}
+
+// Return true when `before` completes before every execution of `after`.
+// Only `after` is projected outward, because an operation enclosing `before`
+// may complete without executing `before`.
+static bool
+isBeforeEveryExecution(Operation *before, Operation *after,
+                       const LaunchExecutionLocation &location,
+                       const PipeGraphAnalysisState &analysisState) {
+  return isBeforeProjectionOf(before, after, location, analysisState,
+                              projectsThroughEveryParent);
+}
+
+// Return true when execution of `before` guarantees later execution of
+// `after`. An executed nested operation completes before subsequent enclosing
+// operations. A nested `after` may be projected outward only through control
+// that is statically selected at the receiver location.
+static bool
+executionGuaranteesLaterExecution(Operation *before, Operation *after,
+                                  const LaunchExecutionLocation &location,
+                                  const PipeGraphAnalysisState &analysisState) {
+  auto staticallySelected = [&](Operation *nested, Operation *parent) {
+    std::optional<ReceiverControlContext> nestedContext =
+        getReceiverControlContext(nested, location, analysisState);
+    return nestedContext &&
+           nestedContext ==
+               getReceiverControlContext(parent, location, analysisState);
+  };
+  return isAncestorBeforeProjectionOf(before, after, location, analysisState,
+                                      staticallySelected);
+}
+
+// Return true when `before` completes before `after` whenever both execute.
+// Projecting either operation through enclosing structured control preserves
+// this order without asserting that a runtime-selected region executes.
 static bool
 isBeforeInReceiverExecution(Operation *before, Operation *after,
                             const LaunchExecutionLocation &location,
                             const PipeGraphAnalysisState &analysisState) {
-  Operation *enclosing = after;
-  while (enclosing) {
-    if (isBeforeInReceiverControlContext(before, enclosing, location,
-                                         analysisState)) {
-      return true;
-    }
-    Block *block = enclosing->getBlock();
-    enclosing = block ? block->getParentOp() : nullptr;
-  }
-  return false;
+  return isAncestorBeforeProjectionOf(before, after, location, analysisState,
+                                      projectsThroughEveryParent);
 }
+
+// Order that a receive wait must have relative to a later use. A push or post
+// that consumes a receive needs the wait only when the receive executes. A
+// tensor read needs it in every execution, because a no-rendezvous sender may
+// write the region at any time during the invocation.
+enum class ReceiveWaitOrder { WheneverBothExecute, EveryUseExecution };
 
 static bool hasMatchingReceiveWaitBeforeUse(
     PipeTransferPostOp postOp, Operation *consumer,
@@ -625,14 +699,19 @@ static bool hasMatchingReceiveWaitBeforeUse(
                          SmallVector<PipeGraphAnalysisState::ReceiveWaitAnyUse>>
         &waitAnysByPost,
     const LaunchExecutionLocation &location,
-    const PipeGraphAnalysisState &analysisState) {
+    const PipeGraphAnalysisState &analysisState, ReceiveWaitOrder order) {
   auto waitIt = waitsByPost.find(postOp.getOperation());
   if (waitIt != waitsByPost.end() &&
       llvm::any_of(waitIt->second, [&](PipeTransferWaitOp waitOp) {
-        return isBeforeInReceiverExecution(postOp, waitOp, location,
-                                           analysisState) &&
-               isBeforeInReceiverExecution(waitOp, consumer, location,
-                                           analysisState);
+        if (!executionGuaranteesLaterExecution(postOp, waitOp, location,
+                                               analysisState)) {
+          return false;
+        }
+        return order == ReceiveWaitOrder::WheneverBothExecute
+                   ? isBeforeInReceiverExecution(waitOp, consumer, location,
+                                                 analysisState)
+                   : isBeforeEveryExecution(waitOp, consumer, location,
+                                            analysisState);
       })) {
     return true;
   }
@@ -660,6 +739,66 @@ static bool hasMatchingReceiveWaitBeforeUse(
   return false;
 }
 
+// Bounds the read iterations enumerated to order a read after the receives
+// of its region.
+constexpr std::uint64_t kMaxEnumeratedReadIterations = 4096;
+
+// Return true when every occurrence of `receiveRegion` that overlaps a region
+// `readSlice` selects executes no later than the read: in an earlier iteration
+// of the loops enclosing `read`, or in the same iteration. Every such loop must
+// also enclose the receive. The caller orders a same-iteration receive wait
+// before the read.
+static bool
+receiveOccurrencesPrecedeRead(TensorSliceOp readSlice, Operation *read,
+                              const ReceiverTensorRegionInfo &receiveRegion,
+                              DeviceRefAttr receiveDevice,
+                              const LaunchExecutionLocation &location,
+                              const PipeGraphAnalysisState &analysisState) {
+  FailureOr<TensorSliceOccurrences> reads = enumerateTensorSliceIterationStarts(
+      readSlice, read, location, analysisState, kMaxEnumeratedReadIterations);
+  if (failed(reads)) {
+    return false;
+  }
+  assert(receiveRegion.occurrenceInductionValues.size() ==
+             receiveRegion.occurrenceStartIndices.size() &&
+         "enumerated receive occurrences carry their induction values");
+  SmallVector<std::size_t> receiveLoopPositions;
+  for (scf::ForOp loop : reads->loops) {
+    const auto *position = llvm::find(receiveRegion.occurrenceLoops, loop);
+    if (position == receiveRegion.occurrenceLoops.end()) {
+      return false;
+    }
+    receiveLoopPositions.push_back(
+        std::distance(receiveRegion.occurrenceLoops.begin(), position));
+  }
+  TensorRegionOccurrences receives =
+      receiveRegion.getOccurrences(receiveDevice);
+  TensorRegionOccurrences readRegions = receives;
+  readRegions.tensorGridShape =
+      cast<RankedTensorType>(readSlice.getTensor().getType()).getShape();
+  readRegions.sliceShape =
+      cast<RankedTensorType>(readSlice.getType()).getShape();
+  readRegions.startIndices = reads->startIndices;
+  SmallVector<SmallVector<int64_t>> receiveIterations;
+  for (ArrayRef<int64_t> inductionValues :
+       receiveRegion.occurrenceInductionValues) {
+    SmallVector<int64_t> &iteration = receiveIterations.emplace_back();
+    for (std::size_t position : receiveLoopPositions) {
+      iteration.push_back(inductionValues[position]);
+    }
+  }
+  bool readPrecedesReceive = forEachOverlappingOccurrencePair(
+      receives, readRegions,
+      [&](std::size_t receiveIndex, std::size_t readIndex) {
+        ArrayRef<int64_t> readIteration = reads->inductionValues[readIndex];
+        ArrayRef<int64_t> receiveIteration = receiveIterations[receiveIndex];
+        return std::lexicographical_compare(
+            readIteration.begin(), readIteration.end(),
+            receiveIteration.begin(), receiveIteration.end());
+      });
+  return !readPrecedesReceive;
+}
+
 static bool hasMatchingReceiveWaitBeforePush(
     PipeTransferPostOp postOp, CBPushOp pushOp,
     const llvm::DenseMap<Operation *, SmallVector<PipeTransferWaitOp>>
@@ -669,9 +808,9 @@ static bool hasMatchingReceiveWaitBeforePush(
         &waitAnysByPost,
     const LaunchExecutionLocation &location,
     const PipeGraphAnalysisState &analysisState) {
-  return hasMatchingReceiveWaitBeforeUse(postOp, pushOp.getOperation(),
-                                         waitsByPost, waitAnysByPost, location,
-                                         analysisState);
+  return hasMatchingReceiveWaitBeforeUse(
+      postOp, pushOp.getOperation(), waitsByPost, waitAnysByPost, location,
+      analysisState, ReceiveWaitOrder::WheneverBothExecute);
 }
 
 /// Group endpoints by logical DFB lifecycle. Physical aliases from other
@@ -767,6 +906,9 @@ static std::optional<std::uint64_t> getConcreteTransferExecutionCount(
     PipeGraphAnalysisState &analysisState,
     std::optional<PipeRecordAttr> selectedRecord);
 
+static DeviceDomainAttr
+getAggregateLocalPipeDeviceDomain(const PipeGraphAnalysisState &analysisState);
+
 static InFlightDiagnostic
 emitReceiverReservationPastDFBEnd(const ReceiverDFBInfo &receiverInfo,
                                   int64_t slot) {
@@ -841,6 +983,17 @@ LogicalResult PipeGraph::assignReceiverAddressSequences(
     LaunchExecutionLocation location;
     std::optional<std::uint64_t> executionCount;
   };
+  DeviceDomainAttr localDeviceDomain =
+      getAggregateLocalPipeDeviceDomain(analysisState);
+  DeviceRefAttr representativeLocalDevice;
+  if (localDeviceDomain) {
+    FailureOr<SmallVector<DeviceRefAttr>> maybeDevices =
+        enumerateDeviceDomain(localDeviceDomain);
+    if (failed(maybeDevices) || maybeDevices->empty()) {
+      return failure();
+    }
+    representativeLocalDevice = maybeDevices->front();
+  }
   // Resolve `endpoint`'s receiver location and total post count. An unresolved
   // location fails; a valid location with an unknown count remains
   // conservative.
@@ -855,16 +1008,24 @@ LogicalResult PipeGraph::assignReceiverAddressSequences(
            "pipe transfer graph validated pipe references");
     const PipeTransferNode &transferNode =
         getPipeTransferNode(endpoint.transferNode);
-    FailureOr<LaunchExecutionLocation> maybeLocation =
-        getPipeGraphExecutionLocation(
-            postOp.getOperation(), getLaunchNodeCoord(endpoint.receiver),
-            transferNode.deviceTransfer, PipeRole::Destination);
-    if (failed(maybeLocation)) {
-      return failure();
+    LaunchNodeCoord receiverNode = getLaunchNodeCoord(endpoint.receiver);
+    LaunchExecutionLocation location(receiverNode);
+    if (transferNode.deviceTransfer) {
+      FailureOr<LaunchExecutionLocation> maybeLocation =
+          getPipeGraphExecutionLocation(postOp.getOperation(), receiverNode,
+                                        transferNode.deviceTransfer,
+                                        PipeRole::Destination);
+      if (failed(maybeLocation)) {
+        return failure();
+      }
+      location = *maybeLocation;
+    } else if (representativeLocalDevice) {
+      location = LaunchExecutionLocation(receiverNode, localDeviceDomain,
+                                         representativeLocalDevice);
     }
     return ReceiverEndpointExecutionInfo{
-        *maybeLocation,
-        getConcreteTransferExecutionCount(postOp.getOperation(), *maybeLocation,
+        location,
+        getConcreteTransferExecutionCount(postOp.getOperation(), location,
                                           *pipeRef, endpoint.postRecordIndex,
                                           analysisState, endpoint.postRecord)};
   };
@@ -1185,30 +1346,6 @@ LogicalResult PipeGraph::verifyCollectiveReceiverAddresses() const {
   return success();
 }
 
-struct TensorRegionBounds {
-  int64_t globalTensorIndex = 0;
-  SmallVector<int64_t> tensorGridShape;
-  SmallVector<int64_t> startIndices;
-  SmallVector<int64_t> extents;
-  Location loc;
-};
-
-static TensorRegionBounds
-getTensorRegionBounds(const ReceiverTensorRegionInfo &region) {
-  int64_t rankDifference =
-      region.tensorGridShape.size() - region.sliceType.getRank();
-  SmallVector<int64_t> extents(region.tensorGridShape.size(), 1);
-  for (int64_t dimension = rankDifference;
-       dimension < static_cast<int64_t>(region.tensorGridShape.size());
-       ++dimension) {
-    extents[dimension] =
-        region.sliceType.getDimSize(dimension - rankDifference);
-  }
-  return TensorRegionBounds{region.globalTensorIndex, region.tensorGridShape,
-                            region.startIndices, std::move(extents),
-                            region.loc};
-}
-
 static Operation *
 getSelectedRecordLoop(const PipeReference &pipeRef,
                       const PipeGraphAnalysisState &analysisState);
@@ -1241,15 +1378,12 @@ resolveTensorRegionStartIndices(ReceiverTensorRegionInfo &region,
                                 std::optional<PipeRecordAttr> selectedRecord,
                                 std::uint64_t expectedExecutionCount,
                                 const PipeGraphAnalysisState &analysisState) {
-  Value selectedRecordInductionVariable;
+  Operation *selectedRecordLoop = nullptr;
   std::uint64_t selectedRecordInductionValue = 0;
   if (pipeReference.isSelected()) {
     assert(recordIndex && selectedRecord &&
            "selected tensor destination requires a concrete record");
-    Operation *selectedRecordLoop =
-        getSelectedRecordLoop(pipeReference, analysisState);
-    selectedRecordInductionVariable =
-        cast<scf::ForOp>(selectedRecordLoop).getInductionVar();
+    selectedRecordLoop = getSelectedRecordLoop(pipeReference, analysisState);
     std::optional<std::uint64_t> inductionValue =
         getPipeNetRecordLoopInductionValue(
             analysisState.pipeRecordLoops.at(selectedRecordLoop),
@@ -1259,231 +1393,74 @@ resolveTensorRegionStartIndices(ReceiverTensorRegionInfo &region,
     selectedRecordInductionValue = *inductionValue;
   }
 
-  auto evaluateContextValue = [&](Value value) -> std::optional<llvm::APInt> {
-    if (selectedRecord && value == selectedRecordInductionVariable) {
+  // Selected-record accessors resolve through the receiver's own record, or
+  // through the record matched by an enumerated iteration of another record
+  // loop.
+  auto evaluateRecordValue =
+      [&](Value value, const LoopInductionBindings &inductionValues,
+          std::string &failureReason) -> std::optional<llvm::APInt> {
+    if (selectedRecordLoop &&
+        value == cast<scf::ForOp>(selectedRecordLoop).getInductionVar()) {
       return llvm::APInt(IndexType::kInternalStorageBitWidth,
                          selectedRecordInductionValue);
     }
     std::optional<Value> queryPipe = getSelectedPipeQueryOperand(value);
-    if (selectedRecord && queryPipe) {
-      FailureOr<PipeReference> queryReference =
-          getPipeReference(value.getDefiningOp(), *queryPipe);
-      if (succeeded(queryReference) && queryReference->isSelected() &&
-          getSelectedRecordLoop(*queryReference, analysisState) ==
-              getSelectedRecordLoop(pipeReference, analysisState)) {
-        if (std::optional<llvm::APInt> selectedValue =
-                evaluateSelectedPipeRecordValue(value, *selectedRecord)) {
-          return selectedValue;
-        }
-      }
+    if (!queryPipe) {
+      return std::nullopt;
     }
-    return evaluateIntegerAtLaunchLocation(value, receiverLocation,
-                                           analysisState);
-  };
-  IntegerExpressionEvaluator contextEvaluator(evaluateContextValue);
-
-  SmallVector<scf::ForOp> dynamicLoops;
-  for (Operation *ancestor = region.slice->getParentOp(); ancestor;
-       ancestor = ancestor->getParentOp()) {
-    auto loop = dyn_cast<scf::ForOp>(ancestor);
-    if (loop && !contextEvaluator.evaluate(loop.getInductionVar())) {
-      dynamicLoops.push_back(loop);
+    FailureOr<PipeReference> queryReference =
+        getPipeReference(value.getDefiningOp(), *queryPipe);
+    if (failed(queryReference) || !queryReference->isSelected()) {
+      return std::nullopt;
     }
-    if (isa<func::FuncOp>(ancestor)) {
-      break;
+    Operation *queryLoop =
+        getSelectedRecordLoop(*queryReference, analysisState);
+    if (queryLoop == selectedRecordLoop) {
+      return evaluateSelectedPipeRecordValue(value, *selectedRecord);
     }
-  }
-  std::reverse(dynamicLoops.begin(), dynamicLoops.end());
-
-  struct LoopRange {
-    Value inductionVariable;
-    int64_t lowerBound = 0;
-    int64_t upperBound = 0;
-    int64_t step = 1;
-  };
-  SmallVector<LoopRange> loopRanges;
-  loopRanges.reserve(dynamicLoops.size());
-  for (scf::ForOp loop : dynamicLoops) {
-    std::optional<llvm::APInt> lowerBound =
-        contextEvaluator.evaluate(loop.getLowerBound());
-    std::optional<llvm::APInt> upperBound =
-        contextEvaluator.evaluate(loop.getUpperBound());
-    std::optional<llvm::APInt> step = contextEvaluator.evaluate(loop.getStep());
-    if (!lowerBound || !upperBound || !step || !lowerBound->isSignedIntN(64) ||
-        !upperBound->isSignedIntN(64) || !step->isSignedIntN(64) ||
-        step->getSExtValue() <= 0) {
-      return region.slice.emitError(
-          "pipe receive tensor_slice requires statically enumerable enclosing "
-          "loops");
+    auto queryInductionIt =
+        inductionValues.find(cast<scf::ForOp>(queryLoop).getInductionVar());
+    if (queryInductionIt == inductionValues.end()) {
+      failureReason = "the selected PipeNet iteration is not enclosed by the "
+                      "destination region";
+      return std::nullopt;
     }
-    loopRanges.push_back(
-        LoopRange{loop.getInductionVar(), lowerBound->getSExtValue(),
-                  upperBound->getSExtValue(), step->getSExtValue()});
-  }
-
-  SmallVector<std::pair<scf::IfOp, unsigned>> enclosingBranches;
-  Operation *nestedOperation = region.slice;
-  for (Operation *ancestor = region.slice->getParentOp(); ancestor;
-       ancestor = ancestor->getParentOp()) {
-    if (auto branch = dyn_cast<scf::IfOp>(ancestor)) {
-      enclosingBranches.push_back(
-          {branch,
-           nestedOperation->getBlock()->getParent()->getRegionNumber()});
-    }
-    nestedOperation = ancestor;
-    if (isa<func::FuncOp>(ancestor)) {
-      break;
-    }
-  }
-
-  llvm::DenseMap<Value, llvm::APInt> inductionValues;
-  region.occurrenceStartIndices.clear();
-  std::string enumerationFailureReason;
-  std::function<LogicalResult(std::size_t)> enumerate =
-      [&](std::size_t loopIndex) -> LogicalResult {
-    if (loopIndex != loopRanges.size()) {
-      const LoopRange &range = loopRanges[loopIndex];
-      for (int64_t value = range.lowerBound; value < range.upperBound;) {
-        inductionValues[range.inductionVariable] = llvm::APInt(
-            IndexType::kInternalStorageBitWidth, value, /*isSigned=*/true);
-        if (failed(enumerate(loopIndex + 1))) {
-          return failure();
-        }
-        std::optional<int64_t> nextValue = llvm::checkedAdd(value, range.step);
-        if (!nextValue || *nextValue <= value) {
-          return region.slice.emitError(
-              "pipe receive tensor_slice loop enumeration overflowed");
-        }
-        value = *nextValue;
-      }
-      inductionValues.erase(range.inductionVariable);
-      return success();
-    }
-
-    IntegerExpressionEvaluator occurrenceEvaluator(
-        [&](Value value) -> std::optional<llvm::APInt> {
-          auto inductionIt = inductionValues.find(value);
-          if (inductionIt != inductionValues.end()) {
-            return inductionIt->second;
+    const PipeNetRecordLoop &queryLoopInfo =
+        analysisState.pipeRecordLoops.at(queryLoop);
+    std::optional<llvm::APInt> selectedValue;
+    forEachPipeRecord(
+        queryReference->getRecords(),
+        [&](std::uint64_t queryRecordIndex, PipeRecordAttr queryRecord) {
+          if (selectedValue) {
+            return;
           }
-          std::optional<Value> queryPipe = getSelectedPipeQueryOperand(value);
-          if (queryPipe) {
-            FailureOr<PipeReference> queryReference =
-                getPipeReference(value.getDefiningOp(), *queryPipe);
-            if (succeeded(queryReference) && queryReference->isSelected()) {
-              Operation *queryLoop =
-                  getSelectedRecordLoop(*queryReference, analysisState);
-              auto queryFor = cast<scf::ForOp>(queryLoop);
-              auto queryInductionIt =
-                  inductionValues.find(queryFor.getInductionVar());
-              if (queryInductionIt != inductionValues.end()) {
-                const PipeNetRecordLoop &queryLoopInfo =
-                    analysisState.pipeRecordLoops.at(queryLoop);
-                std::optional<llvm::APInt> selectedValue;
-                forEachPipeRecord(
-                    queryReference->getRecords(),
-                    [&](std::uint64_t queryRecordIndex,
-                        PipeRecordAttr queryRecord) {
-                      if (selectedValue) {
-                        return;
-                      }
-                      std::optional<std::uint64_t> inductionValue =
-                          getPipeNetRecordLoopInductionValue(
-                              queryLoopInfo, receiverLocation, queryRecordIndex,
-                              queryRecord);
-                      if (inductionValue &&
-                          *inductionValue ==
-                              queryInductionIt->second.getZExtValue()) {
-                        selectedValue =
-                            evaluateSelectedPipeRecordValue(value, queryRecord);
-                      }
-                    });
-                if (selectedValue) {
-                  return selectedValue;
-                }
-                enumerationFailureReason =
-                    "the selected PipeNet iteration does not identify a "
-                    "record at this launch location";
-              } else {
-                enumerationFailureReason =
-                    "the selected PipeNet iteration is not enclosed by the "
-                    "destination region";
-              }
-            }
+          std::optional<std::uint64_t> inductionValue =
+              getPipeNetRecordLoopInductionValue(queryLoopInfo,
+                                                 receiverLocation,
+                                                 queryRecordIndex, queryRecord);
+          if (inductionValue &&
+              *inductionValue == queryInductionIt->second.getZExtValue()) {
+            selectedValue = evaluateSelectedPipeRecordValue(value, queryRecord);
           }
-          return evaluateContextValue(value);
         });
-    for (auto [branch, selectedRegion] : enclosingBranches) {
-      std::optional<llvm::APInt> condition =
-          occurrenceEvaluator.evaluate(branch.getCondition());
-      if (!condition || condition->getBitWidth() != 1) {
-        return region.slice.emitError(
-            "pipe receive tensor_slice requires statically enumerable "
-            "enclosing conditions");
-      }
-      if (condition->getBoolValue() != (selectedRegion == 0)) {
-        return success();
-      }
+    if (!selectedValue) {
+      failureReason = "the selected PipeNet iteration does not identify a "
+                      "record at this launch location";
     }
-
-    SmallVector<int64_t> startIndices;
-    startIndices.reserve(region.slice.getIndices().size());
-    for (auto [dimension, index] : llvm::enumerate(region.slice.getIndices())) {
-      std::optional<llvm::APInt> resolvedIndex =
-          occurrenceEvaluator.evaluate(index);
-      if (!resolvedIndex || !resolvedIndex->isSignedIntN(64)) {
-        return region.slice.emitError()
-               << "pipe receive tensor_slice start index in dimension "
-               << dimension << " is not statically enumerable"
-               << (enumerationFailureReason.empty()
-                       ? ""
-                       : ": " + enumerationFailureReason);
-      }
-      startIndices.push_back(resolvedIndex->getSExtValue());
-    }
-    if (region.occurrenceStartIndices.size() >= expectedExecutionCount) {
-      return region.slice.emitError(
-          "pipe receive tensor_slice enumeration exceeds its proven transfer "
-          "count");
-    }
-    region.occurrenceStartIndices.push_back(std::move(startIndices));
-    return success();
+    return selectedValue;
   };
-  if (failed(enumerate(0))) {
+
+  FailureOr<TensorSliceOccurrences> occurrences =
+      enumerateTensorSliceOccurrences(
+          region.slice, receiverLocation, analysisState, expectedExecutionCount,
+          evaluateRecordValue, [&] { return region.slice.emitError(); });
+  if (failed(occurrences)) {
     return failure();
   }
-  if (dynamicLoops.empty() && region.occurrenceStartIndices.size() == 1) {
-    region.occurrenceStartIndices.resize(expectedExecutionCount,
-                                         region.occurrenceStartIndices.front());
-  }
-  if (region.occurrenceStartIndices.size() != expectedExecutionCount) {
-    return region.slice.emitError(
-        "pipe receive tensor_slice enumeration does not match its proven "
-        "transfer count");
-  }
+  region.occurrenceLoops = std::move(occurrences->loops);
+  region.occurrenceInductionValues = std::move(occurrences->inductionValues);
+  region.occurrenceStartIndices = std::move(occurrences->startIndices);
   region.startIndices = region.occurrenceStartIndices.front();
-
-  int64_t rankDifference =
-      region.tensorGridShape.size() - region.sliceType.getRank();
-  for (ArrayRef<int64_t> startIndices : region.occurrenceStartIndices) {
-    for (int64_t dimension = 0;
-         dimension < static_cast<int64_t>(region.tensorGridShape.size());
-         ++dimension) {
-      int64_t regionExtent =
-          dimension < rankDifference
-              ? 1
-              : region.sliceType.getDimSize(dimension - rankDifference);
-      if (startIndices[dimension] < 0 || regionExtent <= 0 ||
-          startIndices[dimension] >
-              region.tensorGridShape[dimension] - regionExtent) {
-        return region.slice.emitError()
-               << "pipe receive tensor_slice region in dimension " << dimension
-               << " starts at " << startIndices[dimension] << " with extent "
-               << regionExtent << ", outside the destination tensor tile grid "
-               << region.tensorGridShape[dimension];
-      }
-    }
-  }
   return success();
 }
 
@@ -1497,119 +1474,31 @@ static bool hasGuaranteedCopyCompletionBeforeBlockExit(CopyOp copy) {
 
 static FailureOr<int64_t> getTensorGlobalIndex(TensorSliceOp slice,
                                                Operation *diagnosticOwner) {
-  auto tensorArgument = dyn_cast<BlockArgument>(slice.getTensor());
-  func::FuncOp function =
-      tensorArgument
-          ? dyn_cast<func::FuncOp>(tensorArgument.getOwner()->getParentOp())
-          : func::FuncOp();
-  auto crtaIndices =
-      function ? function->getAttrOfType<ArrayAttr>(kCRTAIndicesAttrName)
-               : ArrayAttr();
-  if (!tensorArgument || !function || !crtaIndices ||
-      tensorArgument.getOwner() != &function.getBody().front() ||
-      tensorArgument.getArgNumber() >= crtaIndices.size()) {
+  std::optional<int64_t> globalTensorIndex = getTensorSliceGlobalIndex(slice);
+  if (!globalTensorIndex) {
     diagnosticOwner->emitOpError(
         "cannot resolve tensor identity while verifying pipe destination "
         "ownership");
     return failure();
   }
-  return cast<IntegerAttr>(crtaIndices[tensorArgument.getArgNumber()]).getInt();
+  return *globalTensorIndex;
 }
 
-static FailureOr<TensorRegionBounds>
-getTensorRegionBounds(TensorSliceOp slice, Operation *diagnosticOwner,
-                      const LaunchExecutionLocation &location,
-                      const PipeGraphAnalysisState &analysisState) {
-  FailureOr<int64_t> globalTensorIndex =
-      getTensorGlobalIndex(slice, diagnosticOwner);
-  if (failed(globalTensorIndex)) {
-    return failure();
+static FailureOr<SmallVector<int64_t>>
+getTensorSliceStart(TensorSliceOp slice, Operation *diagnosticOwner,
+                    const LaunchExecutionLocation &location,
+                    const PipeGraphAnalysisState &analysisState) {
+  IntegerExpressionEvaluator evaluator([&](Value value) {
+    return evaluateIntegerAtLaunchLocation(value, location, analysisState);
+  });
+  FailureOr<SmallVector<int64_t>> startIndices =
+      evaluateTensorSliceStart(slice, evaluator);
+  if (failed(startIndices)) {
+    diagnosticOwner->emitOpError(
+        "cannot prove ownership of a tensor slice whose start depends on "
+        "runtime values");
   }
-
-  auto tensorType = cast<RankedTensorType>(slice.getTensor().getType());
-  auto sliceType = cast<RankedTensorType>(slice.getType());
-  SmallVector<int64_t> startIndices;
-  startIndices.reserve(slice.getIndices().size());
-  for (Value index : slice.getIndices()) {
-    std::optional<llvm::APInt> resolvedIndex =
-        evaluateIntegerAtLaunchLocation(index, location, analysisState);
-    if (!resolvedIndex || !resolvedIndex->isSignedIntN(64)) {
-      diagnosticOwner->emitOpError(
-          "cannot prove ownership of a tensor slice whose start depends on "
-          "runtime values");
-      return failure();
-    }
-    startIndices.push_back(resolvedIndex->getSExtValue());
-  }
-  int64_t rankDifference = tensorType.getRank() - sliceType.getRank();
-  SmallVector<int64_t> extents(tensorType.getRank(), 1);
-  for (int64_t dimension = rankDifference; dimension < tensorType.getRank();
-       ++dimension) {
-    extents[dimension] = sliceType.getDimSize(dimension - rankDifference);
-  }
-  return TensorRegionBounds{
-      *globalTensorIndex, SmallVector<int64_t>(tensorType.getShape()),
-      std::move(startIndices), std::move(extents), diagnosticOwner->getLoc()};
-}
-
-static bool tensorRegionsOverlap(const TensorRegionBounds &lhs,
-                                 const TensorRegionBounds &rhs) {
-  if (lhs.tensorGridShape != rhs.tensorGridShape ||
-      lhs.startIndices.size() != rhs.startIndices.size() ||
-      lhs.extents.size() != rhs.extents.size()) {
-    return true;
-  }
-  for (int64_t dimension = 0;
-       dimension < static_cast<int64_t>(lhs.tensorGridShape.size());
-       ++dimension) {
-    int64_t lhsEnd = lhs.startIndices[dimension] + lhs.extents[dimension];
-    int64_t rhsEnd = rhs.startIndices[dimension] + rhs.extents[dimension];
-    if (lhsEnd <= rhs.startIndices[dimension] ||
-        rhsEnd <= lhs.startIndices[dimension]) {
-      return false;
-    }
-  }
-  return true;
-}
-
-static TensorRegionBounds
-getTensorOccurrenceBounds(const ReceiverTensorRegionInfo &region,
-                          ArrayRef<int64_t> startIndices) {
-  TensorRegionBounds bounds = getTensorRegionBounds(region);
-  bounds.startIndices.assign(startIndices.begin(), startIndices.end());
-  return bounds;
-}
-
-static bool
-tensorRegionOccurrencesOverlap(const ReceiverTensorRegionInfo &lhs,
-                               const ReceiverTensorRegionInfo &rhs) {
-  return llvm::any_of(
-      lhs.occurrenceStartIndices, [&](ArrayRef<int64_t> lhsStart) {
-        TensorRegionBounds lhsBounds = getTensorOccurrenceBounds(lhs, lhsStart);
-        return llvm::any_of(
-            rhs.occurrenceStartIndices, [&](ArrayRef<int64_t> rhsStart) {
-              return tensorRegionsOverlap(
-                  lhsBounds, getTensorOccurrenceBounds(rhs, rhsStart));
-            });
-      });
-}
-
-static bool
-tensorRegionHasOverlappingOccurrences(const ReceiverTensorRegionInfo &region) {
-  for (std::size_t lhsIndex = 0;
-       lhsIndex < region.occurrenceStartIndices.size(); ++lhsIndex) {
-    TensorRegionBounds lhs = getTensorOccurrenceBounds(
-        region, region.occurrenceStartIndices[lhsIndex]);
-    for (std::size_t rhsIndex = lhsIndex + 1;
-         rhsIndex < region.occurrenceStartIndices.size(); ++rhsIndex) {
-      if (tensorRegionsOverlap(
-              lhs, getTensorOccurrenceBounds(
-                       region, region.occurrenceStartIndices[rhsIndex]))) {
-        return true;
-      }
-    }
-  }
-  return false;
+  return startIndices;
 }
 
 static bool isSerializedReuseOfTensorDestination(
@@ -1634,14 +1523,14 @@ static bool isSerializedReuseOfTensorDestination(
   if (failed(maybeLocation)) {
     return false;
   }
-  return hasMatchingReceiveWaitBeforeUse(lhsPost, rhsPost,
-                                         analysisState.receiveWaitsByPost,
-                                         analysisState.receiveWaitAnysByPost,
-                                         *maybeLocation, analysisState) ||
-         hasMatchingReceiveWaitBeforeUse(rhsPost, lhsPost,
-                                         analysisState.receiveWaitsByPost,
-                                         analysisState.receiveWaitAnysByPost,
-                                         *maybeLocation, analysisState);
+  return hasMatchingReceiveWaitBeforeUse(
+             lhsPost, rhsPost, analysisState.receiveWaitsByPost,
+             analysisState.receiveWaitAnysByPost, *maybeLocation, analysisState,
+             ReceiveWaitOrder::WheneverBothExecute) ||
+         hasMatchingReceiveWaitBeforeUse(
+             rhsPost, lhsPost, analysisState.receiveWaitsByPost,
+             analysisState.receiveWaitAnysByPost, *maybeLocation, analysisState,
+             ReceiveWaitOrder::WheneverBothExecute);
 }
 
 LogicalResult PipeGraph::verifyTensorRegionDestinations(
@@ -1658,14 +1547,7 @@ LogicalResult PipeGraph::verifyTensorRegionDestinations(
              "a positive statically proven transfer count";
       return failure();
     }
-    ReceiverTensorRegionInfo &tensorRegion =
-        endpoint.getTensorRegionDestination();
-    tensorRegion.hasDisjointOccurrences =
-        !tensorRegionHasOverlappingOccurrences(tensorRegion);
     tensorEndpoints.push_back(&endpoint);
-    if (*endpoint.executionCount > 1) {
-      repeatedTensorEndpoints.push_back(&endpoint);
-    }
   }
   if (tensorEndpoints.empty()) {
     return success();
@@ -1676,27 +1558,32 @@ LogicalResult PipeGraph::verifyTensorRegionDestinations(
         getPipeTransferNode(endpoint.transferNode).deviceTransfer;
     return transfer ? transfer.getEdge().getDestination() : DeviceRefAttr();
   };
+  SmallVector<TensorRegionOccurrences> destinations = llvm::map_to_vector(
+      tensorEndpoints, [&](const PipeReceiverEndpoint *endpoint) {
+        return endpoint->getTensorRegionDestination().getOccurrences(
+            receiverDevice(*endpoint));
+      });
+  SmallVector<bool> disjointDestinations =
+      computeDisjointTensorRegionDestinations(destinations);
+  for (auto [endpoint, disjoint] :
+       llvm::zip_equal(tensorEndpoints, disjointDestinations)) {
+    endpoint->getTensorRegionDestination().hasDisjointOccurrences = disjoint;
+  }
   for (std::size_t lhsIndex = 0; lhsIndex < tensorEndpoints.size();
        ++lhsIndex) {
     PipeReceiverEndpoint &lhsEndpoint = *tensorEndpoints[lhsIndex];
-    ReceiverTensorRegionInfo &lhsRegion =
-        lhsEndpoint.getTensorRegionDestination();
     for (std::size_t rhsIndex = lhsIndex + 1; rhsIndex < tensorEndpoints.size();
          ++rhsIndex) {
-      PipeReceiverEndpoint &rhsEndpoint = *tensorEndpoints[rhsIndex];
-      ReceiverTensorRegionInfo &rhsRegion =
-          rhsEndpoint.getTensorRegionDestination();
-      DeviceRefAttr lhsDevice = receiverDevice(lhsEndpoint);
-      DeviceRefAttr rhsDevice = receiverDevice(rhsEndpoint);
-      bool provenDifferentDevices =
-          lhsDevice && rhsDevice && lhsDevice != rhsDevice;
-      if (provenDifferentDevices ||
-          lhsRegion.globalTensorIndex != rhsRegion.globalTensorIndex ||
-          !tensorRegionOccurrencesOverlap(lhsRegion, rhsRegion)) {
+      if (disjointDestinations[lhsIndex] || disjointDestinations[rhsIndex] ||
+          !tensorRegionDestinationsMayAlias(destinations[lhsIndex],
+                                            destinations[rhsIndex])) {
         continue;
       }
-      lhsRegion.hasDisjointOccurrences = false;
-      rhsRegion.hasDisjointOccurrences = false;
+      PipeReceiverEndpoint &rhsEndpoint = *tensorEndpoints[rhsIndex];
+      const ReceiverTensorRegionInfo &lhsRegion =
+          lhsEndpoint.getTensorRegionDestination();
+      const ReceiverTensorRegionInfo &rhsRegion =
+          rhsEndpoint.getTensorRegionDestination();
       if (!isSerializedReuseOfTensorDestination(lhsEndpoint, rhsEndpoint, *this,
                                                 analysisState)) {
         auto diagnostic = emitError(rhsRegion.loc)
@@ -1707,6 +1594,12 @@ LogicalResult PipeGraph::verifyTensorRegionDestinations(
             << "overlapping destination is here";
         return failure();
       }
+    }
+  }
+  for (PipeReceiverEndpoint *endpoint : tensorEndpoints) {
+    if (*endpoint->executionCount > 1 &&
+        !endpoint->getTensorRegionDestination().hasDisjointOccurrences) {
+      repeatedTensorEndpoints.push_back(endpoint);
     }
   }
 
@@ -1736,10 +1629,8 @@ LogicalResult PipeGraph::verifyTensorRegionDestinations(
   };
   auto mayExecuteOnSameDevice = [&](Operation *operation,
                                     const PipeReceiverEndpoint &endpoint) {
-    DeviceRefAttr operationDevice = enclosingPipeDevice(operation);
-    DeviceRefAttr endpointDevice = receiverDevice(endpoint);
-    return !operationDevice || !endpointDevice ||
-           operationDevice == endpointDevice;
+    return devicesMayCoincide(enclosingPipeDevice(operation),
+                              receiverDevice(endpoint));
   };
 
   for (func::FuncOp function : mod.getOps<func::FuncOp>()) {
@@ -1843,7 +1734,8 @@ LogicalResult PipeGraph::verifyTensorRegionDestinations(
     for (const PipeReceiverEndpoint *endpoint : tensorEndpoints) {
       const ReceiverTensorRegionInfo &tensorRegion =
           endpoint->getTensorRegionDestination();
-      TensorRegionBounds pipeRegion = getTensorRegionBounds(tensorRegion);
+      TensorRegionOccurrences pipeRegion =
+          tensorRegion.getOccurrences(receiverDevice(*endpoint));
       if (*accessedTensorIndex != pipeRegion.globalTensorIndex ||
           !mayExecuteOnSameDevice(copy, *endpoint)) {
         continue;
@@ -1877,32 +1769,26 @@ LogicalResult PipeGraph::verifyTensorRegionDestinations(
                     accessedEndpoint->receiver.y != endpoint->receiver.y) {
                   return false;
                 }
-                DeviceRefAttr accessedDevice =
-                    receiverDevice(*accessedEndpoint);
-                DeviceRefAttr endpointDevice = receiverDevice(*endpoint);
-                if (accessedDevice && endpointDevice &&
-                    accessedDevice != endpointDevice) {
-                  return false;
-                }
-                return tensorRegionOccurrencesOverlap(
-                    accessedEndpoint->getTensorRegionDestination(),
-                    tensorRegion);
+                return tensorRegionDestinationsMayAlias(
+                    accessedEndpoint->getTensorRegionDestination()
+                        .getOccurrences(receiverDevice(*accessedEndpoint)),
+                    pipeRegion);
               });
         } else {
-          FailureOr<TensorRegionBounds> maybeAccessedRegion =
-              getTensorRegionBounds(accessedSlice, copy, *maybeLocation,
-                                    analysisState);
-          if (failed(maybeAccessedRegion)) {
+          FailureOr<SmallVector<int64_t>> accessedStart = getTensorSliceStart(
+              accessedSlice, copy, *maybeLocation, analysisState);
+          if (failed(accessedStart)) {
             copyResult = failure();
             return WalkResult::interrupt();
           }
-          overlapsAnyOccurrence = llvm::any_of(
-              tensorRegion.occurrenceStartIndices,
-              [&](ArrayRef<int64_t> occurrenceStart) {
-                return tensorRegionsOverlap(
-                    *maybeAccessedRegion,
-                    getTensorOccurrenceBounds(tensorRegion, occurrenceStart));
-              });
+          TensorRegionOccurrences accessedRegion{
+              *accessedTensorIndex, DeviceRefAttr(),
+              cast<RankedTensorType>(accessedSlice.getTensor().getType())
+                  .getShape(),
+              cast<RankedTensorType>(accessedSlice.getType()).getShape(),
+              ArrayRef<SmallVector<int64_t>>(*accessedStart)};
+          overlapsAnyOccurrence =
+              tensorRegionOccurrencesOverlap(accessedRegion, pipeRegion);
         }
         if (!overlapsAnyOccurrence) {
           continue;
@@ -1912,7 +1798,7 @@ LogicalResult PipeGraph::verifyTensorRegionDestinations(
         auto diagnostic = copy.emitOpError()
                           << "writes a tensor region also owned by a pipe "
                              "receive destination";
-        diagnostic.attachNote(pipeRegion.loc) << "pipe destination is here";
+        diagnostic.attachNote(tensorRegion.loc) << "pipe destination is here";
         copyResult = failure();
         return WalkResult::interrupt();
       }
@@ -1921,9 +1807,18 @@ LogicalResult PipeGraph::verifyTensorRegionDestinations(
       // with the last completed receive rather than every future owner of the
       // same storage.
       auto postOp = cast<PipeTransferPostOp>(endpoint->postOp);
-      bool completedBeforeRead = hasMatchingReceiveWaitBeforeUse(
-          postOp, copy.getOperation(), analysisState.receiveWaitsByPost,
-          analysisState.receiveWaitAnysByPost, *maybeLocation, analysisState);
+      bool completedBeforeRead =
+          hasMatchingReceiveWaitBeforeUse(
+              postOp, copy.getOperation(), analysisState.receiveWaitsByPost,
+              analysisState.receiveWaitAnysByPost, *maybeLocation,
+              analysisState, ReceiveWaitOrder::EveryUseExecution) ||
+          (receiveOccurrencesPrecedeRead(accessedSlice, copy, tensorRegion,
+                                         receiverDevice(*endpoint),
+                                         *maybeLocation, analysisState) &&
+           hasMatchingReceiveWaitBeforeUse(
+               postOp, copy.getOperation(), analysisState.receiveWaitsByPost,
+               analysisState.receiveWaitAnysByPost, *maybeLocation,
+               analysisState, ReceiveWaitOrder::WheneverBothExecute));
       bool hasSerializedAlias = false;
       bool supersededBeforeRead = false;
       for (const PipeReceiverEndpoint *otherEndpoint : tensorEndpoints) {
@@ -1934,7 +1829,9 @@ LogicalResult PipeGraph::verifyTensorRegionDestinations(
         const ReceiverTensorRegionInfo &otherRegion =
             otherEndpoint->getTensorRegionDestination();
         if (otherRegion.globalTensorIndex != pipeRegion.globalTensorIndex ||
-            !tensorRegionOccurrencesOverlap(tensorRegion, otherRegion) ||
+            !tensorRegionOccurrencesOverlap(
+                pipeRegion,
+                otherRegion.getOccurrences(receiverDevice(*otherEndpoint))) ||
             !isSerializedReuseOfTensorDestination(*endpoint, *otherEndpoint,
                                                   *this, analysisState)) {
           continue;
@@ -1946,16 +1843,18 @@ LogicalResult PipeGraph::verifyTensorRegionDestinations(
                 otherPost, getLaunchNodeCoord(otherEndpoint->receiver),
                 getPipeTransferNode(otherEndpoint->transferNode).deviceTransfer,
                 PipeRole::Destination);
-        if (failed(otherLocation) || !hasMatchingReceiveWaitBeforeUse(
-                                         otherPost, copy.getOperation(),
-                                         analysisState.receiveWaitsByPost,
-                                         analysisState.receiveWaitAnysByPost,
-                                         *otherLocation, analysisState)) {
+        if (failed(otherLocation) ||
+            !hasMatchingReceiveWaitBeforeUse(
+                otherPost, copy.getOperation(),
+                analysisState.receiveWaitsByPost,
+                analysisState.receiveWaitAnysByPost, *otherLocation,
+                analysisState, ReceiveWaitOrder::EveryUseExecution)) {
           continue;
         }
         supersededBeforeRead = hasMatchingReceiveWaitBeforeUse(
             postOp, otherPost, analysisState.receiveWaitsByPost,
-            analysisState.receiveWaitAnysByPost, *maybeLocation, analysisState);
+            analysisState.receiveWaitAnysByPost, *maybeLocation, analysisState,
+            ReceiveWaitOrder::WheneverBothExecute);
         if (supersededBeforeRead) {
           break;
         }
@@ -1974,7 +1873,7 @@ LogicalResult PipeGraph::verifyTensorRegionDestinations(
         auto diagnostic = copy.emitOpError()
                           << "reads a pipe destination tensor region before "
                              "the matching receive wait";
-        diagnostic.attachNote(pipeRegion.loc) << "pipe destination is here";
+        diagnostic.attachNote(tensorRegion.loc) << "pipe destination is here";
         copyResult = failure();
         return WalkResult::interrupt();
       }
@@ -2190,6 +2089,7 @@ PipeGraph::proveReceiverProducerStreams(PipeGraphAnalysisState &analysisState) {
     LogicalResult result = success();
     llvm::DenseMap<Operation *, SmallVector<Operation *>> pushesByPost;
     bool pushOutsidePostContext = false;
+    bool pushWithoutPost = false;
     forEachReceiverDFBPhysicalStreamEvent(
         analysisState.pushesByPhysicalStream, receiverDFB,
         [&](CBPushOp pushOp) {
@@ -2280,13 +2180,30 @@ PipeGraph::proveReceiverProducerStreams(PipeGraphAnalysisState &analysisState) {
             std::optional<ReceiverControlContext> pushContext =
                 getReceiverControlContext(pushOp, *maybeLocation,
                                           analysisState);
-            // Both contexts must be known and equal. Two unknown contexts
-            // compare equal as optionals, so the known-ness is tested
-            // explicitly.
-            bool contextsKnownAndEqual =
-                postContext && pushContext && *postContext == *pushContext;
-            if (!contextsKnownAndEqual) {
-              pushOutsidePostContext = true;
+            std::optional<ReceiverControlContext> reserveContext =
+                getReceiverControlContext(reserveOp, *maybeLocation,
+                                          analysisState);
+            // Two unknown contexts compare equal as optionals, so known-ness
+            // is tested explicitly.
+            auto knownAndEqual =
+                [](const std::optional<ReceiverControlContext> &lhs,
+                   const std::optional<ReceiverControlContext> &rhs) {
+                  return lhs && rhs && *lhs == *rhs;
+                };
+            // A push may execute without its post only when it finalizes a
+            // reserve in its own context and advances one full DFB: the
+            // lifecycle stays balanced and the write pointer returns to the
+            // slot the sender computes. Its advance is still not a pipe
+            // receive, so it cannot prove a pipe-only producer stream.
+            if (!knownAndEqual(postContext, pushContext)) {
+              bool fullPushOfOwnReserve =
+                  knownAndEqual(reserveContext, pushContext) &&
+                  *maybePushedBlocks == physicalBlockCount;
+              if (fullPushOfOwnReserve) {
+                pushWithoutPost = true;
+              } else {
+                pushOutsidePostContext = true;
+              }
             }
             if (!hasMatchingReceiveWaitBeforePush(
                     postOp, pushOp, analysisState.receiveWaitsByPost,
@@ -2334,13 +2251,16 @@ PipeGraph::proveReceiverProducerStreams(PipeGraphAnalysisState &analysisState) {
         break;
       }
     }
-    // The sender advances its slot counter once per post, so a push that can
-    // execute without its post desynchronizes the counter from the receiver's
-    // write pointer. Checked last so a more specific ownership failure is
-    // reported first.
+    // The sender advances its slot counter once per post, so a partial push
+    // that can execute without its post desynchronizes the counter from the
+    // receiver's write pointer. Checked last so a more specific ownership
+    // failure is reported first.
     if (pushOutsidePostContext) {
       rejectBoth("push does not execute in the control context of its "
                  "receiver post");
+    }
+    if (pushWithoutPost) {
+      rejectPipeOnly("push can execute without its receiver post");
     }
     if (pipeOnlyValid) {
       node.hasProvenPipeOnlyProducerStream = true;
@@ -2620,6 +2540,64 @@ static std::optional<std::uint64_t> getConcreteTransferExecutionCount(
              : std::nullopt;
 }
 
+/// Return the one device domain used by selected PipeNet records. Multiple
+/// domains retain node-only conservative analysis.
+static DeviceDomainAttr
+getAggregateLocalPipeDeviceDomain(const PipeGraphAnalysisState &analysisState) {
+  DeviceDomainAttr deviceDomain;
+  for (const auto &[loopOperation, recordLoop] :
+       analysisState.pipeRecordLoops) {
+    (void)loopOperation;
+    for (PipeRecordAttr record : recordLoop.records.getPipes()) {
+      if (!record.getDeviceTransfer()) {
+        continue;
+      }
+      DeviceDomainAttr recordDomain = record.getDeviceTransfer().getDomain();
+      if (deviceDomain && deviceDomain != recordDomain) {
+        return {};
+      }
+      deviceDomain = recordDomain;
+    }
+  }
+  return deviceDomain;
+}
+
+/// Return the execution count of the protocol operation `op` at `location`.
+/// A local PipeNet event (no `deviceTransfer`) represents one replicated
+/// transfer program, so it needs the same count on every device of
+/// `localDeviceDomain`; a device-varying count cannot use one endpoint graph.
+static std::optional<std::uint64_t> getTransferExecutionCount(
+    Operation *op, const LaunchExecutionLocation &location,
+    DeviceTransferAttr deviceTransfer, const PipeReference &pipeRef,
+    std::optional<std::uint64_t> recordIndex,
+    std::optional<PipeRecordAttr> record, DeviceDomainAttr localDeviceDomain,
+    PipeGraphAnalysisState &analysisState) {
+  if (deviceTransfer || !localDeviceDomain) {
+    return getConcreteTransferExecutionCount(op, location, pipeRef, recordIndex,
+                                             analysisState, record);
+  }
+  FailureOr<SmallVector<DeviceRefAttr>> maybeDevices =
+      enumerateDeviceDomain(localDeviceDomain);
+  if (failed(maybeDevices)) {
+    return std::nullopt;
+  }
+
+  std::optional<std::uint64_t> uniformCount;
+  for (DeviceRefAttr device : *maybeDevices) {
+    std::optional<std::uint64_t> maybeCount = getConcreteTransferExecutionCount(
+        op, LaunchExecutionLocation(location.node, localDeviceDomain, device),
+        pipeRef, recordIndex, analysisState, record);
+    if (!maybeCount) {
+      return std::nullopt;
+    }
+    if (uniformCount && *uniformCount != *maybeCount) {
+      return std::nullopt;
+    }
+    uniformCount = *maybeCount;
+  }
+  return uniformCount;
+}
+
 /// A protocol operation and the selected record it represents.
 template <typename ProtocolOp>
 struct PipeProtocolCandidate {
@@ -2693,6 +2671,8 @@ PipeGraph::rebuildEndpointGraph(const PipeTransferIndex &transferIndex,
   using PipeTransferIdentity = std::pair<PipeKey, DeviceTransferAttr>;
   llvm::MapVector<PipeTransferIdentity, PipeTransferCandidates>
       candidatesByPipe;
+  DeviceDomainAttr aggregateLocalDeviceDomain =
+      getAggregateLocalPipeDeviceDomain(analysisState);
   // Static operations require a conservative role bound. Selected operations
   // are restricted per record by their enclosing PipeNet foreach semantics.
   for (Operation *op : analysisState.transferProtocolOps) {
@@ -2739,9 +2719,10 @@ PipeGraph::rebuildEndpointGraph(const PipeTransferIndex &transferIndex,
                   return failure();
                 }
                 std::optional<std::uint64_t> maybeExecutionCount =
-                    getConcreteTransferExecutionCount(
-                        sendOp.getOperation(), *maybeLocation, *pipeRef,
-                        selectedRecordIndex, analysisState, record);
+                    getTransferExecutionCount(
+                        sendOp.getOperation(), *maybeLocation, deviceTransfer,
+                        *pipeRef, selectedRecordIndex, record,
+                        aggregateLocalDeviceDomain, analysisState);
                 if (maybeExecutionCount && *maybeExecutionCount == 0) {
                   return success();
                 }
@@ -2812,9 +2793,10 @@ PipeGraph::rebuildEndpointGraph(const PipeTransferIndex &transferIndex,
                   return;
                 }
                 std::optional<std::uint64_t> maybeExecutionCount =
-                    getConcreteTransferExecutionCount(
-                        postOp.getOperation(), *maybeLocation, *pipeRef,
-                        selectedRecordIndex, analysisState, record);
+                    getTransferExecutionCount(
+                        postOp.getOperation(), *maybeLocation, deviceTransfer,
+                        *pipeRef, selectedRecordIndex, record,
+                        aggregateLocalDeviceDomain, analysisState);
                 if (!maybeExecutionCount || *maybeExecutionCount != 0) {
                   candidates.postsByReceiver[receiver].push_back(
                       {postOp, selectedRecordIndex, record,
@@ -2915,16 +2897,18 @@ PipeGraph::rebuildEndpointGraph(const PipeTransferIndex &transferIndex,
           return;
         }
         bool haveEqualExecutionCounts = false;
-        std::optional<std::uint64_t> maybeSendCount =
-            getConcreteTransferExecutionCount(
-                sendOp.getOperation(), *maybeSendLocation, *sendPipeRef,
-                candidates.sends[sendIndex].recordIndex, analysisState,
-                candidates.sends[sendIndex].record);
-        std::optional<std::uint64_t> maybePostCount =
-            getConcreteTransferExecutionCount(
-                postOp.getOperation(), *maybePostLocation, *postPipeRef,
-                postsIt->second[sendIndex].recordIndex, analysisState,
-                postsIt->second[sendIndex].record);
+        std::optional<std::uint64_t> maybeSendCount = getTransferExecutionCount(
+            sendOp.getOperation(), *maybeSendLocation,
+            candidates.deviceTransfer, *sendPipeRef,
+            candidates.sends[sendIndex].recordIndex,
+            candidates.sends[sendIndex].record, aggregateLocalDeviceDomain,
+            analysisState);
+        std::optional<std::uint64_t> maybePostCount = getTransferExecutionCount(
+            postOp.getOperation(), *maybePostLocation,
+            candidates.deviceTransfer, *postPipeRef,
+            postsIt->second[sendIndex].recordIndex,
+            postsIt->second[sendIndex].record, aggregateLocalDeviceDomain,
+            analysisState);
         if (maybeSendCount && maybePostCount) {
           haveEqualExecutionCounts = *maybeSendCount == *maybePostCount;
         }

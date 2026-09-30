@@ -288,6 +288,102 @@ def _make_repeated_one_to_many_direct_dram_receive(mesh_shape, repeat_count):
     return repeated_one_to_many_direct_dram_receive
 
 
+def _make_same_thread_dram_exchange(mesh_shape):
+    device_domain = ttl.DeviceDomain(mesh_shape)
+    source_devices = tuple(product(*(range(extent) for extent in mesh_shape)))
+    destination_devices = source_devices[1:] + source_devices[:1]
+    exchange_net = ttl.PipeNet(
+        graph=ttl.TransferGraph.edges(
+            device_domain,
+            edges=list(zip(source_devices, destination_devices, strict=True)),
+        )
+    )
+
+    @ttl.operation(grid=(1, 1), device_domain=device_domain)
+    def same_thread_dram_exchange(inp, staging, observed):
+        send_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=1)
+        readback_dfb = ttl.make_dataflow_buffer_like(
+            staging, shape=(1, 1), block_count=1
+        )
+
+        @ttl.compute()
+        def idle_compute():
+            pass
+
+        @ttl.datamovement()
+        def exchange_node():
+            def send(pipe):
+                with send_dfb.reserve() as send_block:
+                    ttl.copy(inp[0:1, 0:1], send_block).wait()
+                with send_dfb.wait() as send_block:
+                    ttl.copy(send_block, pipe).wait()
+
+            def receive(pipe):
+                ttl.copy(pipe, staging[0:1, 0:1], shape=(1, 1)).wait()
+                with readback_dfb.reserve() as readback_block:
+                    ttl.copy(staging[0:1, 0:1], readback_block).wait()
+                with readback_dfb.wait() as readback_block:
+                    ttl.copy(readback_block, observed[0:1, 0:1]).wait()
+
+            exchange_net.if_src(send)
+            exchange_net.if_dst(receive)
+
+        @ttl.datamovement()
+        def idle_node():
+            pass
+
+    return same_thread_dram_exchange
+
+
+def _make_conditional_full_push_receive(mesh_shape, iteration_count):
+    device_domain = ttl.DeviceDomain(mesh_shape)
+    source_device = tuple(0 for _ in mesh_shape)
+    destination_device = tuple(extent - 1 for extent in mesh_shape)
+    transfer_net = ttl.PipeNet(
+        graph=ttl.TransferGraph.edges(
+            device_domain, edges=[(source_device, destination_device)]
+        )
+    )
+
+    @ttl.operation(grid=(1, 1), device_domain=device_domain)
+    def conditional_full_push_receive(inp, out):
+        send_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+        receive_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=1)
+
+        @ttl.compute()
+        def idle_compute():
+            pass
+
+        @ttl.datamovement()
+        def sender_node():
+            def send(pipe):
+                with send_dfb.reserve() as send_block:
+                    ttl.copy(inp[0:1, 0:1], send_block).wait()
+                with send_dfb.wait() as send_block:
+                    ttl.copy(send_block, pipe).wait()
+
+            for iteration in range(iteration_count):
+                if iteration != 0:
+                    transfer_net.if_src(send)
+
+        @ttl.datamovement()
+        def receiver_node():
+            for iteration in range(iteration_count):
+                with receive_dfb.reserve() as receive_block:
+                    if iteration == 0:
+                        ttl.copy(inp[0:1, 0:1], receive_block).wait()
+                    else:
+
+                        def receive(pipe):
+                            ttl.copy(pipe, receive_block).wait()
+
+                        transfer_net.if_dst(receive)
+                with receive_dfb.wait() as receive_block:
+                    ttl.copy(receive_block, out[iteration : iteration + 1, 0:1]).wait()
+
+    return conditional_full_push_receive
+
+
 @pytest.mark.parametrize(
     "torch_dtype,rtol,atol",
     [
@@ -566,3 +662,98 @@ def test_repeated_one_to_many_pipe_receive_uses_per_record_occurrence_counters(
     expected_device_shards[1:3] = input_device_shards[0]
     expected = expected_device_shards.reshape(logical_shape)
     assert_allclose(result.float(), expected.float(), rtol=rtol, atol=atol)
+
+
+# Every device sends before it receives in the same thread. The sends into
+# disjoint DRAM regions do not wait for receiver posts, so the ring of
+# same-thread exchanges cannot deadlock.
+@pytest.mark.parametrize(
+    "torch_dtype,rtol,atol",
+    [
+        pytest.param(torch.bfloat16, 0.05, 1.0, id="bf16"),
+        pytest.param(torch.float32, 1e-5, 1e-5, id="fp32"),
+    ],
+)
+def test_same_thread_send_before_receive_to_dram_region(torch_dtype, rtol, atol):
+    mesh_shape = get_fabric_mesh_shape(fabric_config=ttnn.FabricConfig.FABRIC_2D)
+    device_count = prod(mesh_shape)
+    if device_count < 2:
+        pytest.skip("requires multiple devices")
+    logical_shape = (device_count * TILE_SIZE, TILE_SIZE)
+    inp_torch = torch.randn(logical_shape, dtype=torch_dtype)
+    zero_torch = torch.zeros(logical_shape, dtype=torch_dtype)
+    same_thread_dram_exchange = _make_same_thread_dram_exchange(mesh_shape)
+
+    with open_fabric_mesh(
+        requested_mesh_shape=mesh_shape,
+        fabric_config=ttnn.FabricConfig.FABRIC_2D,
+    ) as mesh:
+        mesh_mapper = ttnn.ShardTensorToMesh(mesh, dim=0)
+        inp = to_dram(inp_torch, mesh, mesh_mapper=mesh_mapper)
+        staging = to_dram(zero_torch, mesh, mesh_mapper=mesh_mapper)
+        observed = to_dram(zero_torch, mesh, mesh_mapper=mesh_mapper)
+
+        same_thread_dram_exchange(inp, staging, observed)
+
+        result = ttnn.to_torch(
+            observed,
+            mesh_composer=ttnn.ConcatMeshToTensor(mesh, dim=0),
+        )
+
+    expected = torch.roll(
+        inp_torch.reshape(device_count, TILE_SIZE, TILE_SIZE), shifts=1, dims=0
+    ).reshape(logical_shape)
+    assert_allclose(result.float(), expected.float(), rtol=rtol, atol=atol)
+
+
+# The receiver reserves and pushes its only DFB block in every iteration but
+# receives only after the first. Each push finalizes its own reserve, so the
+# sender still computes the receiver's slot address.
+@pytest.mark.parametrize(
+    "torch_dtype,rtol,atol",
+    [
+        pytest.param(torch.bfloat16, 0.05, 1.0, id="bf16"),
+        pytest.param(torch.float32, 1e-5, 1e-5, id="fp32"),
+    ],
+)
+def test_conditional_receive_with_full_push(torch_dtype, rtol, atol):
+    mesh_shape = get_fabric_mesh_shape(fabric_config=ttnn.FabricConfig.FABRIC_2D)
+    device_count = prod(mesh_shape)
+    if device_count < 2:
+        pytest.skip("requires multiple devices")
+    iteration_count = 3
+    shard_shape = (iteration_count * TILE_SIZE, TILE_SIZE)
+    logical_shape = (device_count * shard_shape[0], shard_shape[1])
+    inp_torch = torch.randn(logical_shape, dtype=torch_dtype)
+    out_torch = torch.zeros(logical_shape, dtype=torch_dtype)
+    conditional_full_push_receive = _make_conditional_full_push_receive(
+        mesh_shape, iteration_count
+    )
+
+    with open_fabric_mesh(
+        requested_mesh_shape=mesh_shape,
+        fabric_config=ttnn.FabricConfig.FABRIC_2D,
+    ) as mesh:
+        mesh_mapper = ttnn.ShardTensorToMesh(mesh, dim=0)
+        inp = to_dram(inp_torch, mesh, mesh_mapper=mesh_mapper)
+        out = to_dram(out_torch, mesh, mesh_mapper=mesh_mapper)
+
+        conditional_full_push_receive(inp, out)
+
+        result = ttnn.to_torch(
+            out,
+            mesh_composer=ttnn.ConcatMeshToTensor(mesh, dim=0),
+        )
+
+    device_tiles = inp_torch.reshape(
+        device_count, iteration_count, TILE_SIZE, TILE_SIZE
+    )
+    result_tiles = result.reshape(device_count, iteration_count, TILE_SIZE, TILE_SIZE)
+    destination = device_count - 1
+    expected = (
+        device_tiles[destination, 0].clone().expand(iteration_count, -1, -1).clone()
+    )
+    expected[1:] = device_tiles[0, 0]
+    assert_allclose(
+        result_tiles[destination].float(), expected.float(), rtol=rtol, atol=atol
+    )

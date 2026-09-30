@@ -972,15 +972,24 @@ def TTLVerifyPipeNetSchedule
     Verifies the synchronization protocol formed by pipe sends, receiver posts,
     and receiver waits. A send waits until every destination has posted a
     dataflow buffer reservation, so each send requires one corresponding post
-    at every destination. A receiver wait observes the send associated with
-    the exact receive handle it consumes. Repeated waits on one handle observe
-    the same completed transfer and do not require additional sends. Posting a
-    reservation does not wait for payload, and a sender does not wait for the
-    receiver to consume the payload. Receiver posts may therefore exist
-    without receiver waits, and sends do not require receiver waits. When a
-    pipe has sends, each destination must have the same number of receiver
-    posts as sends. A pipe with no sends or waits may contain unused receiver
-    posts.
+    at every destination. The exception is a point-to-point fabric send to one
+    receiver whose DRAM tensor-region destination is statically enumerated,
+    pairwise disjoint across its executions, and disjoint from every other pipe
+    receive into the same tensor on the receiver device. That send does not
+    wait for the post, and pipe lowering emits it without a receiver readiness
+    signal by the same rule. Such a send still requires its corresponding post,
+    and a send operation that also sends on a pipe without this property waits
+    for every post. A destination that the verifier cannot enumerate, including
+    one whose enclosing loops or executions exceed 1048576, is treated as
+    overlapping every destination on its device. A receiver wait observes
+    the send associated with the exact receive handle it consumes. Repeated
+    waits on one handle observe the same completed transfer and do not require
+    additional sends. Posting a reservation does not wait for payload, and a
+    sender does not wait for the receiver to consume the payload. Receiver
+    posts may therefore exist without receiver waits, and sends do not require
+    receiver waits. When a pipe has sends, each destination must have the same
+    number of receiver posts as sends. A pipe with no sends or waits may
+    contain unused receiver posts.
 
     Receiver-published addressing supports one outstanding post for each pipe
     and destination. Each repetition must contain its corresponding send or an
@@ -1002,15 +1011,23 @@ def TTLVerifyPipeNetSchedule
     use their exact launch-node domain. Otherwise, the static PipeNet endpoint
     role provides a conservative domain that includes every possible event;
     execution-count analysis still removes coordinates proven not to execute.
-    Multi-block regions that contribute pipe events, recursive calls containing
-    pipe events, and schedules with more than 4096 expanded event occurrences
-    at one launch node are rejected because the verifier cannot construct a
-    correct bounded event graph.
+    Static loops containing pipe events are expanded to concrete iterations,
+    which preserves event order across iterations. When expanding every such
+    loop would exceed 4096 pipe copies or 65536 cloned operations in the
+    operation, every loop in which no structured control enclosing a pipe
+    event within the loop body depends on the induction variable keeps compact
+    execution-count analysis, and only the other loops are expanded; the
+    operation is rejected if those still exceed the bounds.
+    Multi-block regions that contribute pipe events, recursive calls
+    containing pipe events, and schedules with more than 4096 pipe events at
+    one launch node are rejected because the verifier cannot construct a
+    correct bounded event graph. Logical-device domains with more than
+    1048576 devices are rejected before their devices are enumerated.
 
     The pass also constructs the same-thread wait-for graph. Program-order
     edges connect consecutive events on one launched node. Protocol edges
-    connect each receiver post to its send and that send to every wait on the
-    post's exact receive handle.
+    connect each receiver post to its send when the send waits for the post,
+    and each send to every wait on the post's exact receive handle.
     A cycle means no event in the cycle can execute and is rejected.
 
     The pass expects one module per `@ttl.operation`, a well-formed
