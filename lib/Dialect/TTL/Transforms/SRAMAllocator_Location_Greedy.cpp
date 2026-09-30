@@ -39,7 +39,9 @@ getCandidateOffsets(const LocationPlacementVariable &variable,
   SmallVector<uint64_t> candidates{getMinimumOffset(variable, problem)};
   for (unsigned regionIndex : variable.regionIndices) {
     for (unsigned placedRegionIndex : state.placedRegions) {
-      if (!problem.conflicts.interferes(regionIndex, placedRegionIndex)) {
+      if (!problem.conflicts.interferes(regionIndex, placedRegionIndex) ||
+          problem.regions[regionIndex].locationIndex !=
+              problem.regions[placedRegionIndex].locationIndex) {
         continue;
       }
       std::optional<uint64_t> placedEnd =

@@ -24,6 +24,7 @@
 #include <limits>
 #include <memory>
 #include <string>
+#include <tuple>
 
 namespace {
 
@@ -1007,6 +1008,34 @@ static bool verifySRAMLocationAllocation() {
                    << strategy << "\n";
       return false;
     }
+    // Global conflict edges do not constrain regions at distinct locations.
+    auto crossLocationConflict = asymmetric;
+    crossLocationConflict.conflicts.addInterference(0, 1);
+    auto crossLocationResult = allocateLocationsForTest(
+        **allocator, crossLocationConflict, failedRegion, reason);
+    if (mlir::failed(crossLocationResult) ||
+        crossLocationResult->offsets != llvm::SmallVector<uint64_t>({0, 0}) ||
+        crossLocationResult->highWaterBytes !=
+            llvm::SmallVector<uint64_t>({64, 192})) {
+      llvm::errs() << "cross-location conflict constrained allocation: "
+                   << strategy << ": " << reason << "\n";
+      return false;
+    }
+    ++cases;
+    auto independentLocations = crossLocationConflict;
+    independentLocations.regions[1].ownerIndex = 11;
+    independentLocations.equalOffsetGroups.clear();
+    auto independentResult = allocateLocationsForTest(
+        **allocator, independentLocations, failedRegion, reason);
+    if (mlir::failed(independentResult) ||
+        independentResult->offsets != llvm::SmallVector<uint64_t>({0, 0}) ||
+        independentResult->highWaterBytes !=
+            llvm::SmallVector<uint64_t>({64, 192})) {
+      llvm::errs() << "independent locations were constrained by a conflict: "
+                   << strategy << ": " << reason << "\n";
+      return false;
+    }
+    ++cases;
     auto mixedResult =
         allocateLocationsForTest(**allocator, mixed, failedRegion, reason);
     if (mlir::failed(mixedResult) ||
@@ -1074,11 +1103,6 @@ static bool verifySRAMLocationAllocation() {
   invalid.regions[0].fixedOffset = 0;
   invalid.regions[1].fixedOffset = 64;
   if (!expectFailure(invalid, 1, "incompatible fixed offsets")) {
-    return false;
-  }
-  invalid = mixed;
-  invalid.conflicts.addInterference(0, 1);
-  if (!expectFailure(invalid, 1, "same location")) {
     return false;
   }
   invalid = mixed;

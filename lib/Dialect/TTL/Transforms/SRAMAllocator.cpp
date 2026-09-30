@@ -170,19 +170,6 @@ validateLocationProblem(const SRAMLocationAllocationProblem &problem,
       return failure();
     }
   }
-  for (unsigned leftIndex = 0; leftIndex < problem.regions.size();
-       ++leftIndex) {
-    for (unsigned rightIndex = leftIndex + 1;
-         rightIndex < problem.regions.size(); ++rightIndex) {
-      if (problem.conflicts.interferes(leftIndex, rightIndex) &&
-          problem.regions[leftIndex].locationIndex !=
-              problem.regions[rightIndex].locationIndex) {
-        failureRegionIndex = rightIndex;
-        failureReason = "conflicting regions must occupy the same location";
-        return failure();
-      }
-    }
-  }
   llvm::DenseSet<unsigned> groupedRegions;
   for (const auto &group : problem.equalOffsetGroups) {
     if (group.regionIndices.size() < 2) {
@@ -307,7 +294,9 @@ validateLocationSolution(const SRAMLocationAllocationProblem &problem,
        ++leftIndex) {
     for (unsigned rightIndex = leftIndex + 1;
          rightIndex < problem.regions.size(); ++rightIndex) {
-      if (!problem.conflicts.interferes(leftIndex, rightIndex)) {
+      if (!problem.conflicts.interferes(leftIndex, rightIndex) ||
+          problem.regions[leftIndex].locationIndex !=
+              problem.regions[rightIndex].locationIndex) {
         continue;
       }
       if (ends[leftIndex] > solution.offsets[rightIndex] &&

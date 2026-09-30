@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <limits>
+#include <numeric>
 
 namespace mlir::tt::ttl::detail {
 
@@ -61,7 +62,10 @@ getVariableDegree(const LocationPlacementVariable &variable,
   for (unsigned regionIndex : variable.regionIndices) {
     for (int neighborIndex :
          problem.conflicts.getNeighbors(regionIndex).set_bits()) {
-      neighbors.insert(static_cast<unsigned>(neighborIndex));
+      if (problem.regions[regionIndex].locationIndex ==
+          problem.regions[neighborIndex].locationIndex) {
+        neighbors.insert(static_cast<unsigned>(neighborIndex));
+      }
     }
   }
   return neighbors.size();
@@ -100,7 +104,9 @@ bool fitsLocationVariableAtOffset(const LocationPlacementVariable &variable,
       return false;
     }
     for (unsigned placedRegionIndex : state.placedRegions) {
-      if (!problem.conflicts.interferes(regionIndex, placedRegionIndex)) {
+      if (!problem.conflicts.interferes(regionIndex, placedRegionIndex) ||
+          region.locationIndex !=
+              problem.regions[placedRegionIndex].locationIndex) {
         continue;
       }
       const auto &placedRegion = problem.regions[placedRegionIndex];
