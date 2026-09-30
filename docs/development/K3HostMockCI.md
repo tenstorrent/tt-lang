@@ -1,0 +1,84 @@
+# K3 host-mock CI
+
+The `K3 host mock` workflow dispatches private program-construction tests for an
+exact public compiler commit. It runs after pushes to `main`, once daily, or by
+manual dispatch from `main`. A manually supplied SHA must be a full lowercase
+commit SHA reachable from public `main`. The default is the public workflow's
+exact SHA. This test establishes host program construction only. Device
+correctness and timing remain untested.
+
+The public workflow checks out its own trusted `main` revision, creates a
+repository-scoped GitHub App token, and dispatches
+`tenstorrent/tt-lang-ops-and-models`'s `k3-host-mock.yml` on private `main`. It
+passes the exact compiler SHA and a unique correlation ID. It polls the private
+run for at most 50 minutes, requiring an exact match of compiler SHA and request
+ID in the run title. The App token expires after one hour. The private workflow
+builds the compiler from the requested source revision rather than using the
+model's compiler submodule pin.
+
+The public `K3 host mock` commit status is attached to the requested compiler
+SHA, including when that SHA differs from the public workflow revision. Its
+target URL is the public orchestration run. Public output contains only compiler
+SHA, correlation ID, success/failure, and the scope limitation. Private run URLs,
+reports, source code, build logs, and generated kernels remain private. Token
+creation failure, dispatch failure, private failure or cancellation, and polling
+timeout produce a failing status. Workflow cancellation invokes terminal status
+publication when GitHub can schedule the final step; forced runner termination
+can leave a pending status.
+
+## Credentials and repository settings
+
+An organization administrator installs a dedicated dispatch App with
+`Actions: write` and the mandatory `Metadata: read` permission on the private
+ops-and-models repository. `Actions: write` also permits reading workflow runs
+for polling. The public repository requires:
+
+- Actions variable `K3_DISPATCH_APP_ID`.
+- Actions secret `K3_DISPATCH_APP_PRIVATE_KEY`.
+- Permission for this workflow's `GITHUB_TOKEN` to create commit statuses.
+- Permission to use the pinned official checkout and App-token actions.
+
+The dispatch token is requested for only the private ops-and-models repository
+and only the Actions permission. It is present only in the trusted public
+orchestration job, which has no pull-request trigger. It is never passed into
+compiler/model execution or private artifacts. The public workflow does not use
+`pull_request_target`.
+
+The private repository additionally needs a separate App with `Contents: read`
+on its private dependency repository; its preparation job receives that credential.
+Private execution also requires a configured Linux x64 Docker runner with at
+least 16 GB RAM. Configuration is documented with the private runner. Both workflows must be
+reviewed and merged to their default branches before dispatching by filename.
+No repository secret contains a user's personal `gh` login.
+
+An authenticated repository member can manually dispatch using local `gh`:
+
+```bash
+gh workflow run k3-host-mock.yml --repo tenstorrent/tt-lang --ref main \
+  -f compiler_sha=bc36476bdb0c348f4cb272bc7e51292c1b844444
+```
+
+The initial status is separate from `check-all-green`. Public `main` currently
+requires `check-all-green` through ruleset 9293173. A new requirement for
+`K3 host mock` would prevent PR merges because this initial workflow deliberately
+runs only trusted commits already reachable from `main`. Any future PR-required
+deployment needs a separately reviewed mechanism that preserves private-source
+and credential isolation. Initial rollout does not change that ruleset.
+
+Actions policy and App installation require administrator verification. The
+implementation does not grant permissions or modify branch protection.
+
+## Validation
+
+The dispatch tests run in the existing script-test workflow and locally:
+
+```bash
+python3 .github/scripts/tests/test_dispatch_k3_host_mock.py
+actionlint .github/workflows/k3-host-mock.yml
+```
+
+GitHub API references:
+
+- [Reusable workflow access](https://docs.github.com/en/actions/reference/workflows-and-actions/reusing-workflow-configurations).
+- [Workflow dispatch](https://docs.github.com/en/rest/actions/workflows#create-a-workflow-dispatch-event).
+- [Commit status publication](https://docs.github.com/en/rest/commits/statuses#create-a-commit-status).
