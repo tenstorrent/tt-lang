@@ -1341,7 +1341,11 @@ buildConditionalReceiveReleasePlan(func::FuncOp func,
       }
       for (CopyOp receiveCopy : *receiveCopies) {
         CBReserveOp reserve = findCBReserveForPipeReceive(receiveCopy.getDst());
-        assert(reserve && "pipe receive verifier requires a DFB reservation");
+        if (!reserve) {
+          waitAny.emitOpError() << "requires every candidate receive to "
+                                   "target a reserved DFB block";
+          return WalkResult::interrupt();
+        }
         Operation *reserveOperation = reserve.getOperation();
         if (plan.reserves.insert(reserveOperation).second) {
           plan.reserveOrder.push_back(reserveOperation);

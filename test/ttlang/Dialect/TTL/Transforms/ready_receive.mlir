@@ -371,3 +371,80 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
     func.return
   }
 }
+
+// -----
+
+// With two candidates, the else branch of `selected == 0` publishes candidate
+// 1, which wait-any has completed.
+// SEMANTICS-LABEL: func.func @ready_receive_complement
+// SEMANTICS: scf.if
+// SEMANTICS: ttkernel.cb_push_back
+// SEMANTICS: } else {
+// SEMANTICS: ttkernel.cb_push_back
+
+module attributes {ttl.launch_grid = array<i64: 1, 1>} {
+  func.func @ready_receive_complement(%start: index) -> index
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %zero = arith.constant 0 : index
+    %source = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+    %landing0 = ttl.bind_cb {cb_index = 1, block_count = 1} {dfb_id = 1 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
+    %landing1 = ttl.bind_cb {cb_index = 2, block_count = 1} {dfb_id = 2 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
+    %pipe0 = ttl.create_pipe src(0, 0) dst(0, 0) to(0, 0) net 0
+        : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>
+    %pipe1 = ttl.create_pipe src(0, 0) dst(0, 0) to(0, 0) net 1
+        : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 1>
+    %dst0 = ttl.cb_reserve %landing0
+        : <[1, 1], !ttcore.tile<32x32, f32>, 1>
+        -> tensor<1x1x!ttcore.tile<32x32, f32>>
+    %dst1 = ttl.cb_reserve %landing1
+        : <[1, 1], !ttcore.tile<32x32, f32>, 1>
+        -> tensor<1x1x!ttcore.tile<32x32, f32>>
+    %request0 = ttl.copy %pipe0, %dst0
+        : (!ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>,
+           tensor<1x1x!ttcore.tile<32x32, f32>>)
+        -> !ttl.receive_request
+    %request1 = ttl.copy %pipe1, %dst1
+        : (!ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 1>,
+           tensor<1x1x!ttcore.tile<32x32, f32>>)
+        -> !ttl.receive_request
+    %send0 = ttl.copy %source, %pipe0
+        : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>,
+           !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>)
+        -> !ttl.transfer_handle<write>
+    ttl.wait %send0 : !ttl.transfer_handle<write>
+    %send1 = ttl.copy %source, %pipe1
+        : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>,
+           !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 1>)
+        -> !ttl.transfer_handle<write>
+    ttl.wait %send1 : !ttl.transfer_handle<write>
+    %ready = ttl.wait_any %request0, %request1 start %start
+        : (!ttl.receive_request, !ttl.receive_request, index)
+        -> !ttl.ready_receive
+    %selected = ttl.ready_receive_index %ready : !ttl.ready_receive
+    %is_zero = arith.cmpi eq, %selected, %zero : index
+    scf.if %is_zero {
+      ttl.cb_push %landing0 : <[1, 1], !ttcore.tile<32x32, f32>, 1>
+    } else {
+      ttl.cb_push %landing1 : <[1, 1], !ttcore.tile<32x32, f32>, 1>
+    }
+    ttl.wait %request0 : !ttl.receive_request
+    ttl.wait %request1 : !ttl.receive_request
+    scf.if %is_zero {
+      ttl.cb_push %landing1 : <[1, 1], !ttcore.tile<32x32, f32>, 1>
+    } else {
+      ttl.cb_push %landing0 : <[1, 1], !ttcore.tile<32x32, f32>, 1>
+    }
+    %block0 = ttl.cb_wait %landing0
+        : <[1, 1], !ttcore.tile<32x32, f32>, 1>
+        -> tensor<1x1x!ttcore.tile<32x32, f32>>
+    ttl.cb_pop %landing0 : <[1, 1], !ttcore.tile<32x32, f32>, 1>
+    %block1 = ttl.cb_wait %landing1
+        : <[1, 1], !ttcore.tile<32x32, f32>, 1>
+        -> tensor<1x1x!ttcore.tile<32x32, f32>>
+    ttl.cb_pop %landing1 : <[1, 1], !ttcore.tile<32x32, f32>, 1>
+    func.return %selected : index
+  }
+}

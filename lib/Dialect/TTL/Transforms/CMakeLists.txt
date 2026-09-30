@@ -31,6 +31,7 @@ add_mlir_dialect_library(TTLangTTLTransforms
   PipeTransferExpansion.cpp
   PipeTransportDFBAnalysis.cpp
   PipeTransportPlan.cpp
+  PipeTensorRegions.cpp
   ConvertTTLToCompute.cpp
   ConvertTTLComputeToSCF.cpp
   ConvertTTLTileOpsToTTKernel.cpp
