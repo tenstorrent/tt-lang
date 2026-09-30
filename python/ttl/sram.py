@@ -292,6 +292,7 @@ class SRAMStorage:
 
     def requirements(self) -> PreparedSRAMStorage:
         """Return immutable movable requirements before physical reservation."""
+        require_outside_submission()
         with self._lock:
             self._owner.require_declared()
             return prepare_persistent_storage(

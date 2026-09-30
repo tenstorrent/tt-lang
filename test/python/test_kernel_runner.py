@@ -2261,7 +2261,7 @@ def test_compiler_l1_arena_size_shares_storage_owner_record_and_payload():
         for dfb_index, logical_pages in enumerate((1, 2))
     ]
 
-    assert kernel_runner._get_compiler_l1_arena_bytes(configs) == 4160
+    assert kernel_runner._get_compiler_sram_arena_bytes(configs) == 4160
 
 
 @pytest.mark.parametrize(
@@ -2288,7 +2288,7 @@ def test_compiler_l1_arena_size_rejects_shared_owner_page_format(
     second = replace(first, dfb_index=1, data_format=second_format, tile=second_tile)
 
     with pytest.raises(ValueError, match="inconsistent page formats"):
-        kernel_runner._get_compiler_l1_arena_bytes([first, second])
+        kernel_runner._get_compiler_sram_arena_bytes([first, second])
 
 
 @pytest.mark.parametrize(
@@ -2331,7 +2331,7 @@ def test_compiler_l1_arena_size_rejects_inconsistent_shared_storage(
     )
 
     with pytest.raises(ValueError, match=message):
-        kernel_runner._get_compiler_l1_arena_bytes([first, second])
+        kernel_runner._get_compiler_sram_arena_bytes([first, second])
 
 
 def test_compiler_l1_arena_size_rejects_distinct_overlapping_records():
@@ -2353,7 +2353,7 @@ def test_compiler_l1_arena_size_rejects_distinct_overlapping_records():
     ]
 
     with pytest.raises(ValueError, match="control records overlap"):
-        kernel_runner._get_compiler_l1_arena_bytes(configs)
+        kernel_runner._get_compiler_sram_arena_bytes(configs)
 
 
 def test_compiler_l1_arena_size_requires_shared_capacity_extent():
@@ -2372,7 +2372,7 @@ def test_compiler_l1_arena_size_requires_shared_capacity_extent():
     )
 
     with pytest.raises(ValueError, match="allocation does not cover its payload"):
-        kernel_runner._get_compiler_l1_arena_bytes([config])
+        kernel_runner._get_compiler_sram_arena_bytes([config])
 
 
 def test_compiler_l1_arena_size_accepts_tensor_backing_without_payload():
@@ -2419,7 +2419,7 @@ def test_compiler_l1_arena_size_rejects_mixed_payload_sources():
     )
 
     with pytest.raises(ValueError, match="arena payload cannot include"):
-        kernel_runner._get_compiler_l1_arena_bytes([config])
+        kernel_runner._get_compiler_sram_arena_bytes([config])
 
 
 def test_compiler_l1_arena_size_combines_tensor_and_static_storage():
@@ -2504,9 +2504,9 @@ def test_shared_sram_backing_requires_matching_node_handoff(second_is_tensor):
     configs = _shared_sram_backing_configs(second_is_tensor=second_is_tensor)
     unrelated_reset = SRAMReconfigurationReset(0, (1,))
     with pytest.raises(ValueError, match="matching reconfiguration handoff"):
-        kernel_runner._get_compiler_l1_arena_bytes(configs)
+        kernel_runner._get_compiler_sram_arena_bytes(configs)
     with pytest.raises(ValueError, match="matching reconfiguration handoff"):
-        kernel_runner._get_compiler_l1_arena_bytes(
+        kernel_runner._get_compiler_sram_arena_bytes(
             configs, reconfiguration_resets=(unrelated_reset,)
         )
 
@@ -2514,7 +2514,7 @@ def test_shared_sram_backing_requires_matching_node_handoff(second_is_tensor):
     reset = SRAMReconfigurationReset(0, (0,), (handoff,))
     expected_bytes = 8 if second_is_tensor else 2112
     assert (
-        kernel_runner._get_compiler_l1_arena_bytes(
+        kernel_runner._get_compiler_sram_arena_bytes(
             configs, reconfiguration_resets=(reset,)
         )
         == expected_bytes
@@ -2523,7 +2523,7 @@ def test_shared_sram_backing_requires_matching_node_handoff(second_is_tensor):
         second_is_tensor=second_is_tensor, second_node=(1, 0)
     )
     assert (
-        kernel_runner._get_compiler_l1_arena_bytes(disjoint_configs) == expected_bytes
+        kernel_runner._get_compiler_sram_arena_bytes(disjoint_configs) == expected_bytes
     )
 
 
@@ -2531,20 +2531,20 @@ def test_shared_sram_backing_rejects_wrong_reset_owner_and_unknown_nodes():
     configs = _shared_sram_backing_configs(second_is_tensor=False)
     handoff = SRAMBackingHandoff(0, 1, (0, 0))
     with pytest.raises(ValueError, match="invalid compiler-sram backing handoff"):
-        kernel_runner._get_compiler_l1_arena_bytes(
+        kernel_runner._get_compiler_sram_arena_bytes(
             configs,
             reconfiguration_resets=(SRAMReconfigurationReset(0, (1,), (handoff,)),),
         )
     configs[1] = replace(configs[1], allocation_nodes=None)
     with pytest.raises(ValueError, match="requires exact launch nodes"):
-        kernel_runner._get_compiler_l1_arena_bytes(configs)
+        kernel_runner._get_compiler_sram_arena_bytes(configs)
 
 
 def test_shared_sram_backing_requires_handoff_on_the_shared_node():
     configs = _shared_sram_backing_configs(second_is_tensor=True)
     wrong_node = SRAMReconfigurationReset(0, (0,), (SRAMBackingHandoff(0, 1, (1, 0)),))
     with pytest.raises(ValueError, match="matching reconfiguration handoff"):
-        kernel_runner._get_compiler_l1_arena_bytes(
+        kernel_runner._get_compiler_sram_arena_bytes(
             configs, reconfiguration_resets=(wrong_node,)
         )
 
@@ -2555,7 +2555,7 @@ def test_shared_sram_backing_accepts_identical_tensor_source():
         configs[1],
         storage_segments=(replace(configs[1].storage_segments[0], tensor_index=0),),
     )
-    assert kernel_runner._get_compiler_l1_arena_bytes(configs) == 8
+    assert kernel_runner._get_compiler_sram_arena_bytes(configs) == 8
 
 
 def test_shared_sram_backing_distinguishes_offsets_within_one_tensor():
@@ -2567,14 +2567,14 @@ def test_shared_sram_backing_distinguishes_offsets_within_one_tensor():
         ),
     )
     with pytest.raises(ValueError, match="matching reconfiguration handoff"):
-        kernel_runner._get_compiler_l1_arena_bytes(configs)
+        kernel_runner._get_compiler_sram_arena_bytes(configs)
 
 
 def test_shared_sram_backing_rejects_duplicate_handoff_in_one_reset():
     configs = _shared_sram_backing_configs(second_is_tensor=True)
     handoff = SRAMBackingHandoff(0, 1, (0, 0))
     with pytest.raises(ValueError, match="duplicate compiler-sram backing handoff"):
-        kernel_runner._get_compiler_l1_arena_bytes(
+        kernel_runner._get_compiler_sram_arena_bytes(
             configs,
             reconfiguration_resets=(
                 SRAMReconfigurationReset(0, (0,), (handoff, handoff)),
@@ -2626,6 +2626,43 @@ def test_compiler_sram_validates_capacity_before_arena_sizing(monkeypatch):
             kernel_specs=[],
             tensors=[],
             cb_configs=[config],
+            core_ranges=_FakeCoreRanges(),
+            memory_model="compiler-sram",
+        )
+
+
+# Runtime allocation must use the same arena extent that metadata validation approved.
+def test_compiler_sram_rejects_prepared_extent_mismatch_before_allocation(monkeypatch):
+    import ttl._sram_requirements as requirements
+
+    original_prepare = requirements.prepare_sram_operation
+
+    def prepare_with_wrong_extent(**kwargs):
+        prepared = original_prepare(**kwargs)
+        arena = prepared.requirements[0]
+        return replace(
+            prepared,
+            requirements=(
+                replace(arena, extent_bytes=arena.extent_bytes + 16),
+                *prepared.requirements[1:],
+            ),
+        )
+
+    monkeypatch.setattr(
+        requirements, "prepare_sram_operation", prepare_with_wrong_extent
+    )
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    monkeypatch.setattr(
+        kernel_runner,
+        "_allocate_l1_sharded_storage_tensor",
+        lambda *_args, **_kwargs: pytest.fail("SRAM allocated before size validation"),
+    )
+
+    with pytest.raises(ValueError, match="prepared SRAM arena size differs"):
+        kernel_runner.run_kernel_on_device(
+            kernel_specs=[],
+            tensors=[],
+            cb_configs=[_compiler_l1_config()],
             core_ranges=_FakeCoreRanges(),
             memory_model="compiler-sram",
         )
@@ -2736,15 +2773,15 @@ def test_compiler_l1_arena_size_rejects_partial_metadata():
     )
 
     with pytest.raises(ValueError, match="mixed compiler-sram and Metal"):
-        kernel_runner._get_compiler_l1_arena_bytes([config])
+        kernel_runner._get_compiler_sram_arena_bytes([config])
 
 
 def test_compiler_sram_mode_rejects_legacy_metadata_and_accepts_empty_plan():
     legacy = PhysicalDFBConfig(0, 1, "bfloat16", 1, 2048, None)
 
     with pytest.raises(ValueError, match="requires complete allocation metadata"):
-        kernel_runner._get_compiler_l1_arena_bytes([legacy], "compiler-sram")
-    assert kernel_runner._get_compiler_l1_arena_bytes([], "compiler-sram") == 0
+        kernel_runner._get_compiler_sram_arena_bytes([legacy], "compiler-sram")
+    assert kernel_runner._get_compiler_sram_arena_bytes([], "compiler-sram") == 0
 
 
 def _compiler_l1_config():
@@ -3575,7 +3612,7 @@ def test_compiler_sram_failed_completion_detaches_cached_owners(
         "runtime_resource_cache": cache,
         "device": device,
     }
-    arena_bytes = kernel_runner._get_compiler_l1_arena_bytes(arguments["cb_configs"])
+    arena_bytes = kernel_runner._get_compiler_sram_arena_bytes(arguments["cb_configs"])
     assert arena_bytes is not None
 
     with pytest.raises(RuntimeError, match="completion unknown"):
@@ -10340,7 +10377,7 @@ def test_sram_report_preserves_existing_positional_runtime_arguments(monkeypatch
     selected_models = []
     monkeypatch.setattr(
         kernel_runner,
-        "_get_compiler_l1_arena_bytes",
+        "_get_compiler_sram_arena_bytes",
         lambda configs, model, resets: selected_models.append(model) or None,
     )
     monkeypatch.setattr(kernel_runner, "_run_kernel_on_device_impl", lambda **kw: kw)

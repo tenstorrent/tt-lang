@@ -2378,7 +2378,7 @@ def _print_sram_runtime_report(
     print("ttlang-sram-report: " + json.dumps(report, sort_keys=True), file=sys.stderr)
 
 
-def _get_compiler_l1_arena_bytes(
+def _get_compiler_sram_arena_bytes(
     cb_configs: Sequence[PhysicalDFBConfig],
     memory_model: Optional[str] = None,
     reconfiguration_resets: Sequence[SRAMReconfigurationReset] = (),
@@ -3052,7 +3052,7 @@ def _get_cached_runtime_resources_impl(
 ) -> Tuple[PipeRuntimeResources, DFBReconfigurationRuntimeResources]:
     pipe_computed_address_dfb_indices = tuple(pipe_computed_address_dfb_indices)
     compiler_sram = (
-        _get_compiler_l1_arena_bytes(
+        _get_compiler_sram_arena_bytes(
             cb_configs, memory_model, sram_reconfiguration_resets
         )
         is not None
@@ -5364,7 +5364,7 @@ def run_kernel_on_device(
     sram_node_sizes = _validate_sram_node_domain_requirements(
         cb_configs, kernel_specs, tensors, core_ranges
     )
-    compiler_l1_arena_bytes = _get_compiler_l1_arena_bytes(
+    compiler_l1_arena_bytes = _get_compiler_sram_arena_bytes(
         cb_configs, memory_model, sram_reconfiguration_resets
     )
     pipe_computed_address_dfb_indices = tuple(
@@ -5382,6 +5382,38 @@ def run_kernel_on_device(
                 "compiler-sram cannot combine with Metal DFB reconfiguration"
             )
         _validate_tensor_backing_aliases(tensors, cb_configs, compiler_sram=True)
+        from ._sram_requirements import prepare_sram_operation
+
+        _ensure_ttnn()
+        if ttnn is None:
+            raise RuntimeError("ttnn is not available")
+        prepared_sram = prepare_sram_operation(
+            name=operation_name,
+            tensors=tensors,
+            configs=cb_configs,
+            nodes=tuple(
+                (int(core.x), int(core.y))
+                for core in ttnn.corerange_to_cores(core_ranges, row_wise=True)
+            ),
+            ttnn_api=ttnn,
+        )
+        prepared_node_sizes = prepared_sram.arena_bytes_by_node()
+        if sram_node_sizes:
+            if prepared_node_sizes != sram_node_sizes:
+                raise ValueError(
+                    "prepared SRAM arena sizes differ from validated node layouts"
+                )
+        elif compiler_l1_arena_bytes and (
+            len(prepared_sram.arenas) != 1
+            or any(
+                size != compiler_l1_arena_bytes for size in prepared_node_sizes.values()
+            )
+        ):
+            raise ValueError(
+                "prepared SRAM arena size differs from validated allocation"
+            )
+    else:
+        prepared_sram = None
     arguments = {
         "kernel_specs": kernel_specs,
         "tensors": tensors,
@@ -5422,12 +5454,13 @@ def run_kernel_on_device(
         arenas = []
         try:
             if sram_node_sizes:
-                from ._sram_domains import node_domains
-
                 arenas_by_node = {}
-                for coordinates in node_domains(cb_configs):
+                for arena_binding in prepared_sram.arenas:
+                    coordinates = arena_binding.nodes
                     domain_ranges = _make_singleton_core_ranges(coordinates)
-                    requested_bytes = sram_node_sizes[coordinates[0]]
+                    requested_bytes = prepared_sram.requirements[
+                        arena_binding.requirement_index
+                    ].extent_bytes
                     arena = _allocate_l1_sharded_storage_tensor(
                         domain_ranges,
                         requested_bytes,
@@ -5448,9 +5481,12 @@ def run_kernel_on_device(
                         )
                 arguments["sram_node_arenas"] = arenas_by_node
             else:
+                requested_bytes = prepared_sram.requirements[
+                    prepared_sram.arenas[0].requirement_index
+                ].extent_bytes
                 arena = _allocate_l1_sharded_storage_tensor(
                     core_ranges,
-                    compiler_l1_arena_bytes,
+                    requested_bytes,
                     resource_device,
                     zero_initialize=True,
                 )
@@ -5458,7 +5494,7 @@ def run_kernel_on_device(
                 arguments["compiler_l1_arena"] = arena
                 if sram_allocation_report:
                     _print_sram_runtime_report(
-                        arena, core_ranges, compiler_l1_arena_bytes, operation_name
+                        arena, core_ranges, requested_bytes, operation_name
                     )
             result = _run_kernel_on_device_impl(**arguments)
         except BaseException as execution_error:
@@ -5733,7 +5769,7 @@ def emit_runner_source(
     for physical_index, config in enumerate(cb_configs):
         _get_dfb_allocation(config)
         _validate_physical_dfb_config(config, physical_index)
-    arena_bytes = _get_compiler_l1_arena_bytes(
+    arena_bytes = _get_compiler_sram_arena_bytes(
         cb_configs, memory_model, sram_reconfiguration_resets
     )
     memory_model = memory_model or (
