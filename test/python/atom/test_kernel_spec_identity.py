@@ -25,8 +25,9 @@ HEADER = "/dev/null/fake_shim.hpp"
 
 
 def _compiled_kernel(operation):
-    """Return the single compiled artifact cached by an operation wrapper."""
-    cache = inspect.getclosurevars(operation._wrapper).nonlocals["cache"]
+    """Return the single artifact cached by the enclosed operation wrapper."""
+    operation_wrapper = inspect.getclosurevars(operation._wrapper).nonlocals["function"]
+    cache = inspect.getclosurevars(operation_wrapper).nonlocals["cache"]
     assert len(cache) == 1
     return next(iter(cache.values()))
 
