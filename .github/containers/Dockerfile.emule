@@ -1,0 +1,128 @@
+# SPDX-FileCopyrightText: (c) 2026 Tenstorrent AI ULC
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# tt-emule JITs Linux/x86-64 shared objects, so this image intentionally uses
+# the amd64 TT-Lang IRD toolchain on every host, including Apple Silicon.
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+
+SHELL ["/bin/bash", "-c"]
+
+ARG BASE_IMAGE
+ARG STACK_MANIFEST_SHA256
+ARG TT_LANG_COMPILER_REPOSITORY
+ARG TT_LANG_COMPILER_BASE_COMMIT
+ARG TT_EMULE_COMMIT
+ARG TT_METAL_COMMIT
+ARG TT_METAL_SOURCE_URL
+ARG RUNTIME_PLATFORM
+ARG TARGET_NAME
+ARG TARGET_CLUSTER_DESCRIPTOR
+ARG TARGET_MESH_DEVICE
+
+LABEL org.opencontainers.image.title="TT-Lang compiler-backed emule runtime" \
+      org.opencontainers.image.source="${TT_LANG_COMPILER_REPOSITORY}" \
+      io.tenstorrent.tt-lang.compiler.commit="${TT_LANG_COMPILER_BASE_COMMIT}" \
+      io.tenstorrent.tt-lang.emule.commit="${TT_EMULE_COMMIT}" \
+      io.tenstorrent.tt-lang.metal.repository="${TT_METAL_SOURCE_URL}" \
+      io.tenstorrent.tt-lang.metal.commit="${TT_METAL_COMMIT}" \
+      io.tenstorrent.tt-lang.runtime.base-image="${BASE_IMAGE}" \
+      io.tenstorrent.tt-lang.runtime.manifest-sha256="${STACK_MANIFEST_SHA256}" \
+      io.tenstorrent.tt-lang.runtime.platform="${RUNTIME_PLATFORM}" \
+      io.tenstorrent.tt-lang.target.name="${TARGET_NAME}" \
+      io.tenstorrent.tt-lang.target.cluster-descriptor="${TARGET_CLUSTER_DESCRIPTOR}" \
+      io.tenstorrent.tt-lang.target.mesh-device="${TARGET_MESH_DEVICE}"
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TT_EMULE_RUNTIME_ROOT=/opt/tt-emule-runtime
+ENV TT_METAL_SOURCE_DIR=/opt/tt-emule-runtime/tt-metal
+ENV TT_METAL_BUILD_DIR=/opt/tt-emule-runtime/tt-metal/build_emule
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        binutils \
+        ca-certificates \
+        cmake \
+        g++-13 \
+        gcc-13 \
+        git \
+        ninja-build \
+    && rm -rf /var/lib/apt/lists/* \
+    && command -v clang-20 >/dev/null \
+    && command -v clang++-20 >/dev/null \
+    && command -v lld-20 >/dev/null
+
+COPY --from=tt-emule-source . /opt/tt-emule
+COPY --from=tt-lang-stack tt-lang-emule-stack.json \
+    /opt/tt-emule-runtime/source-manifest.json
+
+RUN printf '%s  %s\n' "$STACK_MANIFEST_SHA256" \
+        /opt/tt-emule-runtime/source-manifest.json | sha256sum --check --strict \
+    && /opt/ttlang-toolchain/venv/bin/python -c \
+        'import json, sys; keys = ("source_manifest_sha256", "compiler_repository", "compiler_commit", "emulator_commit", "metal_repository", "metal_commit", "base_image", "platform", "target", "cluster_descriptor", "mesh_device"); json.dump(dict(zip(keys, sys.argv[1:])), sys.stdout, indent=2); print()' \
+        "$STACK_MANIFEST_SHA256" \
+        "$TT_LANG_COMPILER_REPOSITORY" "$TT_LANG_COMPILER_BASE_COMMIT" \
+        "$TT_EMULE_COMMIT" \
+        "$TT_METAL_SOURCE_URL" "$TT_METAL_COMMIT" \
+        "$BASE_IMAGE" "$RUNTIME_PLATFORM" "$TARGET_NAME" \
+        "$TARGET_CLUSTER_DESCRIPTOR" "$TARGET_MESH_DEVICE" \
+        > /opt/tt-emule-runtime/stack.json
+
+RUN test -f /opt/tt-emule/tt-metal-pin.txt \
+    && grep -F -x -- "$TT_METAL_COMMIT" /opt/tt-emule/tt-metal-pin.txt \
+    && mkdir -p "$TT_EMULE_RUNTIME_ROOT" \
+    && git init "$TT_METAL_SOURCE_DIR" \
+    && git -C "$TT_METAL_SOURCE_DIR" remote add origin "$TT_METAL_SOURCE_URL" \
+    && git -C "$TT_METAL_SOURCE_DIR" fetch --depth 1 origin "$TT_METAL_COMMIT" \
+    && git -C "$TT_METAL_SOURCE_DIR" checkout --detach FETCH_HEAD \
+    && git -C "$TT_METAL_SOURCE_DIR" submodule update --init --depth 1 \
+        tt_metal/third_party/umd tt_metal/third_party/tracy
+
+RUN cmake -S "$TT_METAL_SOURCE_DIR" -B "$TT_METAL_BUILD_DIR" -G Ninja \
+        -DCMAKE_TOOLCHAIN_FILE="$TT_METAL_SOURCE_DIR/cmake/x86_64-linux-clang-20-libstdcpp-toolchain.cmake" \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_INSTALL_PREFIX="$TT_METAL_BUILD_DIR" \
+        -DPython3_EXECUTABLE=/opt/ttlang-toolchain/venv/bin/python \
+        -DTT_METAL_USE_EMULE=ON \
+        -DTT_EMULE_PATH=/opt/tt-emule \
+        -DWITH_PYTHON_BINDINGS=ON \
+        -DTT_UNITY_BUILDS=ON \
+        -DENABLE_TRACY=OFF \
+        -DENABLE_DISTRIBUTED=OFF \
+        -DBUILD_SHARED_LIBS=ON \
+        -DBUILD_PROGRAMMING_EXAMPLES=OFF \
+        -DTT_METAL_BUILD_TESTS=OFF \
+        -DTTNN_BUILD_TESTS=OFF \
+        -DBUILD_TT_TRAIN=OFF \
+        -DBUILD_TELEMETRY=OFF \
+        -DENABLE_TTNN_SHARED_SUBLIBS=OFF \
+        -DTT_ENABLE_LIGHT_METAL_TRACE=OFF \
+        -DENABLE_LIBCXX=OFF \
+    && TT_METAL_HOME="$TT_METAL_SOURCE_DIR" \
+       TT_METAL_RUNTIME_ROOT="$TT_METAL_SOURCE_DIR" \
+       TT_METAL_CACHE="$TT_METAL_BUILD_DIR/tt-metal-cache" \
+       cmake --build "$TT_METAL_BUILD_DIR" --target ttnn ttnncpp \
+    && TT_METAL_HOME="$TT_METAL_SOURCE_DIR" \
+       TT_METAL_RUNTIME_ROOT="$TT_METAL_SOURCE_DIR" \
+       TT_METAL_CACHE="$TT_METAL_BUILD_DIR/tt-metal-cache" \
+       cmake --build "$TT_METAL_BUILD_DIR" --target precompile-fw --parallel 1 \
+    && ln -sfn "$TT_METAL_BUILD_DIR/ttnn/_ttnn.so" \
+        "$TT_METAL_SOURCE_DIR/ttnn/ttnn/_ttnn.so" \
+    && mkdir -p "$TT_METAL_BUILD_DIR/lib" \
+    && ln -sfn ../tt_metal/libtt_metal.so "$TT_METAL_BUILD_DIR/lib/libtt_metal.so" \
+    && ln -sfn ../tt_stl/libtt_stl.so "$TT_METAL_BUILD_DIR/lib/libtt_stl.so" \
+    && ln -sfn ../ttnn/_ttnncpp.so "$TT_METAL_BUILD_DIR/lib/_ttnncpp.so" \
+    && ln -sfn ../ttnn/_ttnn.so "$TT_METAL_BUILD_DIR/lib/_ttnn.so" \
+    && nm -DC "$TT_METAL_BUILD_DIR/tt_metal/libtt_metal.so" \
+        > /tmp/tt-metal-symbols.txt \
+    && grep -q 'emule::execute_program_emulated' /tmp/tt-metal-symbols.txt \
+    && rm /tmp/tt-metal-symbols.txt \
+    && TT_METAL_HOME="$TT_METAL_SOURCE_DIR" \
+       TT_METAL_RUNTIME_ROOT="$TT_METAL_SOURCE_DIR" \
+       PYTHONPATH="$TT_METAL_SOURCE_DIR/ttnn:$TT_METAL_SOURCE_DIR/tools" \
+       /opt/ttlang-toolchain/venv/bin/python -c 'import ttnn'
+
+RUN mkdir -p /ttlang-build /tt-metal-cache
+
+WORKDIR /workspace
+ENTRYPOINT ["/workspace/scripts/tt-lang-emule-entrypoint.sh"]
