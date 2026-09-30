@@ -790,19 +790,23 @@ void recordGuardOperation(Operation *op, const LaunchNodeDomain &domain,
       .Case<WaitOp>([&](WaitOp wait) {
         verifyPipeWaitGuard(wait, domain, unanalyzableOp, state);
       })
-      .Case<CBPushOp>([&](CBPushOp push) {
-        FailureOr<int64_t> dfbId =
-            state.dfbIdentities->getLogicalId(push.getCb());
-        assert(succeeded(dfbId) && "DFB operands were verified");
-        state.dfbProducerDomains[*dfbId] =
-            state.dfbProducerDomains[*dfbId].unionWith(domain);
-      })
       .Case<CBWaitOp>([&](CBWaitOp wait) {
         FailureOr<int64_t> dfbId =
             state.dfbIdentities->getLogicalId(wait.getCb());
         assert(succeeded(dfbId) && "DFB operands were verified");
         state.waitUses.push_back({wait, domain, *dfbId});
       });
+  if (auto access = dyn_cast<DFBAccessOpInterface>(op)) {
+    for (const DFBProtocolEffect &effect : access.getDFBProtocolEffects()) {
+      if (effect.kind != DFBProtocolEffectKind::Push) {
+        continue;
+      }
+      FailureOr<int64_t> dfbId = state.dfbIdentities->getLogicalId(effect.dfb);
+      assert(succeeded(dfbId) && "DFB producer operands were verified");
+      state.dfbProducerDomains[*dfbId] =
+          state.dfbProducerDomains[*dfbId].unionWith(domain);
+    }
+  }
 }
 
 /// Record the synchronization events used by the schedule verifier.
@@ -858,11 +862,28 @@ verifyGuardDFBIdentities(ModuleOp module,
     return failure();
   }
 
+  if (failed(verifyDFBOperandIdentities(
+          module, "ttl-verify-pipenet-guards",
+          [](Operation *operation) {
+            return isa<CBPushOp, CBWaitOp>(operation);
+          },
+          [&](Value dfb) { return dfbIdentities.getLogicalId(dfb); },
+          "`ttl.cb_push` and `ttl.cb_wait` DFB",
+          DFBIdentityRequirement::Logical))) {
+    return failure();
+  }
   return verifyDFBOperandIdentities(
       module, "ttl-verify-pipenet-guards",
-      [](Operation *operation) { return isa<CBPushOp, CBWaitOp>(operation); },
+      [](Operation *operation) {
+        auto access = dyn_cast<DFBAccessOpInterface>(operation);
+        return access && !isa<CBPushOp>(operation) &&
+               llvm::any_of(access.getDFBProtocolEffects(),
+                            [](const DFBProtocolEffect &effect) {
+                              return effect.kind == DFBProtocolEffectKind::Push;
+                            });
+      },
       [&](Value dfb) { return dfbIdentities.getLogicalId(dfb); },
-      "`ttl.cb_push` and `ttl.cb_wait` DFB", DFBIdentityRequirement::Logical);
+      "DFB producer", DFBIdentityRequirement::Logical);
 }
 
 enum class PipeScheduleEdgeKind {

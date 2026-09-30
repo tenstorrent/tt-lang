@@ -1904,9 +1904,9 @@ at the construction source location.
 ```
 
 `ttl-insert-cb-sync` first makes every DFB lifecycle operation explicit.
-`ttl-verify-pipenet-guards` then uses each DFB's unique provisional index to
-compare producer and consumer domains. This occurs before final DFB index reuse
-so independent logical DFBs are not grouped by a shared physical index.
+`ttl-verify-pipenet-guards` then uses each DFB's logical identity to compare
+producer and consumer domains. This occurs before final DFB index reuse, so
+independent logical DFBs are not grouped by a shared physical index.
 `ttl-verify-pipenet-schedule` follows it so invalid launch domains are diagnosed
 before schedule construction. Both verifiers inspect the high-level pipe
 schedule before later transformations modify it, and diagnostics therefore use
@@ -1938,9 +1938,10 @@ may execute there.
 - `setToEntryState`: the entry block of every kernel function starts
   at the full launch grid (`ttl.launch_grid` module attribute).
 - `visitOperation`: identity for most ops; pipe-typed `ttl.copy`
-  operations check their `before` domain against the pipe role, and
-  `ttl.cb_push` / `ttl.cb_wait` operations are recorded for the later
-  DFB producer-domain check.
+  operations check their `before` domain against the pipe role. Direct
+  `ttl.cb_wait` operations and `push` effects from `DFBAccessOpInterface`
+  operations, including external calls, are recorded for the later DFB
+  producer-domain check.
 - `visitRegionBranchControlFlowTransfer`: when entering a region of
   `scf.if`, `affine.if`, `ttl.if_src`, `ttl.if_dst`, or
   `ttl.pipenet_scope`, the lattice at the region entry is set to `current`
@@ -1971,15 +1972,14 @@ the role required by the op:
 | `ttl.copy(pipe, buffer)` | `pipe.dst` (receiver set) |
 | `ttl.if_src %pipe` body | `pipe.src` (the operation executes its body only at the source coordinate) |
 | `ttl.if_dst %pipe` body | `pipe.dst` (the operation executes its body only in the destination range) |
-| `cb_wait` on pipe-coupled DFB | union of producer domains across all `cb_push` to the same DFB index |
+| `cb_wait` on pipe-coupled DFB | union of domains for direct and external `push` effects on the same logical DFB |
 
 DFB wait checking is module-global: producer domains accumulate by
-provisional DFB index across every `cb_push` the analysis visits, then a
-post-pass walks recorded `cb_wait` uses and checks each against the union. The
-frontend and compiler-created DFBs have unique provisional indices before
-physical allocation. A `cb_wait` in one kernel function is therefore checked
-against `cb_push` domains for the same logical DFB in other kernel functions,
-without combining independent DFBs that later reuse one physical index.
+logical DFB identity across every direct or externally declared `push` effect
+the analysis visits, then a post-pass checks recorded `cb_wait` uses against
+the union. A `cb_wait` in one kernel function is therefore checked against
+producer domains for the same logical DFB in other kernel functions, without
+combining independent DFBs that later reuse one physical index.
 
 `ttl-verify-pipenet-schedule` reuses the launch-node domains but constructs a
 separate event graph. Its correspondence rules are directional:
@@ -2204,8 +2204,8 @@ note: suggested guard: `net_0.is_src()`
 | pipe schedule contains a wait-for cycle | Same-thread ordering creates a wait-for cycle not matched by a more specific diagnostic. | reorder same-thread sends and receives so all required receive posts happen before dependent sends |
 | collective pipe receiver payload layouts are incompatible | Collective endpoints use incompatible DFB element types, block sizes, reserve spans, or destination subviews. | use compatible receiver payload layouts, or use separate point-to-point transfers |
 | collective pipe receiver address sequences are not proven equal | The graph cannot prove one pointwise destination-address class over all occurrences of a collective transfer. | use receiver schedules that produce the same address for every occurrence, or use separate point-to-point transfers |
-| this `cb_wait` reads from a dataflow buffer that no other thread fills | A `cb_wait` references a DFB index that no `cb_push` anywhere in the module writes to. | check that another `@ttl.compute()` or `@ttl.datamovement()` thread reserves and pushes the same buffer |
-| this `cb_wait` runs on launched nodes where no thread pushes data to the buffer (would deadlock) | A `cb_wait` is reachable from nodes outside the union of `cb_push` producer domains for the same DFB index. | guard the wait with the same `if net.is_active(): ...` role condition the producer uses |
+| this `cb_wait` reads from a dataflow buffer that no other thread fills | A `cb_wait` references a logical DFB with no direct or externally declared `push` effect anywhere in the module. | check that another `@ttl.compute()` or `@ttl.datamovement()` thread reserves and pushes the same buffer |
+| this `cb_wait` runs on launched nodes where no thread pushes data to the buffer (would deadlock) | A `cb_wait` is reachable from nodes outside the union of direct and externally declared `push` producer domains for the same logical DFB. | guard the wait with the same `if net.is_active(): ...` role condition the producer uses |
 | could not statically analyze the PipeNet guard around this op | A surrounding condition uses runtime values or arithmetic the verifier can't enumerate per coordinate (e.g. multiplying a node coordinate by a runtime value). | rewrite using `net.is_src()` / `net.is_dst()` / `net.is_active()`, or compare `ttl.node(dims=2)` coordinates against integer constants |
 
 Internal-invariant diagnostics also exist (`references unknown PipeNet
@@ -2313,7 +2313,7 @@ that the two diverge:
 | Send/post and send/wait correspondence | yes (`ttl-verify-pipenet-schedule`) | runtime only |
 | Same-thread PipeNet wait-for cycles | yes (`ttl-verify-pipenet-schedule`) | runtime only |
 | `ttl.pipenet_scope` domain is a subset of declared role union | yes | no |
-| `cb_wait` covered by `cb_push` producer domain | yes (static) | runtime only (deadlock detector in `greenlet_scheduler.py`) |
+| `cb_wait` covered by direct or externally declared `push` producer domain | yes (static) | runtime only (deadlock detector in `greenlet_scheduler.py`) |
 | Unanalyzable coordinate-dependent condition diagnosed | yes | no |
 | Missing/malformed `ttl.launch_grid`, unknown PipeNet ids | yes | n/a (no IR) |
 
