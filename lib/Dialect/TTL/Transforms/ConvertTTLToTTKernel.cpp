@@ -1640,7 +1640,7 @@ static LogicalResult lowerDFBReset(Operation *operation,
   }
   ttk::OpaqueCallOp::create(
       rewriter, location, TypeRange{},
-      rewriter.getStringAttr("experimental::reset_dfb_interfaces"),
+      rewriter.getStringAttr("::experimental::reset_dfb_interfaces"),
       rewriter.getStringAttr("<cstdint>"),
       ValueRange{synchronizationAddress, lowMask, highMask}, ArrayAttr(),
       rewriter.getDenseI32ArrayAttr({0, 1, 2}),
@@ -1741,7 +1741,7 @@ struct DFBReconfigurationLowering : OpConversionPattern<DFBReconfigurationOp> {
         runtimeArgIndex);
     auto reconfigurationCall = ttk::OpaqueCallOp::create(
         rewriter, op.getLoc(), TypeRange{},
-        rewriter.getStringAttr("experimental::reconfigure_dfb_interfaces"),
+        rewriter.getStringAttr("::experimental::reconfigure_dfb_interfaces"),
         rewriter.getStringAttr("<cstdint>"), ValueRange{configurationAddress},
         ArrayAttr(), rewriter.getDenseI32ArrayAttr({0}), DenseI32ArrayAttr());
     reconfigurationCall->setAttr(kDFBReconfigurationOrdinalAttrName,

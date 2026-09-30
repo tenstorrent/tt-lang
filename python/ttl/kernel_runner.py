@@ -35,6 +35,8 @@ from typing import (
     Tuple,
 )
 
+from .config import kernel_include_paths
+
 ttnn = None  # Lazy-loaded via _ensure_ttnn()
 
 _STATIC_DFB_PACKING_SEARCH_STATE_LIMIT = 1_000_000
@@ -2239,7 +2241,9 @@ def build_kernel_descriptors(
                     defines=defines,
                     common_runtime_args=partition_common_runtime_args,
                     config=spec.config,
-                    compiler_include_paths=spec.compiler_include_paths,
+                    compiler_include_paths=kernel_include_paths(
+                        spec.compiler_include_paths
+                    ),
                 )
                 partition_runtime_args = _restrict_runtime_args(
                     descriptor_variant.runtime_args, partition_coordinates
