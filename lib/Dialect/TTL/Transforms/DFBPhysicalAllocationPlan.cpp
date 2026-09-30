@@ -2450,6 +2450,12 @@ static FailureOr<PhysicalAllocationCandidate> computeAllocationWithinL1(
   return allocation;
 }
 
+static bool hasSameGeometry(const DFBConfigurationEpochDescriptor &lhs,
+                            const DFBConfigurationEpochDescriptor &rhs) {
+  return lhs.numTiles == rhs.numTiles && lhs.elementType == rhs.elementType &&
+         lhs.pageSize == rhs.pageSize && lhs.blockCount == rhs.blockCount;
+}
+
 /// Builds the dense runtime descriptor table without modifying IR.
 static FailureOr<DFBPhysicalAllocationDescriptorList>
 buildDescriptors(ArrayRef<DFBPhysicalIndexAssignment> assignments,
@@ -2591,23 +2597,19 @@ buildDescriptors(ArrayRef<DFBPhysicalIndexAssignment> assignments,
         return failure();
       }
 
-      int32_t numTiles = static_cast<int32_t>(*pagesPerBlock);
-      int32_t pageSize = static_cast<int32_t>(*pageSizeBytes);
-      int32_t blockCount = static_cast<int32_t>(dfbType.getBlockCount());
+      DFBConfigurationEpochDescriptor configuration{
+          entryReconfigurationOrdinal,
+          static_cast<int32_t>(*pagesPerBlock),
+          dfbType.getElementType(),
+          static_cast<int32_t>(*pageSizeBytes),
+          static_cast<int32_t>(dfbType.getBlockCount()),
+          {}};
       auto configurationIt = findConfiguration(entryReconfigurationOrdinal);
       if (configurationIt == descriptor.epochConfigurations.end()) {
-        descriptor.epochConfigurations.push_back({entryReconfigurationOrdinal,
-                                                  numTiles,
-                                                  dfbType.getElementType(),
-                                                  pageSize,
-                                                  blockCount,
-                                                  {}});
+        descriptor.epochConfigurations.push_back(configuration);
         configurationRepresentatives.push_back(&candidate);
         configurationIt = std::prev(descriptor.epochConfigurations.end());
-      } else if (configurationIt->numTiles != numTiles ||
-                 configurationIt->elementType != dfbType.getElementType() ||
-                 configurationIt->pageSize != pageSize ||
-                 configurationIt->blockCount != blockCount) {
+      } else if (!hasSameGeometry(*configurationIt, configuration)) {
         unsigned configurationIndex = std::distance(
             descriptor.epochConfigurations.begin(), configurationIt);
         const DFBPhysicalIndexAssignment *representative =
@@ -2647,10 +2649,10 @@ buildDescriptors(ArrayRef<DFBPhysicalIndexAssignment> assignments,
           return failure();
         }
         if (*candidateBytes > *representativeBytes) {
-          configurationIt->numTiles = numTiles;
-          configurationIt->elementType = dfbType.getElementType();
-          configurationIt->pageSize = pageSize;
-          configurationIt->blockCount = blockCount;
+          configurationIt->numTiles = configuration.numTiles;
+          configurationIt->elementType = configuration.elementType;
+          configurationIt->pageSize = configuration.pageSize;
+          configurationIt->blockCount = configuration.blockCount;
           configurationRepresentatives[configurationIndex] = &candidate;
         }
       }
@@ -2830,10 +2832,7 @@ buildDescriptors(ArrayRef<DFBPhysicalIndexAssignment> assignments,
           entry.heldOrdinals, [&](std::optional<int64_t> heldOrdinal) {
             auto heldIt = findConfiguration(heldOrdinal);
             return heldIt != descriptor.epochConfigurations.end() &&
-                   heldIt->numTiles == retainedIt->numTiles &&
-                   heldIt->elementType == retainedIt->elementType &&
-                   heldIt->pageSize == retainedIt->pageSize &&
-                   heldIt->blockCount == retainedIt->blockCount;
+                   hasSameGeometry(*heldIt, *retainedIt);
           });
       if (keepsDescriptor) {
         continue;
