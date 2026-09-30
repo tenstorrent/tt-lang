@@ -876,7 +876,7 @@ verifyGuardDFBIdentities(ModuleOp module,
       module, "ttl-verify-pipenet-guards",
       [](Operation *operation) {
         auto access = dyn_cast<DFBAccessOpInterface>(operation);
-        return access &&
+        return access && !isa<CBPushOp>(operation) &&
                llvm::any_of(access.getDFBProtocolEffects(),
                             [](const DFBProtocolEffect &effect) {
                               return effect.kind == DFBProtocolEffectKind::Push;
