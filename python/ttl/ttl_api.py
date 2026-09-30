@@ -137,7 +137,7 @@ from .kernel_runner import (
     _FabricRouteCache,
     _detect_device_arch,
     _device_identity,
-    _get_compiler_l1_arena_bytes,
+    _get_compiler_sram_arena_bytes,
     _same_device,
     attach_runtime_resource_finalizer,
     FabricManagerIntervalKind,
@@ -3029,7 +3029,7 @@ def _resolve_dfb_configs(module):
             "ttl-finalize-dfb-indices must run before runtime construction"
         )
     memory_model = _module_memory_model(module)
-    arena_bytes = _get_compiler_l1_arena_bytes(
+    arena_bytes = _get_compiler_sram_arena_bytes(
         physical_allocations,
         memory_model,
         _extract_sram_reconfiguration_resets(module),

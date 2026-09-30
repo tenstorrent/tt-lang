@@ -14,6 +14,8 @@ An `SRAMStorage` object declares tensors, allocates their backing, initializes i
 
 Declaration and allocation are separate because placement should consider the complete set of requirements before reserving storage. The initial implementation uses ordinary owned TTNN allocations. It does not yet jointly pack them with compiler scratch; [SRAM Allocation](SRAMAllocation.md) describes the existing placement machinery.
 
+`storage.requirements()` returns immutable requirements while declarations remain open. Each tensor declaration appears once with its per-shard extent, alignment, persistent lifetime, allocator-selected placement, and groups of nodes that must use one base address. `allocate()` validates the same requirements before reserving storage.
+
 `addressing="uniform"` requests one local address on every participating worker node. `addressing="per-node"` lets TTNN allocate each node independently and uses the Metal hybrid-allocation prerequisite defined in [SRAM Allocation](SRAMAllocation.md#runtime-allocation-and-binding). The tensor's required sharding mode defines how its logical dimensions map to those nodes. Per-node storage supports direct local access only; general tensor access and multicast require one common base address and are rejected.
 
 ### Example: Sharing State Between Operations
@@ -107,6 +109,14 @@ Persistent references become ordinary tensor arguments before compilation and ca
 
 ## Follow-On Work
 
-Joint placement combines declared persistent tensors, fixed existing allocations, and known temporary-storage requirements. Persistent contents remain live between accesses, so idle time alone cannot justify reusing their bytes. Reusing temporary storage across launches additionally requires a declared and enforced execution order.
+### Joint Placement
+
+Joint placement will assign aligned offsets to persistent declarations and prepared operation arenas before reserving SRAM. Persistent contents occupy their ranges until release. Arenas from different operations may overlap only when enforced completion dependencies serialize those operations. Existing application tensors keep their addresses. The TT-Lang storage owner will retain each pool and its typed views through device completion.
+
+### Program Capacity
+
+Joint placement must validate SRAM data capacity and Metal program capacity separately. Metal's [data allocator](https://github.com/tenstorrent/tt-metal/blob/ea042c4ad6237678103cd7cbceb346e060f0f9a3/tt_metal/impl/allocator/allocator.cpp#L89) already excludes reserved firmware and program memory, so program bytes must not be subtracted from the data budget again. Every participating program must be finalized without dispatch before the owner publishes persistent reservations. Physical pool bases remain runtime arguments.
+
+### Concurrent Borrowing
 
 Read/write effect information can permit concurrent read-only borrowing. These optimizations preserve the ownership and completion rules above.
