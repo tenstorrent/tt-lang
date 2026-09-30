@@ -510,6 +510,26 @@ def test_external_tensor_alias_wrapper_restores_owned_reference(runtime, address
     storage.close()
 
 
+@pytest.mark.parametrize("addressing", ["uniform", "per-node"])
+def test_external_tensor_alias_wrapper_accepts_device_coordinate_order(
+    runtime, addressing
+):
+    storage = SRAMStorage(device=runtime.device)
+    state = declare(storage, addressing=addressing)
+    storage.allocate()
+    resource = runtime.allocations[0]
+    resource.device_coordinates = (
+        ttnn.MeshCoordinate(0, 0),
+        ttnn.MeshCoordinate(0, 1),
+    )
+    if addressing == "per-node":
+        make_per_node(resource)
+    alias_wrapper = copy.copy(resource)
+    alias_wrapper.device_coordinates = tuple(reversed(resource.device_coordinates))
+    assert storage.submit(lambda value: alias_wrapper, state) is state
+    storage.close()
+
+
 @pytest.mark.parametrize(
     "difference",
     [
@@ -522,6 +542,7 @@ def test_external_tensor_alias_wrapper_restores_owned_reference(runtime, address
         "memory_config",
         "allocation_state",
         "device",
+        "device_coordinates",
         "addressing",
         "per_core_address",
     ],
@@ -557,6 +578,8 @@ def test_external_nonalias_tensor_wrapper_is_not_restored(runtime, difference):
         other_device = Device()
         other_device.device_id += 1
         candidate.options = {**candidate.options, "device": other_device}
+    elif difference == "device_coordinates":
+        candidate.device_coordinates = (ttnn.MeshCoordinate(0, 1),)
     elif difference == "addressing":
         candidate.is_per_core_allocated = lambda: True
     elif difference == "per_core_address":

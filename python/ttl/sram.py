@@ -112,6 +112,7 @@ class _TTNNStorageBackend:
             "is_allocated",
             "is_per_core_allocated",
             "memory_config",
+            "device_coords",
         )
         if any(
             not callable(getattr(candidate, method, None))
@@ -134,6 +135,12 @@ class _TTNNStorageBackend:
                 or candidate.is_per_core_allocated() != resource.is_per_core_allocated()
             ):
                 return False
+            resource_devices = tuple(resource.device_coords())
+            candidate_devices = tuple(candidate.device_coords())
+            if not resource_devices or tuple(
+                sorted(map(tuple, resource_devices))
+            ) != tuple(sorted(map(tuple, candidate_devices))):
+                return False
             if not resource.is_per_core_allocated():
                 return candidate.buffer_address() == resource.buffer_address()
             shard_grid = resource.memory_config().shard_spec.grid
@@ -141,12 +148,6 @@ class _TTNNStorageBackend:
                 self.api.corerange_to_cores(shard_grid),
                 key=lambda node: (node.y, node.x),
             )
-            resource_devices = tuple(resource.device_coords())
-            candidate_devices = tuple(candidate.device_coords())
-            if tuple(map(tuple, resource_devices)) != tuple(
-                map(tuple, candidate_devices)
-            ):
-                return False
             for device_coordinate in resource_devices:
                 for node in nodes:
                     if resource.experimental_per_core_buffer_address(
