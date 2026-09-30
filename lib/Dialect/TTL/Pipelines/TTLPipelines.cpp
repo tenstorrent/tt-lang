@@ -49,7 +49,7 @@ void createTTLToTTKernelPipeline(OpPassManager &pm,
   }
   pm.addNestedPass<func::FuncOp>(createTTLMaterializeLoopState());
   pm.addNestedPass<func::FuncOp>(createTTLInsertCopyWait());
-  buildTTLAutoSyncPipeline(pm.nest<func::FuncOp>());
+  buildTTLAutoSyncPipeline(pm.nest<func::FuncOp>(), options.autoSyncUserDFBs);
   {
     TTLInsertAccumulationScopesOptions insertOptions;
     insertOptions.kind = "dfb";
@@ -69,7 +69,11 @@ void createTTLToTTKernelPipeline(OpPassManager &pm,
     pm.addNestedPass<func::FuncOp>(createTTLInsertIntermediateDFBs(dfbOpts));
   }
   pm.addNestedPass<func::FuncOp>(createTTLConvertTTLToCompute());
-  pm.addNestedPass<func::FuncOp>(createTTLInsertCBSync());
+  {
+    TTLInsertCBSyncOptions syncOptions;
+    syncOptions.syncUserDFBs = options.autoSyncUserDFBs;
+    pm.addNestedPass<func::FuncOp>(createTTLInsertCBSync(syncOptions));
+  }
   // Verify the complete high-level schedule while logical DFB identities are
   // still distinct and before later transformations rewrite pipe operations.
   buildTTLVerifyPipeNetPipeline(pm);
@@ -79,7 +83,12 @@ void createTTLToTTKernelPipeline(OpPassManager &pm,
     transportOpts.l1BudgetOverride = options.l1BudgetOverride;
     pm.addPass(createTTLFormPipeTransports(transportOpts));
   }
-  pm.addNestedPass<func::FuncOp>(createTTLCoalesceDFBAcquires());
+  {
+    TTLCoalesceDFBAcquiresOptions coalesceOptions;
+    coalesceOptions.syncUserDFBs = options.autoSyncUserDFBs;
+    pm.addNestedPass<func::FuncOp>(
+        createTTLCoalesceDFBAcquires(coalesceOptions));
+  }
   {
     TTLFinalizeDFBIndicesOptions finalizeOptions;
     finalizeOptions.reuseUserDFBs = options.reuseUserDFBs;
@@ -155,9 +164,13 @@ void buildTTLVerifyPipeNetPipeline(OpPassManager &pm) {
   pm.addPass(createTTLVerifyPipeNetSchedule());
 }
 
-void buildTTLAutoSyncPipeline(OpPassManager &pm) {
-  pm.addPass(createTTLInsertCBSync());
-  pm.addPass(createTTLCoalesceDFBAcquires());
+void buildTTLAutoSyncPipeline(OpPassManager &pm, bool syncUserDFBs) {
+  TTLInsertCBSyncOptions syncOptions;
+  syncOptions.syncUserDFBs = syncUserDFBs;
+  pm.addPass(createTTLInsertCBSync(syncOptions));
+  TTLCoalesceDFBAcquiresOptions coalesceOptions;
+  coalesceOptions.syncUserDFBs = syncUserDFBs;
+  pm.addPass(createTTLCoalesceDFBAcquires(coalesceOptions));
 }
 
 void buildTTKernelSpecializationPipeline(OpPassManager &pm) {
@@ -178,9 +191,9 @@ void registerTTLPipelines() {
       "ttl-verify-pipenet",
       "Verify PipeNet launch domains and synchronization schedules.",
       buildTTLVerifyPipeNetPipeline);
-  PassPipelineRegistration<>("ttl-auto-sync",
-                             "Insert auto pop/push and coalesce DFB acquires.",
-                             buildTTLAutoSyncPipeline);
+  PassPipelineRegistration<>(
+      "ttl-auto-sync", "Insert auto pop/push and coalesce DFB acquires.",
+      [](OpPassManager &pm) { buildTTLAutoSyncPipeline(pm); });
   PassPipelineRegistration<>(
       "ttkernel-cleanup-and-finalize-runtime-args",
       "Batch and expand static PipeNet records, optimize resolved transfers, "

@@ -34,6 +34,7 @@ from .dfb_allocation_group import (
 )
 from .dialects._ttl_enum_gen import LogicalKernelKind as _TableGenLogicalKernelKind
 from .scalar import ScalarType
+from .template_argument import UInt32TemplateArgument
 
 _PIPE_SOURCE_KERNEL_ROLE: Final[str] = "pipe_source"
 _DFB_RELEASE_METHODS: Final = frozenset(("push", "pop"))
@@ -299,6 +300,8 @@ def _encode_identity_literal(value) -> Optional[bytes]:
         return b"none"
     if isinstance(value, bool):
         return b"bool:true" if value else b"bool:false"
+    if isinstance(value, UInt32TemplateArgument):
+        return f"uint32:{value.value}".encode("ascii")
     if isinstance(value, int):
         return f"int:{value}".encode("ascii")
     if isinstance(value, float):
@@ -319,6 +322,11 @@ def _encode_identity_literal(value) -> Optional[bytes]:
             elements.append(f"{len(encoded)}:".encode("ascii") + encoded)
         kind = b"tuple" if isinstance(value, tuple) else b"list"
         return kind + b":" + b"".join(elements)
+    semantic_identity = getattr(value, "_operation_identity_capture", None)
+    if callable(semantic_identity):
+        encoded = _encode_identity_literal(semantic_identity())
+        if encoded is not None:
+            return b"semantic:" + encoded
     return None
 
 
@@ -339,12 +347,6 @@ def _encode_identity_capture(
     if is_ttnn_global_semaphore(value):
         address = get_ttnn_global_semaphore_address(value)
         return f"global-semaphore:{address}".encode("ascii")
-
-    semantic_identity = getattr(value, "_operation_identity_capture", None)
-    if callable(semantic_identity):
-        encoded = _encode_identity_literal(semantic_identity())
-        if encoded is not None:
-            return b"semantic:" + encoded
 
     if inspect.ismodule(value):
         return f"module:{value.__name__}".encode("utf-8")

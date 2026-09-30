@@ -63,6 +63,12 @@ struct TTLToTTKernelPipelineOptions
       *this, "strict-f32-acc",
       llvm::cl::desc("Error if accumulation output exceeds f32 DST capacity."),
       llvm::cl::init(false)};
+  Option<bool> autoSyncUserDFBs{
+      *this, "auto-sync-user-dfbs",
+      llvm::cl::desc("Infer releases and coalesce acquires for user-managed "
+                     "DFBs. When disabled, the program supplies their queue "
+                     "operations; compiler-created DFBs remain automatic."),
+      llvm::cl::init(true)};
   Option<bool> compilerDFBs{
       *this, "compiler-dfbs",
       llvm::cl::desc("Insert compiler-allocated intermediate DFBs when "
@@ -124,7 +130,8 @@ void createTTLToTTKernelPipeline(mlir::OpPassManager &pm,
                                  const TTLToTTKernelPipelineOptions &options);
 
 /// Add DFB synchronization insertion and acquire coalescing passes.
-void buildTTLAutoSyncPipeline(mlir::OpPassManager &pm);
+void buildTTLAutoSyncPipeline(mlir::OpPassManager &pm,
+                              bool syncUserDFBs = true);
 
 /// Add the ordered PipeNet launch-domain and synchronization verifiers.
 void buildTTLVerifyPipeNetPipeline(mlir::OpPassManager &pm);
