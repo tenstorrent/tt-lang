@@ -1,16 +1,18 @@
 // Verifies address-based selected reset, reset-all, and reconfiguration lowering.
 // RUN: ttlang-opt %s --split-input-file --pass-pipeline='builtin.module(convert-ttl-to-ttkernel{pipe-computed-addresses=false})' | FileCheck %s
 // RUN: ttlang-opt %s --split-input-file --pass-pipeline='builtin.module(convert-ttl-to-ttkernel{pipe-computed-addresses=false l1-budget-override=4224})' | FileCheck %s
+// RUN: ttlang-opt %s --split-input-file --ttl-verify-dfb-lifecycle -o /dev/null
 
 #compute = #ttl.logical_kernel<kind = compute, identity = "compute", operation = "reset_test">
 #reader = #ttl.logical_kernel<kind = data_movement, identity = "reader", operation = "reset_test">
 #writer = #ttl.logical_kernel<kind = data_movement, identity = "writer", operation = "reset_test">
 #selected = #ttl.synchronized_dfb_reset<0, participants[#compute, #reader, #writer]>
 #all = #ttl.synchronized_dfb_reset<1, participants[#compute, #reader, #writer]>
+#preserved = #ttl.synchronized_dfb_reset<2, participants[#compute, #reader, #writer]>
 
 // CHECK-LABEL: module attributes {
-// CHECK-SAME: ttl.dfb_reset_count = 2 : i64
-// CHECK-SAME: ttl.pipe_sram_scratch_bytes = 32 : i64
+// CHECK-SAME: ttl.dfb_reset_count = 3 : i64
+// CHECK-SAME: ttl.pipe_sram_scratch_bytes = 64 : i64
 // CHECK-LABEL: func.func @compute
 // CHECK: %[[ZERO:.*]] = arith.constant 0 : i32
 // CHECK: %[[SCRATCH0:.*]] = ttkernel.get_common_arg_val
@@ -26,6 +28,8 @@
 // CHECK-NEXT: %[[ALL1:.*]] = ttkernel.get_compile_time_arg_val(1)
 // CHECK-NEXT: ttkernel.opaque_call "ttlang::l1::resetState"(%[[ALL1]]) {{.*}}dfb_resource_indices = array<i32: 1>
 // CHECK-NEXT: ttkernel.opaque_call "experimental::reset_dfb_interfaces"(%[[SCRATCH1]], %[[ZERO]], %[[ZERO]]) {{.*}}dfb_resource_indices = array<i32: 0, 1>
+// CHECK: ttkernel.opaque_call "experimental::reset_dfb_interfaces"({{.*}}) {{.*}}dfb_resource_indices = array<i32: 0>
+// CHECK: ttkernel.opaque_call "ttlang::l1::resetState"({{.*}}) {{.*}}dfb_resource_indices = array<i32: 0>
 // CHECK-NOT: ttl.reset
 module attributes {ttl.dfb_allocations = [{block_count = 1 : i32, dfb_index = 0 : i32, element_type = !ttcore.tile<32x32, bf16>, l1_allocation_bytes = 2048 : i64, l1_offset = 0 : i64, l1_payload_offset = 64 : i64, num_tiles = 1 : i32, page_size = 2048 : i32, storage_index = 0 : i32}, {block_count = 1 : i32, dfb_index = 1 : i32, element_type = !ttcore.tile<32x32, bf16>, l1_allocation_bytes = 2048 : i64, l1_offset = 8 : i64, l1_payload_offset = 2112 : i64, num_tiles = 1 : i32, page_size = 2048 : i32, storage_index = 1 : i32}], ttl.l1_arena_bytes = 4160 : i64, ttl.launch_grid = [1, 1], ttl.memory_model = "compiler-sram", ttl.target_arch = #ttcore.arch<blackhole>} {
   func.func @compute() attributes {ttl.base_cta_index = 1 : i32, ttl.kernel_thread = #ttkernel.thread<compute>, ttl.logical_kernel = #compute} {
@@ -33,6 +37,7 @@ module attributes {ttl.dfb_allocations = [{block_count = 1 : i32, dfb_index = 0 
     %second = ttl.bind_cb {cb_index = 1, block_count = 1} {dfb_id = 1 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
     ttl.reset_dfbs #selected(%first : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>)
     ttl.reset_all_dfbs #all
+    ttl.reset_all_dfbs #preserved preserve %second : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
     return
   }
   func.func @read() attributes {ttl.base_cta_index = 1 : i32, ttl.kernel_thread = #ttkernel.thread<noc>, ttl.logical_kernel = #reader, ttl.noc_index = 0 : i32} {
@@ -40,6 +45,7 @@ module attributes {ttl.dfb_allocations = [{block_count = 1 : i32, dfb_index = 0 
     %second = ttl.bind_cb {cb_index = 1, block_count = 1} {dfb_id = 1 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
     ttl.reset_dfbs #selected(%first : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>)
     ttl.reset_all_dfbs #all
+    ttl.reset_all_dfbs #preserved preserve %second : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
     return
   }
   func.func @write() attributes {ttl.base_cta_index = 1 : i32, ttl.kernel_thread = #ttkernel.thread<noc>, ttl.logical_kernel = #writer, ttl.noc_index = 1 : i32} {
@@ -47,6 +53,7 @@ module attributes {ttl.dfb_allocations = [{block_count = 1 : i32, dfb_index = 0 
     %second = ttl.bind_cb {cb_index = 1, block_count = 1} {dfb_id = 1 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
     ttl.reset_dfbs #selected(%first : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>)
     ttl.reset_all_dfbs #all
+    ttl.reset_all_dfbs #preserved preserve %second : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
     return
   }
 }

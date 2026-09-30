@@ -32,6 +32,12 @@ enum class DFBStorageConflictMode {
   CompilerManaged,
 };
 
+/// Required relationship between one DFB's L1 addresses on launch nodes.
+enum class DFBAddressScope { Local, RemoteUniform };
+
+/// Returns the runtime metadata spelling for an address scope.
+StringRef getDFBAddressScopeName(DFBAddressScope scope);
+
 /// Physical index selected for one logical DFB.
 struct DFBPhysicalIndexAssignment {
   int64_t logicalId = 0;
@@ -40,6 +46,7 @@ struct DFBPhysicalIndexAssignment {
   Type type;
   TensorBackingAttr tensorBacking;
   DFBAllocationGroupAttr allocationGroup;
+  DFBAddressScope addressScope = DFBAddressScope::Local;
   LaunchNodeDomain launchDomain;
   SmallVector<BindCBOp> declarations;
   bool bounded = false;
@@ -69,6 +76,7 @@ struct DFBPhysicalAllocationDescriptor {
   Type elementType;
   int32_t pageSize = 0;
   int32_t blockCount = 0;
+  DFBAddressScope addressScope = DFBAddressScope::Local;
   /// Exact union of nodes that access this index. An unknown domain requires
   /// conservative whole-grid runtime allocation.
   LaunchNodeDomain allocationDomain = LaunchNodeDomain::unknown();

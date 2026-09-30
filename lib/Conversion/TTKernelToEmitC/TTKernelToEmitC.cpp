@@ -436,6 +436,10 @@ static StringRef getL1PtrOpaqueTypeName(unsigned elementWidth) {
   }
 }
 
+static std::string getVolatileL1PtrOpaqueTypeName(unsigned elementWidth) {
+  return ("volatile " + getL1PtrOpaqueTypeName(elementWidth)).str();
+}
+
 static FailureOr<int64_t> extractNocIndex(Attribute value) {
   auto nocIdxAttr = mlir::dyn_cast_if_present<IntegerAttr>(value);
   if (!nocIdxAttr) {
@@ -738,7 +742,7 @@ public:
         [ctx](mlir::tt::ttkernel::RoutingPlaneConnectionManagerType type)
             -> Type {
           return emitc::OpaqueType::get(
-              ctx, "tt::tt_fabric::RoutingPlaneConnectionManager");
+              ctx, "experimental::RoutingPlaneConnectionManager");
         });
     addConversion(
         [ctx](IndexType type) -> Type { return emitc::SizeTType::get(ctx); });
@@ -871,15 +875,30 @@ public:
   matchAndRewrite(ttkernel::LoadFromL1Op op,
                   ttkernel::LoadFromL1Op::Adaptor adaptor,
                   ConversionPatternRewriter &rewriter) const final {
-    auto pointerType =
-        mlir::cast<emitc::PointerType>(adaptor.getL1Ptr().getType());
-    auto subscriptOp = rewriter.create<emitc::SubscriptOp>(
-        op->getLoc(),
-        emitc::LValueType::get(op.getContext(), pointerType.getPointee()),
-        adaptor.getL1Ptr(), adaptor.getOffset());
+    Location loc = op->getLoc();
+    const unsigned elementWidth =
+        mlir::cast<ttkernel::L1AddrPtrType>(op.getL1Ptr().getType())
+            .getElementWidth();
+    const std::string elementTypeName =
+        getVolatileL1PtrOpaqueTypeName(elementWidth);
+    auto elementType = emitc::OpaqueType::get(op.getContext(), elementTypeName);
 
-    auto loaded = rewriter.create<emitc::LoadOp>(
-        op->getLoc(), pointerType.getPointee(), subscriptOp);
+    // TODO: `TTKernelToCpp` adds no baseline API header for
+    // `ThreadType::Ethernet`, so an Ethernet kernel would emit this call
+    // undeclared; no TT-Lang pipeline emits Ethernet kernels today. Add the
+    // header requirement together with Ethernet kernel support.
+    emitc::CallOpaqueOp::create(rewriter, loc, TypeRange{},
+                                "invalidate_l1_cache", ValueRange{});
+    auto volatilePointer = emitc::CallOpaqueOp::create(
+        rewriter, loc, TypeRange{emitc::PointerType::get(elementType)},
+        "reinterpret_cast<" + elementTypeName + "*>",
+        ValueRange{adaptor.getL1Ptr()});
+    auto subscriptOp = emitc::SubscriptOp::create(
+        rewriter, loc, emitc::LValueType::get(op.getContext(), elementType),
+        volatilePointer.getResult(0), adaptor.getOffset());
+
+    auto loaded =
+        emitc::LoadOp::create(rewriter, loc, elementType, subscriptOp);
     rewriter.replaceOpWithNewOp<emitc::CastOp>(
         op, getTypeConverter()->convertType(op.getValue().getType()), loaded);
     return success();
@@ -2981,22 +3000,14 @@ public:
                   ConversionPatternRewriter &rewriter) const final {
     std::string routeIdName =
         getResultVariableName(op.getRouteId(), state, "fabric_route_id_");
-    std::string runtimeArgIndexName = routeIdName + "_runtime_arg_index";
-    std::string code = "size_t " + runtimeArgIndexName + " = {};\n" +
-                       "uint32_t " + routeIdName + " = 0;\n" +
+    std::string code = "uint32_t " + routeIdName + " = 0;\n" +
                        "if ({} != 0) {{\n"
-                       "  open_connections({}, {}, " +
-                       runtimeArgIndexName +
-                       ");\n"
-                       "  PacketHeaderPool::reset();\n"
                        "  " +
-                       routeIdName +
-                       " = PacketHeaderPool::allocate_header_n({});\n" + "}";
+                       routeIdName + " = {}.open({}, {});\n" + "}";
     emitc::VerbatimOp::create(
         rewriter, op.getLoc(), rewriter.getStringAttr(code),
-        ValueRange{adaptor.getRuntimeArgBase(), adaptor.getConnectionCount(),
-                   adaptor.getManager(), adaptor.getConnectionCount(),
-                   adaptor.getConnectionCount()});
+        ValueRange{adaptor.getConnectionCount(), adaptor.getManager(),
+                   adaptor.getConnectionCount(), adaptor.getRuntimeArgBase()});
     rewriter.replaceOp(
         op, emitc::LiteralOp::create(
                 rewriter, op.getLoc(),
@@ -3021,6 +3032,40 @@ public:
                   ConversionPatternRewriter &rewriter) const final {
     rewriter.replaceOpWithNewOp<emitc::CallOpaqueOp>(
         op, TypeRange(), "experimental::routing_plane_atomic_inc", nullptr,
+        nullptr, adaptor.getOperands());
+    return success();
+  }
+};
+
+class TTKernelRoutingPlaneWriteOpRewriter
+    : public OpConversionPattern<ttkernel::RoutingPlaneWriteOp> {
+  using Op = ttkernel::RoutingPlaneWriteOp;
+
+public:
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(Op op, Op::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const final {
+    rewriter.replaceOpWithNewOp<emitc::CallOpaqueOp>(
+        op, TypeRange(), "experimental::routing_plane_write", nullptr, nullptr,
+        adaptor.getOperands());
+    return success();
+  }
+};
+
+class TTKernelRoutingPlaneScatterWriteOpRewriter
+    : public OpConversionPattern<ttkernel::RoutingPlaneScatterWriteOp> {
+  using Op = ttkernel::RoutingPlaneScatterWriteOp;
+
+public:
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(Op op, Op::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const final {
+    rewriter.replaceOpWithNewOp<emitc::CallOpaqueOp>(
+        op, TypeRange(), "experimental::routing_plane_scatter_write", nullptr,
         nullptr, adaptor.getOperands());
     return success();
   }
@@ -3055,8 +3100,9 @@ public:
                   ConversionPatternRewriter &rewriter) const final {
     emitc::VerbatimOp::create(
         rewriter, op.getLoc(),
-        rewriter.getStringAttr("if ({} != 0) {{\n  close_connections({});\n}"),
-        ValueRange{adaptor.getConnectionCount(), adaptor.getManager()});
+        rewriter.getStringAttr("if ({} != 0) {{\n  {}.close({});\n}"),
+        ValueRange{adaptor.getConnectionCount(), adaptor.getManager(),
+                   adaptor.getConnectionCount()});
     rewriter.eraseOp(op);
     return success();
   }
@@ -4261,6 +4307,8 @@ public:
                  TTKernelOpenRoutingPlaneConnectionsOpRewriter>(typeConverter,
                                                                 context, state);
     patterns.add<TTKernelRoutingPlaneAtomicIncOpRewriter,
+                 TTKernelRoutingPlaneWriteOpRewriter,
+                 TTKernelRoutingPlaneScatterWriteOpRewriter,
                  TTKernelRoutingPlaneFusedWriteAtomicIncOpRewriter,
                  TTKernelCloseRoutingPlaneConnectionsOpRewriter>(typeConverter,
                                                                  context);

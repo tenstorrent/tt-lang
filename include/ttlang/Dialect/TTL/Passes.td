@@ -21,12 +21,57 @@ def TTLInsertCBSync
     Explicit push/pop calls and context-manager-generated push/pop are
     preserved: the pass only fills in what is missing.
 
+    With `sync-user-dfbs=false`, release inference and its access-order checks
+    apply only to compiler-created DFBs. The program supplies push/pop and
+    orders all accesses to user-managed DFBs, including external C++ accesses.
+    Conditional receive-completion validation remains enabled.
+
     A receive request used by `ttl.wait_any` has conditional completion. Its
     destination reservation is not published automatically because only the
     selected request is known to be complete. Publication must be explicit and
     conditioned on the corresponding selection, or follow an exact wait.
+
+    A block still held when a nested region acquires the same DFB with the
+    same kind would alias that acquisition (`cb_wait_front` and
+    `cb_reserve_back` address the current slot). When the region releases
+    the block on some branches and never uses it afterwards, the release is
+    hoisted before the region:
+
+    ```mlir
+    %b0 = ttl.cb_wait %in : ...
+    ttl.store %b0, %slot : ...
+    scf.if %cond {
+      ttl.cb_pop %in : ...
+      %b1 = ttl.cb_wait %in : ...
+      ...
+    }
+    ```
+
+    becomes
+
+    ```mlir
+    %b0 = ttl.cb_wait %in : ...
+    ttl.store %b0, %slot : ...
+    ttl.cb_pop %in : ...
+    scf.if %cond {
+      %b1 = ttl.cb_wait %in : ...
+      ...
+    }
+    ```
+
+    The pass emits an error when the held block is used in or after the
+    region without a release on every branch, and, in data-movement kernels,
+    when a held block is not used before the next same-kind acquisition
+    unless the two acquisitions coalesce into one. The DFB pointer names the
+    first block of a coalesced acquisition, so in a data-movement kernel an
+    access to a later block is an error unless it is a pipe receive into that
+    block's view.
   }];
 
+  let options = [
+    Option<"syncUserDFBs", "sync-user-dfbs", "bool", "true",
+           "Infer missing releases and validate access order for user-managed DFBs">
+  ];
   let dependentDialects = [];
 }
 
@@ -103,8 +148,16 @@ def TTLCoalesceDFBAcquires
     `<1, k>` are coalesced; the coalesced result is `<1, N*k>`. Other
     ranks would require a convention for which axis to extend by `N`,
     which is not specified, and are skipped.
+
+    With `sync-user-dfbs=false`, only compiler-created DFBs are coalesced.
+    User-managed queue operations retain their counts and ordering so they
+    can implement a protocol shared with external C++.
   }];
 
+  let options = [
+    Option<"syncUserDFBs", "sync-user-dfbs", "bool", "true",
+           "Coalesce acquire/release groups for user-managed DFBs">
+  ];
   let dependentDialects = [
     "::mlir::tensor::TensorDialect"
   ];
@@ -384,6 +437,11 @@ def TTLConvertTTLToTTKernel
            "Allocate all compiler-managed PipeNet synchronization counters "
            "in GlobalSemaphore storage, leaving local hardware semaphore ids "
            "available to the application.">,
+    Option<"fabricMux", "fabric-mux", "bool", "true",
+           "Mark compiler-proven single-execution fabric clients as eligible "
+           "for program-local forwarding-link multiplexing. Target binding "
+           "selects direct or mux transport without changing PipeNet "
+           "synchronization.">,
     Option<"l1BudgetOverride", "l1-budget-override", "uint32_t", "0",
            "Override the per-core L1 budget used for finalized DFB and "
            "scratch validation. 0 selects the target budget.">
@@ -885,8 +943,13 @@ def TTLVerifyPipeNetGuards
     point's domain is contained in the pipe's source or destination domain;
     out-of-domain uses, scopes broader than their declared role, unmatched
     `ttl.cb_wait`s, and unanalyzable coord-dependent predicates are reported.
-    Each diagnostic includes an example offending coordinate, the contributing
-    PipeNet(s), and a suggested guard.
+    Each out-of-domain diagnostic includes an example offending coordinate, the
+    contributing PipeNet(s), and a suggested guard. An unanalyzable-predicate
+    diagnostic names the operation and, when the analysis identifies it, the
+    predicate. A diagnostic that names its predicate is reported once per
+    operation location, operation name, and predicate location when both
+    locations are file locations, so the copies of an operation that composition
+    repeats share one diagnostic.
 
     The pass expects one module per `@ttl.operation`, a well-formed
     `ttl.launch_grid` (i64 array of length 2 with positive entries), static
@@ -914,15 +977,24 @@ def TTLVerifyPipeNetSchedule
     Verifies the synchronization protocol formed by pipe sends, receiver posts,
     and receiver waits. A send waits until every destination has posted a
     dataflow buffer reservation, so each send requires one corresponding post
-    at every destination. A receiver wait observes the send associated with
-    the exact receive handle it consumes. Repeated waits on one handle observe
-    the same completed transfer and do not require additional sends. Posting a
-    reservation does not wait for payload, and a sender does not wait for the
-    receiver to consume the payload. Receiver posts may therefore exist
-    without receiver waits, and sends do not require receiver waits. When a
-    pipe has sends, each destination must have the same number of receiver
-    posts as sends. A pipe with no sends or waits may contain unused receiver
-    posts.
+    at every destination. The exception is a point-to-point fabric send to one
+    receiver whose DRAM tensor-region destination is statically enumerated,
+    pairwise disjoint across its executions, and disjoint from every other pipe
+    receive into the same tensor on the receiver device. That send does not
+    wait for the post, and pipe lowering emits it without a receiver readiness
+    signal by the same rule. Such a send still requires its corresponding post,
+    and a send operation that also sends on a pipe without this property waits
+    for every post. A destination that the verifier cannot enumerate, including
+    one whose enclosing loops or executions exceed 1048576, is treated as
+    overlapping every destination on its device. A receiver wait observes
+    the send associated with the exact receive handle it consumes. Repeated
+    waits on one handle observe the same completed transfer and do not require
+    additional sends. Posting a reservation does not wait for payload, and a
+    sender does not wait for the receiver to consume the payload. Receiver
+    posts may therefore exist without receiver waits, and sends do not require
+    receiver waits. When a pipe has sends, each destination must have the same
+    number of receiver posts as sends. A pipe with no sends or waits may
+    contain unused receiver posts.
 
     Receiver-published addressing supports one outstanding post for each pipe
     and destination. Each repetition must contain its corresponding send or an
@@ -944,15 +1016,23 @@ def TTLVerifyPipeNetSchedule
     use their exact launch-node domain. Otherwise, the static PipeNet endpoint
     role provides a conservative domain that includes every possible event;
     execution-count analysis still removes coordinates proven not to execute.
-    Multi-block regions that contribute pipe events, recursive calls containing
-    pipe events, and schedules with more than 4096 expanded event occurrences
-    at one launch node are rejected because the verifier cannot construct a
-    correct bounded event graph.
+    Static loops containing pipe events are expanded to concrete iterations,
+    which preserves event order across iterations. When expanding every such
+    loop would exceed 4096 pipe copies or 65536 cloned operations in the
+    operation, every loop in which no structured control enclosing a pipe
+    event within the loop body depends on the induction variable keeps compact
+    execution-count analysis, and only the other loops are expanded; the
+    operation is rejected if those still exceed the bounds.
+    Multi-block regions that contribute pipe events, recursive calls
+    containing pipe events, and schedules with more than 4096 pipe events at
+    one launch node are rejected because the verifier cannot construct a
+    correct bounded event graph. Logical-device domains with more than
+    1048576 devices are rejected before their devices are enumerated.
 
     The pass also constructs the same-thread wait-for graph. Program-order
     edges connect consecutive events on one launched node. Protocol edges
-    connect each receiver post to its send and that send to every wait on the
-    post's exact receive handle.
+    connect each receiver post to its send when the send waits for the post,
+    and each send to every wait on the post's exact receive handle.
     A cycle means no event in the cycle can execute and is rejected.
 
     The pass expects one module per `@ttl.operation`, a well-formed
@@ -981,32 +1061,38 @@ def TTLVerifyTransferProvenance
 
 def TTLVerifyDFBSPSC
     : Pass<"ttl-verify-dfb-spsc", "::mlir::ModuleOp"> {
-  let summary = "Verify DFB producers and consumers across launch domains";
+  let summary = "Verify DFB queue ownership across launch domains";
   let description = [{
     Walks DFB protocol actions exposed through `DFBAccessOpInterface`, groups
     them by module-wide logical `dfb_id` and enclosing
     `ttl.kernel_thread`-tagged `func.func`, and tracks the launch-node domain for
-    each producer or consumer participant. The pass requires every waited DFB
+    each producer or read-pointer-owner participant. Reserve and push effects
+    identify producers; pop effects identify the kernel that advances the read
+    pointer. Multiple kernels may wait for and read the same published pages
+    when exactly one kernel pops them. The pass also requires every waited DFB
     to have a compiler-visible push or uncontracted external access that may
-    contain one and, for each launched node, at most one producer kernel and at
-    most one consumer kernel. Disjoint domains across different kernel
-    functions are accepted. Distinct logical DFBs remain separate when physical
-    allocation assigns them the same `cb_index`.
+    contain one. Each launched node may have at most one producer and one
+    read-pointer owner. Disjoint domains across different kernel functions are
+    accepted. Distinct logical DFBs remain separate when physical allocation
+    assigns them the same `cb_index`.
 
     tt-metal circular buffers expose a counter pair (`pages_received`,
     `pages_acked`) that is not multi-writer safe on either side, so the
-    per-launched-node single-producer single-consumer property is required for
-    correctness; see `docs/development/DFBManagement.md` for the runtime
-    contract. The pass emits an error for waits without any possible producer,
-    overlapping producer or consumer domains, and unknown domains when
-    multiple threads participate and SPSC cannot be proven statically.
+    per-launched-node single-writer property for each counter is required for
+    correctness. `cb_wait_front` observes availability without advancing the
+    read pointer; `cb_pop_front` advances it. See
+    `docs/development/DFBManagement.md` for the runtime contract. The pass emits
+    an error for waits without any possible producer, overlapping producer or
+    read-pointer-owner domains, and unknown domains when multiple owners
+    participate and ownership cannot be proven statically. Operations with an
+    exact zero execution count do not participate.
 
     The module must contain the `ttl.dfb_allocations` metadata emitted by
     `ttl-finalize-dfb-indices`, and every DFB declaration and lifecycle operand
     must resolve to a `ttl.bind_cb` with `dfb_id`. Modules with DFB acquire ops
     must also carry a valid `ttl.launch_grid` attribute.
 
-    Setting `TTL_RELAX_DFB_SPSC` skips per-launch-node producer and consumer
+    Setting `TTL_RELAX_DFB_SPSC` skips per-launch-node producer and read-pointer
     ownership verification. The program must enforce that ownership contract
     through synchronization not represented in the IR. The verifier still
     rejects every waited DFB without a compiler-visible push or uncontracted
@@ -1015,6 +1101,58 @@ def TTLVerifyDFBSPSC
     verification is the default. When relaxation is enabled, the compiler
     emits a warning and records
     `ttl.relaxed_dfb_protocol_domain_verification` on the module.
+  }];
+
+  let dependentDialects = [];
+}
+
+def TTLVerifyDFBLifecycle
+    : Pass<"ttl-verify-dfb-lifecycle", "::mlir::ModuleOp"> {
+  let summary = "Verify DFB acquire/release order and capacity per launch node";
+  let description = [{
+    Checks, per launch node and DFB, that the `ttl.cb_reserve`/`ttl.cb_push`
+    and `ttl.cb_wait`/`ttl.cb_pop` sequences of all kernels are well formed:
+    a release never exceeds the preceding acquisitions of its kind, open
+    acquisitions never exceed the DFB capacity, no acquisition is open when
+    the kernel returns, and across kernels the blocks waited for or popped
+    never exceed the blocks pushed while the unpopped blocks fit the capacity.
+    Every kernel on a node waits at a synchronized reset or reconfiguration
+    until all of them arrive, so the waits and reserves before one must be
+    satisfied by the pushes and pops before it. A reset restores the physical
+    interfaces of its lowered mask and a reconfiguration the descriptors that
+    `ttl.dfb_reconfiguration_plan` installs at its boundary on the node; a
+    restored DFB's sequence between two restorations is checked on its own,
+    and every other DFB's sequence continues across the operation.
+
+    Nodes where an external call may perform undeclared protocol actions on a
+    DFB are not checked for it. There the pass warns when the DFB is waited
+    on, never popped, and its producer can push more blocks than its capacity
+    before a restoration, because published blocks stay in the DFB.
+
+    ```mlir
+    // Rejected: four blocks are pushed into a capacity-1 DFB that no
+    // kernel pops.
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 1} {dfb_id = 0 : index} : ...
+    scf.for %i = %c0 to %c4 step %c1 {
+      %slot = ttl.cb_reserve %cb : ...
+      ttl.cb_push %cb : ...
+    }
+    ```
+
+    A loop whose body contains a reset or reconfiguration is summarized from
+    its first iteration and one later iteration, so the cost does not depend
+    on the trip count. The later iterations share that summary only when every
+    condition on the loop index that controls protocol effects or barriers
+    compares the index with a value that is constant on the node and has one
+    outcome in every iteration after the first; otherwise every DFB of the
+    kernel is left unchecked.
+
+    Region execution per node comes from the launch-node domain and
+    execution-count analyses; sequences they cannot resolve are accepted.
+    Requires the finalized DFB indices and `ttl.dfb_allocations` metadata
+    emitted by `ttl-finalize-dfb-indices`, the `ttl.dfb_reconfiguration_plan`
+    it emits for a module with reconfigurations, and a valid
+    `ttl.launch_grid`.
   }];
 
   let dependentDialects = [];
@@ -1102,6 +1240,15 @@ def TTLFinalizeDFBIndices
     different geometry or storage. A DFB with live protocol state crosses a
     reconfiguration unchanged and remains active in every epoch it spans, so
     its physical index cannot be reassigned at those boundaries.
+
+    Every participant must execute a synchronized reset or reconfiguration the
+    same compile-time-known number of times on each launch node: at most once,
+    or once per iteration of one sequential loop with a constant trip count.
+    The count may differ between launch nodes through conditions on the launch
+    node, but not through a loop bound or a runtime value. A reset or
+    reconfiguration under a condition on a runtime value, or in nested loops,
+    is rejected because the DFB lifecycle checks do not cover transactions
+    across it.
 
     Physical-index coloring and storage coloring enforce different contracts.
     A physical index identifies one active hardware descriptor and therefore
@@ -1640,24 +1787,26 @@ def TTKernelAnnotateDFBUse
     Runs after per-core specialization and canonicalization.
     For each `ttkernel.thread` function, records the
     sorted DFB allocation indices reached through surviving
-    `ttkernel.get_compile_time_arg_val` operations below
-    `ttl.base_cta_index` and `dfb_resource_indices` metadata on surviving
-    `ttkernel.opaque_call` operations in `ttl.used_dfb_indices`. The metadata
-    preserves resource requirements after lowering replaces DFB operands with
-    static values. Helpers stay in the call-graph analysis so their uses
-    propagate to kernel entries.
+    `ttkernel.get_compile_time_arg_val` operations in
+    `ttl.used_dfb_indices`. An argument index is a DFB index when it is less
+    than the number of entries in the module's `ttl.dfb_allocations` metadata.
+    `dfb_resource_indices` metadata on surviving `ttkernel.opaque_call`
+    operations preserves resource requirements after lowering replaces DFB
+    operands with static values. Helpers stay in the call-graph analysis so
+    their uses propagate to kernel entries.
     Declarations are not annotated. The compile-time ABI places
-    every DFB before tensor-accessor arguments, including DFB ids passed to
-    opaque externs as scalar values. In compiler-managed SRAM mode, these are
-    compiler allocation indices; in Metal mode, they are physical indices.
+    every DFB first, including DFB ids passed to opaque externs as scalar
+    values. Later compiler-defined and tensor-accessor arguments are excluded.
+    In compiler-managed SRAM mode these are allocation indices; in Metal mode
+    they are physical descriptor indices.
 
-    Resource indices must be within the enclosing function's DFB compile-time
-    argument range.
+    Resource indices must be within the module's finalized DFB allocation
+    range.
 
     Calls are resolved through the MLIR call graph. Uses are propagated from
     callees to callers in SCC order, including recursive calls. An unknown or
     external callee is handled conservatively by recording every DFB
-    compile-time argument below `ttl.base_cta_index`.
+    compile-time argument.
 
     Print-only `get_compile_time_arg_val` operations (those whose only users
     are `emitc.verbatim` debug prints, through unrealized casts) are excluded
@@ -1669,6 +1818,39 @@ def TTKernelAnnotateDFBUse
   }];
 
   let dependentDialects = [];
+}
+
+def TTKernelSpecializeDFBReconfiguration
+    : Pass<"ttkernel-specialize-dfb-reconfiguration", "::mlir::ModuleOp"> {
+  let summary = "Specialize DFB reconfiguration descriptor fields";
+  let description = [{
+    Rewrites every `experimental::reconfigure_dfb_interfaces` call carrying
+    `ttl.dfb_reconfiguration_ordinal` and removes that attribute.
+
+    `ttl.dfb_reconfiguration_plan` determines which physical DFBs a boundary
+    reconfigures on each launch coordinate. For each entry in `dfbs` the pass
+    selects the configuration whose `entry_reconfiguration` matches the
+    ordinal, provided its `storage_segments` cover the coordinate or it
+    declares none. The selection becomes `template_args`
+    `[recordCount, (dfbIndex, totalBytes, numPages, pageBytes)...]`, where
+    `numPages` is `num_tiles * block_count` and `totalBytes` is
+    `numPages * page_size`. The specialized call reads no active masks and no
+    descriptor sizes from the runtime record.
+
+    A function with `ttl.core_coord` uses the selection for that coordinate. A
+    function without it may run on any node of `ttl.launch_grid`, so it uses
+    the static form only when every grid node yields the same selection, and
+    otherwise keeps the runtime form, which derives the reconfigured DFBs from
+    the active masks in the runtime record.
+
+    Each DFB's L1 address still comes from its runtime record word, because
+    tensor-backed storage binds a launch-time address, and storage without a
+    runtime-bound address requests preserving the address the interface
+    already holds.
+
+    Plan entries must have ascending, unique `dfb_index` values below the
+    64-record capacity of the runtime configuration area.
+  }];
 }
 
 def TTKernelFinalizeTensorRuntimeArgs

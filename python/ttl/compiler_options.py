@@ -121,6 +121,17 @@ def _make_parser() -> argparse.ArgumentParser:
         help="Error if accumulation (+=) output block exceeds f32 DST capacity (default: disabled).",
     )
     p.add_argument(
+        "--ttl-auto-sync-user-dfbs",
+        default=None,
+        dest="auto_sync_user_dfbs",
+        action=argparse.BooleanOptionalAction,
+        help=(
+            "Infer releases and coalesce acquires for user-managed DFBs "
+            "(default: enabled). When disabled, the program supplies their "
+            "queue operations; compiler-created DFBs remain automatic."
+        ),
+    )
+    p.add_argument(
         "--ttl-compiler-dfbs",
         default=None,
         dest="compiler_dfbs",
@@ -161,6 +172,16 @@ def _make_parser() -> argparse.ArgumentParser:
         ),
     )
     p.add_argument(
+        "--ttl-fabric-mux",
+        default=None,
+        dest="fabric_mux",
+        action=argparse.BooleanOptionalAction,
+        help=(
+            "Allow compiler-proven single-execution fabric clients to share "
+            "a forwarding link through a program-local mux (default: enabled)."
+        ),
+    )
+    p.add_argument(
         "--ttl-pipe-batch-tiles",
         default=None,
         dest="pipe_batch_tiles",
@@ -188,6 +209,21 @@ def _make_parser() -> argparse.ArgumentParser:
         ),
     )
     p.add_argument(
+        "--ttl-unsafe-split-static-dfb-descriptors",
+        default=None,
+        dest="unsafe_split_static_dfb_descriptors",
+        action=argparse.BooleanOptionalAction,
+        help=(
+            "UNSAFE, TEMPORARY (removed once the compiler-managed SRAM "
+            "allocator is merged): let the runtime split a static DFB descriptor "
+            "per core when a core's L1 budget overflows. Split descriptors give "
+            "one DFB different addresses on different cores, which breaks "
+            "kernels that write a DFB on another core by its local address. "
+            "Descriptors of remote_uniform DFBs are never split "
+            "(default: disabled)."
+        ),
+    )
+    p.add_argument(
         "--ttl-dfb-exact-coloring-search-limit",
         default=None,
         dest="dfb_exact_coloring_search_limit",
@@ -204,6 +240,14 @@ def _make_parser() -> argparse.ArgumentParser:
         "loops, or compile-time table lookups depend on logical core "
         "coordinates. Constant coordinates allow later compiler passes to "
         "remove unreachable code and unused table entries (default: disabled).",
+    )
+    p.add_argument(
+        "--ttl-dynamic-noc",
+        default=None,
+        dest="dynamic_noc",
+        action=argparse.BooleanOptionalAction,
+        help="Allow data-movement kernels to select either NOC dynamically "
+        "while retaining their assigned processor (default: disabled).",
     )
     p.add_argument(
         "--ttl-l1-budget",
@@ -273,15 +317,19 @@ class CompilerOptions:
     strict_f32_acc: bool = False
     memory_model: str = "metal-cb"
     sram_allocation_strategy: str = "first-fit-decreasing"
+    auto_sync_user_dfbs: bool = True
     compiler_dfbs: bool = True
     pipe_computed_addresses: bool = True
     pipe_capacity_sync: bool = True
     pipe_global_semaphores_only: bool = False
+    fabric_mux: bool = True
     pipe_batch_tiles: int = 0
     reuse_user_dfbs: bool = True
     unsafe_assume_dfb_allocation_groups: bool = False
+    unsafe_split_static_dfb_descriptors: bool = False
     dfb_exact_coloring_search_limit: int = 1_000_000
     specialize_cores: bool = False
+    dynamic_noc: bool = False
     l1_budget: int = dataclasses.field(default=0, compare=False, hash=False)
 
     # Fields that were explicitly provided (not defaulted). Excluded from

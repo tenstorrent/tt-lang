@@ -151,6 +151,7 @@ def format_mlir_error(
     error_msg: str,
     source_lines: Optional[List[str]] = None,
     source_file: Optional[str] = None,
+    label: str = "error",
 ) -> str:
     """Format an MLIR error with source context if location is available.
 
@@ -164,6 +165,7 @@ def format_mlir_error(
         error_msg: The MLIR error message
         source_lines: Original Python source lines (optional, will read from file if needed)
         source_file: Source filename (optional, extracted from error if not provided)
+        label: Label of each primary diagnostic ("error" or "warning")
 
     Returns:
         Formatted error message, with source context if available
@@ -177,7 +179,7 @@ def format_mlir_error(
     for primary, notes in groups:
         primary_loc, primary_msg = primary
         block = _render_diagnostic_block(
-            primary_loc, primary_msg, "error", source_lines, source_file
+            primary_loc, primary_msg, label, source_lines, source_file
         )
         if block is not None:
             blocks.append(block)

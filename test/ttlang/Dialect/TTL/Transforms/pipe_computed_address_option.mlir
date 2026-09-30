@@ -123,7 +123,7 @@ module attributes {
   // The first epoch publishes and consumes the tensor-backed reservation.
   // COMPUTED: ttkernel.store_to_l1
   // COMPUTED: ttkernel.load_from_l1
-  // COMPUTED: ttkernel.opaque_call "experimental::reconfigure_dfb_interfaces"
+  // COMPUTED: ttkernel.opaque_call "::experimental::reconfigure_dfb_interfaces"
   // The second epoch publishes and consumes the compiler-managed reservation.
   // COMPUTED: ttkernel.store_to_l1
   // COMPUTED: ttkernel.load_from_l1

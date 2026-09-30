@@ -4,6 +4,7 @@
 # Exhaustive three-region schedules and every four-region conflict graph check
 # byte-placement safety independently of the compiler conflict analysis.
 # A nine-region case checks control-prefix alignment across target quanta.
+# The lifecycle verifier must accept storage identities above Metal's index limit.
 # RUN: %python %s
 
 import itertools
@@ -114,6 +115,21 @@ def validate_control_prefix_alignment():
         assert arena_bytes == control_bytes + 2048
 
 
+def validate_lifecycle_above_physical_index_limit():
+    for architecture in ("wormhole_b0", "blackhole"):
+        result = subprocess.run(
+            [
+                "ttlang-opt",
+                "-pass-pipeline=builtin.module(ttl-finalize-dfb-indices{memory-model=compiler-sram},ttl-verify-dfb-lifecycle)",
+            ],
+            input=make_control_prefix_module(architecture, 70),
+            text=True,
+            capture_output=True,
+            timeout=90,
+        )
+        assert result.returncode == 0, result.stderr
+
+
 def validate(output, events, architecture, reuse, unknown):
     count = len(events) // 2
     quantum = 32 if architecture == "wormhole_b0" else 64
@@ -162,6 +178,7 @@ def validate(output, events, architecture, reuse, unknown):
 
 def main():
     validate_control_prefix_alignment()
+    validate_lifecycle_above_physical_index_limit()
     schedules = [
         events
         for events in itertools.permutations(range(6))

@@ -156,9 +156,10 @@ def loopback_collective_published_address(inp, out):
                 ttl.copy(send_block, pipe).wait()
 
         receive.wait()
-        if node_x == 0:
-            ttl.copy(recv_block, out[0, 0]).wait()
         recv_block.push()
+        with recv_dfb.wait() as received_block:
+            if node_x == 0:
+                ttl.copy(received_block, out[0, 0]).wait()
 
     @ttl.datamovement()
     def dm_brisc():
@@ -213,18 +214,21 @@ def transfer_specific_completion(inp, out):
             )
 
             multicast_receive.wait()
-            ttl.copy(multicast_block, out[0, 0]).wait()
             multicast_block.push()
+            with multicast_recv_dfb.wait() as received_block:
+                ttl.copy(received_block, out[0, 0]).wait()
 
             single_receiver_receive.wait()
-            ttl.copy(single_receiver_block, out[0, 1]).wait()
             single_receiver_block.push()
+            with single_receiver_dfb.wait() as received_block:
+                ttl.copy(received_block, out[0, 1]).wait()
         elif node_x == 2:
             multicast_block = multicast_recv_dfb.reserve()
             multicast_receive = ttl.copy(multicast_pipe, multicast_block)
             multicast_receive.wait()
-            ttl.copy(multicast_block, out[0, 2]).wait()
             multicast_block.push()
+            with multicast_recv_dfb.wait() as received_block:
+                ttl.copy(received_block, out[0, 2]).wait()
 
     @ttl.datamovement()
     def dm_brisc():
@@ -803,9 +807,10 @@ def test_pipe_rejects_different_rendezvous_execution_contexts(device):
     with pytest.raises(
         Exception,
         match=(
-            "cannot prove a one-to-one synchronization schedule on PipeNet.*"
-            "receiver post and send occurrences do not have matching proven "
-            "execution counts and conditions"
+            "PipeNet net requires one static receiver post definition for each "
+            "static send definition at receiver core_x=1, core_y=0; found 1 "
+            "static receiver post definition[(]s[)] and 2 static send "
+            "definition[(]s[)]"
         ),
     ):
         mismatched_pipe_occurrences(to_dram(inp_torch, device), output)
@@ -836,9 +841,10 @@ def test_pipe_rejects_loop_conditional_rendezvous_count(device):
     with pytest.raises(
         Exception,
         match=(
-            "cannot prove a one-to-one synchronization schedule on PipeNet.*"
-            "receiver post and send occurrences do not have matching proven "
-            "execution counts and conditions"
+            "PipeNet net requires one static receiver post definition for each "
+            "static send definition at receiver core_x=1, core_y=0; found 2 "
+            "static receiver post definition[(]s[)] and 1 static send "
+            "definition[(]s[)]"
         ),
     ):
         loop_conditional_rendezvous_count(to_dram(inp_torch, device), output)

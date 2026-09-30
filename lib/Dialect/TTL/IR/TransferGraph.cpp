@@ -123,6 +123,8 @@ void enumerateComponentCoordinates(
   }
 }
 
+} // namespace
+
 SmallVector<DeviceRefAttr> enumerateDomainDevices(DeviceDomainAttr domain) {
   MLIRContext *context = domain.getContext();
   SmallVector<SmallVector<DenseI64ArrayAttr>> deviceCoordinates(1);
@@ -152,6 +154,8 @@ SmallVector<DeviceRefAttr> enumerateDomainDevices(DeviceDomainAttr domain) {
   }
   return devices;
 }
+
+namespace {
 
 std::optional<std::size_t> findDomainComponentIndex(DeviceDomainAttr domain,
                                                     StringAttr componentName) {
@@ -184,6 +188,8 @@ FailureOr<std::uint64_t> getExtentElementCount(ArrayRef<int64_t> extent) {
   return count;
 }
 
+} // namespace
+
 FailureOr<std::uint64_t> getDomainDeviceCount(DeviceDomainAttr domain) {
   std::uint64_t count = 1;
   for (DeviceDomainComponentAttr component : domain.getComponents()) {
@@ -201,6 +207,8 @@ FailureOr<std::uint64_t> getDomainDeviceCount(DeviceDomainAttr domain) {
   }
   return count;
 }
+
+namespace {
 
 LogicalResult
 verifyDomainDeviceCount(DeviceDomainAttr domain,
