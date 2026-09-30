@@ -1008,6 +1008,8 @@ python tutorials/elementwise/step_4_multinode_grid_full.py
 | `LLVM_BUILD_TYPE`                | `Release` | LLVM build type (independent of project build type)                                  |
 | `TTLANG_TOOLCHAIN_DIR`           | —          | Toolchain prefix for LLVM, tt-metal, and venv                                        |
 | `TTLANG_PYTHON_VENV`            | —          | Existing Python virtual environment used by configure/build                          |
+| `TTLANG_INSTALL_RUNTIME_REQUIREMENTS` | `ON` | Install `requirements.txt` during compiler configuration. `OFF` uses a pre-provisioned Python environment with the required build/runtime dependencies. |
+| `TTLANG_INSTALL_DEV_REQUIREMENTS` | `ON` | Install `dev-requirements.txt` during compiler configuration. `OFF` requires preinstalled compiler/test dependencies and documentation tools when enabled. |
 | `TTLANG_USE_TOOLCHAIN`           | `OFF`     | Use pre-built toolchain at `TTLANG_TOOLCHAIN_DIR`                                  |
 | `TTLANG_USE_TOOLCHAIN_TTMETAL`   | follows `TTLANG_USE_TOOLCHAIN` | Reuse tt-metal from the toolchain. Set `OFF` (e.g. via `scripts/build-and-install.sh --rebuild-ttmetal`) to keep LLVM from the toolchain but rebuild tt-metal from the submodule. |
 | `TTLANG_BUILD_TOOLCHAIN`         | `OFF`     | Build LLVM and tt-metal into a reusable toolchain directory (cleans stale artifacts) |
@@ -1020,6 +1022,11 @@ python tutorials/elementwise/step_4_multinode_grid_full.py
 | `TTLANG_ENABLE_DOCS`             | `OFF`     | Enable Sphinx documentation build (`ttlang-docs` target)                           |
 | `CODE_COVERAGE`                  | `OFF`     | Enable code coverage reporting                                                       |
 | `TTLANG_FORCE_TOOLCHAIN_REBUILD` | `OFF`     | Force rebuild of LLVM and tt-metal into `TTLANG_TOOLCHAIN_DIR`                     |
+
+For a pre-provisioned compiler environment, both requirements-install options
+can be set to `OFF`. `requirements-test.txt` supplies the compiler/test
+dependencies; `dev-requirements.txt` includes them plus documentation and lint
+tools.
 
 ## Build Architecture
 

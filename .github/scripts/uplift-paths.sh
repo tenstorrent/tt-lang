@@ -40,6 +40,7 @@ UPLIFT_PATHS=(
     docs/requirements.txt
     requirements.txt
     requirements-runtime.txt
+    requirements-test.txt
     scripts/build-and-install.sh
     scripts/copy-ttmetal-runtime-artifacts.sh
     scripts/install-ttmetal.sh
