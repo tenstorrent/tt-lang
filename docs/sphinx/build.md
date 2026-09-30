@@ -7,6 +7,12 @@ TT-Lang's own dialects and tools from git submodules at recorded commits. A sing
 `cmake -G Ninja -B build && cmake --build build` invocation produces a
 fully working environment.
 
+A build that does not name a type is configured as `RelWithDebInfo` with
+assertions left enabled. Pass `-DCMAKE_BUILD_TYPE=Debug` for an unoptimized
+compiler, or `-DTTLANG_ENABLE_ASSERTIONS=OFF` to drop the assertions from an
+optimized one. Build type changes how long the compiler takes to lower a
+kernel, not the kernels it emits.
+
 ## Prerequisites
 
 - CMake 3.28+
