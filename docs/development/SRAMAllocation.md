@@ -54,6 +54,12 @@ extent = roundUp(P * T * B, A)
 
 Packed-format metadata is included in `P`. An allocation group reserves the largest compiler-owned payload extent required by any member. Tensor-backed storage uses the tensor's existing node-local SRAM address and adds no payload bytes to the arena. Its control record remains in the arena. The complete arena size is the maximum of the control section end and every compiler-owned payload end. An empty allocation plan needs no arena; lifecycle synchronization scratch remains a separate runtime allocation.
 
+## Runtime Storage Requirements
+
+Compiler offsets describe storage inside an arena, while the host runtime must also account for existing tensor allocations. Before reserving an arena, TT-Lang prepares one immutable requirement per physical storage owner. Each requirement records its byte extent, alignment, lifetime, whether its address is fixed or allocator-selected, and which worker nodes must share a base address. DFB control and payload ranges reference these owners; multiple DFBs backed by one tensor share its fixed requirement, which covers the tensor's complete shard extent.
+
+The runtime checks prepared arena sizes and worker-node groups against compiler metadata before allocating SRAM, then reserves arenas from the prepared requirements. Persistent tensor declarations use the same requirement type with a longer lifetime, but their tensors and invocation arenas remain separate allocations at this stage.
+
 ## Conflict Analysis
 
 Allocation consumes the existing logical-identity, allocation-group, and completion-aware lifetime analyses. The compiler validates every allocation group and builds the complete conflict relation before changing IR. Unknown launch domains, unproved completion, concurrent lifetimes, and incompatible storage ownership remain conflicts.
