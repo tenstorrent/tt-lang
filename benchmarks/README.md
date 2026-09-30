@@ -28,3 +28,6 @@ python -m benchmarks.softmax.flash_chain_8node --runs 10
 python -m benchmarks.softmax.online_softmax_accumulators --variant staged
 python -m benchmarks.softmax.online_softmax_accumulators --variant ssa
 ```
+
+[`all_gather_minimal_matmul`](all_gather_minimal_matmul/README.md) uses device
+profiling to compare TT-Lang and TT-Metal column-parallel fused operations.

@@ -29,10 +29,10 @@ Two kernels cover the `K_parts` axis:
 Both kernels use the same two mcast nets:
 
 - **A (activations) row-mcast**: the core at column 0 of each row reads an A
-  block from DRAM and multicasts it across the row to all `Np` consumers in
-  that row.
+  block from DRAM and multicasts it to the other `Np - 1` consumers in that
+  row.
 - **B (weights) column-mcast**: the core at row 0 of each column reads a B
-  block and multicasts it down the column to all `Mp` consumers.
+  block and multicasts it to the other `Mp - 1` consumers in that column.
 
 So each A block is read once per row and each B block once per column; every
 other core receives over the on-chip mcast net instead of hitting DRAM. In

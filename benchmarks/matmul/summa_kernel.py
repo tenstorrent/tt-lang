@@ -69,10 +69,10 @@ def make_kernel(
 
     @ttl.operation(grid=(COL, ROW), fp32_dest_acc_en=fp32_dest_acc_en)
     def summa_matmul(a, w, out):
-        a_pipes = [ttl.Pipe(src=(0, m_p), dst=(slice(0, Np), m_p)) for m_p in range(Mp)]
+        a_pipes = [ttl.Pipe(src=(0, m_p), dst=(slice(1, Np), m_p)) for m_p in range(Mp)]
         mcast_a_net = ttl.PipeNet(a_pipes)
 
-        b_pipes = [ttl.Pipe(src=(n_p, 0), dst=(n_p, slice(0, Mp))) for n_p in range(Np)]
+        b_pipes = [ttl.Pipe(src=(n_p, 0), dst=(n_p, slice(1, Mp))) for n_p in range(Np)]
         mcast_b_net = ttl.PipeNet(b_pipes)
 
         a_cb = ttl.make_dataflow_buffer_like(a, shape=(bm, bk), block_count=2)

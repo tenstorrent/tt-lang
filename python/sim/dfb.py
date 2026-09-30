@@ -1678,7 +1678,13 @@ def _matmul_tile_shape(a_shape: Shape, b_shape: Shape) -> Shape:
     return out_batch + (a_shape[-2], b_shape[-1])
 
 
-def matmul(a: Block, b: Block, _output_hint: Optional[Block] = None) -> Block:
+def matmul(
+    a: Block,
+    b: Block,
+    _output_hint: Optional[Block] = None,
+    *,
+    dtype: Any = None,
+) -> Block:
     """Matrix multiplication of two blocks.
 
     Converts each block to a ttnnsim.Tensor, delegates to torch.matmul via the
@@ -1690,6 +1696,7 @@ def matmul(a: Block, b: Block, _output_hint: Optional[Block] = None) -> Block:
         a: First input block.
         b: Second input block.
         _output_hint: Optional output block hint (unused in simulator).
+        dtype: Optional declared result dtype.
 
     Returns:
         Block whose tile shape corresponds to the matmul output shape.
@@ -1699,7 +1706,14 @@ def matmul(a: Block, b: Block, _output_hint: Optional[Block] = None) -> Block:
     if _is_dry_run():
         result_tensor = _DRY_RUN_SENTINEL
     else:
-        result_tensor = a.to_tensor() @ b.to_tensor()
+        computed_tensor = a.to_tensor() @ b.to_tensor()
+        result_tensor = Tensor(
+            computed_tensor.to_torch(),
+            computed_tensor.layout,
+            computed_tensor.memory_config,
+            dtype=dtype if dtype is not None else computed_tensor.dtype,
+            logical_shape=computed_tensor.shape,
+        )
     result_block = Block(
         tensor=result_tensor,
         shape=result_shape,
