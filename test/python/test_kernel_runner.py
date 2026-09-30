@@ -397,6 +397,15 @@ class _FakeTTNN:
         self.mux_client_runtime_calls = []
         self.mux_kernel_runtime_calls = []
         self.experimental = SimpleNamespace(fabric_mux=_FakeFabricMux(self))
+        self.fabric_chip_neighbors = {}
+        self._ttnn = SimpleNamespace(
+            multi_device=SimpleNamespace(
+                experimental=SimpleNamespace(
+                    RoutingDirection=SimpleNamespace(N="N", E="E", S="S", W="W", Z="Z"),
+                    get_chip_neighbors=self._get_chip_neighbors,
+                )
+            )
+        )
 
     class CoreCoord:
         def __init__(self, x, y):
@@ -705,6 +714,9 @@ class _FakeTTNN:
     def get_eth_forwarding_direction(self, source_node_id, destination_node_id):
         self.fabric_direction_calls.append((source_node_id, destination_node_id))
         return self.fabric_directions.get(destination_node_id, 1)
+
+    def _get_chip_neighbors(self, source_node_id, direction):
+        return self.fabric_chip_neighbors.get((source_node_id, direction), {})
 
     def get_forwarding_link_indices(self, source_node_id, destination_node_id):
         self.fabric_link_calls.append((source_node_id, destination_node_id))
@@ -5965,28 +5977,142 @@ def test_routing_plane_connects_one_dimensional_route_to_neighbor(monkeypatch):
     assert program.kernels[0].runtime_args[0][0][:5] == [1, 0, 3, 0, 3]
 
 
-def test_routing_plane_connects_one_dimensional_ring_route_to_neighbor(monkeypatch):
+class _FakeRingMeshDevice:
+    def __init__(self, shape):
+        self.shape = shape
+
+    def get_fabric_node_id(self, coordinate):
+        row, column = coordinate.coords
+        return _FakeFabricNodeId(0, row * self.shape[1] + column)
+
+
+def _make_fake_ring_ttnn(monkeypatch, chip_neighbors=None):
     fake_ttnn = _FakeTTNN()
     fake_ttnn.fabric_config = _FakeTTNN.FabricConfig.FABRIC_1D_RING
+    fake_ttnn.fabric_chip_neighbors = chip_neighbors or {}
     monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
-    program = _make_fake_fabric_program(1)
-    route = kernel_runner.FabricRouteSpec((0, 0), (0, 3), ((0, 0),), 0)
+    return fake_ttnn
 
+
+def _configure_ring_route(program, mesh_shape, local_device, remote_device):
+    route = kernel_runner.FabricRouteSpec(local_device, remote_device, ((0, 0),), 0)
     kernel_runner.configure_routing_plane_runtime_args(
         program_descriptor=program,
         kernel_fabric_routes=[[route]],
         kernel_fabric_runtime_arg_base_common_indices=[0],
-        mesh_device=_FakeMeshDevice(),
-        device_coordinates=(0, 0),
+        mesh_device=_FakeRingMeshDevice(mesh_shape),
+        device_coordinates=local_device,
         grid_cols=1,
         grid_rows=1,
     )
 
-    assert fake_ttnn.fabric_direction_calls == [
-        (_FakeFabricNodeId(0, 0), _FakeFabricNodeId(0, 1)),
-        (_FakeFabricNodeId(0, 1), _FakeFabricNodeId(0, 2)),
-        (_FakeFabricNodeId(0, 2), _FakeFabricNodeId(0, 3)),
+
+# A one-dimensional ring reaches the far end of its axis over the closing link
+# when the two ends of the axis are direct neighbors.
+def test_routing_plane_uses_ring_closing_link_for_shorter_route(monkeypatch):
+    fake_ttnn = _make_fake_ring_ttnn(
+        monkeypatch, {(_FakeFabricNodeId(0, 0), "W"): {0: [3]}}
+    )
+    program = _make_fake_fabric_program(1)
+
+    _configure_ring_route(program, (1, 4), (0, 0), (0, 3))
+
+    assert fake_ttnn.fabric_setup_calls == [
+        (
+            _FakeFabricNodeId(0, 0),
+            [_FakeFabricNodeId(0, 3)],
+            [0],
+            0,
+            (0, 0),
+        )
     ]
+    assert program.kernels[0].runtime_args[0][0][:5] == [1, 0, 3, 0, 1]
+
+
+# A route that starts inside the axis crosses the closing link mid-route and
+# continues from the far end.
+def test_routing_plane_crosses_ring_closing_link_mid_route(monkeypatch):
+    fake_ttnn = _make_fake_ring_ttnn(
+        monkeypatch, {(_FakeFabricNodeId(0, 0), "W"): {0: [4]}}
+    )
+    program = _make_fake_fabric_program(1)
+
+    _configure_ring_route(program, (1, 5), (0, 1), (0, 4))
+
+    assert fake_ttnn.fabric_direction_calls == [
+        (_FakeFabricNodeId(0, 1), _FakeFabricNodeId(0, 0)),
+        (_FakeFabricNodeId(0, 0), _FakeFabricNodeId(0, 4)),
+    ]
+    assert fake_ttnn.fabric_setup_calls == [
+        (
+            _FakeFabricNodeId(0, 1),
+            [_FakeFabricNodeId(0, 0)],
+            [0],
+            0,
+            (0, 0),
+        )
+    ]
+    assert program.kernels[0].runtime_args[0][0][:5] == [1, 0, 4, 0, 2]
+
+
+# A route from the far end toward coordinate zero wraps forward to zero.
+def test_routing_plane_wraps_ring_route_to_axis_start(monkeypatch):
+    fake_ttnn = _make_fake_ring_ttnn(
+        monkeypatch, {(_FakeFabricNodeId(0, 0), "W"): {0: [3]}}
+    )
+    program = _make_fake_fabric_program(1)
+
+    _configure_ring_route(program, (1, 4), (0, 3), (0, 0))
+
+    assert fake_ttnn.fabric_direction_calls == [
+        (_FakeFabricNodeId(0, 3), _FakeFabricNodeId(0, 0)),
+    ]
+    assert program.kernels[0].runtime_args[0][0][:5] == [1, 0, 0, 0, 1]
+
+
+# On axis 0, the closing link joins the ends of the local device's column.
+def test_routing_plane_uses_ring_closing_link_on_axis_zero(monkeypatch):
+    fake_ttnn = _make_fake_ring_ttnn(
+        monkeypatch, {(_FakeFabricNodeId(0, 1), "N"): {0: [7]}}
+    )
+    program = _make_fake_fabric_program(1)
+
+    _configure_ring_route(program, (4, 2), (0, 1), (3, 1))
+
+    assert fake_ttnn.fabric_setup_calls == [
+        (
+            _FakeFabricNodeId(0, 1),
+            [_FakeFabricNodeId(0, 7)],
+            [0],
+            0,
+            (0, 0),
+        )
+    ]
+    assert program.kernels[0].runtime_args[0][0][:5] == [1, 0, 7, 0, 1]
+
+
+# A TTNN build without the neighbor query cannot prove the closing link, so the
+# ring route follows the axis order.
+def test_routing_plane_keeps_axis_order_without_neighbor_query(monkeypatch):
+    fake_ttnn = _make_fake_ring_ttnn(
+        monkeypatch, {(_FakeFabricNodeId(0, 0), "W"): {0: [3]}}
+    )
+    del fake_ttnn._ttnn
+    program = _make_fake_fabric_program(1)
+
+    _configure_ring_route(program, (1, 4), (0, 0), (0, 3))
+
+    assert program.kernels[0].runtime_args[0][0][:5] == [1, 0, 3, 0, 3]
+
+
+# Without a link between the ends of the axis, the ring route follows the axis
+# order, because 1D connection setup accepts only a direct neighbor.
+def test_routing_plane_keeps_axis_order_without_ring_closing_link(monkeypatch):
+    fake_ttnn = _make_fake_ring_ttnn(monkeypatch)
+    program = _make_fake_fabric_program(1)
+
+    _configure_ring_route(program, (1, 4), (0, 0), (0, 3))
+
     assert fake_ttnn.fabric_setup_calls == [
         (
             _FakeFabricNodeId(0, 0),
@@ -5997,6 +6123,82 @@ def test_routing_plane_connects_one_dimensional_ring_route_to_neighbor(monkeypat
         )
     ]
     assert program.kernels[0].runtime_args[0][0][:5] == [1, 0, 3, 0, 3]
+
+
+# Equal distances in both ring directions keep the route along the axis order.
+def test_routing_plane_keeps_axis_order_for_equidistant_ring_route(monkeypatch):
+    fake_ttnn = _make_fake_ring_ttnn(
+        monkeypatch, {(_FakeFabricNodeId(0, 0), "W"): {0: [3]}}
+    )
+    program = _make_fake_fabric_program(1)
+
+    _configure_ring_route(program, (1, 4), (0, 0), (0, 2))
+
+    assert fake_ttnn.fabric_direction_calls == [
+        (_FakeFabricNodeId(0, 0), _FakeFabricNodeId(0, 1)),
+        (_FakeFabricNodeId(0, 1), _FakeFabricNodeId(0, 2)),
+    ]
+    assert program.kernels[0].runtime_args[0][0][:5] == [1, 0, 2, 0, 2]
+
+
+def _configure_external_ring_requirement(remote_device):
+    external_binding = FabricConnectionBinding(
+        claim=_bound_fabric_claim(),
+        connections=(
+            FabricConnectionRequirement(
+                local_device=DeviceRef(0, 0),
+                remote_device=DeviceRef(*remote_device),
+                worker_nodes=((1, 0),),
+                fixed_link_index=1,
+            ),
+        ),
+        abi_identity="external-v1",
+    )
+    kernel_runner.configure_routing_plane_runtime_args(
+        program_descriptor=_make_fake_fabric_program_at_node(1),
+        kernel_fabric_routes=[[]],
+        kernel_fabric_runtime_arg_base_common_indices=[None],
+        kernel_fabric_manager_intervals=[
+            (
+                _fabric_manager_interval(
+                    "external.external",
+                    kind=kernel_runner.FabricManagerIntervalKind.EXTERNAL,
+                    claim="external",
+                    route_indices=(),
+                ),
+            )
+        ],
+        external_fabric_connections=(external_binding,),
+        mesh_device=_FakeRingMeshDevice((1, 4)),
+        device_coordinates=(0, 0),
+        grid_cols=2,
+        grid_rows=1,
+    )
+
+
+# An external requirement follows the generated ring route rule, so its fixed
+# link is checked in the direction of the closing link.
+def test_routing_plane_resolves_external_ring_requirement_over_closing_link(
+    monkeypatch,
+):
+    fake_ttnn = _make_fake_ring_ttnn(
+        monkeypatch, {(_FakeFabricNodeId(0, 0), "W"): {0: [3]}}
+    )
+
+    _configure_external_ring_requirement((0, 3))
+
+    assert fake_ttnn.fabric_link_calls == [
+        (_FakeFabricNodeId(0, 0), _FakeFabricNodeId(0, 3))
+    ]
+
+
+# External requirement endpoints are checked against the device domain, which
+# may exceed the mesh when mesh program placements are explicit.
+def test_routing_plane_rejects_external_ring_requirement_outside_mesh(monkeypatch):
+    _make_fake_ring_ttnn(monkeypatch)
+
+    with pytest.raises(ValueError, match=r"leaves mesh extent \(1, 4\)"):
+        _configure_external_ring_requirement((0, 5))
 
 
 def test_routing_plane_rejects_nonadjacent_neighbor_exchange(monkeypatch):
