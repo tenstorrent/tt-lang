@@ -668,6 +668,7 @@ def _make_descriptor_metadata():
         fabric_routes=("route",),
         fabric_runtime_arg_base_common_index=5,
         fabric_manager_intervals=("interval",),
+        fabric_mux_capable=False,
         logical_selector=ttl.KernelKind.DATA_MOVEMENT,
         function_attributes=(("new.descriptor.property", "value"),),
     )
@@ -880,6 +881,7 @@ class TestSpecializedKernelGrouping:
             "fabric_routes": ("other",),
             "fabric_runtime_arg_base_common_index": 9,
             "fabric_manager_intervals": ("other",),
+            "fabric_mux_capable": True,
             "logical_selector": ttl.KernelKind.COMPUTE,
             "function_attributes": (("new.descriptor.property", "other"),),
         }

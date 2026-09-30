@@ -6,6 +6,7 @@
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlow.h"
+#include "mlir/Dialect/EmitC/IR/EmitC.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/BuiltinOps.h"
@@ -211,7 +212,8 @@ int main(int argumentCount, char **argumentValues) {
 
   mlir::DialectRegistry registry;
   registry.insert<mlir::arith::ArithDialect, mlir::cf::ControlFlowDialect,
-                  mlir::func::FuncDialect, mlir::scf::SCFDialect>();
+                  mlir::emitc::EmitCDialect, mlir::func::FuncDialect,
+                  mlir::scf::SCFDialect>();
   mlir::MLIRContext context(registry);
   mlir::ParserConfig parserConfig(&context);
   mlir::OwningOpRef<mlir::ModuleOp> module =

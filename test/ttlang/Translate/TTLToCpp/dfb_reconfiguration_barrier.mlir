@@ -15,10 +15,17 @@
 // CHECK: storeSynchronizationWord(&synchronizationState[arrivalWord], entryComplete);
 // CHECK: while (!participantsHaveState(synchronizationState, entryComplete)) {
 // CHECK: FORCE_INLINE void exit(volatile uint32_t tt_l1_ptr *synchronizationState) {
+// CHECK-NOT: storeSynchronizationWord(&synchronizationState[arrivalWord], 0);
 // CHECK: storeSynchronizationWord(&synchronizationState[arrivalWord], exitComplete);
-// CHECK: while (!participantsHaveState(synchronizationState, exitComplete)) {
-// CHECK: dfb_reconfiguration_detail::enter(synchronizationState);
-// CHECK: dfb_reconfiguration_detail::exit(synchronizationState);
+// CHECK-NEXT: while (loadSynchronizationWord(&synchronizationState[releaseWord]) !=
+// CHECK-NEXT: exitComplete) {
+// CHECK-NEXT: }
+// CHECK-NEXT: #elif defined(TTL_DFB_RECONFIGURATION_DM1)
+// CHECK-NEXT: while (!participantsHaveState(synchronizationState, exitComplete)) {
+// CHECK-NOT: participantsHaveState(synchronizationState, 0)
+// CHECK-NOT: storeSynchronizationWord(&synchronizationState[releaseWord], 0);
+// CHECK: enter(synchronizationState);
+// CHECK: exit(synchronizationState);
 // CHECK: get_arg_val<uint32_t>(get_compile_time_arg_val(0))
 // NO-ATOMICS-NOT: __atomic_
 

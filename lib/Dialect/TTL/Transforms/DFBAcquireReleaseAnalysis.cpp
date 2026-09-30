@@ -7,12 +7,14 @@
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 
+#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "llvm/ADT/BitVector.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
+#include "llvm/ADT/TypeSwitch.h"
 
 #include <algorithm>
 #include <optional>
@@ -69,6 +71,22 @@ static bool protocolUseMatchesAcquire(DFBAcquireInterval interval,
   return !foundDependency;
 }
 
+// Whether a wait on `dfb` precedes `operation` in its block or precedes one of
+// its ancestors in the ancestor's block, so it dominates `operation`.
+static bool hasDominatingDFBWait(Operation *operation, Value dfb) {
+  for (Operation *current = operation; current && !isa<func::FuncOp>(current);
+       current = current->getParentOp()) {
+    for (Operation *previous = current->getPrevNode(); previous;
+         previous = previous->getPrevNode()) {
+      if (auto wait = dyn_cast<CBWaitOp>(previous);
+          wait && wait.getCb() == dfb) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 // Operand roles and protocol effects identify the pointer side. Unclassified
 // direct accesses conservatively match both sides.
 static bool directDFBUseMatchesAcquire(DFBAcquireInterval interval,
@@ -82,11 +100,21 @@ static bool directDFBUseMatchesAcquire(DFBAcquireInterval interval,
     return true;
   }
 
+  // A pipe send reads through the read pointer only after a wait on the DFB;
+  // otherwise pipe lowering sends the reserved block through the write
+  // pointer.
+  bool readsWaitedBlock = copy.getSrc() == interval.dfb;
+  if (readsWaitedBlock &&
+      isa<PipeType, SelectedPipeSrcType, SelectedPipeDstType>(
+          copy.getDst().getType())) {
+    readsWaitedBlock = hasDominatingDFBWait(copy, interval.dfb);
+  }
   switch (interval.kind) {
   case DFBAcquireReleaseKind::Producer:
-    return copy.getDst() == interval.dfb;
+    return copy.getDst() == interval.dfb ||
+           (copy.getSrc() == interval.dfb && !readsWaitedBlock);
   case DFBAcquireReleaseKind::Consumer:
-    return copy.getSrc() == interval.dfb;
+    return readsWaitedBlock;
   }
   llvm_unreachable("unknown DFB acquire/release kind");
 }
@@ -237,9 +265,14 @@ static bool projectToIntervalOrderingBlock(DFBAcquireInterval interval,
   } else if (!isBefore(ordering.start, projected)) {
     return false;
   }
-  if (!ignoreBoundary && interval.kindBoundary &&
-      !isBefore(projected, interval.kindBoundary)) {
-    return false;
+  // `op` must also precede `kindBoundary`, compared through its ancestor in
+  // the block of `kindBoundary`.
+  if (!ignoreBoundary && interval.kindBoundary) {
+    Operation *reference =
+        interval.kindBoundary->getBlock()->findAncestorOpInBlock(*op);
+    if (!reference || !isBefore(reference, interval.kindBoundary)) {
+      return false;
+    }
   }
   return true;
 }
@@ -436,20 +469,147 @@ int64_t getDFBLifecycleTileCount(Operation *operation) {
   return effects.front().numTiles;
 }
 
-std::optional<int64_t> getDFBTransactionBlockCount(Operation *operation) {
-  assert((isDFBAcquireOp(operation) || isDFBReleaseOp(operation)) &&
-         "DFB transaction block count requires a lifecycle operation");
-  Value dfb = isDFBAcquireOp(operation) ? getDFBAcquireDFB(operation)
-                                        : getDFBReleaseDFB(operation);
-  auto dfbType = dyn_cast<CircularBufferType>(dfb.getType());
+std::optional<int64_t>
+getDFBProtocolEffectBlockCount(const DFBProtocolEffect &effect) {
+  auto dfbType = dyn_cast<CircularBufferType>(effect.dfb.getType());
   if (!dfbType || dfbType.getElementsPerBlock() <= 0) {
     return std::nullopt;
   }
-  int64_t numTiles = getDFBLifecycleTileCount(operation);
-  if (numTiles <= 0 || numTiles % dfbType.getElementsPerBlock() != 0) {
+  if (effect.numTiles <= 0 ||
+      effect.numTiles % dfbType.getElementsPerBlock() != 0) {
     return std::nullopt;
   }
-  return numTiles / dfbType.getElementsPerBlock();
+  return effect.numTiles / dfbType.getElementsPerBlock();
+}
+
+static bool hasCoalescedTileCount(Operation *op) {
+  return TypeSwitch<Operation *, bool>(op)
+      .Case<CBReserveOp, CBWaitOp, CBPushOp, CBPopOp>(
+          [](auto lifecycle) { return lifecycle.getNumTiles().has_value(); })
+      .Default([](Operation *) { return false; });
+}
+
+// Whether `op`, between two acquisitions of `dfb`, may release `dfb` before
+// the merged release: it uses `dfb` (a release included) or a group member's
+// result, which may flow into a release, or it carries regions whose bodies
+// may release.
+static bool mayReleaseBeforeCoalescedRelease(Operation *op, Value dfb,
+                                             ArrayRef<Operation *> group) {
+  if (isa<AttachCBOp>(op)) {
+    return false;
+  }
+  if (op->getNumRegions() > 0) {
+    return true;
+  }
+  for (Value operand : op->getOperands()) {
+    if (operand == dfb) {
+      return true;
+    }
+    for (Operation *member : group) {
+      if (operand == member->getResult(0)) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+SmallVector<CoalescedAcquireGroup>
+planCoalescedAcquireGroups(Block &block, DFBAcquireReleaseKind kind) {
+  auto isAcquire = [&](Operation *op) {
+    return kind == DFBAcquireReleaseKind::Producer ? isa<CBReserveOp>(op)
+                                                   : isa<CBWaitOp>(op);
+  };
+  auto isRelease = [&](Operation *op) {
+    return kind == DFBAcquireReleaseKind::Producer ? isa<CBPushOp>(op)
+                                                   : isa<CBPopOp>(op);
+  };
+  // The plan replays the pass's in-place rewrite: releases erased by an
+  // earlier merge are absent from later groups, and the retained release
+  // carries the merged tile count.
+  llvm::DenseSet<Operation *> merged;
+  llvm::DenseSet<Operation *> erasedReleases;
+  llvm::DenseSet<Operation *> countedReleases;
+  SmallVector<CoalescedAcquireGroup> groups;
+  for (Operation &leader : block) {
+    if (!isAcquire(&leader) || merged.contains(&leader) ||
+        hasCoalescedTileCount(&leader)) {
+      continue;
+    }
+    auto unitType = cast<RankedTensorType>(leader.getResult(0).getType());
+    if (unitType.getRank() != 2 || unitType.getShape()[0] != 1) {
+      continue;
+    }
+    Value dfb = getDFBAcquireDFB(&leader);
+    CoalescedAcquireGroup group;
+    group.acquires.push_back(&leader);
+    Operation *current = leader.getNextNode();
+    for (; current; current = current->getNextNode()) {
+      if (erasedReleases.contains(current)) {
+        continue;
+      }
+      if (isAcquire(current) && getDFBAcquireDFB(current) == dfb) {
+        if (hasCoalescedTileCount(current)) {
+          break;
+        }
+        group.acquires.push_back(current);
+        continue;
+      }
+      if (mayReleaseBeforeCoalescedRelease(current, dfb, group.acquires)) {
+        break;
+      }
+    }
+    if (group.acquires.size() < 2) {
+      continue;
+    }
+    for (Operation *op = group.acquires.back()->getNextNode(); op;
+         op = op->getNextNode()) {
+      if (erasedReleases.contains(op) || !isRelease(op) ||
+          getDFBReleaseDFB(op) != dfb) {
+        continue;
+      }
+      if (hasCoalescedTileCount(op) || countedReleases.contains(op)) {
+        break;
+      }
+      group.releases.push_back(op);
+      if (group.releases.size() == group.acquires.size()) {
+        break;
+      }
+    }
+    if (group.releases.size() != group.acquires.size()) {
+      continue;
+    }
+    merged.insert(group.acquires.begin(), group.acquires.end());
+    countedReleases.insert(group.releases.back());
+    erasedReleases.insert(group.releases.begin(),
+                          std::prev(group.releases.end()));
+    groups.push_back(std::move(group));
+  }
+  return groups;
+}
+
+std::optional<CoalescedAcquireGroup>
+findCoalescedAcquireGroup(Operation *acquire) {
+  DFBAcquireReleaseKind kind = isa<CBReserveOp>(acquire)
+                                   ? DFBAcquireReleaseKind::Producer
+                                   : DFBAcquireReleaseKind::Consumer;
+  for (CoalescedAcquireGroup &group :
+       planCoalescedAcquireGroups(*acquire->getBlock(), kind)) {
+    if (llvm::is_contained(group.acquires, acquire)) {
+      return std::move(group);
+    }
+  }
+  return std::nullopt;
+}
+
+std::optional<int64_t> getDFBTransactionBlockCount(Operation *operation) {
+  assert((isDFBAcquireOp(operation) || isDFBReleaseOp(operation)) &&
+         "DFB transaction block count requires a lifecycle operation");
+  SmallVector<DFBProtocolEffect> effects =
+      cast<DFBAccessOpInterface>(operation).getDFBProtocolEffects();
+  assert(effects.size() == 1 &&
+         "concrete DFB lifecycle ops have exactly one protocol effect");
+  return getDFBProtocolEffectBlockCount(effects.front());
 }
 
 struct OutstandingDFBAcquisition {
@@ -642,9 +802,14 @@ static void walkDFBAcquireOwnedUses(
     if (countsAsUse) {
       recordUse(user, projected);
     }
+    // Tensor views, transfer handles, and receive requests keep naming the
+    // acquired slot; a scalar read from the block does not.
     if (propagateResults) {
       for (Value result : user->getResults()) {
-        worklist.push_back(result);
+        if (isa<RankedTensorType, TransferHandleType, ReceiveRequestType,
+                ReadyReceiveType>(result.getType())) {
+          worklist.push_back(result);
+        }
       }
     }
     return true;
@@ -726,6 +891,20 @@ Operation *findLastDFBAcquireOwnedUse(DFBAcquireInterval interval) {
   return last;
 }
 
+Operation *
+findLastDFBAcquireOwnedUseInAcquiringBlock(DFBAcquireInterval interval) {
+  Block *block = interval.acquire->getBlock();
+  Operation *last = interval.acquire;
+  walkDFBAcquireOwnedUses(interval, DFBUseTraversal::LazyTensorResults,
+                          [&](Operation *user, Operation *) {
+                            if (Operation *projected =
+                                    block->findAncestorOpInBlock(*user)) {
+                              updateLatestUse(projected, last);
+                            }
+                          });
+  return last;
+}
+
 void collectDFBAcquireOwnedUses(DFBAcquireInterval interval,
                                 SmallVectorImpl<Operation *> &uses) {
   walkDFBAcquireOwnedUses(
@@ -779,9 +958,7 @@ DFBReleaseSearch findOwnedDFBReleases(DFBAcquireInterval interval,
   DFBAcquireOrdering ordering = getDFBAcquireOrdering(interval.acquire);
   Block *block = ordering.block;
   DFBProtocolEffectKind releaseEffectKind =
-      interval.kind == DFBAcquireReleaseKind::Producer
-          ? DFBProtocolEffectKind::Push
-          : DFBProtocolEffectKind::Pop;
+      getDFBReleaseEffectKind(interval.kind);
 
   bool useExtendsPastBoundary =
       lastOwnedUse && lastOwnedUse != interval.acquire &&
@@ -1021,6 +1198,11 @@ DFBAcquireReleaseIndex::getReleases(DFBAcquireReleaseKind kind) const {
     }
   }
   return releases;
+}
+
+bool hasDFBProtocolEffectOn(Operation *operation, Value dfb,
+                            DFBProtocolEffectKind kind) {
+  return hasProtocolEffect(operation, dfb, kind);
 }
 
 } // namespace mlir::tt::ttl
