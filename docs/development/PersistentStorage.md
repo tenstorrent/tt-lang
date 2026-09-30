@@ -58,7 +58,7 @@ Two synchronization requirements therefore remain distinct: the DFB protocol ord
 
 Host dispatch return does not establish device completion. `SRAMStorage` records completion after submission and retains the allocation until that completion is observed. Its uses are conservatively serialized; proving read-only access could permit additional concurrency later.
 
-Submission and close must agree on which operations own an outstanding use. Closing rejects new uses and waits for previously submitted ones. When an operation borrows several storage owners, the runtime acquires their ownership protections in a common order to avoid deadlock.
+Submission and close must agree on which operations own an outstanding use. Closing rejects new uses and waits for previously submitted ones. When an operation borrows several storage owners, the runtime acquires their ownership protections in a common order to avoid deadlock. A submission callback cannot call a storage lifecycle method or start another persistent submission, because either could acquire another owner's lock out of order.
 
 A launch can fail after enqueueing work. Such failure must not release its arguments immediately. If a completion record cannot be established, storage remains retained until recovery proves that accesses have finished. Failed cleanup remains retryable and never releases another owner's allocation.
 

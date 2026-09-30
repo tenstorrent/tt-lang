@@ -5,11 +5,11 @@
 """Persistent SRAM tensor declarations and TTNN submission ownership."""
 
 from dataclasses import dataclass
-import threading
 
 from ._persistent_storage import (
     StorageOwner,
     StorageReference,
+    require_outside_submission,
     with_persistent_storage,
 )
 
@@ -183,7 +183,8 @@ class SRAMStorage:
         self._backend = _TTNNStorageBackend(device, ttnn, queue_ids, sub_device_ids)
         self._owner = StorageOwner((), self._backend, declared=True)
         self._declarations = []
-        self._lock = threading.RLock()
+        # A second lock permits facade close and owner submission to deadlock.
+        self._lock = self._owner._lock
 
     def tensor(
         self,
@@ -198,6 +199,7 @@ class SRAMStorage:
         initialize="zeros",
     ):
         """Declare a BF16/FP32 tiled tensor using TTNN shard-layout validation."""
+        require_outside_submission()
         api = self._api
         with self._lock:
             self._owner.require_declared()
@@ -269,6 +271,7 @@ class SRAMStorage:
 
     def allocate(self):
         """Allocate all declarations and initialize once before publishing bindings."""
+        require_outside_submission()
         with self._lock:
             if not self._declarations:
                 raise ValueError("storage has no tensor declarations")
@@ -313,6 +316,7 @@ class SRAMStorage:
         return with_persistent_storage(function)(*args, **kwargs)
 
     def close(self):
+        require_outside_submission()
         with self._lock:
             self._owner.close()
 

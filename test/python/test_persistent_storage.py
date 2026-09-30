@@ -293,18 +293,56 @@ def test_reverse_argument_order_cannot_deadlock():
 def test_reentrant_close_is_rejected_before_release():
     owner, backend, _ = make_owner()
     launch = with_persistent_storage(lambda value: owner.close())
-    with pytest.raises(RuntimeError, match="inside its submission"):
+    with pytest.raises(RuntimeError, match="inside a submission"):
         launch(owner.reference(0))
     assert backend.released == []
     backend.complete()
     owner.close()
 
 
+def test_cross_owner_close_from_submission_cannot_deadlock():
+    # Reverse-order callbacks must not acquire another owner's lock.
+    first, first_backend, _ = make_owner()
+    second, second_backend, _ = make_owner()
+    first_reference = first.reference(0)
+    second_reference = second.reference(0)
+    callbacks_ready = threading.Barrier(2)
+    errors = []
+
+    def submit(reference, other_owner):
+        @with_persistent_storage
+        def launch(value):
+            callbacks_ready.wait(timeout=3)
+            with pytest.raises(RuntimeError, match="inside a submission"):
+                other_owner.close()
+
+        try:
+            launch(reference)
+        except BaseException as error:
+            errors.append(error)
+
+    threads = [
+        threading.Thread(target=submit, args=(first_reference, second), daemon=True),
+        threading.Thread(target=submit, args=(second_reference, first), daemon=True),
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=3)
+    assert all(not thread.is_alive() for thread in threads)
+    assert errors == []
+    first_backend.complete()
+    second_backend.complete()
+    first.close()
+    second.close()
+
+
 def test_nested_submission_is_rejected_before_locking_another_owner():
     first, first_backend, _ = make_owner()
     second, second_backend, _ = make_owner()
     inner = with_persistent_storage(lambda value: None)
-    outer = with_persistent_storage(lambda value: inner(second.reference(0)))
+    second_reference = second.reference(0)
+    outer = with_persistent_storage(lambda value: inner(second_reference))
     with pytest.raises(RuntimeError, match="nested persistent"):
         outer(first.reference(0))
     assert second_backend.events == []

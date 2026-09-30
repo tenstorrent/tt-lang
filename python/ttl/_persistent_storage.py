@@ -47,6 +47,11 @@ _pending_lock = threading.Lock()
 _submission_thread = threading.local()
 
 
+def require_outside_submission():
+    if getattr(_submission_thread, "active", False):
+        raise RuntimeError("storage operations are not allowed inside a submission")
+
+
 def _contains_allocation(resources, candidate, backend):
     return any(
         backend.is_same_allocation(resource, candidate) for resource in resources
@@ -77,15 +82,16 @@ class StorageOwner:
         self._state = _State.DECLARED if declared else _State.READY
         self._completion = None
         self._unknown_completion = False
-        self._submitting = False
 
     def reference(self, index: int) -> "StorageReference":
+        require_outside_submission()
         with self._lock:
             self._require_ready()
             self._validate_reference_index(index, len(self._resources))
             return StorageReference(self, index)
 
     def declare_reference(self) -> "StorageReference":
+        require_outside_submission()
         with self._lock:
             if self._state is not _State.DECLARED:
                 raise RuntimeError("persistent declarations are complete")
@@ -95,6 +101,7 @@ class StorageOwner:
 
     def allocate(self, build_resources: Callable[[Callable[[object], None]], None]):
         """Publish all retained resources together after initialization completes."""
+        require_outside_submission()
         with self._lock:
             if self._state is not _State.DECLARED:
                 raise RuntimeError(
@@ -136,11 +143,13 @@ class StorageOwner:
         return isinstance(reference, StorageReference) and reference._owner is self
 
     def require_open(self):
+        require_outside_submission()
         with self._lock:
             if self._state in (_State.CLOSING, _State.CLOSED):
                 raise RuntimeError("persistent storage is closing or closed")
 
     def require_declared(self):
+        require_outside_submission()
         with self._lock:
             if self._state is not _State.DECLARED:
                 raise RuntimeError("persistent declarations are complete")
@@ -163,9 +172,8 @@ class StorageOwner:
 
         Failure retains unreleased resources and permits retrying close.
         """
+        require_outside_submission()
         with self._lock:
-            if self._submitting:
-                raise RuntimeError("cannot close storage inside its submission")
             if self._state is _State.CLOSED:
                 return
             self._state = _State.CLOSING
@@ -236,8 +244,6 @@ def with_persistent_storage(function):
             resolved_kwargs = {name: resolve(value) for name, value in kwargs.items()}
             with _pending_lock:
                 _pending_owners.update(owners)
-            for owner in owners:
-                owner._submitting = True
             _submission_thread.active = True
             try:
                 try:
@@ -253,8 +259,6 @@ def with_persistent_storage(function):
                         owner._completion = completion
                         owner._unknown_completion = False
             finally:
-                for owner in owners:
-                    owner._submitting = False
                 _submission_thread.active = False
             owned_allocations = [
                 (reference._owner._backend, resolve(reference), reference)

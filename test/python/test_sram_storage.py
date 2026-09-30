@@ -6,6 +6,7 @@
 
 import copy
 import sys
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -434,6 +435,49 @@ def test_allocate_initialize_once_and_repeated_external_updates(
     assert not resource.allocated
     with pytest.raises(RuntimeError, match="closing or closed"):
         storage.submit(update, state, 1)
+
+
+def test_storage_close_during_submission_cannot_deadlock(runtime):
+    # Closing must not acquire the facade lock before the submission lock.
+    storage = SRAMStorage(device=runtime.device)
+    state = declare(storage)
+    storage.allocate()
+    submitted = threading.Event()
+    closer_has_lock = threading.Event()
+    errors = []
+
+    def launch(value):
+        submitted.set()
+        closer_has_lock.wait(timeout=0.25)
+        with pytest.raises(RuntimeError, match="inside a submission"):
+            storage.close()
+
+    def submit():
+        try:
+            storage.submit(launch, state)
+        except BaseException as error:
+            errors.append(error)
+
+    def close():
+        try:
+            assert submitted.wait(timeout=1)
+            with storage._lock:
+                closer_has_lock.set()
+                storage.close()
+        except BaseException as error:
+            errors.append(error)
+
+    threads = [
+        threading.Thread(target=submit, daemon=True),
+        threading.Thread(target=close, daemon=True),
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=2)
+    assert all(not thread.is_alive() for thread in threads)
+    assert errors == []
+    assert not runtime.allocations[0].allocated
 
 
 def test_completion_selection_ignores_mutable_stall_group(runtime):
