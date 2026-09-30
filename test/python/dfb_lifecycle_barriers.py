@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # REQUIRES: ttnn
-# RUN: env TTLANG_COMPILE_ONLY=1 %python %s subset-install 2>&1 | FileCheck %s --check-prefix=SUBSET-INSTALL
+# RUN: env TTLANG_COMPILE_ONLY=1 not %python %s crossing-install 2>&1 | FileCheck %s --check-prefix=CROSSING-INSTALL
 # RUN: env TTLANG_COMPILE_ONLY=1 %python %s filled 2>&1 | FileCheck %s --check-prefix=FILLED
 # RUN: env TTLANG_COMPILE_ONLY=1 not %python %s overfilled 2>&1 | FileCheck %s --check-prefix=OVERFILLED
 # RUN: env TTLANG_COMPILE_ONLY=1 not %python %s overfilled-keep-state 2>&1 | FileCheck %s --check-prefix=OVERFILLED
@@ -14,8 +14,9 @@
 # RUN: env TTLANG_COMPILE_ONLY=1 %python %s generations 2>&1 | FileCheck %s --check-prefix=GENERATIONS
 # RUN: env TTLANG_COMPILE_ONLY=1 not %python %s growing-generations 2>&1 | FileCheck %s --check-prefix=GROWING-GENERATIONS
 
-# SUBSET-INSTALL-NOT: {{error|warning}}:
-# SUBSET-INSTALL: COMPILED
+# CROSSING-INSTALL: error: logical DFB {{[0-9]+}} has capacity-unsafe producer and consumer transactions on core_x=1, core_y=0
+# CROSSING-INSTALL: note: the consumer pops 1 block(s) per launch, but the producer pushes 0 block(s) per launch
+# CROSSING-INSTALL: note: in the interval that starts at this synchronized reset or reconfiguration, which restores the DFB
 # FILLED-NOT: {{error|warning}}:
 # FILLED: COMPILED
 # OVERFILLED: error: logical DFB {{[0-9]+}} has transactions that cannot complete before a synchronized reset or reconfiguration on core_x=0, core_y=0
@@ -79,9 +80,11 @@ def _participants():
     )
 
 
-def make_subset_install():
-    # Node 0 completes a lifecycle on each side of the boundary; node 1 keeps
-    # its block across it. The plan installs the descriptor on node 0 only.
+def make_crossing_install():
+    # Node 0 completes a lifecycle on each side of the boundary. Node 1 pushes a
+    # block before it and pops it after it, but the plan installs the next
+    # descriptor on both nodes, so the reconfiguration restores the DFB on
+    # node 1 and discards that block.
     compute_kernel, reader_kernel, writer_kernel = _participants()
     boundary = ttl.DFBReconfiguration(
         participants=(compute_kernel, reader_kernel, writer_kernel),
@@ -89,7 +92,7 @@ def make_subset_install():
     )
 
     @ttl.operation(grid=(2, 1))
-    def subset_install(inp, out):
+    def crossing_install(inp, out):
         dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
 
         @ttl.compute(kernel=compute_kernel)
@@ -116,7 +119,7 @@ def make_subset_install():
             with dfb.wait() as blk:
                 ttl.copy(blk, out[0, 1]).wait()
 
-    return subset_install
+    return crossing_install
 
 
 def make_fill(pushes, discard_dfb_state):
@@ -308,7 +311,7 @@ def make_generations(pushes_per_generation):
 
 
 FACTORIES = {
-    "subset-install": make_subset_install,
+    "crossing-install": make_crossing_install,
     "filled": lambda: make_fill(pushes=2, discard_dfb_state=True),
     "overfilled": lambda: make_fill(pushes=3, discard_dfb_state=True),
     "overfilled-keep-state": lambda: make_fill(pushes=3, discard_dfb_state=False),
