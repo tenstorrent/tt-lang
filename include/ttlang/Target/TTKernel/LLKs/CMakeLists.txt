@@ -15,6 +15,8 @@ set(LLK_HEADERS
     ${CMAKE_SOURCE_DIR}/include/ttlang/Target/TTKernel/LLKs/experimental_fabric_2d_routing.h
     ${CMAKE_SOURCE_DIR}/include/ttlang/Target/TTKernel/LLKs/experimental_fabric_api.h
     ${CMAKE_SOURCE_DIR}/include/ttlang/Target/TTKernel/LLKs/experimental_routing_plane.h
+    ${CMAKE_SOURCE_DIR}/include/ttlang/Target/TTKernel/LLKs/experimental_routing_plane_scatter_write.h
+    ${CMAKE_SOURCE_DIR}/include/ttlang/Target/TTKernel/LLKs/experimental_routing_plane_write.h
     ${CMAKE_SOURCE_DIR}/include/ttlang/Target/TTKernel/LLKs/experimental_reg_api.h
     ${CMAKE_SOURCE_DIR}/include/ttlang/Target/TTKernel/LLKs/experimental_row_normalization.h
     ${CMAKE_SOURCE_DIR}/include/ttlang/Target/TTKernel/LLKs/experimental_semaphore.h

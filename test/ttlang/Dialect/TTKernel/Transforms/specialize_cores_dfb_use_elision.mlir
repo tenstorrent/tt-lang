@@ -23,7 +23,10 @@
 // CHECK-NOT: scf.if
 // CHECK: return
 
-module attributes {ttl.launch_grid = [1 : i64, 2 : i64]} {
+module attributes {
+  ttl.dfb_allocations = [{}, {}],
+  ttl.launch_grid = [1 : i64, 2 : i64]
+} {
   func.func @conditional_dfb_user() attributes {
       ttl.base_cta_index = 2 : i32,
       ttkernel.thread = #ttkernel.thread<noc>} {
@@ -51,7 +54,10 @@ module attributes {ttl.launch_grid = [1 : i64, 2 : i64]} {
 // CHECK: ttkernel.opaque_call "inspect"() {dfb_resource_indices = array<i32: 0>, header = "inspect.hpp"} : () -> ()
 // CHECK-NOT: func.func @single_node_opaque_dependency_c
 
-module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
+module attributes {
+  ttl.dfb_allocations = [{}],
+  ttl.launch_grid = [1 : i64, 1 : i64]
+} {
   func.func @single_node_opaque_dependency() attributes {
       ttl.base_cta_index = 1 : i32,
       ttkernel.thread = #ttkernel.thread<noc>} {

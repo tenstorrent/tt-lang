@@ -900,13 +900,27 @@ matchStridedTableIndex(Value index, std::size_t tableSize) {
                            static_cast<std::size_t>(offset)};
 }
 
+/// Return the value of every entry of a non-empty table whose entries are all
+/// equal.
+static std::optional<int64_t> getUniformTableValue(ArrayRef<int64_t> values) {
+  if (values.empty() || !llvm::all_equal(values)) {
+    return std::nullopt;
+  }
+  return values.front();
+}
+
 OpFoldResult ConstantTableLookupOp::fold(FoldAdaptor adaptor) {
+  ArrayRef<int64_t> values = getValues();
+  if (std::optional<int64_t> uniformValue = getUniformTableValue(values)) {
+    return IntegerAttr::get(getResult().getType(), *uniformValue);
+  }
+
   auto indexAttr = dyn_cast_or_null<IntegerAttr>(adaptor.getIndex());
   if (!indexAttr) {
     return {};
   }
   FailureOr<int64_t> tableValue =
-      lookupConstantTableValue(indexAttr.getInt(), getValues());
+      lookupConstantTableValue(indexAttr.getInt(), values);
   if (failed(tableValue)) {
     return {};
   }
@@ -917,13 +931,20 @@ void ConstantTableLookupOp::getCanonicalizationPatterns(
     RewritePatternSet &patterns, MLIRContext *) {
   patterns.add(+[](ConstantTableLookupOp lookupOp,
                    PatternRewriter &rewriter) -> LogicalResult {
+    ArrayRef<int64_t> values = lookupOp.getValues();
+    if (std::optional<int64_t> uniformValue = getUniformTableValue(values)) {
+      rewriter.replaceOpWithNewOp<arith::ConstantIndexOp>(lookupOp,
+                                                          *uniformValue);
+      return success();
+    }
+
     APInt indexValue;
     if (!matchPattern(lookupOp.getIndex(), m_ConstantInt(&indexValue))) {
       return rewriter.notifyMatchFailure(lookupOp, "index is not constant");
     }
 
-    FailureOr<int64_t> tableValue = lookupConstantTableValue(
-        indexValue.getSExtValue(), lookupOp.getValues());
+    FailureOr<int64_t> tableValue =
+        lookupConstantTableValue(indexValue.getSExtValue(), values);
     if (failed(tableValue)) {
       return rewriter.notifyMatchFailure(lookupOp,
                                          "index is outside table bounds");

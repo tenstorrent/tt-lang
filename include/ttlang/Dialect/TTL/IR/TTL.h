@@ -189,6 +189,10 @@ constexpr llvm::StringLiteral kRelaxedDFBProtocolDomainVerificationAttrName(
 constexpr llvm::StringLiteral
     kDFBReconfigurationPlanAttrName("ttl.dfb_reconfiguration_plan");
 
+/// Associates a lowered DFB reconfiguration call with its plan entry.
+constexpr llvm::StringLiteral
+    kDFBReconfigurationOrdinalAttrName("ttl.dfb_reconfiguration_ordinal");
+
 /// Module attributes carrying compiler-owned pipe resource allocation.
 constexpr llvm::StringLiteral
     kPipeSyncSemaphoreCountAttrName("ttl.pipe_sync_semaphore_count");
@@ -215,14 +219,16 @@ constexpr llvm::StringLiteral kFabricRuntimeArgBaseCommonIndexAttrName(
     "ttl.fabric_runtime_arg_base_common_index");
 constexpr llvm::StringLiteral
     kFabricManagerIntervalsAttrName("ttl.fabric_manager_intervals");
+constexpr llvm::StringLiteral
+    kFabricMuxCapableAttrName("ttl.fabric_mux_capable");
 
 /// Marker on BindCBOp to distinguish compiler-allocated DFBs from user-declared
 /// ones.
 constexpr llvm::StringLiteral
     kCompilerAllocatedAttrName("ttl.compiler_allocated");
 
-/// Function attribute recording the base compile-time argument index.
-/// CTA layout is [CBs, TAs], so this equals the number of CBs.
+/// Function attribute recording the first tensor-accessor argument index.
+/// CTA layout is [DFBs, compiler-defined arguments, tensor accessors].
 constexpr llvm::StringLiteral kBaseCTAIndexAttrName("ttl.base_cta_index");
 
 /// Function attribute recording physical DFB indices referenced by the final

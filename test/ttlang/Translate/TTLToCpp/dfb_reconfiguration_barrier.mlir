@@ -15,10 +15,17 @@
 // HEADER: storeSynchronizationWord(&synchronizationState[arrivalWord], entryComplete);
 // HEADER: while (!participantsHaveState(synchronizationState, entryComplete)) {
 // HEADER: FORCE_INLINE void exit(volatile uint32_t tt_l1_ptr *synchronizationState) {
+// HEADER-NOT: storeSynchronizationWord(&synchronizationState[arrivalWord], 0);
 // HEADER: storeSynchronizationWord(&synchronizationState[arrivalWord], exitComplete);
-// HEADER: while (!participantsHaveState(synchronizationState, exitComplete)) {
-// HEADER: dfb_reconfiguration_detail::enter(synchronizationState);
-// HEADER: dfb_reconfiguration_detail::exit(synchronizationState);
+// HEADER-NEXT: while (loadSynchronizationWord(&synchronizationState[releaseWord]) !=
+// HEADER-NEXT: exitComplete) {
+// HEADER-NEXT: }
+// HEADER-NEXT: #elif defined(TTL_DFB_RECONFIGURATION_DM1)
+// HEADER-NEXT: while (!participantsHaveState(synchronizationState, exitComplete)) {
+// HEADER-NOT: participantsHaveState(synchronizationState, 0)
+// HEADER-NOT: storeSynchronizationWord(&synchronizationState[releaseWord], 0);
+// HEADER: enter(synchronizationState);
+// HEADER: exit(synchronizationState);
 // CHECK: #include "api/compute/common.h"
 // CHECK: #include "ttlang/Target/TTKernel/LLKs/experimental_dfb_reconfiguration.h"
 // CHECK-NOT: experimental_dfb_reconfiguration.h

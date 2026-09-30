@@ -14,6 +14,7 @@ compute/data-movement routing."""
 import ast
 import copy
 import inspect
+import re
 import textwrap
 
 import pytest
@@ -673,6 +674,719 @@ def test_composition_preserves_captured_kernel_handle():
     assert result.kernels == (reader,)
 
 
+def test_composition_removes_inactive_factory_boolean_branch():
+    """Dead factory branches cannot add kernels or invalid literals."""
+    enabled = False
+    absent_offset = None
+
+    @ttl.operation()
+    def selected_callee():
+        if not enabled:
+            ttl.call_extern_func(
+                "live.hpp",
+                "live",
+                kernel=ttl.KernelKind.COMPUTE,
+            )
+        if enabled:
+            ttl.call_extern_func(
+                "dead.hpp",
+                "dead",
+                template_args=[absent_offset],
+                kernel=ttl.KernelKind.DATA_MOVEMENT,
+            )
+
+    @ttl.operation(grid=(1, 1))
+    def selected_caller():
+        selected_callee()
+
+    for spec in (selected_callee._spec, selected_caller._spec):
+        assert "if " not in spec.source
+        assert "'live'" in spec.source
+        assert "'dead'" not in spec.source
+        assert "None" not in spec.source
+
+    result = split_function_body(
+        selected_caller._spec.fn_ast,
+        dfb_param_names=set(),
+        logical_kernels=selected_caller._spec.logical_kernels,
+        selector_scope=selected_caller._spec.frozen_scope,
+        kernel_capacities=_backend_kernel_capacities(),
+    )
+    assert result.kernels == (KernelKind.COMPUTE,)
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_factory_boolean_specialization_selects_resource_declarations(enabled):
+    """Static branches determine resources before declaration validation."""
+
+    @ttl.operation(grid=(1, 1))
+    def selected_operation():
+        if enabled:
+            scratch = ttl.make_dfb("bf16", shape=(1, 1), block_count=2)
+
+    assert "if " not in selected_operation._spec.source
+    assert ("make_dfb" in selected_operation._spec.source) == enabled
+
+
+def test_factory_boolean_specialization_respects_nested_parameter():
+    """Nested parameters shadow same-named factory captures."""
+    enabled = False
+
+    @ttl.operation()
+    def selected_operation():
+        if enabled:
+            ttl.call_extern_func(
+                "dead.hpp",
+                "dead",
+                kernel=ttl.KernelKind.DATA_MOVEMENT,
+            )
+
+        def selected_callback(enabled):
+            if enabled:
+                ttl.call_extern_func(
+                    "live.hpp",
+                    "live",
+                    kernel=ttl.KernelKind.COMPUTE,
+                )
+
+    assert "'dead'" not in selected_operation._spec.source
+    assert "def selected_callback(enabled):" in selected_operation._spec.source
+    assert "if enabled:" in selected_operation._spec.source
+    assert "'live'" in selected_operation._spec.source
+
+
+def test_factory_boolean_specialization_preserves_empty_function_syntax():
+    """A fully disabled operation retains a valid empty body."""
+    enabled = False
+
+    @ttl.operation()
+    def disabled_operation():
+        if enabled:
+            ttl.call_extern_func(
+                "dead.hpp",
+                "dead",
+                kernel=ttl.KernelKind.COMPUTE,
+            )
+
+    assert disabled_operation._spec.source.endswith("    pass")
+    result = split_function_body(
+        disabled_operation._spec.fn_ast,
+        dfb_param_names=set(),
+        selector_scope=disabled_operation._spec.frozen_scope,
+    )
+    assert result.kernels == ()
+
+
+def test_factory_boolean_specialization_preserves_empty_loop_syntax():
+    """A loop whose only statement is a disabled branch retains a valid body."""
+    enabled = False
+
+    @ttl.operation()
+    def disabled_loop_operation():
+        for _index in range(2):
+            if enabled:
+                ttl.call_extern_func(
+                    "dead.hpp",
+                    "dead",
+                    kernel=ttl.KernelKind.COMPUTE,
+                )
+
+    source = disabled_loop_operation._spec.source
+    compile(source, "<operation>", "exec")
+    assert source.endswith("        pass")
+
+
+def test_factory_boolean_specialization_preserves_try_syntax():
+    """A try statement whose finally block held only a disabled branch stays valid."""
+    enabled = False
+
+    @ttl.operation()
+    def disabled_finally_operation():
+        try:
+            ttl.call_extern_func("live.hpp", "live", kernel=ttl.KernelKind.COMPUTE)
+        finally:
+            if enabled:
+                ttl.call_extern_func(
+                    "dead.hpp",
+                    "dead",
+                    kernel=ttl.KernelKind.COMPUTE,
+                )
+
+    compile(disabled_finally_operation._spec.source, "<operation>", "exec")
+
+
+@pytest.mark.parametrize(
+    "coordinates",
+    [((1, 2), (3, 4)), [[1, 2], [3, 4]]],
+    ids=["tuple", "list"],
+)
+def test_composition_expands_captured_sequence_loop(coordinates):
+    """Composition expands static coordinate iteration before lowering."""
+
+    @ttl.operation()
+    def coordinate_helper(core_x, core_y):
+        selected = False
+        for coordinate_x, coordinate_y in coordinates:
+            selected = selected or (core_x == coordinate_x and core_y == coordinate_y)
+        if selected:
+            ttl.call_extern_func(
+                "selected.hpp",
+                "selected",
+                kernel=ttl.KernelKind.COMPUTE,
+            )
+
+    @ttl.operation(grid=(1, 1))
+    def composed_coordinates(core_x, core_y):
+        coordinate_helper(core_x, core_y)
+
+    source = composed_coordinates._spec.source
+    assert "for " not in source
+    assert "core_x == 1" in source
+    assert "core_y == 2" in source
+    assert "core_x == 3" in source
+    assert "core_y == 4" in source
+
+
+def test_composition_unrolls_captured_sequence_loop_else():
+    """An else suite without break runs once after the unrolled body."""
+    coordinates = ((1, 2), (3, 4))
+
+    @ttl.operation()
+    def coordinate_helper(core_x):
+        for coordinate_x, _coordinate_y in coordinates:
+            if core_x == coordinate_x:
+                ttl.call_extern_func("each.hpp", "each", kernel=ttl.KernelKind.COMPUTE)
+        else:
+            ttl.call_extern_func("after.hpp", "after", kernel=ttl.KernelKind.COMPUTE)
+
+    @ttl.operation(grid=(1, 1))
+    def composed_coordinates(core_x):
+        coordinate_helper(core_x)
+
+    source = composed_coordinates._spec.source
+    assert "for " not in source
+    assert source.count("'each'") == 2
+    assert source.count("'after'") == 1
+    assert source.index("core_x == 3") < source.index("'after'")
+
+
+def _make_loop_control_helper(loop_control):
+    coordinates = ((1, 2), (3, 4))
+    if loop_control == "break":
+
+        @ttl.operation()
+        def coordinate_helper(core_x):
+            for coordinate_x, _coordinate_y in coordinates:
+                if core_x == coordinate_x:
+                    break
+
+    else:
+
+        @ttl.operation()
+        def coordinate_helper(core_x):
+            for coordinate_x, _coordinate_y in coordinates:
+                if core_x == coordinate_x:
+                    continue
+
+    return coordinate_helper
+
+
+@pytest.mark.parametrize("loop_control", ["break", "continue"])
+def test_composition_rejects_loop_control_over_captured_sequence(loop_control):
+    """Unrolling a captured sequence removes the loop that break and continue use."""
+    coordinate_helper = _make_loop_control_helper(loop_control)
+
+    with pytest.raises(
+        ValueError,
+        match="a loop over a captured sequence cannot use break or continue",
+    ):
+
+        @ttl.operation(grid=(1, 1))
+        def composed_coordinates(core_x):
+            coordinate_helper(core_x)
+
+
+def _composed_source(helper):
+    @ttl.operation(grid=(1, 1))
+    def composed_coordinates(core_x):
+        helper(core_x)
+
+    source = composed_coordinates._spec.source
+    compile(source, "<operation>", "exec")
+    return source
+
+
+def test_composition_binds_captured_sequence_target_after_loop():
+    """Code after the unrolled loop sees the last element, as in Python."""
+    coordinates = ((1, 2), (3, 4))
+
+    @ttl.operation()
+    def coordinate_helper(core_x):
+        for coordinate_x, _coordinate_y in coordinates:
+            pass
+        coordinate_x += 1
+        if core_x == coordinate_x:
+            ttl.call_extern_func("last.hpp", "last", kernel=ttl.KernelKind.COMPUTE)
+
+    source = _composed_source(coordinate_helper)
+    assert re.search(
+        r"coordinate_x\w* = 3\n.*coordinate_x\w* \+= 1\n", source, re.DOTALL
+    )
+    assert "_coordinate_y" not in source
+
+
+def test_composition_binds_captured_sequence_target_read_by_augmented_assignment():
+    """An augmented assignment after the loop reads the target."""
+    values = (1, 2)
+
+    @ttl.operation()
+    def value_helper(core_x):
+        for value in values:
+            pass
+        value += core_x
+
+    source = _composed_source(value_helper)
+    assert re.search(r"(value\w*) = 2\n\s*\1 \+= core_x$", source, re.MULTILINE)
+
+
+def test_composition_binds_only_captured_sequence_targets_read_after_loop():
+    """Only target names read after the loop need a literal element."""
+    pairs = ((ttl.KernelKind.DATA_MOVEMENT, 1), (ttl.KernelKind.COMPUTE, 2))
+
+    @ttl.operation()
+    def pair_helper(core_x):
+        for kind, count in pairs:
+            ttl.call_extern_func("each.hpp", "each", kernel=kind)
+        if core_x == count:
+            ttl.call_extern_func("last.hpp", "last", kernel=ttl.KernelKind.COMPUTE)
+
+    source = _composed_source(pair_helper)
+    assert re.search(r"count\w* = 2\n", source)
+    assert not re.search(r"^\s*kind\w* = ", source, re.MULTILINE)
+
+
+def test_composition_accepts_reused_captured_sequence_target_name():
+    """A later loop that rebinds the target reads its own element."""
+    kinds = (ttl.KernelKind.DATA_MOVEMENT, ttl.KernelKind.COMPUTE)
+
+    @ttl.operation()
+    def captured_first(core_x):
+        for kind in kinds:
+            ttl.call_extern_func("first.hpp", "first", kernel=kind)
+        for kind in kinds:
+            ttl.call_extern_func("second.hpp", "second", kernel=kind)
+
+    @ttl.operation()
+    def range_first(core_x):
+        for kind in range(2):
+            pass
+        for kind in kinds:
+            ttl.call_extern_func("second.hpp", "second", kernel=kind)
+
+    @ttl.operation()
+    def empty_first(core_x):
+        for kind in ():
+            pass
+        for kind in kinds:
+            ttl.call_extern_func("second.hpp", "second", kernel=kind)
+
+    for helper in (captured_first, range_first, empty_first):
+        source = _composed_source(helper)
+        assert not re.search(r"^\s*kind\w* = ", source, re.MULTILINE)
+
+
+def test_composition_binds_captured_sequence_target_read_by_closure():
+    """A closure called after the loop reads the loop's last element."""
+    values = (1, 2, 3)
+
+    @ttl.operation()
+    def value_helper(core_x):
+        for value in range(2):
+            check = lambda: core_x == value
+        for value in values:
+            pass
+        if check():
+            ttl.call_extern_func("hit.hpp", "hit", kernel=ttl.KernelKind.COMPUTE)
+
+    source = _composed_source(value_helper)
+    assert re.search(r"value\w* = 3$", source, re.MULTILINE)
+
+
+def test_composition_accepts_captured_sequence_target_stored_before_read():
+    """A store after the loop hides the loop's element from later reads."""
+    kinds = (ttl.KernelKind.DATA_MOVEMENT, ttl.KernelKind.COMPUTE)
+
+    @ttl.operation()
+    def kind_helper(core_x):
+        for kind in kinds:
+            ttl.call_extern_func("each.hpp", "each", kernel=kind)
+        kind = ttl.KernelKind.COMPUTE
+        ttl.call_extern_func("last.hpp", "last", kernel=kind)
+
+    source = _composed_source(kind_helper)
+    assert not re.search(r"^\s*kind\w* = kinds", source, re.MULTILINE)
+
+
+def test_composition_binds_captured_sequence_target_deleted_after_loop():
+    """Deleting the target after the loop requires its binding."""
+    values = (1, 2, 3)
+
+    @ttl.operation()
+    def value_helper(core_x):
+        for value in values:
+            pass
+        del value
+
+    source = _composed_source(value_helper)
+    assert re.search(r"(value\w*) = 3\n\s*del \1$", source, re.MULTILINE)
+
+
+def test_composition_binds_captured_sequence_target_in_rebinding_enclosing_loop():
+    """An enclosing loop over the same name does not hide the inner binding."""
+    values = (1, 2, 3)
+
+    @ttl.operation()
+    def value_helper(core_x):
+        for value in range(2):
+            for value in values:
+                pass
+            if core_x == value:
+                ttl.call_extern_func("hit.hpp", "hit", kernel=ttl.KernelKind.COMPUTE)
+
+    source = _composed_source(value_helper)
+    assert re.search(r"(value\w*) = 3\n\s*if core_x == \1:", source)
+
+
+def test_composition_binds_captured_sequence_target_read_in_later_loop_else():
+    """A later loop that may run zero times leaves its else suite reading it."""
+    values = (1, 2, 3)
+
+    @ttl.operation()
+    def value_helper(core_x):
+        for value in values:
+            pass
+        for value in range(core_x):
+            pass
+        else:
+            if core_x == value:
+                ttl.call_extern_func("hit.hpp", "hit", kernel=ttl.KernelKind.COMPUTE)
+
+    source = _composed_source(value_helper)
+    assert re.search(r"value\w* = 3$", source, re.MULTILINE)
+
+
+def test_composition_binds_captured_sequence_target_read_in_later_loop_iter():
+    """A later loop's sequence expression reads the target before rebinding it."""
+    values = (1, 2, 3)
+
+    @ttl.operation()
+    def value_helper(core_x):
+        for value in values:
+            pass
+        for value in range(value):
+            if core_x == value:
+                ttl.call_extern_func("hit.hpp", "hit", kernel=ttl.KernelKind.COMPUTE)
+
+    source = _composed_source(value_helper)
+    assert re.search(r"value\w* = 3$", source, re.MULTILINE)
+
+
+def test_composition_accepts_callbacks_in_captured_sequence_loop_body():
+    """Callbacks in the loop body get the element, not a post-loop binding."""
+    kinds = (ttl.KernelKind.DATA_MOVEMENT, ttl.KernelKind.COMPUTE)
+
+    @ttl.operation()
+    def kind_helper(core_x):
+        for kind in kinds:
+            launch = lambda: ttl.call_extern_func("each.hpp", "each", kernel=kind)
+            launch()
+
+            def launch_again():
+                ttl.call_extern_func("again.hpp", "again", kernel=kind)
+
+            launch_again()
+
+    source = _composed_source(kind_helper)
+    assert not re.search(r"^\s*kind\w* = ", source, re.MULTILINE)
+
+
+def test_composition_binds_captured_sequence_target_read_after_finally():
+    """A handler reached through a finally suite reads the loop in that suite."""
+    values = (1, 2, 3)
+
+    @ttl.operation()
+    def value_helper(core_x):
+        try:
+            try:
+                raise RuntimeError()
+            finally:
+                for value in values:
+                    pass
+        except RuntimeError:
+            if core_x == value:
+                ttl.call_extern_func("hit.hpp", "hit", kernel=ttl.KernelKind.COMPUTE)
+
+    source = _composed_source(value_helper)
+    assert re.search(r"value\w* = 3$", source, re.MULTILINE)
+
+
+def test_composition_binds_captured_sequence_target_read_after_continue():
+    """A continue through a finally suite reaches the loop head's reads."""
+    values = (1, 2, 3)
+
+    @ttl.operation()
+    def value_helper(core_x):
+        value = 0
+        for step in range(2):
+            if step == 1 and value == 3:
+                ttl.call_extern_func("hit.hpp", "hit", kernel=ttl.KernelKind.COMPUTE)
+            try:
+                if core_x == step:
+                    continue
+            finally:
+                for value in values:
+                    pass
+            value = 0
+
+    source = _composed_source(value_helper)
+    assert re.search(r"value\w* = 3$", source, re.MULTILINE)
+
+
+def test_composition_accepts_captured_sequence_target_stored_after_try():
+    """Without a finally suite, a try exits only to the statement after it."""
+    kinds = (ttl.KernelKind.DATA_MOVEMENT, ttl.KernelKind.COMPUTE)
+
+    @ttl.operation()
+    def kind_helper(core_x):
+        kind = ttl.KernelKind.COMPUTE
+        for step in range(core_x):
+            try:
+                for kind in kinds:
+                    ttl.call_extern_func("each.hpp", "each", kernel=kind)
+            except RuntimeError:
+                pass
+            kind = ttl.KernelKind.COMPUTE
+        ttl.call_extern_func("last.hpp", "last", kernel=kind)
+
+    source = _composed_source(kind_helper)
+    assert not re.search(r"^\s*kind\w* = kinds", source, re.MULTILINE)
+
+
+def test_composition_binds_captured_sequence_target_read_after_loop_exception():
+    """An exception from an enclosing loop's iteration keeps the target live."""
+    values = (1, 2, 3)
+
+    @ttl.operation()
+    def value_helper(core_x):
+        try:
+            for value in range(core_x):
+                for value in values:
+                    pass
+        except RuntimeError:
+            if core_x == value:
+                ttl.call_extern_func("hit.hpp", "hit", kernel=ttl.KernelKind.COMPUTE)
+
+    source = _composed_source(value_helper)
+    assert re.search(r"value\w* = 3$", source, re.MULTILINE)
+
+
+def test_composition_binds_nested_captured_sequence_target_per_outer_element():
+    """An inner loop over the outer target binds its last element per iteration."""
+    rows = ((1, 2), (3, 4))
+
+    @ttl.operation()
+    def row_helper(core_x):
+        value = 0
+        for row in rows:
+            for value in row:
+                pass
+            if core_x == value:
+                ttl.call_extern_func("hit.hpp", "hit", kernel=ttl.KernelKind.COMPUTE)
+
+    source = _composed_source(row_helper)
+    assert re.search(
+        r"(value\w*) = 2\n\s*if core_x == \1:.*\1 = 4\n\s*if core_x == \1:",
+        source,
+        re.DOTALL,
+    )
+
+
+def test_composition_binds_captured_sequence_target_passed_to_nested_helper():
+    """A target passed to an inlined helper gets its binding.
+
+    The substituted argument takes the parameter's source position, which here
+    equals the loop target's position in the caller.
+    """
+    coordinates = ((2, 1), (4, 3))
+
+    @ttl.operation()
+    def compare_helper(core_x, coordinate_q):
+        if core_x == coordinate_q:
+            ttl.call_extern_func("hit.hpp", "hit", kernel=ttl.KernelKind.COMPUTE)
+
+    @ttl.operation()
+    def coordinate_helper(core_x):
+        for _second, coordinate_x in coordinates:
+            pass
+        compare_helper(core_x, coordinate_x)
+
+    source = _composed_source(coordinate_helper)
+    assert re.search(r"(coordinate_x\w*) = 3\n.*if core_x == \1:", source, re.DOTALL)
+
+
+def test_composition_rejects_non_literal_captured_sequence_target_after_loop():
+    """A target bound to a non-literal element cannot be used after the loop."""
+    kinds = (ttl.KernelKind.DATA_MOVEMENT, ttl.KernelKind.COMPUTE)
+
+    @ttl.operation()
+    def kind_helper(core_x):
+        for kind in kinds:
+            ttl.call_extern_func("each.hpp", "each", kernel=kind)
+        ttl.call_extern_func("last.hpp", "last", kernel=kind)
+
+    with pytest.raises(
+        ValueError,
+        match="loop target 'kind' in 'kind_helper' is read after its loop",
+    ):
+        _composed_source(kind_helper)
+
+
+def test_composition_rebinds_captured_sequence_target_in_enclosing_loop():
+    """A read in a later iteration sees the target the unrolled loop assigned."""
+    coordinates = ((1, 2), (3, 4))
+
+    @ttl.operation()
+    def coordinate_helper(core_x):
+        coordinate_x = 0
+        for _iteration in range(2):
+            if core_x == coordinate_x:
+                ttl.call_extern_func("hit.hpp", "hit", kernel=ttl.KernelKind.COMPUTE)
+            for coordinate_x, _coordinate_y in coordinates:
+                pass
+
+    source = _composed_source(coordinate_helper)
+    loop_body = source.split("for _iteration", 1)[1]
+    assert re.search(r"coordinate_x\w* = 3$", loop_body, re.MULTILINE)
+
+
+def test_composition_keeps_body_only_captured_sequence_target_unassigned():
+    """A target used only in the loop body gets no binding after the loop."""
+    coordinates = ((1, 2), (3, 4))
+
+    @ttl.operation()
+    def coordinate_helper(core_x):
+        for coordinate_x, _coordinate_y in coordinates:
+            if core_x == coordinate_x:
+                ttl.call_extern_func("each.hpp", "each", kernel=ttl.KernelKind.COMPUTE)
+
+    source = _composed_source(coordinate_helper)
+    assert "coordinate_x" not in source
+
+
+def test_composition_rejects_empty_captured_sequence_target_use_after_loop():
+    """An empty captured sequence leaves the target unbound after the loop."""
+    coordinates = ()
+
+    @ttl.operation()
+    def coordinate_helper(core_x):
+        for coordinate_x in coordinates:
+            pass
+        if core_x == coordinate_x:
+            ttl.call_extern_func("last.hpp", "last", kernel=ttl.KernelKind.COMPUTE)
+
+    with pytest.raises(ValueError, match="empty captured sequence leaves its target"):
+        _composed_source(coordinate_helper)
+
+
+def test_composition_folds_captured_sequence_subscript():
+    """Composition resolves nested indexing into a captured sequence."""
+    coordinates = ((1, 2), (3, 4))
+
+    @ttl.operation()
+    def coordinate_helper(core_x, core_y):
+        selected = core_x == coordinates[-1][0] and core_y == coordinates[-1][1]
+        if selected:
+            ttl.call_extern_func(
+                "selected.hpp",
+                "selected",
+                kernel=ttl.KernelKind.COMPUTE,
+            )
+
+    @ttl.operation(grid=(1, 1))
+    def composed_coordinates(core_x, core_y):
+        coordinate_helper(core_x, core_y)
+
+    source = composed_coordinates._spec.source
+    assert "[" not in source
+    assert "core_x == 3" in source
+    assert "core_y == 4" in source
+
+
+def test_composition_rejects_incompatible_captured_sequence_target():
+    coordinates = ((1, 2, 3),)
+
+    @ttl.operation()
+    def coordinate_helper():
+        for coordinate_x, coordinate_y in coordinates:
+            ttl.call_extern_func(
+                "selected.hpp",
+                "selected",
+                template_args=[coordinate_x, coordinate_y],
+                kernel=ttl.KernelKind.COMPUTE,
+            )
+
+    with pytest.raises(
+        ValueError,
+        match="captured sequence loop .* has incompatible target and element structures",
+    ):
+
+        @ttl.operation(grid=(1, 1))
+        def composed_coordinates():
+            coordinate_helper()
+
+
+def _make_rebinding_helper(rebinding):
+    kinds = (ttl.KernelKind.DATA_MOVEMENT, ttl.KernelKind.COMPUTE)
+    if rebinding == "assignment":
+
+        @ttl.operation()
+        def kind_helper(core_x):
+            for kind in kinds:
+                kind = ttl.KernelKind.COMPUTE
+                ttl.call_extern_func("each.hpp", "each", kernel=kind)
+
+    elif rebinding == "inner-loop":
+
+        @ttl.operation()
+        def kind_helper(core_x):
+            for kind in kinds:
+                for kind in range(2):
+                    pass
+                ttl.call_extern_func("each.hpp", "each", kernel=kind)
+
+    else:
+
+        @ttl.operation()
+        def kind_helper(core_x):
+            for kind in kinds:
+                ttl.call_extern_func("each.hpp", "each", kernel=kind)
+                del kind
+
+    return kind_helper
+
+
+@pytest.mark.parametrize("rebinding", ["assignment", "inner-loop", "delete"])
+def test_composition_rejects_rebound_captured_sequence_target(rebinding):
+    """A store to the target inside the body would be bypassed by later reads."""
+    kind_helper = _make_rebinding_helper(rebinding)
+
+    with pytest.raises(
+        ValueError,
+        match="loop target 'kind' in 'kind_helper' is rebound inside its loop",
+    ):
+        _composed_source(kind_helper)
+
+
 def test_repeated_composition_reuses_callee_logical_kernel():
     """Sequential calls to one helper share its declared logical kernel."""
     reader = Kernel(KernelKind.DATA_MOVEMENT)
@@ -696,6 +1410,149 @@ def test_repeated_composition_reuses_callee_logical_kernel():
         kernel_capacities=_backend_kernel_capacities(),
     )
     assert result.kernels == (reader,)
+
+
+def test_factory_operations_reuse_implicit_kernel_selector():
+    """Implicit selectors retain their compiler-owned identity across operations."""
+
+    def make_helper(entry):
+        selected_kernel = ttl.PIPE_SOURCE_KERNEL
+
+        @ttl.operation()
+        def selected_helper():
+            ttl.call_extern_func("pipe.hpp", entry, kernel=selected_kernel)
+
+        return selected_helper
+
+    first_helper = make_helper("first_entry")
+    second_helper = make_helper("second_entry")
+
+    @ttl.operation(grid=(1, 1))
+    def selected_caller():
+        first_helper()
+        second_helper()
+
+    spec = selected_caller._spec
+    result = split_function_body(
+        spec.fn_ast,
+        dfb_param_names=set(),
+        logical_kernels=spec.logical_kernels,
+        selector_scope=spec.frozen_scope,
+        kernel_capacities=_backend_kernel_capacities(),
+    )
+
+    assert result.kernels == (ttl.PIPE_SOURCE_KERNEL,)
+    source = _kernel_src(result, ttl.PIPE_SOURCE_KERNEL)
+    assert "'first_entry'" in source
+    assert "'second_entry'" in source
+
+
+def test_composition_preserves_captured_kernel_kind():
+    """A factory-selected canonical kernel remains available after inlining."""
+
+    def make_helper(selected_kernel_kind):
+        @ttl.operation()
+        def selected_helper():
+            ttl.call_extern_func(
+                "reader.hpp",
+                "reader",
+                kernel=selected_kernel_kind,
+            )
+
+        return selected_helper
+
+    data_movement_helper = make_helper(KernelKind.DATA_MOVEMENT)
+
+    @ttl.operation(grid=(1, 1))
+    def selected_caller():
+        data_movement_helper()
+
+    spec = selected_caller._spec
+    result = split_function_body(
+        spec.fn_ast,
+        dfb_param_names=set(),
+        logical_kernels=spec.logical_kernels,
+        selector_scope=spec.frozen_scope,
+        kernel_capacities=_backend_kernel_capacities(),
+    )
+
+    assert result.kernels == (KernelKind.DATA_MOVEMENT,)
+
+
+class _UnsupportedCapture:
+    pass
+
+
+shadowed_capture_value = _UnsupportedCapture()
+shadowed_capture_kernel = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
+
+
+def test_comprehension_variable_does_not_capture_shadowed_global():
+    """A comprehension variable is local even when a global has its name."""
+
+    @ttl.operation()
+    def comprehension_operation():
+        offsets = [shadowed_capture_value * 2 for shadowed_capture_value in range(2)]
+        ttl.call_extern_func(
+            "live.hpp", "live", template_args=offsets, kernel=KernelKind.COMPUTE
+        )
+
+    assert "shadowed_capture_value" not in (
+        comprehension_operation._spec.compile_time_captures
+    )
+
+
+def test_nested_parameter_does_not_capture_shadowed_global():
+    """A nested function parameter is local even when a global has its name."""
+
+    @ttl.operation()
+    def nested_operation():
+        def offset(shadowed_capture_value):
+            return shadowed_capture_value * 2
+
+        ttl.call_extern_func(
+            "live.hpp", "live", template_args=[offset(1)], kernel=KernelKind.COMPUTE
+        )
+
+    assert "shadowed_capture_value" not in (
+        nested_operation._spec.compile_time_captures
+    )
+
+
+shadowed_attribute_name = _UnsupportedCapture()
+
+
+def test_attribute_name_does_not_capture_shadowed_global():
+    """An attribute sharing a global's name does not make it a capture."""
+
+    @ttl.operation()
+    def attribute_operation():
+        base = ttl.shadowed_attribute_name
+        offsets = [
+            shadowed_attribute_name * base for shadowed_attribute_name in range(2)
+        ]
+        ttl.call_extern_func(
+            "live.hpp", "live", template_args=offsets, kernel=KernelKind.COMPUTE
+        )
+
+    assert "shadowed_attribute_name" not in (
+        attribute_operation._spec.compile_time_captures
+    )
+
+
+def test_comprehension_variable_does_not_bind_shadowed_kernel():
+    """A comprehension variable does not bind a global kernel of the same name."""
+
+    @ttl.operation()
+    def comprehension_operation():
+        offsets = [shadowed_capture_kernel * 2 for shadowed_capture_kernel in range(2)]
+        ttl.call_extern_func(
+            "live.hpp", "live", template_args=offsets, kernel=KernelKind.COMPUTE
+        )
+
+    assert "shadowed_capture_kernel" not in (
+        comprehension_operation._spec.logical_kernels
+    )
 
 
 def test_factory_instances_with_different_captures_keep_distinct_kernels():
@@ -1109,6 +1966,77 @@ def test_scalar_type_capture_changes_operation_identity():
 
     assert (
         i32_operation._spec.operation_identity != i64_operation._spec.operation_identity
+    )
+
+
+def test_kernel_kind_capture_selects_canonical_kernel():
+    """A factory may select a canonical kernel without declaring a new kernel."""
+
+    def make_operation(kernel_kind):
+        @ttl.operation()
+        def selected_operation():
+            ttl.call_extern_func(
+                "work.hpp",
+                "work",
+                kernel=kernel_kind,
+            )
+
+        return selected_operation
+
+    compute_operation = make_operation(ttl.KernelKind.COMPUTE)
+    data_movement_operation = make_operation(ttl.KernelKind.DATA_MOVEMENT)
+
+    assert (
+        compute_operation._spec.operation_identity
+        != data_movement_operation._spec.operation_identity
+    )
+    for operation, expected_kind in (
+        (compute_operation, KernelKind.COMPUTE),
+        (data_movement_operation, KernelKind.DATA_MOVEMENT),
+    ):
+        result = split_function_body(
+            operation._spec.fn_ast,
+            dfb_param_names=set(),
+            logical_kernels=operation._spec.logical_kernels,
+            selector_scope=operation._spec.frozen_scope,
+            kernel_capacities=_backend_kernel_capacities(),
+        )
+        assert result.kernels == (expected_kind,)
+
+
+def test_uint32_template_capture_survives_composition():
+    """Composition retains unsigned type and distinguishes it from signed int."""
+
+    def make_operation(template_value):
+        template_arguments = [template_value]
+
+        @ttl.operation()
+        def external_call():
+            ttl.call_extern_func(
+                "template.hpp",
+                "consume",
+                template_args=template_arguments,
+                kernel=ttl.KernelKind.COMPUTE,
+            )
+
+        return external_call
+
+    signed_operation = make_operation(1)
+    unsigned_operation = make_operation(ttl.uint32(1))
+
+    assert (
+        signed_operation._spec.operation_identity
+        != unsigned_operation._spec.operation_identity
+    )
+
+    @ttl.operation(grid=(1, 1))
+    def composed_operation():
+        unsigned_operation()
+
+    uint32_type = type(ttl.uint32(0))
+    assert any(
+        isinstance(value, uint32_type)
+        for value in composed_operation._spec.compile_time_captures.values()
     )
 
 
@@ -1659,6 +2587,58 @@ def test_composition_preserves_inspect_dfb_access():
         assert source.count("dfb_accesses=") == 1
 
 
+def test_composition_preserves_dfb_occurrences_through_sequence_loop():
+    """Static loop expansion retains distinct nested formal DFB occurrences."""
+
+    @ttl.operation()
+    def inspect_pair(first: ttl.DFB, second: ttl.DFB):
+        ttl.call_extern_func(
+            "descriptor.hpp",
+            "inspect_pair",
+            func_args=[first, second],
+            dfb_accesses=[
+                ttl.DFBAccess.inspect(first),
+                ttl.DFBAccess.inspect(second),
+            ],
+            kernel=ttl.KernelKind.COMPUTE,
+        )
+
+    @ttl.operation()
+    def indexed_pair(descriptor: ttl.DFB):
+        for first, second in ((descriptor, descriptor),):
+            inspect_pair(first, second)
+
+    @ttl.operation(grid=(1, 1))
+    def composed_pair(descriptor: ttl.DFB):
+        indexed_pair(descriptor)
+
+    call = next(
+        node
+        for node in ast.walk(composed_pair._spec.fn_ast)
+        if isinstance(node, ast.Call)
+        and atom_rules.call_name(node) == "call_extern_func"
+    )
+    function_arguments = next(
+        keyword.value.elts for keyword in call.keywords if keyword.arg == "func_args"
+    )
+    source_occurrences = [
+        getattr(argument, "_ttl_dfb_source_occurrence", None)
+        for argument in function_arguments
+    ]
+    assert None not in source_occurrences
+    assert source_occurrences[0] != source_occurrences[1]
+    access_arguments = next(
+        [access.args[0] for access in keyword.value.elts]
+        for keyword in call.keywords
+        if keyword.arg == "dfb_accesses"
+    )
+    assert [
+        getattr(argument, "_ttl_dfb_source_occurrence", None)
+        for argument in access_arguments
+    ] == source_occurrences
+    assert not any(isinstance(node, ast.For) for node in ast.walk(call))
+
+
 def test_composition_instantiates_reset_identity_per_call_site():
     """Repeated helper calls denote distinct dynamic reset instances."""
     compute_kernel = ttl.Kernel(ttl.KernelKind.COMPUTE)
@@ -1842,6 +2822,64 @@ def test_synchronized_dfb_reset_is_replicated_to_every_participant():
     assert _kind_src(result, KernelKind.COMPUTE).count("ttl.reset_dfbs(") == 1
     assert _kind_src(result, KernelKind.DATA_MOVEMENT, 0).count("ttl.reset_dfbs(") == 1
     assert _kind_src(result, KernelKind.DATA_MOVEMENT, 1).count("ttl.reset_dfbs(") == 1
+
+
+def test_composed_reset_uses_canonical_kernel_selectors():
+    """Canonical reset participants remain one target-sized kernel set."""
+    reset = ttl.DFBReset(
+        participants=(
+            KernelKind.COMPUTE,
+            KernelKind.DATA_MOVEMENT,
+            ttl.PIPE_SOURCE_KERNEL,
+        )
+    )
+
+    @ttl.operation()
+    def reset_helper(target: ttl.DFB):
+        ttl.reset_dfbs(reset, dfbs=[target])
+
+    @ttl.operation()
+    def composed_reset(first: ttl.DFB, second: ttl.DFB):
+        reset_helper(first)
+        reset_helper(second)
+
+    spec = composed_reset._spec
+    assert spec.logical_kernels == {}
+    result = split_function_body(
+        spec.fn_ast,
+        dfb_param_names={"first", "second"},
+        logical_kernels=spec.logical_kernels,
+        selector_scope=spec.frozen_scope,
+        kernel_capacities={
+            KernelKind.COMPUTE: 1,
+            KernelKind.DATA_MOVEMENT: 2,
+        },
+    )
+    assert result.plan.kernels == (
+        KernelKind.COMPUTE,
+        KernelKind.DATA_MOVEMENT,
+        ttl.PIPE_SOURCE_KERNEL,
+    )
+    for source in (
+        _kind_src(result, KernelKind.COMPUTE),
+        _kind_src(result, KernelKind.DATA_MOVEMENT, 0),
+        _kind_src(result, KernelKind.DATA_MOVEMENT, 1),
+    ):
+        assert source.count("ttl.reset_dfbs(") == 2
+
+
+def test_synchronized_dfb_reset_requires_complete_distinct_participants():
+    """A reset names one compute kernel and both data-movement kernels."""
+    with pytest.raises(ValueError, match="one compute kernel and two data movement"):
+        ttl.DFBReset(participants=(KernelKind.COMPUTE, KernelKind.DATA_MOVEMENT))
+    with pytest.raises(ValueError, match="participants must be distinct"):
+        ttl.DFBReset(
+            participants=(
+                KernelKind.COMPUTE,
+                KernelKind.DATA_MOVEMENT,
+                KernelKind.DATA_MOVEMENT,
+            )
+        )
 
 
 def test_dfb_reconfiguration_requires_complete_distinct_participants():
@@ -3117,6 +4155,219 @@ def test_external_call_tuple_selects_multiple_logical_kernels():
         source = _kernel_src(result, kernel)
         assert source.count("call_extern_func") == 1
         assert "kernel=" not in source
+
+
+def test_external_call_selects_kernel_specific_func_args():
+    """Each emitted call retains only its selected kernel's C++ arguments."""
+    reader = _logical_kernel(KernelKind.DATA_MOVEMENT, "reader")
+    fn = _fn(
+        """
+        def k(compute_source, reader_source):
+            ttl.call_extern_func(
+                "shared.hpp",
+                "shared",
+                func_args={
+                    ttl.KernelKind.COMPUTE: [compute_source, 1],
+                    reader: [reader_source, 2],
+                },
+                kernel=(ttl.KernelKind.COMPUTE, reader),
+            )
+        """
+    )
+    result = split_function_body(
+        fn,
+        dfb_param_names={"compute_source", "reader_source"},
+        logical_kernels={"reader": reader},
+    )
+
+    compute_source = _kernel_src(result, KernelKind.COMPUTE)
+    assert "func_args=[compute_source, 1]" in compute_source
+    assert "reader_source" not in compute_source
+
+    reader_source = _kernel_src(result, reader)
+    assert "func_args=[reader_source, 2]" in reader_source
+    assert "compute_source" not in reader_source
+
+
+def test_kernel_specific_func_args_restrict_scalar_liveness():
+    """A scalar argument is required only by the kernel that receives it."""
+    fn = _fn(
+        """
+        def k(source):
+            position_word = ttl.read_index(source, 0, 0)
+            position = position_word + 1
+            ttl.call_extern_func(
+                "shared.hpp",
+                "shared",
+                func_args={
+                    ttl.KernelKind.COMPUTE: [],
+                    ttl.KernelKind.DATA_MOVEMENT: [position],
+                },
+                kernel=(
+                    ttl.KernelKind.COMPUTE,
+                    ttl.KernelKind.DATA_MOVEMENT,
+                ),
+            )
+        """
+    )
+    result = split_function_body(fn, dfb_param_names={"source"})
+
+    compute_source = _kind_src(result, KernelKind.COMPUTE)
+    assert "func_args=[]" in compute_source
+    assert "position_word =" not in compute_source
+    assert "position =" not in compute_source
+
+    data_movement_source = _kind_src(result, KernelKind.DATA_MOVEMENT)
+    assert "position_word = ttl.read_index(source, 0, 0)" in data_movement_source
+    assert "position = position_word + 1" in data_movement_source
+    assert "func_args=[position]" in data_movement_source
+
+
+def test_external_call_selects_kernel_specific_dfb_accesses():
+    """Each emitted call retains only its selected kernel's DFB inspections."""
+    reader = _logical_kernel(KernelKind.DATA_MOVEMENT, "reader")
+    fn = _fn(
+        """
+        def k(compute_source, reader_source):
+            ttl.call_extern_func(
+                "shared.hpp",
+                "shared",
+                dfb_accesses={
+                    ttl.KernelKind.COMPUTE: [
+                        ttl.DFBAccess.inspect(compute_source),
+                    ],
+                    reader: [ttl.DFBAccess.inspect(reader_source)],
+                },
+                kernel=(ttl.KernelKind.COMPUTE, reader),
+            )
+        """
+    )
+    result = split_function_body(
+        fn,
+        dfb_param_names={"compute_source", "reader_source"},
+        logical_kernels={"reader": reader},
+    )
+
+    compute_source = _kernel_src(result, KernelKind.COMPUTE)
+    assert "DFBAccess.inspect(compute_source)" in compute_source
+    assert "reader_source" not in compute_source
+
+    reader_source = _kernel_src(result, reader)
+    assert "DFBAccess.inspect(reader_source)" in reader_source
+    assert "compute_source" not in reader_source
+
+
+def test_external_call_selects_kernel_specific_dfb_effects():
+    """Each emitted call retains only its selected kernel's DFB effects."""
+    fn = _fn(
+        """
+        def k(source, destination):
+            ttl.call_extern_func(
+                "shared.hpp",
+                "shared",
+                func_args=[source, destination],
+                dfb_effects={
+                    ttl.KernelKind.COMPUTE: [
+                        ttl.DFBEffect.wait(source, tiles=2),
+                        ttl.DFBEffect.pop(source, tiles=2),
+                    ],
+                    ttl.KernelKind.DATA_MOVEMENT: [
+                        ttl.DFBEffect.reserve(destination, tiles=2),
+                        ttl.DFBEffect.push(destination, tiles=2),
+                    ],
+                },
+                kernel=(
+                    ttl.KernelKind.COMPUTE,
+                    ttl.KernelKind.DATA_MOVEMENT,
+                ),
+            )
+        """
+    )
+
+    result = split_function_body(
+        fn,
+        dfb_param_names={"source", "destination"},
+    )
+
+    compute_source = _kernel_src(result, KernelKind.COMPUTE)
+    assert "DFBEffect.wait(source" in compute_source
+    assert "DFBEffect.pop(source" in compute_source
+    assert "DFBEffect.reserve" not in compute_source
+    assert "DFBEffect.push" not in compute_source
+
+    data_movement_source = _kernel_src(result, KernelKind.DATA_MOVEMENT)
+    assert "DFBEffect.reserve(destination" in data_movement_source
+    assert "DFBEffect.push(destination" in data_movement_source
+    assert "DFBEffect.wait" not in data_movement_source
+    assert "DFBEffect.pop" not in data_movement_source
+
+
+@pytest.mark.parametrize(
+    "keyword, value, message",
+    [
+        (
+            "func_args",
+            "{ttl.KernelKind.COMPUTE: (source,)}",
+            "kernel-specific func_args value must be a list",
+        ),
+        (
+            "dfb_accesses",
+            "{ttl.KernelKind.COMPUTE: []}",
+            "kernel-specific dfb_accesses value must be a nonempty list",
+        ),
+    ],
+)
+def test_external_call_rejects_invalid_kernel_specific_lists(keyword, value, message):
+    fn = _fn(
+        f"""
+        def k(source):
+            ttl.call_extern_func(
+                "shared.hpp",
+                "shared",
+                {keyword}={value},
+                kernel=ttl.KernelKind.COMPUTE,
+            )
+        """
+    )
+
+    with pytest.raises(ValueError, match=message):
+        split_function_body(fn, dfb_param_names={"source"})
+
+
+@pytest.mark.parametrize(
+    "effects, message",
+    [
+        ("{}", "must not be empty"),
+        (
+            "{**shared_effects}",
+            "does not support dictionary expansion",
+        ),
+        (
+            "{ttl.PIPE_SOURCE_KERNEL: [ttl.DFBEffect.wait(source, tiles=1)]}",
+            "selects a kernel excluded by the call's kernel selection",
+        ),
+        (
+            "{ttl.KernelKind.COMPUTE: []}",
+            "must be a nonempty list",
+        ),
+    ],
+)
+def test_external_call_rejects_invalid_kernel_specific_dfb_effects(effects, message):
+    fn = _fn(
+        f"""
+        def k(source):
+            ttl.call_extern_func(
+                "shared.hpp",
+                "shared",
+                func_args=[source],
+                dfb_effects={effects},
+                kernel=ttl.KernelKind.COMPUTE,
+            )
+        """
+    )
+
+    with pytest.raises(ValueError, match=message):
+        split_function_body(fn, dfb_param_names={"source"})
 
 
 def test_external_call_kind_union_selects_multiple_logical_kernels():

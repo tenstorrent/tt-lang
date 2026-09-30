@@ -19,7 +19,7 @@ from test_utils import (
     tensors_equal,
 )
 
-from sim.blockstate import BlockAcquisition
+from sim.blockstate import BlockAcquisition, ExpectedOp
 from sim.context import set_current_kernel_type
 from sim.dfb import Block, DataflowBuffer
 from sim.ttnnsim import ROW_MAJOR_LAYOUT, Tensor
@@ -141,6 +141,56 @@ class TestCopyTransaction:
             ValueError, match="No copy handler registered for \\(Tensor, Tensor\\)"
         ):
             CopyTransaction(tensor1, tensor2)
+
+    @pytest.mark.parametrize(
+        ("transfer_kind", "expected_error"),
+        [
+            pytest.param(
+                "tensor-to-block",
+                r"from a tensor to a DFB block requires.*reserve\(\).*wait\(\)",
+                id="waited-tensor-destination",
+            ),
+            pytest.param(
+                "block-to-tensor",
+                r"from a DFB block to a tensor requires.*wait\(\).*reserve\(\)",
+                id="reserved-tensor-source",
+            ),
+            pytest.param(
+                "pipe-to-block",
+                r"from a Pipe to a DFB block requires.*reserve\(\).*wait\(\)",
+                id="waited-pipe-destination",
+            ),
+        ],
+    )
+    def test_invalid_copy_acquisition_preserves_block_state(
+        self, transfer_kind: str, expected_error: str
+    ) -> None:
+        """Reject an invalid endpoint before changing its access state."""
+        acquisition = (
+            BlockAcquisition.RESERVE
+            if transfer_kind == "block-to-tensor"
+            else BlockAcquisition.WAIT
+        )
+        block = Block(
+            make_ones_tile(),
+            shape=(1, 1),
+            acquisition=acquisition,
+            kernel_type=KernelKind.DATA_MOVEMENT,
+        )
+        initial_access = block._sm.access_state
+        initial_expected = block._sm.expected_ops
+        if transfer_kind == "tensor-to-block":
+            source, destination = make_ones_tile(), block
+        elif transfer_kind == "block-to-tensor":
+            source, destination = block, make_zeros_tile()
+        else:
+            source, destination = Pipe(7300, 7301), block
+
+        with pytest.raises(ValueError, match=expected_error):
+            copy(source, destination)
+
+        assert block._sm.access_state == initial_access
+        assert block._sm.expected_ops == initial_expected
 
 
 class TestTensorToBlockCopy:
@@ -331,16 +381,17 @@ class TestMultipleCopyOperations:
         # Start copy with block as source
         tx1 = copy(block, tensor1)
 
-        # Attempt to start copy with same block as destination should fail immediately
-        # wait() DM blocks cannot be used as copy destinations per state machine
+        # A waited block remains a consumer endpoint while its read is pending.
         with pytest.raises(
-            RuntimeError,
-            match=r"(?s)Cannot perform copy \(as destination\): not a valid next dataflow step.*\[COPY_SRC, TX_WAIT\].*attempted COPY_DST",
+            ValueError,
+            match=r"from a tensor to a DFB block requires.*reserve\(\).*wait\(\)",
         ):
             copy(tensor2, block)
 
-        # Clean up
+        # After the read completes the block offers only another read or its
+        # release; the state model has no copy-destination transition.
         tx1.wait()
+        assert block.expected_ops == {ExpectedOp.COPY_SRC, ExpectedOp.POP}
 
     # Removed: test_can_read_source_multiple_times - tests multiple copies which is not allowed per state machine
 

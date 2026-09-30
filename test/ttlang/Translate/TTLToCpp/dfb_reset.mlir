@@ -15,8 +15,15 @@
 // HEADER: completeInterfaceWork();
 // HEADER: while (!participantsHaveState(synchronizationState, entryComplete))
 // HEADER: FORCE_INLINE void exit(volatile uint32_t tt_l1_ptr *synchronizationState)
-// HEADER: while (!participantsHaveState(synchronizationState, exitComplete))
-// HEADER: storeStateWord(&synchronizationState[releaseWord], 0);
+// HEADER-NOT: storeStateWord(&synchronizationState[arrivalWord], 0);
+// HEADER: storeStateWord(&synchronizationState[arrivalWord], exitComplete);
+// HEADER-NEXT: while (loadStateWord(&synchronizationState[releaseWord]) != exitComplete) {
+// HEADER-NEXT: }
+// HEADER-NEXT: #elif defined(TTL_DFB_RESET_DM1)
+// HEADER-NEXT: while (!participantsHaveState(synchronizationState, exitComplete))
+// HEADER: storeStateWord(&synchronizationState[releaseWord], exitComplete);
+// HEADER-NOT: participantsHaveState(synchronizationState, 0)
+// HEADER-NOT: storeStateWord(&synchronizationState[releaseWord], 0);
 // HEADER: FORCE_INLINE void applyMask(uint32_t activeMask, uint32_t firstDFBIndex)
 // HEADER: interface.fifo_rd_ptr = base;
 // HEADER: interface.fifo_wr_ptr = base;
