@@ -5,46 +5,47 @@
 
 // CHECK: #include "tt_metal/fabric/fabric_edm_packet_header.hpp"
 // CHECK-NEXT: #include "tt_metal/fabric/hw/inc/fabric_config.h"
-// CHECK-NEXT: #include "tt_metal/fabric/hw/inc/linear/api.h"
+// CHECK: #include "tt_metal/fabric/hw/inc/linear/api.h"
+// CHECK-NEXT: #include "tt_metal/fabric/hw/inc/fabric_config.h"
+// CHECK: while (muxSender.get_num_free_write_slots() != muxNumBuffers) {
+// CHECK-NEXT: }
+// CHECK-NEXT: tt::tt_fabric::fabric_client_disconnect(muxSender);
 // CHECK: static __attribute__((noinline)) void
 // CHECK: routing_plane_atomic_inc(
 // CHECK: packet_header->to_noc_unicast_atomic_inc(
-// CHECK: sender.send_payload_flush_blocking_from_address(
+// CHECK: manager.sendPayloadFlushBlockingFromAddress(
 // CHECK-LABEL: static __attribute__((noinline)) void routing_plane_fused_write_atomic_inc(
 // CHECK: const uint32_t [[MAX_PACKET_SIZE:.*]] = tt::tt_fabric::get_fabric_max_packet_size();
 // CHECK: while (sizeBytes > [[MAX_PACKET_SIZE]]) {
 // CHECK: packetHeader->to_noc_unicast_write(
-// CHECK: sender.send_payload_without_header_non_blocking_from_address(sourceAddress,
-// CHECK-NEXT: [[MAX_PACKET_SIZE]]);
+// CHECK: manager.sendPayloadWithoutHeaderNonBlockingFromAddress(
+// CHECK-NEXT: connectionIndex, sourceAddress, [[MAX_PACKET_SIZE]]);
 // CHECK: sourceAddress += [[MAX_PACKET_SIZE]];
 // CHECK-NEXT: destinationAddress += [[MAX_PACKET_SIZE]];
 // CHECK-NEXT: sizeBytes -= [[MAX_PACKET_SIZE]];
 // CHECK: packetHeader->to_noc_fused_unicast_write_atomic_inc(
-// CHECK: sender.send_payload_without_header_non_blocking_from_address(sourceAddress,
-// CHECK-NEXT: sizeBytes);
+// CHECK: manager.sendPayloadWithoutHeaderNonBlockingFromAddress(
+// CHECK-NEXT: connectionIndex, sourceAddress, sizeBytes);
 // CHECK: static __attribute__((noinline)) void
 // CHECK-NEXT: routing_plane_write(
 // CHECK: packet_header->to_noc_unicast_write(
-// CHECK: sender.send_payload_without_header_non_blocking_from_address(source_address,
+// CHECK: manager.sendPayloadWithoutHeaderNonBlockingFromAddress(
 // CHECK-LABEL: FORCE_INLINE void routing_plane_scatter_write(
 // CHECK: packet_header->to_noc_unicast_scatter_write(
-// CHECK: fabric_unicast_noc_scatter_write_with_state<
+// CHECK: manager.sendScatterWrite(connection_index, packet_header, source_address);
 // CHECK: noc_async_writes_flushed();
 // CHECK-LABEL: void kernel_main() {
 // CHECK: size_t [[RUNTIME_ARG_BASE:.*]] = 5;
-// CHECK: tt::tt_fabric::RoutingPlaneConnectionManager [[MANAGER:.*]];
-// CHECK: size_t [[ARG_INDEX:.*]] = [[RUNTIME_ARG_BASE]];
+// CHECK: experimental::RoutingPlaneConnectionManager [[MANAGER:.*]];
 // CHECK: uint32_t [[ROUTE_ID:.*]] = 0;
 // CHECK: if ([[COUNT:.*]] != 0) {
-// CHECK-NEXT: open_connections([[MANAGER]], [[COUNT]], [[ARG_INDEX]]);
-// CHECK-NEXT: PacketHeaderPool::reset();
-// CHECK-NEXT: [[ROUTE_ID]] = PacketHeaderPool::allocate_header_n([[COUNT]]);
+// CHECK-NEXT: [[ROUTE_ID]] = [[MANAGER]].open([[COUNT]], [[RUNTIME_ARG_BASE]]);
 // CHECK: experimental::routing_plane_atomic_inc([[MANAGER]], [[ROUTE_ID]], [[INDEX:[^,]+]], [[DEST_DEVICE:[^,]+]], [[DEST_MESH:[^,]+]], [[HOPS:[^,]+]],
 // CHECK: experimental::routing_plane_write([[MANAGER]], [[ROUTE_ID]], [[INDEX]], [[DEST_DEVICE]], [[DEST_MESH]], [[HOPS]],
 // CHECK: experimental::routing_plane_scatter_write([[MANAGER]], [[ROUTE_ID]], [[INDEX]], [[DEST_DEVICE]], [[DEST_MESH]], [[HOPS]],
 // CHECK: experimental::routing_plane_fused_write_atomic_inc([[MANAGER]], [[ROUTE_ID]], [[INDEX]], [[DEST_DEVICE]], [[DEST_MESH]], [[HOPS]],
 // CHECK: if ([[COUNT]] != 0) {
-// CHECK-NEXT: close_connections([[MANAGER]]);
+// CHECK-NEXT: [[MANAGER]].close([[COUNT]]);
 
 module {
   func.func @routing_plane() attributes {ttkernel.thread = #ttkernel.thread<noc>} {
