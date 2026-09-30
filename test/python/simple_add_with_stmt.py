@@ -168,7 +168,12 @@ def add_with_kernel(lhs, rhs, out):
 
 # Reserve output
 # CHECK-CPP: [[CB2]].reserve_back(
-# CHECK-CPP: init_sfpu(get_compile_time_arg_val(0), get_compile_time_arg_val(2));
+# CHECK-CPP: reconfig_data_format<SrcOrder::Regular, true>(get_compile_time_arg_val(0), get_compile_time_arg_val(0));
+# CHECK-CPP-NEXT: pack_reconfig_data_format<true>(get_compile_time_arg_val(2));
+# CHECK-CPP-NEXT: copy_tile_init(get_compile_time_arg_val(0));
+# CHECK-CPP-NEXT: #ifndef ARCH_QUASAR
+# CHECK-CPP-NEXT: MATH((ckernel::math::_configure_unary_preserve_zero_flag_state_()));
+# CHECK-CPP-NEXT: #endif
 
 # Add operation
 # CHECK-CPP: tile_regs_acquire();
@@ -210,7 +215,8 @@ def add_with_kernel(lhs, rhs, out):
 # CHECK-CPP-FPU: [[CB0]].wait_front(
 # CHECK-CPP-FPU: [[CB1]].wait_front(
 # CHECK-CPP-FPU: [[CB2]].reserve_back(
-# CHECK-CPP-FPU: binary_op_init_common(get_compile_time_arg_val(0), get_compile_time_arg_val(1), get_compile_time_arg_val(2));
+# CHECK-CPP-FPU: reconfig_data_format<SrcOrder::Regular, true>(get_compile_time_arg_val(0), get_compile_time_arg_val(1));
+# CHECK-CPP-FPU-NEXT: pack_reconfig_data_format<true>(get_compile_time_arg_val(2));
 # CHECK-CPP-FPU: tile_regs_acquire();
 # CHECK-CPP-FPU: add_tiles_init(get_compile_time_arg_val(0), get_compile_time_arg_val(1));
 # CHECK-CPP-FPU: add_tiles(get_compile_time_arg_val(0), get_compile_time_arg_val(1),

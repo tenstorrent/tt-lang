@@ -95,6 +95,9 @@ enum class ComputeOpCreationRejectionKind {
 enum class ComputeOpCreationWarningKind {
   /// Instrumentation prevents combining a matmul and its accumulator add.
   InstrumentationPreventsMatmulAccumulator,
+
+  /// Instrumentation prevents folding a broadcast into its binary consumer.
+  InstrumentationPreventsBinaryBroadcast,
 };
 
 /// Warning emitted before applying a legal `ComputeOp` creation plan.
@@ -220,6 +223,13 @@ enum class FusedOperationRecipe {
   /// Emit `ttl.tile_bcast` for a broadcast within one hardware tile.
   TileBroadcast,
 
+  /// Emit no operation because a following binary recipe folds this broadcast.
+  DeferredTileBroadcast,
+
+  /// Emit one `ttl.tile_binary_bcast` for a deferred broadcast and its binary
+  /// consumer, so the broadcast never materializes into DST.
+  BinaryBroadcast,
+
   /// Emit a standalone `ttl.tile_matmul_block`.
   Matmul,
 
@@ -263,7 +273,10 @@ struct FusedOperationPlan {
   Operation *source = nullptr;
 
   /// Original operands used to detect invalidation before application.
-  SmallVector<Value> sourceOperands;
+  ///
+  /// A fused source is at most ternary, and the inline capacity is pinned so
+  /// the plan stays inside the inline-size limit `SmallVector` asserts on.
+  SmallVector<Value, 4> sourceOperands;
 
   /// Tile recipe selected by the planner.
   FusedOperationRecipe recipe = FusedOperationRecipe::TileOperation;
@@ -276,6 +289,9 @@ struct FusedOperationPlan {
 
   /// Hardware broadcast kind for a tile-broadcast recipe.
   std::optional<BcastType> tileBroadcast;
+
+  /// Hardware binary kind for a binary-broadcast recipe.
+  std::optional<EltwiseBinaryType> eltwiseBinary;
 
   /// Matmul emitted by a later accumulator recipe.
   std::optional<MatmulOp> foldedMatmul;

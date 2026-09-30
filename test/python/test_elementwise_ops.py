@@ -335,6 +335,17 @@ def test_unary_op(device, op_name):
     assert_allclose(result.float(), expected.float(), rtol=1e-2, atol=1e-2)
 
 
+def test_signbit_preserves_negative_zero(device):
+    """Short copy initialization preserves -0.0 after format reconfiguration."""
+    kernel, _ = UNARY_OPS["signbit"]
+    values = torch.tensor([-0.0, 0.0], dtype=torch.bfloat16).repeat(512).reshape(32, 32)
+    inp = to_l1(values, device)
+    out = to_l1(torch.zeros_like(values), device)
+    kernel(inp, out)
+    actual = ttnn.to_torch(out).float()
+    assert torch.equal(actual, torch.signbit(values).float())
+
+
 # =============================================================================
 # Sharded L1 Tests - same ops with height-sharded memory layout
 # =============================================================================

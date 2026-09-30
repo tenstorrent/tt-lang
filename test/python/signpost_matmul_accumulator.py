@@ -68,7 +68,11 @@ def signpost_matmul_accumulator(a, b, accumulator, out):
 # CHECK:          matmul_block(
 # CHECK-NEXT:     {
 # CHECK-NEXT:     DeviceZoneScopedN("ttl_accumulator_add");
+# CHECK-NEXT:     reconfig_data_format<SrcOrder::Regular, true>(
 # CHECK-NEXT:     copy_tile_init(
+# CHECK-NEXT:     #ifndef ARCH_QUASAR
+# CHECK-NEXT:     MATH((ckernel::math::_configure_unary_preserve_zero_flag_state_()));
+# CHECK-NEXT:     #endif
 # CHECK-NEXT:     copy_tile(
 # CHECK-NEXT:     add_binary_tile_init();
 # CHECK-NEXT:     add_binary_tile(
@@ -78,7 +82,11 @@ def signpost_matmul_accumulator(a, b, accumulator, out):
 # CHECK-FPU:      matmul_block(
 # CHECK-FPU-NEXT: {
 # CHECK-FPU-NEXT: DeviceZoneScopedN("ttl_accumulator_add");
+# CHECK-FPU-NEXT: reconfig_data_format<SrcOrder::Regular, true>(
 # CHECK-FPU-NEXT: copy_tile_init(
+# CHECK-FPU-NEXT: #ifndef ARCH_QUASAR
+# CHECK-FPU-NEXT: MATH((ckernel::math::_configure_unary_preserve_zero_flag_state_()));
+# CHECK-FPU-NEXT: #endif
 # CHECK-FPU-NEXT: copy_tile(
 # CHECK-FPU-NEXT: add_binary_tile_init();
 # CHECK-FPU-NEXT: add_binary_tile(

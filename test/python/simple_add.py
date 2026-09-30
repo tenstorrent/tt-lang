@@ -172,7 +172,8 @@ def add_kernel(lhs, rhs, out):
 # CHECK-CPP: [[CB2]].reserve_back(
 
 # FPU binary init
-# CHECK-CPP: binary_op_init_common(get_compile_time_arg_val(0), get_compile_time_arg_val(1), get_compile_time_arg_val(2));
+# CHECK-CPP: reconfig_data_format<SrcOrder::Regular, true>(get_compile_time_arg_val(0), get_compile_time_arg_val(1));
+# CHECK-CPP-NEXT: pack_reconfig_data_format<true>(get_compile_time_arg_val(2));
 
 # DST register lifecycle
 # CHECK-CPP: tile_regs_acquire();
@@ -253,7 +254,12 @@ def add_kernel(lhs, rhs, out):
 # CHECK-CPP-SFPU: [[CB0]].wait_front(
 # CHECK-CPP-SFPU: [[CB1]].wait_front(
 # CHECK-CPP-SFPU: [[CB2]].reserve_back(
-# CHECK-CPP-SFPU: init_sfpu(get_compile_time_arg_val(0), get_compile_time_arg_val(2));
+# CHECK-CPP-SFPU: reconfig_data_format<SrcOrder::Regular, true>(get_compile_time_arg_val(0), get_compile_time_arg_val(0));
+# CHECK-CPP-SFPU-NEXT: pack_reconfig_data_format<true>(get_compile_time_arg_val(2));
+# CHECK-CPP-SFPU-NEXT: copy_tile_init(get_compile_time_arg_val(0));
+# CHECK-CPP-SFPU-NEXT: #ifndef ARCH_QUASAR
+# CHECK-CPP-SFPU-NEXT: MATH((ckernel::math::_configure_unary_preserve_zero_flag_state_()));
+# CHECK-CPP-SFPU-NEXT: #endif
 # CHECK-CPP-SFPU: tile_regs_acquire();
 # SFPU path loads tiles into DST via copy_tile before computing.
 # CHECK-CPP-SFPU: copy_tile_init(get_compile_time_arg_val(0));
