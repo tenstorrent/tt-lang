@@ -551,6 +551,27 @@ host allocation. Device pytests retain the shared 300-second timeout.
 
 #### Rebuilding Docker images
 
+The IRD and dist images package CPU-only PyTorch in the toolchain's Python
+virtual environment. TT-Lang compiles Tenstorrent kernels on the host CPU;
+device execution uses tt-metal. CUDA and Triton development can use a separate
+GPU-enabled Python environment. Source installs and wheel dependency metadata
+retain the general PyTorch requirement.
+
+`call-build-docker.yml` seeds the toolchain venv from the PyTorch CPU wheel index
+before configuring tt-lang. Local packaging uses the same preparation step
+inside the base image, with the toolchain directory mounted at its final path:
+
+```bash
+export TTLANG_TOOLCHAIN_DIR=/opt/ttlang-toolchain
+bash .github/containers/prepare-toolchain-venv.sh "$TTLANG_TOOLCHAIN_DIR" &&
+    bash scripts/build-and-install.sh --configure-only
+```
+
+Both final image stages verify that PyTorch is CPU-only and that the toolchain
+venv contains no CUDA or Triton packages. An existing GPU-enabled toolchain venv
+requires a fresh packaging environment; the preparation step preserves existing
+packages and reports an incompatible environment instead of removing them.
+
 Docker images are built by `call-build-docker.yml`. The workflow takes a
 `push` input (default `false`); the image is tagged with whatever
 `get-version-tag.sh` returns and smoke-tested with `docker run` before any
