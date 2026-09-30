@@ -64,7 +64,10 @@ COPY --from=ird-toolchain --chmod=777 /src $TTLANG_TOOLCHAIN_DIR/src/
 COPY requirements.txt requirements-runtime.txt dev-requirements.txt /tmp/
 COPY docs/requirements.txt /tmp/docs/requirements.txt
 COPY .github/containers/install-exabox-worker.sh /tmp/install-exabox-worker.sh
+COPY .github/containers/check-cpu-torch.py /tmp/check-cpu-torch.py
 RUN $TTLANG_TOOLCHAIN_DIR/venv/bin/python -m pip install -r /tmp/dev-requirements.txt tt-smi --no-cache-dir && \
+    $TTLANG_TOOLCHAIN_DIR/venv/bin/python /tmp/check-cpu-torch.py && \
+    rm /tmp/check-cpu-torch.py && \
     rm -rf /tmp/requirements.txt /tmp/requirements-runtime.txt /tmp/docs /tmp/dev-requirements.txt && \
     apt-get update && apt-get install -y \
     vim \
@@ -111,9 +114,12 @@ COPY --from=dist-toolchain --chmod=777 /test $TTLANG_TOOLCHAIN_DIR/test/
 COPY --from=dist-toolchain --chmod=777 /env $TTLANG_TOOLCHAIN_DIR/env/
 
 # Install text editors, SSH, and tt-smi
+COPY .github/containers/check-cpu-torch.py /tmp/check-cpu-torch.py
 RUN apt-get update && apt-get install -y vim nano openssh-server && rm -rf /var/lib/apt/lists/* && \
     mkdir -p /run/sshd && \
-    $TTLANG_TOOLCHAIN_DIR/venv/bin/python -m pip install tt-smi --no-cache-dir
+    $TTLANG_TOOLCHAIN_DIR/venv/bin/python -m pip install tt-smi --no-cache-dir && \
+    $TTLANG_TOOLCHAIN_DIR/venv/bin/python /tmp/check-cpu-torch.py && \
+    rm /tmp/check-cpu-torch.py
 
 # Auto-activate tt-lang environment on login
 RUN printf '%s\n' \
