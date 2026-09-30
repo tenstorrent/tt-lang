@@ -141,8 +141,8 @@ def dprint_f32_kernel(inp_f32, out_f32):
 # CHECK-DAG: cb_id
 # CHECK-DAG: bf16 dm hello
 # CHECK-DAG: core:
-# CHECK-DAG: math thread
-# CHECK-DAG: unpack thread
+# CHECK-DAG: TR1: math thread
+# CHECK-DAG: TR0: unpack thread
 
 # DST and tile dprints are inside the fused compute body (pack thread).
 # They appear after the scalar/thread output since the fused compute
@@ -155,11 +155,11 @@ def dprint_f32_kernel(inp_f32, out_f32):
 # XXX: === after add ===
 # XXX: DST[0] (ttl.tile_add)
 # XXX: DST[1] (ttl.tile_exp)
-# CHECK: pack thread
+# CHECK-DAG: TR2: pack thread
 
 # Tensor pages print in dm_write (bf16 page from L1 CB)
 # The page output starts with page number followed by BF16 values.
-# CHECK: 0:
+# CHECK-DAG: BR: 0:
 
 # =============================================================================
 # FileCheck patterns -- f32 kernel (runs after bf16 kernel)
