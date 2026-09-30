@@ -57,6 +57,8 @@ void populateTTLModule(nb::module_ &m) {
   m.attr("FABRIC_MANAGER_INTERVALS_ATTR") =
       nb::str(kFabricManagerIntervalsAttrName.data(),
               kFabricManagerIntervalsAttrName.size());
+  m.attr("FABRIC_MUX_CAPABLE_ATTR") = nb::str(kFabricMuxCapableAttrName.data(),
+                                              kFabricMuxCapableAttrName.size());
   m.attr("USED_DFB_INDICES_ATTR") =
       nb::str(kUsedDFBIndicesAttrName.data(), kUsedDFBIndicesAttrName.size());
   m.attr("LOGICAL_KERNEL_ATTR") =

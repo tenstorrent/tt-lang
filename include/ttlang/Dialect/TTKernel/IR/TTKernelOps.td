@@ -4398,9 +4398,14 @@ def TTKernel_StoreToL1Op : TTKernel_Op<"store_to_l1"> {
 }
 
 def TTKernel_LoadFromL1Op : TTKernel_Op<"load_from_l1"> {
-    let summary = "LoadFromL1";
+    let summary = "Load a value from local L1";
     let description = [{
-      Load value from L1.
+      Reads the element at index `$offset` from `$l1_ptr` at the pointer's
+      element width and returns it converted to the declared result type
+      (`i8`, `i16`, or `i32`). The read observes data delivered
+      by the NoC: on targets whose L1 data cache is not coherent with NoC
+      writes it invalidates that cache first, and it is not reordered before
+      preceding synchronization.
     }];
 
     let arguments = (ins TTKernel_L1AddrPtr:$l1_ptr, I32:$offset);
@@ -4666,6 +4671,62 @@ def TTKernel_RoutingPlaneAtomicIncOp :
     I32:$destinationHopCount,
     TTKernel_NocAddr:$semaphoreAddress,
     I32:$increment
+  );
+  let assemblyFormat = [{
+    `(` operands `)` attr-dict `:` functional-type(operands, results)
+  }];
+}
+
+def TTKernel_RoutingPlaneWriteOp :
+    TTKernel_Op<"routing_plane.write"> {
+  let summary = "Write a payload through one fabric connection";
+  let description = [{
+    Sends `sizeBytes` from local L1 memory to `destinationAddress` through the
+    connection selected by `connectionIndex`. Payloads larger than the active
+    fabric packet limit are split into consecutive packets. This operation does
+    not signal receiver completion.
+  }];
+  let arguments = (ins
+    TTKernel_RoutingPlaneConnectionManager:$manager,
+    I32:$routeId,
+    I32:$connectionIndex,
+    I32:$destinationDeviceId,
+    I32:$destinationMeshId,
+    I32:$destinationHopCount,
+    I32:$sourceAddress,
+    I32:$sizeBytes,
+    TTKernel_NocAddr:$destinationAddress
+  );
+  let assemblyFormat = [{
+    `(` operands `)` attr-dict `:` functional-type(operands, results)
+  }];
+}
+
+def TTKernel_RoutingPlaneScatterWriteOp :
+    TTKernel_Op<"routing_plane.scatter_write"> {
+  let summary = "Scatter contiguous source chunks through one fabric connection";
+  let description = [{
+    Sends `chunkCount` consecutive `chunkSizeBytes` chunks from local L1 memory
+    to the corresponding destination addresses through the connection selected
+    by `connectionIndex`. `chunkCount` is between one and four. The transport
+    combines chunks in one scatter packet when permitted by the active fabric
+    packet limit and uses a unicast packet for a single remaining chunk. This
+    operation does not signal receiver completion.
+  }];
+  let arguments = (ins
+    TTKernel_RoutingPlaneConnectionManager:$manager,
+    I32:$routeId,
+    I32:$connectionIndex,
+    I32:$destinationDeviceId,
+    I32:$destinationMeshId,
+    I32:$destinationHopCount,
+    I32:$sourceAddress,
+    I32:$chunkSizeBytes,
+    I32:$chunkCount,
+    TTKernel_NocAddr:$destinationAddress0,
+    TTKernel_NocAddr:$destinationAddress1,
+    TTKernel_NocAddr:$destinationAddress2,
+    TTKernel_NocAddr:$destinationAddress3
   );
   let assemblyFormat = [{
     `(` operands `)` attr-dict `:` functional-type(operands, results)

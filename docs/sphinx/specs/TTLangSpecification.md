@@ -318,7 +318,7 @@ assert row_major_shape(from_torch(torch.randn((2, 2, 120, 30)))) == [2, 2, 120, 
 
 Shape determines the shape of a *block* returned by one of the *acquisition functions*: `wait` and `reserve`. The size of a block in L1 memory is determined by shape, shape unit and data type. For example, for a block with shape `(2, 2, 4, 1)`, shape unit of a tile (32 by 32 scalar elements) and BF16 data type (2 bytes), its size in L1 will be `2 * 2 * (4 * 32) * (1 * 32) * 2 = 32768` bytes. The block count determines the total size of L1 memory allocated for a dataflow buffer. This size is a product of a block size and block count. For the most common case block count defaults to 2 to support double buffering. With double buffered dataflow buffer one thread can write to a block while another is reading from a block thus enabling the pipelining. For the example above, this means there will be a total of 32768 bytes of L1 memory allocated for the dataflow buffer.
 
-A dataflow buffer is constructed in the scope of an operation function but its object functions run on threads. Acquisition functions can be used with Python `with` statement, which will automatically release acquired blocks at the end of the `with` scope. Alternatively, if acquisition functions are used without the `with` the user must explicitly call a corresponding release function on the acquired block: `pop` for `wait` and `push` for `reserve`.
+A dataflow buffer is constructed in the scope of an operation function but its object functions run on threads. Acquisition functions can be used with Python `with` statement, which will automatically release acquired blocks at the end of the `with` scope. Alternatively, if acquisition functions are used without the `with` the user must explicitly call a corresponding release function on the acquired block: `pop` for `wait` and `push` for `reserve`. A block must be released before its dataflow buffer is acquired again with the same acquisition function in a nested scope, such as a loop body: an acquisition returns the buffer's current front or write block, so a block held across a further acquisition would alias it. The compiler rejects a block that is still used or released after such an acquisition.
 
 #### Dataflow buffer example
 
@@ -851,30 +851,34 @@ net = ttl.PipeNet(
 
 @ttl.datamovement()
 def dm():
-    with dfb.reserve() as blk:
+    def pipe_src(pipe):
+        with send_dfb.reserve() as producer_block:
 
-        def pipe_src(pipe):
-
-            # write data into blk
+            # write data into producer_block
             # ...
 
-            # then copy blk to pipe:
+        with send_dfb.wait() as send_block:
 
-            xf = ttl.copy(blk, pipe)
+            # then copy send_block to pipe:
+
+            xf = ttl.copy(send_block, pipe)
             xf.wait()
 
-        def pipe_dst(pipe):
+    def pipe_dst(pipe):
+        with recv_dfb.reserve() as receive_block:
 
-            # copy blk from pipe:
+            # copy receive_block from pipe:
 
-            xf = ttl.copy(pipe, blk)
+            xf = ttl.copy(pipe, receive_block)
             xf.wait()
 
-            # then read data from blk
+        with recv_dfb.wait() as received_block:
+
+            # then read data from received_block
             # ...
 
-        net.if_src(pipe_src)
-        net.if_dst(pipe_dst)
+    net.if_src(pipe_src)
+    net.if_dst(pipe_dst)
 
 ```
 
@@ -896,30 +900,34 @@ net = ttl.PipeNet(
 
 @ttl.datamovement()
 def dm():
-    with dfb.reserve() as blk:
+    def pipe_src(pipe):
+        with send_dfb.reserve() as producer_block:
 
-        def pipe_src(pipe):
-
-            # write data into blk
+            # write data into producer_block
             # ...
 
-            # then copy blk to pipe:
+        with send_dfb.wait() as send_block:
 
-            xf = ttl.copy(blk, pipe)
+            # then copy send_block to pipe:
+
+            xf = ttl.copy(send_block, pipe)
             xf.wait()
 
-        def pipe_dst(pipe):
+    def pipe_dst(pipe):
+        with recv_dfb.reserve() as receive_block:
 
-            # copy blk from pipe:
+            # copy receive_block from pipe:
 
-            xf = ttl.copy(pipe, blk)
+            xf = ttl.copy(pipe, receive_block)
             xf.wait()
 
-            # then read data from blk
+        with recv_dfb.wait() as received_block:
+
+            # then read data from received_block
             # ...
 
-        net.if_src(pipe_src)
-        net.if_dst(pipe_dst)
+    net.if_src(pipe_src)
+    net.if_dst(pipe_dst)
 
 ```
 
@@ -949,30 +957,34 @@ net = ttl.PipeNet(
 
 @ttl.datamovement()
 def dm():
-    with dfb.reserve() as blk:
+    def pipe_src(pipe):
+        with send_dfb.reserve() as producer_block:
 
-        def pipe_src(pipe):
-
-            # write data into blk
+            # write data into producer_block
             # ...
 
-            # then copy blk to pipe:
+        with send_dfb.wait() as send_block:
 
-            xf = ttl.copy(blk, pipe)
+            # then copy send_block to pipe:
+
+            xf = ttl.copy(send_block, pipe)
             xf.wait()
 
-        def pipe_dst(pipe):
+    def pipe_dst(pipe):
+        with recv_dfb.reserve() as receive_block:
 
-            # copy blk from pipe:
+            # copy receive_block from pipe:
 
-            xf = ttl.copy(pipe, blk)
+            xf = ttl.copy(pipe, receive_block)
             xf.wait()
 
-            # then read data from blk
+        with recv_dfb.wait() as received_block:
+
+            # then read data from received_block
             # ...
 
-        net.if_src(pipe_src)
-        net.if_dst(pipe_dst)
+    net.if_src(pipe_src)
+    net.if_dst(pipe_dst)
 
 ```
 
@@ -1005,34 +1017,34 @@ net = ttl.PipeNet(
 
 @ttl.datamovement()
 def dm():
+    def pipe_src(pipe):
+        with dfb_to_send.reserve() as producer_block:
 
-    with (
-        dfb_to_send.reserve() as blk_to_send,
-        dfb_received.reserve() as blk_received,
-    ):
-
-        def pipe_src(pipe):
-
-            # write data into blk_to_send
+            # write data into producer_block
             # ...
 
-            # then copy blk_to_send to pipe:
+        with dfb_to_send.wait() as send_block:
 
-            xf = ttl.copy(blk_to_send, pipe)
+            # then copy send_block to pipe:
+
+            xf = ttl.copy(send_block, pipe)
             xf.wait()
 
-        def pipe_dst(pipe):
+    def pipe_dst(pipe):
+        with dfb_received.reserve() as receive_block:
 
-            # copy blk_received from pipe:
+            # copy receive_block from pipe:
 
-            xf = ttl.copy(pipe, blk_received)
+            xf = ttl.copy(pipe, receive_block)
             xf.wait()
 
-            # then read data from blk_received
+        with dfb_received.wait() as received_block:
+
+            # then read data from received_block
             # ...
 
-        net.if_src(pipe_src)
-        net.if_dst(pipe_dst)
+    net.if_src(pipe_src)
+    net.if_dst(pipe_dst)
 
 ```
 
@@ -1082,6 +1094,8 @@ def dm():
 ## Copy
 
 The `ttl.copy` function expresses a variety of data movements that always have two arguments: source and destination. `ttl.copy` returns a *transfer handle* object. A transfer handle has a `wait` function that serves as a barrier. When the `wait` returns the transfer is complete and data in the destination is safe to use.  The `ttl.copy` is executed on a data movement thread.
+
+A tensor-to-dataflow-buffer copy or Pipe receive writes a block acquired from `reserve()`. A dataflow-buffer-to-tensor copy reads a block acquired from `wait()`. A Pipe send may read either kind of block; a reserve-acquired send must still be consumed by another kernel through `wait()`, and the spec examples send from `wait()` blocks. To keep a produced block in a tensor as well, publish it and copy it to the tensor from a `wait()`-acquired block of a second dataflow buffer.
 
 
 ### Group transfer

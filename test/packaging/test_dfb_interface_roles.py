@@ -63,7 +63,7 @@ def test_dfb_interface_role_updates(
     )
     assert preprocessed.returncode == 0, preprocessed.stderr
     helper_body = preprocessed.stdout.split(
-        "void reconfigure_dfb_interfaces(uint32_t configurationAddress)", 1
+        "void applyReconfiguration(uint32_t configurationAddress)", 1
     )[1].split("\n}", 1)[0]
     selected_flags = dict(
         re.findall(r"constexpr bool (\w+) = (true|false);", helper_body)

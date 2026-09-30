@@ -14,8 +14,8 @@ DFB in strict mode because the consumer launch-node domains overlap. The
 relaxed RUN verifies the explicit external synchronization override.
 """
 
-# CHECK: logical DFB 0 has multiple consumer kernels active on the same launched node
-# CHECK: tt-metal CBs are single-producer single-consumer; allocate one DFB per consumer
+# CHECK: logical DFB 0 has multiple read-pointer owner kernels active on the same launched node
+# CHECK: only one kernel may advance a DFB read pointer on each launched node
 
 import os
 
@@ -49,8 +49,11 @@ def overlapping_dfb_consumers(input_tensor, output_tensor):
 
     @ttl.datamovement()
     def data_movement_producer():
-        with shared_cb.reserve() as shared_blk:
-            ttl.copy(input_tensor[0, 0], shared_blk).wait()
+        # One block per consumer: the lifecycle verifier compares totals even
+        # when ownership verification is relaxed.
+        for _ in range(2):
+            with shared_cb.reserve() as shared_blk:
+                ttl.copy(input_tensor[0, 0], shared_blk).wait()
 
     @ttl.datamovement()
     def data_movement_consumer():

@@ -88,6 +88,9 @@ void checkInterface(const LocalCBInterface &actual,
 }
 
 void initializeInterfaces() {
+#if TEST_SHARED_GEOMETRY
+  geometryUpdateCount = 0;
+#endif
   for (uint32_t index = 0; index < interfaces.size(); ++index) {
     uint32_t base = 0x100 + index * 0x40;
     interfaces[index] = {base + 7,    base + 9, 11,         13,
@@ -95,6 +98,75 @@ void initializeInterfaces() {
     received[index] = 101 + index;
     acked[index] = 201 + index;
   }
+}
+
+using Configuration = std::array<uint32_t, 264>;
+
+template <typename Configurations>
+void checkReconfiguration(Configuration &configuration,
+                          const Configuration &expectedConfiguration,
+                          const std::array<uint32_t, 2> &mask) {
+  initializeInterfaces();
+  auto before = interfaces;
+#if TEST_SHARED_GEOMETRY
+  Configurations::rebindSharedGeometry(configuration.data());
+  // Rebinding shared geometry must not update any RISC-local interface.
+  for (uint32_t index = 0; index < interfaces.size(); ++index) {
+    checkInterface(interfaces[index], before[index]);
+  }
+#endif
+#if TEST_ACTIVE
+  Configurations::template run<TEST_RECONFIG_READ, TEST_RECONFIG_WRITE,
+                               TEST_RECONFIG_WRITE_TILE,
+                               TEST_RECONFIG_RESET_COUNTERS>(
+      configuration.data());
+#else
+  ::experimental::reconfigure_dfb_interfaces(0);
+  ::experimental::reconfigure_dfb_interfaces<0>(0);
+#endif
+  uint32_t expectedUpdateCount = 0;
+  for (uint32_t index = 0; index < interfaces.size(); ++index) {
+    bool selected = ((mask[index / 32] >> (index % 32)) & 1U) != 0;
+    auto expected = before[index];
+    if (selected && TEST_ACTIVE) {
+      uint32_t configuredAddress = expectedConfiguration[index * 4];
+      uint32_t base = configuredAddress == 0
+                          ? before[index].fifo_limit - before[index].fifo_size
+                          : configuredAddress >> cb_addr_shift;
+      uint32_t size = expectedConfiguration[index * 4 + 1] >> cb_addr_shift;
+      uint32_t pages = expectedConfiguration[index * 4 + 2];
+      uint32_t pageSize = expectedConfiguration[index * 4 + 3] >> cb_addr_shift;
+      if (TEST_READ) {
+        expected.fifo_rd_ptr = base;
+      }
+      if (TEST_WRITE) {
+        expected.fifo_wr_ptr = base;
+        expected.fifo_num_pages = pages;
+      }
+      if (TEST_WRITE_TILE) {
+        expected.fifo_wr_tile_ptr = 0;
+      }
+      expected.tiles_acked_received_init = 0;
+      expected.fifo_limit = base + size;
+      expected.fifo_size = size;
+      expected.fifo_page_size = pageSize;
+#if TEST_SHARED_GEOMETRY
+      assert(expectedUpdateCount < geometryUpdateCount);
+      const auto &update = geometryUpdates.at(expectedUpdateCount++);
+      assert(update.index == index);
+      assert(update.baseBytes == (base << cb_addr_shift));
+      assert(update.pageBytes == (pageSize << cb_addr_shift));
+      assert(update.pages == pages);
+#endif
+    }
+    checkInterface(interfaces[index], expected);
+    bool resetCounters = selected && TEST_RESET_COUNTERS;
+    assert(received[index] == (resetCounters ? 0 : 101 + index));
+    assert(acked[index] == (resetCounters ? 0 : 201 + index));
+  }
+#if TEST_SHARED_GEOMETRY
+  assert(geometryUpdateCount == expectedUpdateCount);
+#endif
 }
 
 int main() {
@@ -106,7 +178,7 @@ int main() {
        {0, 1},
        {0, 0x80000000U},
        {0x80000001U, 0x80000001U}}};
-  std::array<uint32_t, 264> configuration = {};
+  Configuration configuration = {};
   for (uint32_t index = 0; index < interfaces.size(); ++index) {
     uint32_t base = 0x1000 + index * 0x100;
     uint32_t pages = 5 + index % 3;
@@ -117,28 +189,6 @@ int main() {
   }
 
   for (const auto &mask : masks) {
-#if TEST_SHARED_GEOMETRY
-    geometryUpdateCount = 0;
-    ::experimental::dfb_reconfiguration_detail::rebindSharedGeometry(
-        configuration.data(), mask[0], 0);
-    ::experimental::dfb_reconfiguration_detail::rebindSharedGeometry(
-        configuration.data(), mask[1], 32);
-    uint32_t expectedUpdateCount = 0;
-    for (uint32_t index = 0; index < interfaces.size(); ++index) {
-      bool selected = ((mask[index / 32] >> (index % 32)) & 1U) != 0;
-      if (!selected) {
-        continue;
-      }
-      assert(expectedUpdateCount < geometryUpdateCount);
-      const auto &update = geometryUpdates.at(expectedUpdateCount++);
-      assert(update.index == index);
-      assert(update.baseBytes == ((0x1000 + index * 0x100) << cb_addr_shift));
-      assert(update.pageBytes == (8 << cb_addr_shift));
-      assert(update.pages == 5 + index % 3);
-    }
-    assert(geometryUpdateCount == expectedUpdateCount);
-#endif
-
     initializeInterfaces();
     auto before = interfaces;
     ::experimental::dfb_reset_detail::applyMask(mask[0], 0);
@@ -165,43 +215,53 @@ int main() {
       assert(acked[index] == (resetCounters ? 0 : 201 + index));
     }
 
-    initializeInterfaces();
-    before = interfaces;
-#if TEST_ACTIVE
-    ::experimental::dfb_reconfiguration_detail::applyMask<
-        TEST_RECONFIG_READ, TEST_RECONFIG_WRITE, TEST_RECONFIG_WRITE_TILE,
-        TEST_RECONFIG_RESET_COUNTERS>(configuration.data(), mask[0], 0);
-    ::experimental::dfb_reconfiguration_detail::applyMask<
-        TEST_RECONFIG_READ, TEST_RECONFIG_WRITE, TEST_RECONFIG_WRITE_TILE,
-        TEST_RECONFIG_RESET_COUNTERS>(configuration.data(), mask[1], 32);
-#else
-    ::experimental::reconfigure_dfb_interfaces(0);
-#endif
-    for (uint32_t index = 0; index < interfaces.size(); ++index) {
-      bool selected = ((mask[index / 32] >> (index % 32)) & 1U) != 0;
-      auto expected = before[index];
-      if (selected && TEST_ACTIVE) {
-        uint32_t base = 0x1000 + index * 0x100;
-        uint32_t pages = 5 + index % 3;
-        if (TEST_READ) {
-          expected.fifo_rd_ptr = base;
+    for (bool preserveAddress : {false, true}) {
+      auto runtimeConfiguration = configuration;
+      runtimeConfiguration[256] = mask[0];
+      runtimeConfiguration[257] = mask[1];
+      if (preserveAddress) {
+        for (uint32_t index = 0; index < interfaces.size(); ++index) {
+          runtimeConfiguration[index * 4] = 0;
         }
-        if (TEST_WRITE) {
-          expected.fifo_wr_ptr = base;
-          expected.fifo_num_pages = pages;
-        }
-        if (TEST_WRITE_TILE) {
-          expected.fifo_wr_tile_ptr = 0;
-        }
-        expected.tiles_acked_received_init = 0;
-        expected.fifo_limit = base + pages * 8;
-        expected.fifo_size = pages * 8;
-        expected.fifo_page_size = 8;
       }
-      checkInterface(interfaces[index], expected);
-      bool resetCounters = selected && TEST_RESET_COUNTERS;
-      assert(received[index] == (resetCounters ? 0 : 101 + index));
-      assert(acked[index] == (resetCounters ? 0 : 201 + index));
+      checkReconfiguration<
+          ::experimental::dfb_reconfiguration_detail::RuntimeConfigurations>(
+          runtimeConfiguration, runtimeConfiguration, mask);
     }
+  }
+
+  for (bool preserveAddress : {false, true}) {
+    auto runtimeConfiguration = configuration;
+    if (preserveAddress) {
+      for (uint32_t index = 0; index < interfaces.size(); ++index) {
+        runtimeConfiguration[index * 4] = 0;
+      }
+    }
+    // Static records, not the empty runtime masks or runtime geometry, select
+    // the updates. Runtime records still supply the FIFO addresses.
+    auto expectedConfiguration = runtimeConfiguration;
+    constexpr std::array<std::array<uint32_t, 4>, 4> staticGeometry = {
+        {{0, 96, 4, 24}, {31, 30, 3, 10}, {32, 70, 5, 14}, {63, 72, 9, 8}}};
+    for (const auto &record : staticGeometry) {
+      uint32_t index = record[0];
+      expectedConfiguration[index * 4 + 1] = record[1] << cb_addr_shift;
+      expectedConfiguration[index * 4 + 2] = record[2];
+      expectedConfiguration[index * 4 + 3] = record[3] << cb_addr_shift;
+    }
+    checkReconfiguration<
+        ::experimental::dfb_reconfiguration_detail::StaticConfigurations<>>(
+        runtimeConfiguration, expectedConfiguration, {0, 0});
+    checkReconfiguration<
+        ::experimental::dfb_reconfiguration_detail::StaticConfigurations<
+            0, 96 << cb_addr_shift, 4, 24 << cb_addr_shift>>(
+        runtimeConfiguration, expectedConfiguration, {1, 0});
+    checkReconfiguration<
+        ::experimental::dfb_reconfiguration_detail::StaticConfigurations<
+            0, 96 << cb_addr_shift, 4, 24 << cb_addr_shift, 31,
+            30 << cb_addr_shift, 3, 10 << cb_addr_shift, 32,
+            70 << cb_addr_shift, 5, 14 << cb_addr_shift, 63,
+            72 << cb_addr_shift, 9, 8 << cb_addr_shift>>(
+        runtimeConfiguration, expectedConfiguration,
+        {0x80000001U, 0x80000001U});
   }
 }

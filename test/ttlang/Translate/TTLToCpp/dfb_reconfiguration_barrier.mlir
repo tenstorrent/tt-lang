@@ -22,12 +22,20 @@
 // HEADER-NEXT: uint32_t tt_l1_ptr *configuration) {
 // HEADER: publishState(synchronizationState, entryComplete);
 // HEADER: while (!participantsHaveState(synchronizationState, entryComplete)) {
+// HEADER: Configurations::rebindSharedGeometry(configuration);
+// HEADER-NEXT: #endif
+// HEADER-NEXT: storeSynchronizationWord(&synchronizationState[releaseWord], entryComplete);
 // HEADER: FORCE_INLINE void exit(volatile uint32_t tt_l1_ptr *synchronizationState) {
 // HEADER: publishState(synchronizationState, exitComplete);
-// HEADER: publishState(synchronizationState, 0);
+// HEADER-NEXT: while (loadSynchronizationWord(&synchronizationState[releaseWord]) !=
+// HEADER-NEXT: exitComplete) {
+// HEADER-NEXT: }
+// HEADER-NEXT: #elif defined(TTL_DFB_RECONFIGURATION_DM1)
 // HEADER: while (!participantsHaveState(synchronizationState, exitComplete)) {
-// HEADER: dfb_reconfiguration_detail::enter(synchronizationState, configuration);
-// HEADER: dfb_reconfiguration_detail::exit(synchronizationState);
+// HEADER-NOT: participantsHaveState(synchronizationState, 0)
+// HEADER-NOT: storeSynchronizationWord(&synchronizationState[releaseWord], 0);
+// HEADER: enter<Configurations>(synchronizationState, configuration);
+// HEADER: exit(synchronizationState);
 // CHECK: #include "api/compute/common.h"
 // CHECK: #include "ttlang/Target/TTKernel/LLKs/experimental_dfb_reconfiguration.h"
 // CHECK-NOT: experimental_dfb_reconfiguration.h

@@ -17,6 +17,7 @@
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/EmitC/IR/EmitC.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/AffineExpr.h"
@@ -845,6 +846,28 @@ bool hasExactEmptyLaunchDomain(Operation *op,
   return true;
 }
 
+LaunchNodeDomain
+refineLaunchNodeDomainFromExecutionCounts(Operation *op,
+                                          const LaunchNodeDomain &domain,
+                                          const LaunchNodeDomainState &state) {
+  if (domain.known || !state.hasLaunchGrid || state.sawError) {
+    return domain;
+  }
+
+  LaunchNodeDomain exactDomain;
+  for (LaunchNodeCoord node : state.baseDomain.nodes) {
+    std::optional<std::uint64_t> executionCount =
+        getExactExecutionCountAtLaunchNode(op, node, state);
+    if (!executionCount) {
+      return domain;
+    }
+    if (*executionCount > 0) {
+      exactDomain.nodes.insert(node);
+    }
+  }
+  return exactDomain;
+}
+
 /// Return true if evaluating `value` can depend on the current launch
 /// coordinate.
 static bool dependsOnCoord(Value value, llvm::DenseMap<Value, bool> &cache) {
@@ -1222,6 +1245,9 @@ static std::optional<llvm::APInt> getIntegerConstant(Value value) {
 
 // Prove equality between expressions rooted in typed dispatch conditions.
 // Polarity tracks whether the caller observes zero or nonzero as true.
+// TODO: prove equivalent expressions written differently (commuted operands,
+// De Morgan forms) with a bounded decision procedure that never proves less
+// than this structural comparison.
 static bool proveEquivalentDispatchConditionExpressions(Value lhsValue,
                                                         bool lhsNonzeroIsTrue,
                                                         Value rhsValue,
@@ -1232,6 +1258,15 @@ static bool proveEquivalentDispatchConditionExpressions(Value lhsValue,
     return lhsConstant && rhsConstant &&
            (lhsConstant->isZero() != lhsNonzeroIsTrue) ==
                (rhsConstant->isZero() != rhsNonzeroIsTrue);
+  }
+
+  if (auto lhsNot = lhsValue.getDefiningOp<emitc::LogicalNotOp>()) {
+    return proveEquivalentDispatchConditionExpressions(
+        lhsNot.getOperand(), !lhsNonzeroIsTrue, rhsValue, rhsNonzeroIsTrue);
+  }
+  if (auto rhsNot = rhsValue.getDefiningOp<emitc::LogicalNotOp>()) {
+    return proveEquivalentDispatchConditionExpressions(
+        lhsValue, lhsNonzeroIsTrue, rhsNot.getOperand(), !rhsNonzeroIsTrue);
   }
 
   auto lhsComparison = lhsValue.getDefiningOp<arith::CmpIOp>();
@@ -1549,6 +1584,11 @@ getBranchDomainsImpl(Value condition, const LaunchNodeDomain &current,
       return {current.intersectWith(roleDomain), current};
     }
     return exactBranches(roleDomain, current, state.baseDomain);
+  }
+  if (auto logicalNot = condition.getDefiningOp<emitc::LogicalNotOp>()) {
+    BranchLaunchNodeDomains operand = getBranchDomainsImpl(
+        logicalNot.getOperand(), current, state, coordCache);
+    return {operand.elseDomain, operand.thenDomain, operand.unanalyzableOp};
   }
   if (auto andOp = condition.getDefiningOp<arith::AndIOp>()) {
     BranchLaunchNodeDomains lhs =

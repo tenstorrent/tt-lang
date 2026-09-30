@@ -30,7 +30,11 @@ namespace dfb_reconfiguration_detail {
 
 // Each core stores 64 four-word interface records, two active masks, three
 // arrival words, one release word, and two padding words in shared L1.
+constexpr uint32_t configurationRecordCapacity = 64;
+constexpr uint32_t configurationWordsPerDFB = 4;
 constexpr uint32_t lowMaskWord = 256;
+static_assert(lowMaskWord ==
+              configurationRecordCapacity * configurationWordsPerDFB);
 constexpr uint32_t highMaskWord = 257;
 constexpr uint32_t synchronizationWord = 258;
 constexpr uint32_t dm0StateWord = 0;
@@ -38,9 +42,20 @@ constexpr uint32_t unpackStateWord = 1;
 constexpr uint32_t packStateWord = 2;
 constexpr uint32_t releaseWord = 3;
 constexpr uint32_t participantCount = 3;
+// Participant and release words alternate between entryComplete and
+// exitComplete. The runtime zero-fills them with the configuration record, and
+// a completed barrier leaves every word at exitComplete. Neither value
+// satisfies an entry wait, so consecutive barriers need no reset round.
 constexpr uint32_t entryComplete = 1;
 constexpr uint32_t exitComplete = 2;
 constexpr uint32_t completionMarker = 0xD1FB;
+// A record address of 0 keeps the interface's current FIFO base. The host
+// writes it for static descriptor storage, whose L1 address only TT-Metal
+// knows. It is correct only while a physical index uses static storage in
+// every epoch it executes on a launch node: an earlier tensor-backed or scratch
+// epoch on that node would leave its base in the interface. Static segments
+// carry no byte offset; the host rejects one.
+constexpr uint32_t preserveFifoAddress = 0;
 
 FORCE_INLINE uint32_t
 loadSynchronizationWord(volatile uint32_t tt_l1_ptr *synchronizationWord) {
@@ -117,6 +132,17 @@ publishState(volatile uint32_t tt_l1_ptr *synchronizationState,
 #endif
 }
 
+// A record address of preserveFifoAddress keeps the allocation the interface
+// already holds; only compiler-managed storage encodes that request.
+FORCE_INLINE uint32_t resolveFifoAddress(uint32_t dfbIndex,
+                                         uint32_t configuredAddress) {
+  if (configuredAddress != preserveFifoAddress) {
+    return configuredAddress >> cb_addr_shift;
+  }
+  LocalCBInterface &interface = get_local_cb_interface(dfbIndex);
+  return interface.fifo_limit - interface.fifo_size;
+}
+
 #if defined(TT_EMULE_USE_L1_POOL) && defined(TTL_DFB_RECONFIGURATION_DM1)
 // The emulator keeps shared geometry separately from each RISC's interface.
 FORCE_INLINE void rebindSharedGeometry(uint32_t tt_l1_ptr *configuration,
@@ -125,8 +151,10 @@ FORCE_INLINE void rebindSharedGeometry(uint32_t tt_l1_ptr *configuration,
   uint32_t dfbIndex = firstDfbIndex;
   while (activeMask != 0) {
     if ((activeMask & 1U) != 0) {
-      uint32_t offset = dfbIndex * 4;
-      ::__emule_cb_rebind_geometry(dfbIndex, configuration[offset],
+      uint32_t offset = dfbIndex * configurationWordsPerDFB;
+      uint32_t fifoAddress =
+          resolveFifoAddress(dfbIndex, configuration[offset]);
+      ::__emule_cb_rebind_geometry(dfbIndex, fifoAddress << cb_addr_shift,
                                    configuration[offset + 3],
                                    configuration[offset + 2]);
     }
@@ -136,6 +164,7 @@ FORCE_INLINE void rebindSharedGeometry(uint32_t tt_l1_ptr *configuration,
 }
 #endif
 
+template <typename Configurations>
 FORCE_INLINE void enter(volatile uint32_t tt_l1_ptr *synchronizationState,
                         uint32_t tt_l1_ptr *configuration) {
 #if defined(TTL_DFB_RECONFIGURATION_DM0)
@@ -157,8 +186,7 @@ FORCE_INLINE void enter(volatile uint32_t tt_l1_ptr *synchronizationState,
   }
 #if defined(TT_EMULE_USE_L1_POOL)
   // Peers must remain at entry while shared geometry changes.
-  rebindSharedGeometry(configuration, configuration[lowMaskWord], 0);
-  rebindSharedGeometry(configuration, configuration[highMaskWord], 32);
+  Configurations::rebindSharedGeometry(configuration);
 #endif
   storeSynchronizationWord(&synchronizationState[releaseWord], entryComplete);
 #endif
@@ -174,17 +202,39 @@ FORCE_INLINE void exit(volatile uint32_t tt_l1_ptr *synchronizationState) {
   while (loadSynchronizationWord(&synchronizationState[releaseWord]) !=
          exitComplete) {
   }
-  publishState(synchronizationState, 0);
-  while (loadSynchronizationWord(&synchronizationState[releaseWord]) != 0) {
-  }
 #elif defined(TTL_DFB_RECONFIGURATION_DM1)
   while (!participantsHaveState(synchronizationState, exitComplete)) {
   }
   storeSynchronizationWord(&synchronizationState[releaseWord], exitComplete);
-  while (!participantsHaveState(synchronizationState, 0)) {
-  }
-  storeSynchronizationWord(&synchronizationState[releaseWord], 0);
 #endif
+}
+
+template <bool updateReadPointer, bool updateWritePointer,
+          bool updateWriteTilePointer, bool resetStreamCounters>
+FORCE_INLINE void
+applyInterfaceConfiguration(uint32_t dfbIndex, uint32_t fifoAddress,
+                            uint32_t fifoSize, uint32_t fifoNumPages,
+                            uint32_t fifoPageSize) {
+  LocalCBInterface &interface = get_local_cb_interface(dfbIndex);
+  if constexpr (updateReadPointer) {
+    interface.fifo_rd_ptr = fifoAddress;
+  }
+  if constexpr (updateWritePointer) {
+    interface.fifo_wr_ptr = fifoAddress;
+    interface.fifo_num_pages = fifoNumPages;
+  }
+  if constexpr (updateWriteTilePointer) {
+    interface.fifo_wr_tile_ptr = 0;
+  }
+  interface.fifo_size = fifoSize;
+  interface.fifo_limit = fifoAddress + fifoSize;
+  interface.fifo_page_size = fifoPageSize;
+  interface.tiles_acked_received_init = 0;
+
+  if constexpr (resetStreamCounters) {
+    *get_cb_tiles_received_ptr(dfbIndex) = 0;
+    *get_cb_tiles_acked_ptr(dfbIndex) = 0;
+  }
 }
 
 template <bool updateReadPointer, bool updateWritePointer,
@@ -194,44 +244,114 @@ FORCE_INLINE void applyMask(uint32_t tt_l1_ptr *configuration,
   uint32_t dfbIndex = firstDfbIndex;
   while (activeMask != 0) {
     if ((activeMask & 1U) != 0) {
-      uint32_t configurationOffset = dfbIndex * 4;
+      uint32_t configurationOffset = dfbIndex * configurationWordsPerDFB;
       uint32_t fifoAddress =
-          configuration[configurationOffset] >> cb_addr_shift;
+          resolveFifoAddress(dfbIndex, configuration[configurationOffset]);
       uint32_t fifoSize =
           configuration[configurationOffset + 1] >> cb_addr_shift;
       uint32_t fifoNumPages = configuration[configurationOffset + 2];
       uint32_t fifoPageSize =
           configuration[configurationOffset + 3] >> cb_addr_shift;
 
-      LocalCBInterface &interface = get_local_cb_interface(dfbIndex);
-      if constexpr (updateReadPointer) {
-        interface.fifo_rd_ptr = fifoAddress;
-      }
-      if constexpr (updateWritePointer) {
-        interface.fifo_wr_ptr = fifoAddress;
-        interface.fifo_num_pages = fifoNumPages;
-      }
-      if constexpr (updateWriteTilePointer) {
-        interface.fifo_wr_tile_ptr = 0;
-      }
-      interface.fifo_size = fifoSize;
-      interface.fifo_limit = fifoAddress + fifoSize;
-      interface.fifo_page_size = fifoPageSize;
-      interface.tiles_acked_received_init = 0;
-
-      if constexpr (resetStreamCounters) {
-        *get_cb_tiles_received_ptr(dfbIndex) = 0;
-        *get_cb_tiles_acked_ptr(dfbIndex) = 0;
-      }
+      applyInterfaceConfiguration<updateReadPointer, updateWritePointer,
+                                  updateWriteTilePointer, resetStreamCounters>(
+          dfbIndex, fifoAddress, fifoSize, fifoNumPages, fifoPageSize);
     }
     activeMask >>= 1;
     ++dfbIndex;
   }
 }
 
-} // namespace dfb_reconfiguration_detail
+template <bool updateReadPointer, bool updateWritePointer,
+          bool updateWriteTilePointer, bool resetStreamCounters,
+          uint32_t... configuration>
+struct ApplyStaticConfigurations;
 
-FORCE_INLINE void reconfigure_dfb_interfaces(uint32_t configurationAddress) {
+template <bool updateReadPointer, bool updateWritePointer,
+          bool updateWriteTilePointer, bool resetStreamCounters>
+struct ApplyStaticConfigurations<updateReadPointer, updateWritePointer,
+                                 updateWriteTilePointer, resetStreamCounters> {
+  static FORCE_INLINE void run(uint32_t tt_l1_ptr *) {}
+#if defined(TT_EMULE_USE_L1_POOL) && defined(TTL_DFB_RECONFIGURATION_DM1)
+  static FORCE_INLINE void rebindSharedGeometry(uint32_t tt_l1_ptr *) {}
+#endif
+};
+
+template <bool updateReadPointer, bool updateWritePointer,
+          bool updateWriteTilePointer, bool resetStreamCounters,
+          uint32_t dfbIndex, uint32_t totalBytes, uint32_t numPages,
+          uint32_t pageBytes, uint32_t... remaining>
+struct ApplyStaticConfigurations<updateReadPointer, updateWritePointer,
+                                 updateWriteTilePointer, resetStreamCounters,
+                                 dfbIndex, totalBytes, numPages, pageBytes,
+                                 remaining...> {
+  static FORCE_INLINE void run(uint32_t tt_l1_ptr *configuration) {
+    uint32_t fifoAddress = resolveFifoAddress(
+        dfbIndex, configuration[dfbIndex * configurationWordsPerDFB]);
+    applyInterfaceConfiguration<updateReadPointer, updateWritePointer,
+                                updateWriteTilePointer, resetStreamCounters>(
+        dfbIndex, fifoAddress, totalBytes >> cb_addr_shift, numPages,
+        pageBytes >> cb_addr_shift);
+    ApplyStaticConfigurations<updateReadPointer, updateWritePointer,
+                              updateWriteTilePointer, resetStreamCounters,
+                              remaining...>::run(configuration);
+  }
+#if defined(TT_EMULE_USE_L1_POOL) && defined(TTL_DFB_RECONFIGURATION_DM1)
+  static FORCE_INLINE void
+  rebindSharedGeometry(uint32_t tt_l1_ptr *configuration) {
+    uint32_t fifoAddress = resolveFifoAddress(
+        dfbIndex, configuration[dfbIndex * configurationWordsPerDFB]);
+    ::__emule_cb_rebind_geometry(dfbIndex, fifoAddress << cb_addr_shift,
+                                 pageBytes, numPages);
+    ApplyStaticConfigurations<
+        updateReadPointer, updateWritePointer, updateWriteTilePointer,
+        resetStreamCounters, remaining...>::rebindSharedGeometry(configuration);
+  }
+#endif
+};
+
+struct RuntimeConfigurations {
+#if defined(TT_EMULE_USE_L1_POOL) && defined(TTL_DFB_RECONFIGURATION_DM1)
+  static FORCE_INLINE void
+  rebindSharedGeometry(uint32_t tt_l1_ptr *configuration) {
+    dfb_reconfiguration_detail::rebindSharedGeometry(
+        configuration, configuration[lowMaskWord], 0);
+    dfb_reconfiguration_detail::rebindSharedGeometry(
+        configuration, configuration[highMaskWord], 32);
+  }
+#endif
+  template <bool updateReadPointer, bool updateWritePointer,
+            bool updateWriteTilePointer, bool resetStreamCounters>
+  static FORCE_INLINE void run(uint32_t tt_l1_ptr *configuration) {
+    applyMask<updateReadPointer, updateWritePointer, updateWriteTilePointer,
+              resetStreamCounters>(configuration, configuration[lowMaskWord],
+                                   0);
+    applyMask<updateReadPointer, updateWritePointer, updateWriteTilePointer,
+              resetStreamCounters>(configuration, configuration[highMaskWord],
+                                   32);
+  }
+};
+
+template <uint32_t... configuration>
+struct StaticConfigurations {
+#if defined(TT_EMULE_USE_L1_POOL) && defined(TTL_DFB_RECONFIGURATION_DM1)
+  static FORCE_INLINE void
+  rebindSharedGeometry(uint32_t tt_l1_ptr *runtimeConfiguration) {
+    ApplyStaticConfigurations<false, false, false, false, configuration...>::
+        rebindSharedGeometry(runtimeConfiguration);
+  }
+#endif
+  template <bool updateReadPointer, bool updateWritePointer,
+            bool updateWriteTilePointer, bool resetStreamCounters>
+  static FORCE_INLINE void run(uint32_t tt_l1_ptr *runtimeConfiguration) {
+    ApplyStaticConfigurations<updateReadPointer, updateWritePointer,
+                              updateWriteTilePointer, resetStreamCounters,
+                              configuration...>::run(runtimeConfiguration);
+  }
+};
+
+template <typename Configurations>
+FORCE_INLINE void applyReconfiguration(uint32_t configurationAddress) {
 #if defined(TTL_DFB_RECONFIGURATION_DM1) ||                                    \
     defined(TTL_DFB_RECONFIGURATION_DM0) ||                                    \
     defined(TTL_DFB_RECONFIGURATION_UNPACK) ||                                 \
@@ -267,21 +387,30 @@ FORCE_INLINE void reconfigure_dfb_interfaces(uint32_t configurationAddress) {
   auto *configuration =
       reinterpret_cast<uint32_t tt_l1_ptr *>(configurationAddress);
   auto *synchronizationState = reinterpret_cast<volatile uint32_t tt_l1_ptr *>(
-      &configuration[dfb_reconfiguration_detail::synchronizationWord]);
-  dfb_reconfiguration_detail::enter(synchronizationState, configuration);
-  dfb_reconfiguration_detail::applyMask<updateReadPointer, updateWritePointer,
-                                        updateWriteTilePointer,
-                                        resetStreamCounters>(
-      configuration, configuration[dfb_reconfiguration_detail::lowMaskWord], 0);
-  dfb_reconfiguration_detail::applyMask<updateReadPointer, updateWritePointer,
-                                        updateWriteTilePointer,
-                                        resetStreamCounters>(
-      configuration, configuration[dfb_reconfiguration_detail::highMaskWord],
-      32);
-  dfb_reconfiguration_detail::exit(synchronizationState);
+      &configuration[synchronizationWord]);
+  enter<Configurations>(synchronizationState, configuration);
+  Configurations::template run<updateReadPointer, updateWritePointer,
+                               updateWriteTilePointer, resetStreamCounters>(
+      configuration);
+  exit(synchronizationState);
 #else
   (void)configurationAddress;
 #endif
+}
+
+} // namespace dfb_reconfiguration_detail
+
+FORCE_INLINE void reconfigure_dfb_interfaces(uint32_t configurationAddress) {
+  dfb_reconfiguration_detail::applyReconfiguration<
+      dfb_reconfiguration_detail::RuntimeConfigurations>(configurationAddress);
+}
+
+template <uint32_t recordCount, uint32_t... configuration>
+FORCE_INLINE void reconfigure_dfb_interfaces(uint32_t configurationAddress) {
+  static_assert(sizeof...(configuration) == recordCount * 4);
+  dfb_reconfiguration_detail::applyReconfiguration<
+      dfb_reconfiguration_detail::StaticConfigurations<configuration...>>(
+      configurationAddress);
 }
 
 #undef TTL_DFB_RECONFIGURATION_DM0
