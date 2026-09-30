@@ -1,6 +1,6 @@
 # Issue 1027 contiguous tensor/DFB copy handoff
 
-Status date: 2026-09-28
+Status date: 2026-09-30
 
 Issue: https://github.com/tenstorrent/tt-lang/issues/1027
 
@@ -10,8 +10,8 @@ Issue: https://github.com/tenstorrent/tt-lang/issues/1027
 - Branch: `jackzhang/coalesce-tensor-dfb-copies`
 - Starting revision: `9d3e176c39b14e7189ac5848b80f1564339d3acb`
   (`origin/main` when the work began)
-- All changes described here are committed on the branch. After the branch is
-  pushed, resume on another machine with:
+- All changes described here are committed and pushed. Resume on another
+  machine with:
 
   ```sh
   git fetch origin
@@ -20,7 +20,7 @@ Issue: https://github.com/tenstorrent/tt-lang/issues/1027
 
 ## What is implemented
 
-The TTL-to-TTKernel copy lowering now coalesces adjacent pages in the innermost
+The TTL-to-TTKernel copy lowering now coalesces adjacent tiles in the innermost
 row of eligible tensor-to-DFB and DFB-to-tensor copies. The initial proof is
 intentionally conservative:
 
@@ -30,23 +30,23 @@ intentionally conservative:
   height-shard/bank boundary.
 - A row is split at the target NoC maximum burst size (16 KiB on Blackhole,
   8 KiB for the conservative/default target).
-- Single-page bursts retain the existing tile operation.
+- Single-tile bursts retain the existing tile operation's default form.
 - DRAM/interleaved and otherwise unproven layouts retain the original
-  page-by-page lowering.
+  tile-by-tile lowering.
 
-For the K3 MLA-shaped compact row in the issue, 224 pages of 64 bytes now lower
-to one 14,336-byte transfer in each direction instead of 224 page transfers.
+For the K3 MLA-shaped compact row in the issue, 224 tiles of 64 bytes now lower
+to one 14,336-byte transfer in each direction instead of 224 tile transfers.
 
-Two TTKernel operations carry the explicit contiguous byte count through the
-pipeline:
+The existing TTKernel TensorAccessor operations now accept a `num_tiles`
+attribute, which defaults to one:
 
-- `ttkernel.noc_async_read_tensor`
-- `ttkernel.noc_async_write_tensor`
+- `ttkernel.noc_async_read_tile`
+- `ttkernel.noc_async_write_tile`
 
-They translate to the TensorAccessor overloads of `noc.async_read` and
-`noc.async_write`, using the first page ID plus the explicit byte count. The
-read-barrier canonicalization also recognizes the new read operation as a NoC
-command.
+The TTL lowering proves the tiles are contiguous and sets `num_tiles`; the
+TTKernel-to-EmitC conversion derives the byte count as `num_tiles` times the
+TensorAccessor aligned page size. This keeps the operation tile-based while
+still mapping to one TensorAccessor `noc.async_read` or `noc.async_write` call.
 
 ## Changed files
 
@@ -82,30 +82,26 @@ The repository-pinned clang-format hook passes on the modified C++ files.
 
 ## Validation completed
 
-The following passed on `bh-lb-120-a07u24`:
+The unified `num_tiles` design passed on `bh-lb-120-a05u28`:
 
 - Build of `ttlang-opt` and `ttlang-translate`.
+- Full `check-ttlang`: 205 packaging, 544 MLIR, and 5 Python tests.
 - New TTL-to-TTKernel regression covering:
-  - a 224-page Blackhole row coalesced to 14,336 bytes;
+  - a 224-tile Blackhole row coalesced to 14,336 bytes;
   - both read and write directions;
-  - a 300-page row split into 16,384-byte and 2,816-byte bursts;
+  - a 300-tile row split into 16,384-byte and 2,816-byte bursts;
   - interleaved DRAM falling back to tile-by-tile copies.
-- New end-to-end TTL-to-C++ regression for both byte-counted read and write.
+- New end-to-end TTL-to-C++ regression for both multi-tile read and write.
 - Existing `rank_reducing_copy.mlir` checks, including its address checks.
 - Existing `dma_single_core.mlir` lowering checks.
 - `git diff --check`.
 
-`llvm-lit` itself could not load `test/lit.cfg.py` because the optional Python
-extension `ttl._mlir_libs._ttlang` was not built. The exact compiler and
-FileCheck pipelines from the tests were therefore run directly and passed.
-
 ## Remaining work
 
-- Run the broader CI/lit suite in a standard tt-lang developer environment.
 - Run an actual K3 model workload from `tt-lang-ops-and-models` against this
   compiler branch and confirm the generated kernels and numerical results.
 - Measure the affected MLA layers to confirm the expected reduction from 224
-  page commands to one bulk command is visible in runtime performance.
+  per-tile commands to one bulk command is visible in runtime performance.
 - Consider extending the proof to additional layouts only when bank identity,
   address progression, and boundary constraints can be established.
 

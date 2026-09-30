@@ -1026,9 +1026,10 @@ static void emitTileLoop(
 /// Direction of a tensor<->CB tile copy for NOC operations.
 enum class NocCopyDirection { Read, Write };
 
-/// Return whether adjacent page IDs in an innermost tensor row are guaranteed
-/// to reside at adjacent addresses in one L1 bank. Height sharding preserves
-/// the full row width, while single-bank placement has no bank interleaving.
+/// Return whether adjacent tile IDs in an innermost tensor row are guaranteed
+/// to address adjacent TensorAccessor pages in one L1 bank. Height sharding
+/// preserves the full row width, while single-bank placement has no bank
+/// interleaving.
 static bool hasContiguousTensorRows(Value tensor) {
   auto tensorType = mlir::cast<RankedTensorType>(tensor.getType());
   auto layout = mlir::cast<LayoutAttr>(tensorType.getEncoding());
@@ -1043,27 +1044,15 @@ static bool hasContiguousTensorRows(Value tensor) {
 static void emitTensorCBTransfer(OpBuilder &builder, Location loc,
                                  NocCopyDirection direction,
                                  Value tensorTileIndex, Value accessor,
-                                 Value cbAddress, int64_t pageCount,
-                                 int64_t pageSizeBytes, Value noc) {
-  if (pageCount == 1) {
-    if (direction == NocCopyDirection::Read) {
-      ttk::NocAsyncReadTileOp::create(builder, loc, tensorTileIndex, accessor,
-                                      cbAddress, noc);
-    } else {
-      ttk::NocAsyncWriteTileOp::create(builder, loc, tensorTileIndex, accessor,
-                                       cbAddress, noc);
-    }
-    return;
-  }
-
-  Value size =
-      arith::ConstantIntOp::create(builder, loc, pageCount * pageSizeBytes, 32);
+                                 Value cbAddress, int64_t tileCount,
+                                 Value noc) {
+  IntegerAttr numTiles = builder.getI32IntegerAttr(tileCount);
   if (direction == NocCopyDirection::Read) {
-    ttk::NocAsyncReadTensorOp::create(builder, loc, tensorTileIndex, accessor,
-                                      cbAddress, size, noc);
+    ttk::NocAsyncReadTileOp::create(builder, loc, tensorTileIndex, accessor,
+                                    cbAddress, noc, numTiles);
   } else {
-    ttk::NocAsyncWriteTensorOp::create(builder, loc, tensorTileIndex, accessor,
-                                       cbAddress, size, noc);
+    ttk::NocAsyncWriteTileOp::create(builder, loc, tensorTileIndex, accessor,
+                                     cbAddress, noc, numTiles);
   }
 }
 
@@ -1075,10 +1064,10 @@ static void emitContiguousTensorRows(
   unsigned tensorRank = tensorGridShape.size();
   unsigned transferRank = transferShape.size();
   unsigned rankDiff = tensorRank - transferRank;
-  int64_t rowPageCount = transferShape.back();
-  int64_t pagesPerBurst = maxBurstBytes / pageSizeBytes;
-  int64_t fullBurstCount = rowPageCount / pagesPerBurst;
-  int64_t remainderPages = rowPageCount % pagesPerBurst;
+  int64_t rowTileCount = transferShape.back();
+  int64_t tilesPerBurst = maxBurstBytes / pageSizeBytes;
+  int64_t fullBurstCount = rowTileCount / tilesPerBurst;
+  int64_t remainderTiles = rowTileCount % tilesPerBurst;
 
   SmallVector<int64_t> outerBounds(transferShape.drop_back());
   Value pageSize = arith::ConstantIndexOp::create(builder, loc, pageSizeBytes);
@@ -1088,7 +1077,7 @@ static void emitContiguousTensorRows(
       builder, loc, outerBounds,
       [&](OpBuilder &rowBuilder, Location rowLoc, ValueRange outerIVs) {
         auto emitBurst = [&](OpBuilder &burstBuilder, Location burstLoc,
-                             Value innerOffset, int64_t pageCount) {
+                             Value innerOffset, int64_t tileCount) {
           SmallVector<Value> tensorCoordinates;
           tensorCoordinates.reserve(tensorRank);
           for (unsigned dimension = 0; dimension < tensorRank; ++dimension) {
@@ -1126,7 +1115,7 @@ static void emitContiguousTensorRows(
                                                        i32Type, cbAddressIndex);
           emitTensorCBTransfer(burstBuilder, burstLoc, direction,
                                tensorTileIndexI32, accessor, cbAddress,
-                               pageCount, pageSizeBytes, noc);
+                               tileCount, noc);
         };
 
         if (fullBurstCount > 0) {
@@ -1135,18 +1124,18 @@ static void emitContiguousTensorRows(
               rowBuilder, rowLoc, burstBounds,
               [&](OpBuilder &burstBuilder, Location burstLoc,
                   ValueRange burstIVs) {
-                Value pagesPerBurstValue = arith::ConstantIndexOp::create(
-                    burstBuilder, burstLoc, pagesPerBurst);
+                Value tilesPerBurstValue = arith::ConstantIndexOp::create(
+                    burstBuilder, burstLoc, tilesPerBurst);
                 Value innerOffset =
                     arith::MulIOp::create(burstBuilder, burstLoc,
-                                          burstIVs.front(), pagesPerBurstValue);
-                emitBurst(burstBuilder, burstLoc, innerOffset, pagesPerBurst);
+                                          burstIVs.front(), tilesPerBurstValue);
+                emitBurst(burstBuilder, burstLoc, innerOffset, tilesPerBurst);
               });
         }
-        if (remainderPages > 0) {
+        if (remainderTiles > 0) {
           Value innerOffset = arith::ConstantIndexOp::create(
-              rowBuilder, rowLoc, fullBurstCount * pagesPerBurst);
-          emitBurst(rowBuilder, rowLoc, innerOffset, remainderPages);
+              rowBuilder, rowLoc, fullBurstCount * tilesPerBurst);
+          emitBurst(rowBuilder, rowLoc, innerOffset, remainderTiles);
         }
       });
 }

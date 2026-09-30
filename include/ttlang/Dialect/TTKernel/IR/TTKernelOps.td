@@ -3615,38 +3615,24 @@ def TTKernel_NocAsyncReadOp
 
 def TTKernel_NocAsyncReadTileOp
     : TTKernel_NocReadCommandOp<"noc_async_read_tile"> {
-    let summary = "NocAsyncReadTile";
+    let summary = "Read one or more contiguous tensor tiles";
     let description = [{
-      NocAsyncReadTile
+      Initiates an asynchronous read of `num_tiles` physically contiguous
+      tensor tiles beginning at `id`. `num_tiles` defaults to one. Each tile
+      occupies one TensorAccessor page, so the transfer size is `num_tiles`
+      times the accessor's aligned page size.
     }];
 
     let arguments = (ins I32:$id,
                          TTKernel_TensorAccessor:$addrGenStruct,
                          I32:$dstLocalL1Addr,
-                         Optional<I8>:$noc);
+                         Optional<I8>:$noc,
+                         DefaultValuedAttr<
+                             ConfinedAttr<I32Attr, [IntPositive]>,
+                             "1">:$num_tiles);
 
     let assemblyFormat = [{
       `(` $id `,` $addrGenStruct `,` $dstLocalL1Addr (`,` $noc^)? `)` attr-dict `:` functional-type(operands, results)
-    }];
-}
-
-def TTKernel_NocAsyncReadTensorOp
-    : TTKernel_NocReadCommandOp<"noc_async_read_tensor"> {
-    let summary = "Read a contiguous byte range from a tensor";
-    let description = [{
-      Initiates an asynchronous read beginning at one tensor page. The byte
-      range must remain physically contiguous in the page's bank.
-    }];
-
-    let arguments = (ins I32:$id,
-                         TTKernel_TensorAccessor:$addrGenStruct,
-                         I32:$dstLocalL1Addr,
-                         I32:$size,
-                         Optional<I8>:$noc);
-
-    let assemblyFormat = [{
-      `(` $id `,` $addrGenStruct `,` $dstLocalL1Addr `,` $size (`,` $noc^)? `)`
-          attr-dict `:` functional-type(operands, results)
     }];
 }
 
@@ -3781,38 +3767,24 @@ def TTKernel_NocAsyncWriteOp
 
 def TTKernel_NocAsyncWriteTileOp
     : TTKernel_NocWriteCommandOp<"noc_async_write_tile"> {
-    let summary = "NocAsyncWriteTile";
+    let summary = "Write one or more contiguous tensor tiles";
     let description = [{
-      NocAsyncWriteTilie
+      Initiates an asynchronous write of `num_tiles` physically contiguous
+      tensor tiles beginning at `id`. `num_tiles` defaults to one. Each tile
+      occupies one TensorAccessor page, so the transfer size is `num_tiles`
+      times the accessor's aligned page size.
     }];
 
     let arguments = (ins IndexLike:$id,
                          TTKernel_TensorAccessor:$addrGenStruct,
                          I32:$srcLocalL1Addr,
-                         Optional<I8>:$noc);
+                         Optional<I8>:$noc,
+                         DefaultValuedAttr<
+                             ConfinedAttr<I32Attr, [IntPositive]>,
+                             "1">:$num_tiles);
 
     let assemblyFormat = [{
       `(` $id `,` $addrGenStruct `,` $srcLocalL1Addr (`,` $noc^)? `)` attr-dict `:` functional-type(operands, results)
-    }];
-}
-
-def TTKernel_NocAsyncWriteTensorOp
-    : TTKernel_NocWriteCommandOp<"noc_async_write_tensor"> {
-    let summary = "Write a contiguous byte range to a tensor";
-    let description = [{
-      Initiates an asynchronous write beginning at one tensor page. The byte
-      range must remain physically contiguous in the page's bank.
-    }];
-
-    let arguments = (ins I32:$id,
-                         TTKernel_TensorAccessor:$addrGenStruct,
-                         I32:$srcLocalL1Addr,
-                         I32:$size,
-                         Optional<I8>:$noc);
-
-    let assemblyFormat = [{
-      `(` $id `,` $addrGenStruct `,` $srcLocalL1Addr `,` $size (`,` $noc^)? `)`
-          attr-dict `:` functional-type(operands, results)
     }];
 }
 

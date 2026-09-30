@@ -3,12 +3,11 @@
 // RUN: ttlang-translate --allow-unregistered-dialect --ttkernel-to-cpp --split-input-file -o %t.cpp %t.emitc.mlir
 // RUN: FileCheck %s --check-prefix=CPP --input-file=%t.cpp
 
-// Verify contiguous tensor-row transfers keep their explicit byte count in
-// generated TensorAccessor NoC calls in both directions.
+// Verify multi-tile operations derive their byte count from the TensorAccessor
+// page size in generated NoC calls in both directions.
 
 // CPP-LABEL: void kernel_main() {
-// CPP-DAG: int32_t [[READ_SIZE:v[0-9]+]] = 14336;
-// CPP: noc0.async_read({{.*}}, CoreLocalMem<uint32_t>({{.*}}), [[READ_SIZE]], {.page_id = static_cast<uint32_t>({{.*}})}, {});
+// CPP: noc0.async_read([[READ_ACCESSOR:v[0-9]+]], CoreLocalMem<uint32_t>({{.*}}), ([[READ_ACCESSOR]].get_aligned_page_size() * 224U), {.page_id = static_cast<uint32_t>({{.*}})}, {});
 // CPP: noc0.async_read_barrier();
 
 #layout = #ttl.layout<shape = [1, 7168], element_type = !ttcore.tile<1x32, bf16>,
@@ -38,8 +37,7 @@ module attributes {ttl.target_arch = #ttcore.arch<blackhole>} {
 // -----
 
 // CPP-LABEL: void kernel_main() {
-// CPP-DAG: int32_t [[WRITE_SIZE:v[0-9]+]] = 14336;
-// CPP: noc0.async_write(CoreLocalMem<uint32_t>({{.*}}), {{.*}}, [[WRITE_SIZE]], {} , {.page_id = static_cast<uint32_t>({{.*}})});
+// CPP: noc0.async_write(CoreLocalMem<uint32_t>({{.*}}), [[WRITE_ACCESSOR:v[0-9]+]], ([[WRITE_ACCESSOR]].get_aligned_page_size() * 224U), {} , {.page_id = static_cast<uint32_t>({{.*}})});
 // CPP: noc0.async_write_barrier();
 
 #layout = #ttl.layout<shape = [1, 7168], element_type = !ttcore.tile<1x32, bf16>,
