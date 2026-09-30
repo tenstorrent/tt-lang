@@ -1348,6 +1348,7 @@ static bool verifySRAMLocationAllocation() {
 static bool compareMinimumArenaSRAMLocationAllocationWithOracle() {
   using mlir::tt::ttl::SRAMAllocationLocation;
   using mlir::tt::ttl::SRAMAllocationRegion;
+  using mlir::tt::ttl::SRAMEqualCapacityGroup;
   using mlir::tt::ttl::SRAMEqualOffsetGroup;
   using mlir::tt::ttl::SRAMLocationAllocationProblem;
 
@@ -1381,7 +1382,8 @@ static bool compareMinimumArenaSRAMLocationAllocationWithOracle() {
               problem.conflicts.addInterference(1, 3);
             }
 
-            uint64_t oracleCost = std::numeric_limits<uint64_t>::max();
+            uint64_t separateOracleCost = std::numeric_limits<uint64_t>::max();
+            uint64_t sharedOracleCost = std::numeric_limits<uint64_t>::max();
             for (uint64_t sharedOffset = 0; sharedOffset < 6; ++sharedOffset) {
               if (sharedOffset + firstBytes > 6 ||
                   sharedOffset + secondBytes > 6) {
@@ -1404,29 +1406,47 @@ static bool compareMinimumArenaSRAMLocationAllocationWithOracle() {
                   if (secondConflict) {
                     continue;
                   }
-                  oracleCost = std::min(
-                      oracleCost, std::max(sharedOffset + firstBytes,
-                                           thirdOffset + thirdBytes) +
-                                      std::max(sharedOffset + secondBytes,
-                                               fourthOffset + fourthBytes));
+                  uint64_t firstHighWater = std::max(sharedOffset + firstBytes,
+                                                     thirdOffset + thirdBytes);
+                  uint64_t secondHighWater = std::max(
+                      sharedOffset + secondBytes, fourthOffset + fourthBytes);
+                  separateOracleCost = std::min(
+                      separateOracleCost, firstHighWater + secondHighWater);
+                  sharedOracleCost =
+                      std::min(sharedOracleCost,
+                               2 * std::max(firstHighWater, secondHighWater));
                 }
               }
             }
-            std::optional<unsigned> failedRegion;
-            auto solution = allocateLocationsForTest(**allocator, problem,
-                                                     failedRegion, reason);
-            if (mlir::failed(solution)) {
-              llvm::errs() << "exact location allocation unexpectedly failed\n";
-              return false;
+            for (bool sharedCapacity : {false, true}) {
+              problem.equalCapacityGroups =
+                  sharedCapacity
+                      ? llvm::SmallVector<
+                            SRAMEqualCapacityGroup>{SRAMEqualCapacityGroup{
+                            {0, 1}}}
+                      : llvm::SmallVector<SRAMEqualCapacityGroup>{};
+              std::optional<unsigned> failedRegion;
+              auto solution = allocateLocationsForTest(**allocator, problem,
+                                                       failedRegion, reason);
+              if (mlir::failed(solution)) {
+                llvm::errs()
+                    << "exact location allocation unexpectedly failed\n";
+                return false;
+              }
+              uint64_t actualCost =
+                  sharedCapacity ? 2 * std::max(solution->highWaterBytes[0],
+                                                solution->highWaterBytes[1])
+                                 : solution->highWaterBytes[0] +
+                                       solution->highWaterBytes[1];
+              uint64_t oracleCost =
+                  sharedCapacity ? sharedOracleCost : separateOracleCost;
+              if (actualCost != oracleCost) {
+                llvm::errs() << "exact location oracle mismatch: " << actualCost
+                             << " != " << oracleCost << "\n";
+                return false;
+              }
+              ++cases;
             }
-            uint64_t actualCost =
-                solution->highWaterBytes[0] + solution->highWaterBytes[1];
-            if (actualCost != oracleCost) {
-              llvm::errs() << "exact location oracle mismatch: " << actualCost
-                           << " != " << oracleCost << "\n";
-              return false;
-            }
-            ++cases;
           }
         }
       }

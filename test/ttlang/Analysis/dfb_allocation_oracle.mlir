@@ -29,7 +29,7 @@
 // CHECK-NEXT: sram_multi_order_large_cases=160
 // CHECK-NEXT: sram_domain_cases=10
 // CHECK-NEXT: sram_location_cases=39
-// CHECK-NEXT: sram_location_oracle_cases=324
+// CHECK-NEXT: sram_location_oracle_cases=648
 // CHECK-NEXT: target_capacities=32, 64, 32, 32
 // CHECK-NEXT: system_desc_num_cbs=64, 32
 // CHECK-NEXT: contract_cases=262144
