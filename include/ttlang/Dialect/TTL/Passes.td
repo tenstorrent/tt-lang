@@ -1116,8 +1116,9 @@ def TTLVerifyDFBLifecycle
     its first iteration and one later iteration, so the cost does not depend
     on the trip count. The later iterations share that summary only when every
     condition on the loop index that controls protocol effects or barriers
-    compares the index with a value that is constant on the node; otherwise
-    every DFB of the kernel is left unchecked.
+    compares the index with a value that is constant on the node and has one
+    outcome in every iteration after the first; otherwise every DFB of the
+    kernel is left unchecked.
 
     Region execution per node comes from the launch-node domain and
     execution-count analyses; sequences they cannot resolve are accepted.

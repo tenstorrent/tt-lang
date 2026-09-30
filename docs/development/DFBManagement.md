@@ -834,11 +834,10 @@ operation names. A reset restores the interfaces of its lowered mask, which
 reset lowering and the verifier compute with the same function
 (`getSynchronizedResetDFBMask`), and a logical DFB that shares a physical
 index with a reset target is restored with it. A reconfiguration restores the
-descriptors that `ttl.dfb_reconfiguration_plan` installs at its boundary on
-the node. The plan does not install a DFB whose state is live across the
-boundary, or whose lifecycle allocation cannot bound; such a DFB keeps its
-pointers and counters although the boundary declares `discard_dfb_state`, and
-its sequence continues across the boundary.
+DFBs whose descriptors `ttl.dfb_reconfiguration_plan` installs at its boundary
+on the node, whether or not their state is live there. Every other DFB keeps
+its pointers and counters although the boundary declares `discard_dfb_state`,
+and its sequence continues across the boundary.
 
 A kernel has one sequence per DFB. A region containing a barrier whose
 execution the counts do not resolve makes every DFB of the kernel unknown. A
