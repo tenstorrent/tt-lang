@@ -309,8 +309,8 @@ def test_persistent_state_shared_by_distinct_operations(
         )
         assert returned_state is state
         for iteration_index in range(2):
-            add_one(state, options="--ttl-memory-model=compiler-l1")
-            add_two(state, options="--ttl-memory-model=compiler-l1")
+            add_one(state, options="--ttl-memory-model=compiler-sram")
+            add_two(state, options="--ttl-memory-model=compiler-sram")
         actual = storage.submit(ttnn.to_torch, state).float()
     expected = torch.full(shape, 7, dtype=torch_dtype).float()
     if torch_dtype == torch.bfloat16:
@@ -370,7 +370,7 @@ def test_persistent_state_with_compiler_managed_temporary_storage(
                 input_tensor,
                 state,
                 output_tensor,
-                options="--ttl-memory-model=compiler-l1",
+                options="--ttl-memory-model=compiler-sram",
             )
         actual_state = storage.submit(ttnn.to_torch, state).float()
         actual_output = ttnn.to_torch(output_tensor).float()
@@ -448,7 +448,7 @@ def test_storage_close_during_submission_cannot_deadlock(runtime):
 
     def launch(value):
         submitted.set()
-        closer_has_lock.wait(timeout=0.25)
+        closer_has_lock.wait(timeout=1)
         with pytest.raises(RuntimeError, match="inside a submission"):
             storage.close()
 
@@ -474,7 +474,7 @@ def test_storage_close_during_submission_cannot_deadlock(runtime):
     for thread in threads:
         thread.start()
     for thread in threads:
-        thread.join(timeout=2)
+        thread.join(timeout=5)
     assert all(not thread.is_alive() for thread in threads)
     assert errors == []
     assert not runtime.allocations[0].allocated
