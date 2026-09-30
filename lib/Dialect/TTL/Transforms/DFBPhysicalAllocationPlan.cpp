@@ -2558,6 +2558,13 @@ buildDescriptors(ArrayRef<DFBPhysicalIndexAssignment> assignments,
     descriptor.allocationDomain = allocationDomainByIndex.lookup(physicalIndex);
     SmallVector<const DFBPhysicalIndexAssignment *>
         configurationRepresentatives;
+    auto findConfiguration = [&](std::optional<int64_t> ordinal) {
+      return llvm::find_if(
+          descriptor.epochConfigurations,
+          [&](const DFBConfigurationEpochDescriptor &configuration) {
+            return configuration.entryReconfigurationOrdinal == ordinal;
+          });
+    };
     auto addConfiguration =
         [&](const DFBPhysicalIndexAssignment &candidate,
             std::optional<int64_t> entryReconfigurationOrdinal,
@@ -2587,12 +2594,7 @@ buildDescriptors(ArrayRef<DFBPhysicalIndexAssignment> assignments,
       int32_t numTiles = static_cast<int32_t>(*pagesPerBlock);
       int32_t pageSize = static_cast<int32_t>(*pageSizeBytes);
       int32_t blockCount = static_cast<int32_t>(dfbType.getBlockCount());
-      auto configurationIt = llvm::find_if(
-          descriptor.epochConfigurations,
-          [&](const DFBConfigurationEpochDescriptor &configuration) {
-            return configuration.entryReconfigurationOrdinal ==
-                   entryReconfigurationOrdinal;
-          });
+      auto configurationIt = findConfiguration(entryReconfigurationOrdinal);
       if (configurationIt == descriptor.epochConfigurations.end()) {
         descriptor.epochConfigurations.push_back({entryReconfigurationOrdinal,
                                                   numTiles,
@@ -2696,6 +2698,17 @@ buildDescriptors(ArrayRef<DFBPhysicalIndexAssignment> assignments,
                                        !lifetime.epochs.empty();
                               });
         });
+    // A configuration that an unproved node enters with retained state is
+    // installed on that node only when its geometry differs from a
+    // configuration the node already holds; otherwise the node keeps its
+    // descriptor, pointers, and counters across the reconfiguration.
+    struct RetainedConfigurationEntry {
+      const DFBPhysicalIndexAssignment *candidate;
+      LaunchNodeCoord node;
+      int64_t ordinal;
+      SmallVector<std::optional<int64_t>> heldOrdinals;
+    };
+    SmallVector<RetainedConfigurationEntry> retainedConfigurationEntries;
     for (const DFBPhysicalIndexAssignment *indexedCandidate :
          assignmentsIt->second) {
       const DFBPhysicalIndexAssignment &candidate = *indexedCandidate;
@@ -2753,11 +2766,26 @@ buildDescriptors(ArrayRef<DFBPhysicalIndexAssignment> assignments,
           LaunchNodeDomain nodeDomain;
           nodeDomain.nodes.insert(lifetime.node);
           if (lifetime.conservativeConfigurationEpochsClassified) {
+            SmallVector<std::optional<int64_t>> heldOrdinals;
             for (std::optional<int64_t> ordinal :
                  lifetime.conservativeConfigurationEpochs) {
+              if (ordinal &&
+                  llvm::is_contained(lifetime.retainedConfigurationEpochs,
+                                     *ordinal)) {
+                continue;
+              }
+              heldOrdinals.push_back(ordinal);
               if (failed(addConfiguration(candidate, ordinal, nodeDomain))) {
                 return failure();
               }
+            }
+            assert((lifetime.retainedConfigurationEpochs.empty() ||
+                    !heldOrdinals.empty()) &&
+                   "a node enters its first configuration without retained "
+                   "state");
+            for (int64_t ordinal : lifetime.retainedConfigurationEpochs) {
+              retainedConfigurationEntries.push_back(
+                  {&candidate, lifetime.node, ordinal, heldOrdinals});
             }
           } else {
             if (failed(addConfiguration(candidate, std::nullopt, nodeDomain))) {
@@ -2788,6 +2816,32 @@ buildDescriptors(ArrayRef<DFBPhysicalIndexAssignment> assignments,
       if (!addedConfigurationEpoch &&
           failed(addConfiguration(candidate, std::nullopt,
                                   candidate.launchDomain))) {
+        return failure();
+      }
+    }
+
+    for (const RetainedConfigurationEntry &entry :
+         retainedConfigurationEntries) {
+      auto retainedIt = findConfiguration(entry.ordinal);
+      if (retainedIt == descriptor.epochConfigurations.end()) {
+        continue;
+      }
+      bool keepsDescriptor = llvm::all_of(
+          entry.heldOrdinals, [&](std::optional<int64_t> heldOrdinal) {
+            auto heldIt = findConfiguration(heldOrdinal);
+            return heldIt != descriptor.epochConfigurations.end() &&
+                   heldIt->numTiles == retainedIt->numTiles &&
+                   heldIt->elementType == retainedIt->elementType &&
+                   heldIt->pageSize == retainedIt->pageSize &&
+                   heldIt->blockCount == retainedIt->blockCount;
+          });
+      if (keepsDescriptor) {
+        continue;
+      }
+      LaunchNodeDomain nodeDomain;
+      nodeDomain.nodes.insert(entry.node);
+      if (failed(
+              addConfiguration(*entry.candidate, entry.ordinal, nodeDomain))) {
         return failure();
       }
     }
