@@ -449,7 +449,9 @@ def test_concurrent_bidirectional_pipe_receive_to_disjoint_dram_regions(
     mesh_shape = get_fabric_mesh_shape(fabric_config=ttnn.FabricConfig.FABRIC_2D)
     if mesh_shape[0] < 2:
         pytest.skip("requires a one-dimensional multi-device mesh")
-    worker_count = 2
+    # Four workers need more interfering managers per direction than a Galaxy
+    # has forwarding links, so mux binding must share links.
+    worker_count = 4
     shard_shape = (worker_count * TILE_SIZE, TILE_SIZE)
     logical_shape = (prod(mesh_shape) * shard_shape[0], shard_shape[1])
     input_device_shards = torch.empty(
