@@ -2706,8 +2706,7 @@ buildDescriptors(ArrayRef<DFBPhysicalIndexAssignment> assignments,
     // descriptor, pointers, and counters across the reconfiguration.
     struct RetainedConfigurationEntry {
       const DFBPhysicalIndexAssignment *candidate;
-      LaunchNodeCoord node;
-      int64_t ordinal;
+      const DFBPerNodeLifetime *lifetime;
       SmallVector<std::optional<int64_t>> heldOrdinals;
     };
     SmallVector<RetainedConfigurationEntry> retainedConfigurationEntries;
@@ -2785,9 +2784,9 @@ buildDescriptors(ArrayRef<DFBPhysicalIndexAssignment> assignments,
                     !heldOrdinals.empty()) &&
                    "a node enters its first configuration without retained "
                    "state");
-            for (int64_t ordinal : lifetime.retainedConfigurationEpochs) {
+            if (!lifetime.retainedConfigurationEpochs.empty()) {
               retainedConfigurationEntries.push_back(
-                  {&candidate, lifetime.node, ordinal, heldOrdinals});
+                  {&candidate, &lifetime, std::move(heldOrdinals)});
             }
           } else {
             if (failed(addConfiguration(candidate, std::nullopt, nodeDomain))) {
@@ -2822,26 +2821,27 @@ buildDescriptors(ArrayRef<DFBPhysicalIndexAssignment> assignments,
       }
     }
 
-    for (const RetainedConfigurationEntry &entry :
-         retainedConfigurationEntries) {
-      auto retainedIt = findConfiguration(entry.ordinal);
-      if (retainedIt == descriptor.epochConfigurations.end()) {
-        continue;
-      }
-      bool keepsDescriptor = llvm::all_of(
-          entry.heldOrdinals, [&](std::optional<int64_t> heldOrdinal) {
-            auto heldIt = findConfiguration(heldOrdinal);
-            return heldIt != descriptor.epochConfigurations.end() &&
-                   hasSameGeometry(*heldIt, *retainedIt);
-          });
-      if (keepsDescriptor) {
-        continue;
-      }
+    for (RetainedConfigurationEntry &entry : retainedConfigurationEntries) {
       LaunchNodeDomain nodeDomain;
-      nodeDomain.nodes.insert(entry.node);
-      if (failed(
-              addConfiguration(*entry.candidate, entry.ordinal, nodeDomain))) {
-        return failure();
+      nodeDomain.nodes.insert(entry.lifetime->node);
+      for (int64_t ordinal : entry.lifetime->retainedConfigurationEpochs) {
+        auto retainedIt = findConfiguration(ordinal);
+        if (retainedIt == descriptor.epochConfigurations.end()) {
+          continue;
+        }
+        bool keepsDescriptor = llvm::all_of(
+            entry.heldOrdinals, [&](std::optional<int64_t> heldOrdinal) {
+              auto heldIt = findConfiguration(heldOrdinal);
+              return heldIt != descriptor.epochConfigurations.end() &&
+                     hasSameGeometry(*heldIt, *retainedIt);
+            });
+        if (keepsDescriptor) {
+          continue;
+        }
+        if (failed(addConfiguration(*entry.candidate, ordinal, nodeDomain))) {
+          return failure();
+        }
+        entry.heldOrdinals.push_back(ordinal);
       }
     }
 
