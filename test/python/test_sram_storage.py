@@ -216,6 +216,50 @@ def test_persistent_declarations_export_movable_requirements(runtime, addressing
     storage.close()
 
 
+# Submission callbacks cannot acquire a second owner's lock.
+def test_requirements_from_other_submission_cannot_deadlock(runtime):
+    first_storage = SRAMStorage(device=runtime.device)
+    second_storage = SRAMStorage(device=runtime.device)
+    first_state = declare(first_storage)
+    second_state = declare(second_storage)
+    first_storage.allocate()
+    second_storage.allocate()
+    callbacks_ready = threading.Barrier(2)
+    errors = []
+
+    def submit(storage, state, other_storage):
+        def callback(value):
+            callbacks_ready.wait(timeout=3)
+            with pytest.raises(RuntimeError, match="inside a submission"):
+                other_storage.requirements()
+
+        try:
+            storage.submit(callback, state)
+        except BaseException as error:
+            errors.append(error)
+
+    threads = [
+        threading.Thread(
+            target=submit,
+            args=(first_storage, first_state, second_storage),
+            daemon=True,
+        ),
+        threading.Thread(
+            target=submit,
+            args=(second_storage, second_state, first_storage),
+            daemon=True,
+        ),
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=3)
+    assert all(not thread.is_alive() for thread in threads)
+    assert errors == []
+    first_storage.close()
+    second_storage.close()
+
+
 def _make_persistent_increment(grid, increment):
     @ttl.operation(grid=grid)
     def update_persistent_state(state):
