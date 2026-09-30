@@ -89,6 +89,16 @@ The LLVM development libraries support compiling the current TT-Lang checkout;
 pytest and lit support the existing compiler test commands. Documentation,
 lint, and hardware-management tools remain available in the development images.
 
+The toolchain's `src/python` directory supplies installed MLIR Python resources
+referenced by its CMake package exports. These files support building TT-Lang's
+Python bindings. The virtual environment links to the final image's system
+Python interpreter. Both Ninja and make support the existing tests, including
+packaging probes that use CMake's default Makefiles generator.
+
+The Docker build context is limited to `.github/containers`; the pinned
+emulator sources and stack manifest use separate named contexts. Local compiler
+and dependency source checkouts remain outside the image build context.
+
 Disk budgeting includes the final image, compiler build volume, and JIT cache
 volume. Building the image locally also requires space for the larger build
 stage and Docker's build cache. CI workers can consume a prebuilt image to avoid

@@ -125,6 +125,11 @@ case "${1:-}" in
             [ ! -e "$source_context/.git" ] || exit 98
             [ ! -e "$source_context/untracked-secret" ] || exit 99
             [ -f "$stack_context/tt-lang-emule-stack.json" ] || exit 96
+            context="${!#}"
+            [ -f "$context/package-emule-runtime.sh" ] || exit 95
+            [ -f "$context/trim-emule-venv.sh" ] || exit 94
+            [ ! -e "$context/third-party" ] || exit 93
+            [ ! -e "$context/.git" ] || exit 92
         fi
         exit 0
         ;;
@@ -651,7 +656,8 @@ PY
         refute_log_contains "TT_EMULE_SOURCE_URL="
         refute_log_contains "source-token"
         refute_log_contains "example.invalid/private.git"
-        assert_log_line "$TTLANG_REPO_ROOT"
+        assert_log_line "$TTLANG_REPO_ROOT/.github/containers"
+        refute_log_line "$TTLANG_REPO_ROOT"
         assert_log_line "run"
         if [ "$source_mode" = rebuild ]; then
             refute_log_line "image"

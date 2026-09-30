@@ -50,7 +50,7 @@ done < <(find "$SOURCE/build_emule" \
     \( -name CMakeFiles -o -name tt-metal-cache \) -prune -o \
     \( -type f -o -type l \) \
     \( -name '*.so' -o -name '*.so.*' -o -name '*.h' -o -name '*.hpp' \
-       -o -name '*.inc' -o -name '*.cc' -o -name '*.cpp' \) -print0)
+       -o -name '*.inc' \) -print0)
 
 ln -s ../../build_emule/ttnn/_ttnn.so "$DESTINATION/ttnn/ttnn/_ttnn.so"
 

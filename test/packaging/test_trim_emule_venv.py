@@ -104,3 +104,13 @@ def test_development_dependencies_remain_enabled_by_default():
         '"${CMAKE_CURRENT_SOURCE_DIR}/dev-requirements.txt")\n'
         "endif()" in cmake
     )
+
+
+def test_final_image_links_its_venv_to_the_installed_python():
+    dockerfile = (REPO_ROOT / ".github/containers/Dockerfile.emule").read_text()
+    build, runtime = dockerfile.split(" AS runtime\n", 1)
+    removal = build.split("rm -f /opt/ttlang-toolchain/venv/bin/python", 1)[1]
+    for name in ("python3", "python3.12"):
+        assert f"/opt/ttlang-toolchain/venv/bin/{name}" in removal
+    assert "--without-pip --symlinks" in runtime
+    assert "--copies" not in runtime

@@ -103,6 +103,8 @@ def test_excludes_build_intermediates_and_unrelated_sources(runtime):
         "build_emule/CMakeFiles/cache.h",
         "build_emule/ttnn/CMakeFiles/kernel.cpp.o",
         "build_emule/ttnn/libintermediate.a",
+        "build_emule/generated/protobuf/rpc.cc",
+        "build_emule/generated/host_bindings.cpp",
         "build_emule/tt-metal-cache/kernel.cpp",
         "build_emule/compile_commands.json",
         "models/demos/model.py",
@@ -217,3 +219,91 @@ def test_rejects_noncontained_symlinks(runtime, outside_exists):
     result = package(source, destination)
     assert result.returncode != 0
     assert "symlink" in result.stderr
+
+
+def test_image_supports_default_generator_cmake_packaging_probes():
+    dockerfile = SCRIPT.with_name("Dockerfile.emule").read_text()
+    runtime = dockerfile.split(" AS runtime\n", 1)[1]
+    packages = runtime.split("apt-get install -y --no-install-recommends", 1)[1]
+    assert "make" in packages.split("&&", 1)[0].split()
+
+
+@pytest.mark.parametrize("major,cache_type", [(20, "FILEPATH"), (21, "STRING")])
+@pytest.mark.parametrize(
+    "missing", [None, "cache", "compiler", "llvm_library", "clang_library"]
+)
+def test_clang_packaging_uses_configured_compiler(tmp_path, major, cache_type, missing):
+    dockerfile = SCRIPT.with_name("Dockerfile.emule").read_text()
+    section = dockerfile.split("# Use the pinned compiler's Clang,")[1]
+    command = section.split("\nRUN ", 1)[1].split("\n\nFROM ", 1)[0]
+    prefix = tmp_path / f"llvm-{major}"
+    destination = tmp_path / "packaged"
+    notices = tmp_path / "notices"
+    compiler = write(prefix, "bin/clang", f"#!/bin/sh\necho {major}.9.7\n")
+    compiler.chmod(0o755)
+    write(prefix, "bin/lld")
+    write(prefix, f"lib/clang/{major}/include/stddef.h")
+    libraries = [
+        write(tmp_path, f"lib/libLLVM.so.{major}.9"),
+        write(tmp_path, f"lib/libclang-cpp.so.{major}.9"),
+    ]
+    cache = write(
+        tmp_path,
+        "build/CMakeCache.txt",
+        f"CMAKE_CXX_COMPILER:{cache_type}={compiler}\n",
+    )
+    if missing == "cache":
+        cache.unlink()
+    elif missing == "compiler":
+        compiler.unlink()
+    output = [f"{library.name} => {library} (0x1234)" for library in libraries]
+    if missing in ("llvm_library", "clang_library"):
+        index = 0 if missing == "llvm_library" else 1
+        output[index] = f"{libraries[index].name} => not found"
+    ldd = write(
+        tmp_path,
+        "bin/ldd",
+        "#!/bin/sh\n" + "\n".join(f"echo '{line}'" for line in output) + "\n",
+    )
+    ldd.chmod(0o755)
+    packages = (
+        f"clang-{major}",
+        f"lld-{major}",
+        f"libllvm{major}",
+        f"libclang-cpp{major}",
+        f"libclang-common-{major}-dev",
+        f"libclang-rt-{major}-dev",
+    )
+    for name in packages:
+        write(notices, f"{name}/copyright", "license text")
+    command = command.replace("/clang$", f"{destination}$").replace(
+        "/clang/", f"{destination}/"
+    )
+    command = command.replace('cp "/usr/share/doc/', f'cp "{notices}/')
+    result = subprocess.run(
+        ["bash", "-c", command],
+        env={
+            **os.environ,
+            "TT_METAL_BUILD_DIR": str(cache.parent),
+            "PATH": f"{ldd.parent}:{os.environ['PATH']}",
+        },
+        capture_output=True,
+        text=True,
+    )
+    if missing:
+        assert result.returncode != 0
+        assert not destination.exists()
+        return
+    assert result.returncode == 0, result.stderr
+    packaged_prefix = destination / str(prefix).lstrip("/")
+    assert (packaged_prefix / "bin/clang").read_text() == compiler.read_text()
+    assert (packaged_prefix / f"lib/clang/{major}/include/stddef.h").is_file()
+    for tool in ("clang", "clang++", "lld", "ld.lld"):
+        alias = destination / f"usr/bin/{tool}-{major}"
+        assert alias.readlink() == prefix / f"bin/{tool}"
+    for library in libraries:
+        assert (destination / "usr/lib/x86_64-linux-gnu" / library.name).is_file()
+    for name in packages:
+        assert (
+            destination / "usr/share/doc" / name / "copyright"
+        ).read_text() == "license text"

@@ -393,7 +393,7 @@ if [ "$_BUILD_IMAGE" -eq 1 ]; then
         --build-arg "TARGET_CLUSTER_DESCRIPTOR=${_MANIFEST_CLUSTER_DESCRIPTOR}" \
         --build-arg "TARGET_MESH_DEVICE=${_MANIFEST_MESH_DEVICE}" \
         --tag "$_IMAGE" \
-        "$_REPO_ROOT"
+        "${_REPO_ROOT}/.github/containers"
 fi
 
 cleanup

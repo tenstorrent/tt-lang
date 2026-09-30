@@ -122,31 +122,44 @@ RUN cmake -S "$TT_METAL_SOURCE_DIR" -B "$TT_METAL_BUILD_DIR" -G Ninja \
        PYTHONPATH="$TT_METAL_SOURCE_DIR/ttnn:$TT_METAL_SOURCE_DIR/tools" \
        /opt/ttlang-toolchain/venv/bin/python -c 'import ttnn'
 
-COPY .github/containers/package-emule-runtime.sh \
-     .github/containers/trim-emule-venv.sh /tmp/
+COPY package-emule-runtime.sh trim-emule-venv.sh /tmp/
 RUN mkdir -p /runtime \
     && bash /tmp/package-emule-runtime.sh "$TT_METAL_SOURCE_DIR" /runtime/tt-metal \
     && cp "$TT_EMULE_RUNTIME_ROOT/stack.json" \
           "$TT_EMULE_RUNTIME_ROOT/source-manifest.json" /runtime/ \
     && bash /tmp/trim-emule-venv.sh /opt/ttlang-toolchain/venv/bin/python \
-    && rm -f /opt/ttlang-toolchain/bin/tt-triage
+    && rm -f /opt/ttlang-toolchain/bin/tt-triage \
+    && rm -f /opt/ttlang-toolchain/venv/bin/python \
+        /opt/ttlang-toolchain/venv/bin/python3 \
+        /opt/ttlang-toolchain/venv/bin/python3.12
 
 # Use the pinned compiler's Clang, rather than another LLVM SDK from apt.
-RUN mkdir -p /clang/usr/lib/llvm-20/bin /clang/usr/lib/llvm-20/lib \
-             /clang/usr/lib/x86_64-linux-gnu /clang/usr/bin \
-    && cp -L /usr/lib/llvm-20/bin/clang /usr/lib/llvm-20/bin/lld \
-        /clang/usr/lib/llvm-20/bin/ \
-    && cp -a /usr/lib/llvm-20/lib/clang /clang/usr/lib/llvm-20/lib/ \
-    && cp -L /usr/lib/llvm-20/lib/libLLVM.so.20.1 \
-        /usr/lib/llvm-20/lib/libclang-cpp.so.20.1 \
-        /clang/usr/lib/x86_64-linux-gnu/ \
-    && ln -s clang /clang/usr/lib/llvm-20/bin/clang++ \
-    && ln -s lld /clang/usr/lib/llvm-20/bin/ld.lld \
+RUN set -euo pipefail \
+    && compiler="$(sed -n 's/^CMAKE_CXX_COMPILER:[^=]*=//p' "$TT_METAL_BUILD_DIR/CMakeCache.txt")" \
+    && test -n "$compiler" \
+    && compiler="$(readlink -f "$(command -v "$compiler")")" \
+    && test -x "$compiler" \
+    && llvm_prefix="$(dirname "$(dirname "$compiler")")" \
+    && llvm_version="$("$compiler" -dumpversion)" \
+    && llvm_major="${llvm_version%%.*}" \
+    && [[ "$llvm_major" =~ ^[0-9]+$ ]] \
+    && libraries="$(ldd "$compiler" "$llvm_prefix/bin/lld")" \
+    && llvm_library="$(printf '%s\n' "$libraries" | awk '$1 ~ /^libLLVM[.-]/ && $2 == "=>" && $3 != "not" { print $3 }' | sort -u)" \
+    && clang_library="$(printf '%s\n' "$libraries" | awk '$1 ~ /^libclang-cpp[.-]/ && $2 == "=>" && $3 != "not" { print $3 }' | sort -u)" \
+    && test -n "$llvm_library" && test -n "$clang_library" \
+    && mkdir -p "/clang$llvm_prefix/bin" "/clang$llvm_prefix/lib" \
+        /clang/usr/lib/x86_64-linux-gnu /clang/usr/bin \
+    && cp -L "$compiler" "/clang$llvm_prefix/bin/clang" \
+    && cp -L "$llvm_prefix/bin/lld" "/clang$llvm_prefix/bin/" \
+    && cp -a "$llvm_prefix/lib/clang" "/clang$llvm_prefix/lib/" \
+    && cp -L "$llvm_library" "$clang_library" /clang/usr/lib/x86_64-linux-gnu/ \
+    && ln -s clang "/clang$llvm_prefix/bin/clang++" \
+    && ln -s lld "/clang$llvm_prefix/bin/ld.lld" \
     && for tool in clang clang++ lld ld.lld; do \
-        ln -s "../lib/llvm-20/bin/$tool" "/clang/usr/bin/$tool-20"; \
+        ln -s "$llvm_prefix/bin/$tool" "/clang/usr/bin/$tool-$llvm_major"; \
     done \
-    && for package in clang-20 lld-20 libllvm20 libclang-cpp20 \
-        libclang-common-20-dev libclang-rt-20-dev; do \
+    && for package in "clang-$llvm_major" "lld-$llvm_major" "libllvm$llvm_major" \
+        "libclang-cpp$llvm_major" "libclang-common-$llvm_major-dev" "libclang-rt-$llvm_major-dev"; do \
         mkdir -p "/clang/usr/share/doc/$package"; \
         cp "/usr/share/doc/$package/copyright" "/clang/usr/share/doc/$package/"; \
     done
@@ -205,7 +218,7 @@ COPY --from=build /opt/tt-emule /opt/tt-emule/
 # Refresh the copied venv's base-interpreter paths for the final OS.
 RUN ldconfig \
     && clang-20 --version && ld.lld-20 --version \
-    && python3 -m venv --upgrade --without-pip --copies --prompt ttlang \
+    && python3 -m venv --upgrade --without-pip --symlinks --prompt ttlang \
         /opt/ttlang-toolchain/venv \
     && /opt/ttlang-toolchain/venv/bin/python -m pip check \
     && TT_METAL_HOME="$TT_METAL_SOURCE_DIR" \
