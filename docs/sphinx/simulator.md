@@ -77,13 +77,16 @@ operation, and tt-metal dispatches the generated kernels to tt-emule.
 
 The getting-started guide covers
 [environment installation](simulator-getting-started.md#install-the-environment),
+[hardware selection](simulator-getting-started.md#select-emulated-hardware),
 [compiler tests](simulator-getting-started.md#run-tests-with-the-existing-test-framework),
 [source validation and image provenance](simulator-getting-started.md#validate-and-inspect-the-environment),
 and [supported workloads](simulator-getting-started.md#known-limitations).
 
 Use the Python backend for simulator options such as `--grid`, `--trace`, and
-`--no-float32-promotion`. For the emule backend, the pinned environment supplies
-the device configuration. Pass program arguments after `--`:
+`--no-float32-promotion`. The emule backend selects a hardware profile with
+`--target=NAME` (default: `p150`). The
+[profile table](simulator-getting-started.md#select-emulated-hardware) lists all
+bundled targets and their validation scope. Pass program arguments after `--`:
 
 ```bash
 ./bin/tt-lang-sim --backend=emule program.py -- --program-option value

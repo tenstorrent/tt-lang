@@ -5,8 +5,13 @@
 
 set -euo pipefail
 
-if [ "$#" -ne 0 ]; then
-    echo "Usage: scripts/shell-tt-lang-emule.sh" >&2
+unset TTLANG_EMULE_TARGET
+if [ "$#" -eq 2 ] && [ "$1" = --target ] && [ -n "$2" ] && [[ "$2" != -* ]]; then
+    export TTLANG_EMULE_TARGET="$2"
+elif [ "$#" -eq 1 ] && [[ "$1" == --target=?* ]]; then
+    export TTLANG_EMULE_TARGET="${1#--target=}"
+elif [ "$#" -ne 0 ]; then
+    echo "Usage: scripts/shell-tt-lang-emule.sh [--target TARGET]" >&2
     exit 2
 fi
 
