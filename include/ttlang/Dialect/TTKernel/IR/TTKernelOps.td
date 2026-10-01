@@ -235,9 +235,6 @@ def TTKernel_ReconfigDataFormatSrcaOp : TTKernel_Op<"reconfig_data_format_srca">
       reprogram tile or face geometry. That form is used when the programmed
       operand is not a single known CB, so a geometry change on that path is
       not applied.
-
-      `copy_tile_init` programs the unpack mode only. It does not change this
-      format.
     }];
 
     let arguments = (ins Optional<TTKernel_CB>:$srca_old, TTKernel_CB:$srca_new);

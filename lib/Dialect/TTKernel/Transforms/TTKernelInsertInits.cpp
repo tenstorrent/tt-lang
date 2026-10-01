@@ -17,14 +17,15 @@
 //   2. Per-op inits: emitted when the init key changes. The key is the init
 //      op type plus the operands it programs. Tracking follows scf.for,
 //      scf.if, and scf.while, and resets at sync boundaries. The init is
-//      placed immediately before the compute op. A loop that keeps one
-//      non-copy key gets that init once, before the loop. copy_tile_init
-//      stays next to the copy so a SrcA reconfig can precede it.
+//      placed immediately before the compute op. A loop that keeps one key
+//      with loop-invariant operands gets that init once, before the loop.
 //   3. SrcA format reconfiguration: copy_tile_init does not change the
 //      unpack data format, and the short inits assert that it already
 //      matches. A copy, add, sub, mul, dest-reuse, reduce, or matmul whose
 //      required SrcA element type differs gets reconfig_data_format_srca
-//      immediately before that init. Loop backedges and branch joins merge
+//      immediately before that init. The format persists across sync
+//      regions, so the dataflow runs over the whole function and reads the
+//      common inits placed by phase 1. Loop backedges and branch joins merge
 //      the programmed operand per edge.
 //
 // TODO(#329): Emit init_short variants for cheaper re-inits on type switches.
@@ -567,27 +568,10 @@ static Type unpackElementType(Value cb) {
   return cast<ttk::CBType>(cb.getType()).getElementType();
 }
 
-// The common init is the operand whose format hardware actually programs.
-// Full matmul init uses SrcOrder::Reverse, so SrcA is in1 and SrcB is in0.
-// FPU binary init programs SrcA from in0. mm_block_init_short programs neither.
-static Value initialSrcA(const SyncRegionAnalysis &analysis, Value inputCB,
-                         Value in0CB, Value in1CB, Value outputCB,
-                         bool matmulInitIsShort) {
-  if (outputCB && analysis.hasMatmul && in0CB && in1CB) {
-    return matmulInitIsShort ? Value() : in1CB;
-  }
-  if (outputCB && analysis.hasFPUBinary && in0CB && in1CB) {
-    return in0CB;
-  }
-  if (!inputCB && outputCB) {
-    return outputCB;
-  }
-  return inputCB;
-}
-
-// Full configures replace the programmed SrcA operand. mm_block_init_short,
-// copy_tile_init, binary_dest_reuse_tiles_init, add/sub/mul_tiles_init, and
-// reduce_init do not. The tiles inits assert the unpacker format already
+// Full configures replace the programmed SrcA operand. Full matmul init uses
+// SrcOrder::Reverse, so SrcA is in1. mm_block_init_short, copy_tile_init,
+// binary_dest_reuse_tiles_init, add/sub/mul_tiles_init, and reduce_init do
+// not write the format. The tiles inits assert the unpacker format already
 // matches. reduce_init expects a preceding reconfig and does not write it.
 static Value srcAProgrammedBy(Operation *op) {
   if (auto init = dyn_cast<ttk::TransposeInitOp>(op)) {
@@ -887,40 +871,21 @@ static SrcAState processRegion(Region &region, SrcAState entry, bool record,
 
 /// Insert reconfig_data_format_srca before a copy or short-init consumer
 /// whose required SrcA element type differs from the programmed operand.
-/// Those inits do not program the format.
-static LogicalResult insertSrcAReconfigs(ModuleOp moduleOp) {
-  bool hadError = false;
-  moduleOp->walk([&](ttk::TileRegsAcquireOp acquireOp) {
-    Value inputCB, in0CB, in1CB, outputCB;
-    FailureOr<SyncRegionAnalysis> analysis =
-        analyzeSyncRegion(acquireOp, inputCB, in0CB, in1CB, outputCB);
-    if (failed(analysis)) {
-      hadError = true;
-      return;
-    }
-    bool matmulInitIsShort =
-        analysis->hasMatmul &&
-        matmulCommonInitIsShort(hoistAboveCompilerLoops(acquireOp));
-    SrcAState state{initialSrcA(*analysis, inputCB, in0CB, in1CB, outputCB,
-                                matmulInitIsShort)};
+/// The SrcA format persists across sync regions, and a common init hoisted
+/// above a compiler loop runs once for every region in that loop, so the
+/// analysis covers the whole function and reads the inits present in the IR.
+static void insertSrcAReconfigs(ModuleOp moduleOp) {
+  moduleOp->walk([&](func::FuncOp funcOp) {
     llvm::SmallVector<SrcAReconfig> planned;
-    Block *block = acquireOp->getBlock();
-    for (auto it = std::next(acquireOp->getIterator()); it != block->end();
-         ++it) {
-      if (isa<ttk::TileRegsReleaseOp>(&*it)) {
-        break;
-      }
-      state = processOperation(&*it, state, true, planned);
-    }
+    processRegion(funcOp.getBody(), {}, true, planned);
 
-    OpBuilder builder(acquireOp.getContext());
+    OpBuilder builder(funcOp.getContext());
     for (const SrcAReconfig &item : planned) {
       builder.setInsertionPoint(item.insertBefore);
       ttk::ReconfigDataFormatSrcaOp::create(builder, item.loc, item.oldCB,
                                             item.newCB);
     }
   });
-  return hadError ? failure() : success();
 }
 
 //===----------------------------------------------------------------------===//
@@ -945,7 +910,6 @@ struct InitSim {
 
 struct InitInsertCtx {
   const ComputeInitMap &inits;
-  llvm::StringRef insertedAttr;
 };
 
 // The lattice is one key or unknown, so a region is simulated a constant
@@ -981,18 +945,9 @@ static InitState mergeInit(InitState lhs, InitState rhs) {
   return result;
 }
 
-static bool isCopyInitKey(const InitKey &key) {
-  return key.typeId == mlir::TypeID::get<ttk::CopyTileOp>() ||
-         key.typeId == mlir::TypeID::get<ttk::CopyBlockMatmulPartialsOp>();
-}
-
 static bool isReduceKey(InitState state) {
   return state.key &&
          state.key->typeId == mlir::TypeID::get<ttk::ReduceTileOp>();
-}
-
-static void markInitInserted(Operation *compute, const InitInsertCtx &ctx) {
-  compute->setAttr(ctx.insertedAttr, UnitAttr::get(compute->getContext()));
 }
 
 static bool initValuesDefinedOutside(scf::ForOp forOp, Operation *compute) {
@@ -1096,17 +1051,14 @@ static InitSim processInitSequence(Block::iterator begin, Block::iterator end,
         }
       }
     }
-    if (record) {
-      markInitInserted(&op, ctx);
-    }
     sim.state.key = key;
     sim.state.mayReduce = isReduceKey(sim.state);
   }
   return sim;
 }
 
-// copy_tile_init stays in the body. A later SrcA reconfig has to run before
-// it, and this phase cannot yet see that reconfig.
+// A hoisted init sits immediately before the loop. The SrcA phase finds it
+// there and places any required reconfig in front of it.
 static InitSim processInitFor(scf::ForOp forOp, InitState entry, bool record,
                               const InitInsertCtx &ctx) {
   Region &body = forOp.getRegion();
@@ -1126,7 +1078,7 @@ static InitSim processInitFor(scf::ForOp forOp, InitState entry, bool record,
     return inner;
   };
 
-  if (preserves && !isCopyInitKey(*cold.state.key)) {
+  if (preserves) {
     Operation *representative = findComputeWithKey(body, *cold.state.key, ctx);
     if (representative && initValuesDefinedOutside(forOp, representative)) {
       bool needsInit = !sameInit(entry, cold.state);
@@ -1258,7 +1210,6 @@ static InitSim processInitRegion(Region &region, InitState entry, bool record,
       }
       OpBuilder builder(op);
       mapIt->second.createInit(builder, op->getLoc(), op);
-      markInitInserted(op, ctx);
     });
     return sim;
   }
@@ -1275,7 +1226,6 @@ struct TTKernelInsertInitsPass
 
   void runOnOperation() override {
     auto moduleOp = getOperation();
-    constexpr llvm::StringLiteral kInitInserted("ttk.init_inserted");
 
     if (failed(insertCommonInits(moduleOp))) {
       signalPassFailure();
@@ -1283,7 +1233,7 @@ struct TTKernelInsertInitsPass
     }
 
     auto computeToInit = buildComputeToInitMap();
-    InitInsertCtx ctx{computeToInit, kInitInserted};
+    InitInsertCtx ctx{computeToInit};
 
     moduleOp->walk([&](ttk::TileRegsAcquireOp acquireOp) {
       Block *block = acquireOp->getBlock();
@@ -1298,12 +1248,7 @@ struct TTKernelInsertInitsPass
       processInitSequence(begin, end, {}, true, ctx);
     });
 
-    if (failed(insertSrcAReconfigs(moduleOp))) {
-      signalPassFailure();
-      return;
-    }
-
-    moduleOp->walk([&](Operation *op) { op->removeAttr(kInitInserted); });
+    insertSrcAReconfigs(moduleOp);
   }
 };
 

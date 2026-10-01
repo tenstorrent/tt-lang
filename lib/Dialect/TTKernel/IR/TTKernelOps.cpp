@@ -133,7 +133,7 @@ void ReconfigDataFormatSrcaOp::print(::mlir::OpAsmPrinter &printer) {
     printer << old << ", ";
   }
   printer << getSrcaNew() << ")";
-  printer.printOptionalAttrDict((*this)->getAttrs(), {"operandSegmentSizes"});
+  printer.printOptionalAttrDict((*this)->getAttrs());
   printer << " : ";
   printer.printFunctionalType(getOperation()->getOperandTypes(),
                               getOperation()->getResultTypes());
@@ -168,14 +168,8 @@ ReconfigDataFormatSrcaOp::parse(::mlir::OpAsmParser &parser,
            << "expected " << operands.size() << " operand types";
   }
   result.addTypes(functionType.getResults());
-  if (parser.resolveOperands(operands, functionType.getInputs(),
-                             parser.getNameLoc(), result.operands)) {
-    return failure();
-  }
-  int32_t oldCount = operands.size() == 2 ? 1 : 0;
-  result.addAttribute("operandSegmentSizes",
-                      parser.getBuilder().getDenseI32ArrayAttr({oldCount, 1}));
-  return success();
+  return parser.resolveOperands(operands, functionType.getInputs(),
+                                parser.getNameLoc(), result.operands);
 }
 
 static bool insideKernelFunction(mlir::Operation *op) {

@@ -1,6 +1,9 @@
 // copy_tile_init does not program the SrcA data format. The common init does,
-// once, from the first input CB. A later copy from a different element type
-// must reconfigure SrcA or the unpacker keeps the first format.
+// once, and the format persists across sync regions. A later copy from a
+// different element type must reconfigure SrcA or the unpacker keeps the
+// programmed format. Tests cover straight-line switches, full configures that
+// reprogram SrcA, short inits that require it, loops, branches, hoisted inits,
+// and regions that share one hoisted common init.
 // RUN: ttlang-opt %s --ttkernel-insert-inits | FileCheck %s
 
 // CHECK-LABEL: func.func @bf16_then_u16
@@ -315,6 +318,139 @@ func.func @matmul_restores_srca() {
   ttkernel.tile_regs_acquire() : () -> ()
   ttkernel.copy_tile(%in0, %c0, %c0) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index, index) -> ()
   ttkernel.matmul_block(%in0, %in1, %c0, %c0, %c0, %i0, %i1, %i1, %i1) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, !ttkernel.cb<4, !ttcore.tile<32x32, u16>>, index, index, index, i32, i32, i32, i32) -> ()
+  ttkernel.pack_tile(%c0, %out, %c0, false) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
+  ttkernel.tile_regs_release() : () -> ()
+  func.return
+}
+
+// Both common inits hoist above the compiler loop, so the U16 one is what the
+// hardware holds when the loop starts, and the backedge carries U16 as well.
+// The first region reconfigures to BF16 and the second back to U16.
+// CHECK-LABEL: func.func @two_regions_in_compiler_loop
+// CHECK-DAG: %[[BF16:.*]] = ttkernel.get_compile_time_arg_val(0)
+// CHECK-DAG: %[[U16:.*]] = ttkernel.get_compile_time_arg_val(1)
+// CHECK-DAG: %[[OUT:.*]] = ttkernel.get_compile_time_arg_val(2)
+// CHECK: ttkernel.init_sfpu(%[[BF16]], %[[OUT]])
+// CHECK-NEXT: ttkernel.init_sfpu(%[[U16]], %[[OUT]])
+// CHECK-NEXT: scf.for
+// CHECK-NEXT: ttkernel.tile_regs_acquire
+// CHECK-NEXT: ttkernel.reconfig_data_format_srca(%[[U16]], %[[BF16]])
+// CHECK-NEXT: ttkernel.copy_tile_init(%[[BF16]])
+// CHECK-NEXT: ttkernel.copy_tile(%[[BF16]]
+// CHECK: ttkernel.tile_regs_acquire
+// CHECK-NEXT: ttkernel.reconfig_data_format_srca(%[[BF16]], %[[U16]])
+// CHECK-NEXT: ttkernel.copy_tile_init(%[[U16]])
+// CHECK-NEXT: ttkernel.copy_tile(%[[U16]]
+// CHECK: ttkernel.tile_regs_release
+func.func @two_regions_in_compiler_loop() {
+  %bf16 = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>
+  %u16 = ttkernel.get_compile_time_arg_val(1) : () -> !ttkernel.cb<4, !ttcore.tile<32x32, u16>>
+  %out = ttkernel.get_compile_time_arg_val(2) : () -> !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c4 = arith.constant 4 : index
+  scf.for %iv = %c0 to %c4 step %c1 {
+    ttkernel.tile_regs_acquire() : () -> ()
+    ttkernel.copy_tile(%bf16, %iv, %c0) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index, index) -> ()
+    ttkernel.tile_regs_commit() : () -> ()
+    ttkernel.tile_regs_wait() : () -> ()
+    ttkernel.pack_tile(%c0, %out, %c0, false) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
+    ttkernel.tile_regs_release() : () -> ()
+    ttkernel.tile_regs_acquire() : () -> ()
+    ttkernel.copy_tile(%u16, %iv, %c0) : (!ttkernel.cb<4, !ttcore.tile<32x32, u16>>, index, index) -> ()
+    ttkernel.tile_regs_commit() : () -> ()
+    ttkernel.tile_regs_wait() : () -> ()
+    ttkernel.pack_tile(%c0, %out, %c0, false) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
+    ttkernel.tile_regs_release() : () -> ()
+  } {ttl.tile_loop_stride = 1 : index}
+  func.return
+}
+
+// No pack means no common init, so nothing has programmed SrcA. The first copy
+// uses the one-operand form; the second knows the programmed operand.
+// CHECK-LABEL: func.func @no_common_init
+// CHECK-DAG: %[[BF16:.*]] = ttkernel.get_compile_time_arg_val(0)
+// CHECK-DAG: %[[U16:.*]] = ttkernel.get_compile_time_arg_val(1)
+// CHECK-NOT: ttkernel.init_sfpu
+// CHECK: ttkernel.reconfig_data_format_srca(%[[BF16]]) :
+// CHECK-NEXT: ttkernel.copy_tile_init(%[[BF16]])
+// CHECK-NEXT: ttkernel.copy_tile(%[[BF16]]
+// CHECK-NEXT: ttkernel.reconfig_data_format_srca(%[[BF16]], %[[U16]])
+// CHECK-NEXT: ttkernel.copy_tile_init(%[[U16]])
+// CHECK-NEXT: ttkernel.copy_tile(%[[U16]]
+// CHECK: ttkernel.tile_regs_release
+func.func @no_common_init() {
+  %bf16 = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>
+  %u16 = ttkernel.get_compile_time_arg_val(1) : () -> !ttkernel.cb<4, !ttcore.tile<32x32, u16>>
+  %c0 = arith.constant 0 : index
+  ttkernel.tile_regs_acquire() : () -> ()
+  ttkernel.copy_tile(%bf16, %c0, %c0) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index, index) -> ()
+  ttkernel.copy_tile(%u16, %c0, %c0) : (!ttkernel.cb<4, !ttcore.tile<32x32, u16>>, index, index) -> ()
+  ttkernel.tile_regs_release() : () -> ()
+  func.return
+}
+
+// Nested loops that keep one copy key hoist copy_tile_init above the outer
+// loop. The reconfig is placed in front of that hoisted init, once.
+// CHECK-LABEL: func.func @hoisted_copy_init_nested_loops
+// CHECK-DAG: %[[BF16:.*]] = ttkernel.get_compile_time_arg_val(0)
+// CHECK-DAG: %[[U16:.*]] = ttkernel.get_compile_time_arg_val(1)
+// CHECK: ttkernel.copy_tile(%[[BF16]]
+// CHECK-NEXT: ttkernel.reconfig_data_format_srca(%[[U16]]) :
+// CHECK-NEXT: ttkernel.copy_tile_init(%[[U16]])
+// CHECK-NEXT: scf.for
+// CHECK-NEXT: scf.for
+// CHECK-NEXT: ttkernel.copy_tile(%[[U16]]
+// CHECK-NEXT: }
+// CHECK-NEXT: }
+// CHECK-NOT: ttkernel.reconfig_data_format_srca
+// CHECK: ttkernel.tile_regs_release
+func.func @hoisted_copy_init_nested_loops() {
+  %bf16 = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>
+  %u16 = ttkernel.get_compile_time_arg_val(1) : () -> !ttkernel.cb<4, !ttcore.tile<32x32, u16>>
+  %out = ttkernel.get_compile_time_arg_val(2) : () -> !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c4 = arith.constant 4 : index
+  ttkernel.tile_regs_acquire() : () -> ()
+  ttkernel.copy_tile(%bf16, %c0, %c0) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index, index) -> ()
+  scf.for %i = %c0 to %c4 step %c1 {
+    scf.for %j = %c0 to %c4 step %c1 {
+      ttkernel.copy_tile(%u16, %j, %j) : (!ttkernel.cb<4, !ttcore.tile<32x32, u16>>, index, index) -> ()
+    }
+  }
+  ttkernel.pack_tile(%c0, %out, %c0, false) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
+  ttkernel.tile_regs_release() : () -> ()
+  func.return
+}
+
+// The while body may run zero or more times, so both its entry and the exit
+// after the loop have no single programmed operand.
+// CHECK-LABEL: func.func @while_loop_reconfig
+// CHECK-DAG: %[[BF16:.*]] = ttkernel.get_compile_time_arg_val(0)
+// CHECK-DAG: %[[U16:.*]] = ttkernel.get_compile_time_arg_val(1)
+// CHECK: } do {
+// CHECK-NEXT: ttkernel.reconfig_data_format_srca(%[[U16]]) :
+// CHECK-NEXT: ttkernel.copy_tile_init(%[[U16]])
+// CHECK-NEXT: ttkernel.copy_tile(%[[U16]]
+// CHECK: ttkernel.reconfig_data_format_srca(%[[BF16]]) :
+// CHECK-NEXT: ttkernel.copy_tile_init(%[[BF16]])
+// CHECK-NEXT: ttkernel.copy_tile(%[[BF16]]
+// CHECK: ttkernel.tile_regs_release
+func.func @while_loop_reconfig(%cond: i1) {
+  %bf16 = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>
+  %u16 = ttkernel.get_compile_time_arg_val(1) : () -> !ttkernel.cb<4, !ttcore.tile<32x32, u16>>
+  %out = ttkernel.get_compile_time_arg_val(2) : () -> !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>
+  %c0 = arith.constant 0 : index
+  ttkernel.tile_regs_acquire() : () -> ()
+  ttkernel.copy_tile(%bf16, %c0, %c0) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index, index) -> ()
+  scf.while : () -> () {
+    scf.condition(%cond)
+  } do {
+    ttkernel.copy_tile(%u16, %c0, %c0) : (!ttkernel.cb<4, !ttcore.tile<32x32, u16>>, index, index) -> ()
+    scf.yield
+  }
+  ttkernel.copy_tile(%bf16, %c0, %c0) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index, index) -> ()
   ttkernel.pack_tile(%c0, %out, %c0, false) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
   ttkernel.tile_regs_release() : () -> ()
   func.return

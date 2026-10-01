@@ -1544,27 +1544,30 @@ def TTKernelInsertInits
     whenever the op type changes from the previous compute op in
     linear block order. Init tracking follows `scf.for`, `scf.if`, and
     `scf.while`, and resets at sync boundaries
-    (`tile_regs_acquire`/`commit`/`wait`/`release`). A loop that keeps one
-    non-copy key is initialized once, before the loop. `copy_tile_init`
-    is placed immediately before the copy, including when a backedge
-    changes the operand, so a SrcA reconfig stays in front of it.
+    (`tile_regs_acquire`/`commit`/`wait`/`release`). A loop whose body keeps
+    one key with loop-invariant operands is initialized once, before the
+    loop.
 
     `copy_tile_init` programs the unpack mode and not the SrcA data format.
-    The common init programs that format from the region's first input CB, or
-    from the matmul's second input when the full matmul init is used (SrcA is
-    in1). A later `copy_tile`, `copy_block_matmul_partials`, `add_tiles`,
-    `sub_tiles`, `mul_tiles`, `binary_dest_reuse_tiles`, `reduce_tile`, or
-    `matmul_block` whose required SrcA element type differs gets
-    `reconfig_data_format_srca` immediately before its short init. add, sub,
-    and mul require in0. Dest reuse requires the unpacked CB. Row sum and row
-    average require the scaler; other reduces require the data CB. Matmul
-    requires in1. The one-operand form is used when the incoming format is
-    not a single CB, which happens on a loop backedge or a branch join. That
-    form updates the data format only; it does not reprogram tile or face
-    geometry. The two-operand form does when the geometry differs. Full
-    configures (`transpose_wh_init`, `unary_bcast_init`,
-    `binary_op_init_common`, matmul init, `init_sfpu`) replace the tracked
-    SrcA operand. The short inits above do not write it.
+    That format is written by the full configures (`init_sfpu`,
+    `binary_op_init_common`, `mm_block_init` with SrcA on in1,
+    `transpose_wh_init`, `unary_bcast_init`, `compute_kernel_hw_startup`) and
+    by `reconfig_data_format_srca`, and it persists across sync regions. A
+    `copy_tile`, `copy_block_matmul_partials`, `add_tiles`, `sub_tiles`,
+    `mul_tiles`, `binary_dest_reuse_tiles`, `reduce_tile`, or `matmul_block`
+    whose required SrcA element type differs from the programmed operand gets
+    `reconfig_data_format_srca` immediately before its short init, which may
+    be a hoisted init before the loop. add, sub, and mul require in0. Dest
+    reuse requires the unpacked CB. Row sum and row average require the
+    scaler; other reduces require the data CB. Matmul requires in1. The
+    dataflow runs over the whole function body and reads the inits present in
+    the IR, so a common init hoisted above a compiler loop that holds several
+    sync regions is observed once, and the backedge carries the last region's
+    format into the first. The one-operand form is used when the programmed
+    operand is not a single CB: on a loop backedge, at a branch join, or when
+    no full configure precedes the consumer. That form updates the data format
+    only; it does not reprogram tile or face geometry. The two-operand form
+    does when the geometry differs.
 
     `reduce_uninit` runs before the next non-reduce compute and before a
     sync boundary when any incoming path may still be in reduction. A branch
