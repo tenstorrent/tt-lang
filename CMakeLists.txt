@@ -36,6 +36,8 @@ message(STATUS "  Provenance:       ttlang=${TTLANG_GIT_COMMIT} tt-metal=${TTLAN
 option(CODE_COVERAGE "Enable coverage reporting" OFF)
 option(TTLANG_ENABLE_DOCS "Enable Sphinx documentation build" OFF)
 option(TTLANG_SIM_ONLY "Set up Python environment for simulator only (skip compiler build)" OFF)
+option(TTLANG_INSTALL_DEV_REQUIREMENTS
+  "Install Python development requirements during configuration" ON)
 
 if(CODE_COVERAGE AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} --coverage")
@@ -195,7 +197,9 @@ add_subdirectory(tools)
 set(TTLANG_PYTHON_PACKAGES_DIR "${CMAKE_CURRENT_BINARY_DIR}/python_packages")
 add_subdirectory(python)
 
-ttlang_pip_install_requirements("${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/dev-requirements.txt")
+if(TTLANG_INSTALL_DEV_REQUIREMENTS)
+  ttlang_pip_install_requirements("${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/dev-requirements.txt")
+endif()
 
 add_subdirectory(test)
 
