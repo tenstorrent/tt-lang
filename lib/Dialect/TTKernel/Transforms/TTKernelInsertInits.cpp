@@ -8,15 +8,19 @@
 // format routing, and per-op inits (exp_tile_init, add_tiles_init, etc.) that
 // configure the MATH pipeline.
 //
-// Two phases:
+// Three phases:
 //   1. Common inits: one per sync region, hoisted above enclosing loops.
 //      Scans each tile_regs_acquire -> tile_regs_release region to determine
 //      the compute category (FPU binary vs SFPU/copy/bcast) and derives
-//      input/output CBs from compute and pack ops.
+//      input/output CBs from compute and pack ops. This programs the SrcA
+//      data format once.
 //   2. Per-op inits: emitted in linear block order whenever the op type
 //      changes (unary SFPU, binary SFPU, minmax, FPU binary). The init
 //      key is (init op TypeID, operand values). An init is inserted only
 //      when the key changes. Tracking resets at sync boundaries.
+//   3. SrcA format reconfiguration: copy_tile_init does not change the
+//      unpack data format. A copy from a CB whose element type differs from
+//      the programmed SrcA operand gets reconfig_data_format_srca.
 //
 // TODO(#329): Emit init_short variants for cheaper re-inits on type switches.
 //
@@ -33,6 +37,7 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Builders.h"
+#include "llvm/ADT/SmallVector.h"
 
 #define DEBUG_TYPE "ttkernel-insert-inits"
 
@@ -539,6 +544,132 @@ static LogicalResult insertCommonInits(ModuleOp moduleOp) {
 }
 
 //===----------------------------------------------------------------------===//
+// SrcA data-format reconfiguration
+//===----------------------------------------------------------------------===//
+
+static Type unpackElementType(Value cb) {
+  return cast<ttk::CBType>(cb.getType()).getElementType();
+}
+
+// The common init is the operand whose format hardware actually programs.
+// Matmul and FPU binary inits take priority over the first copy, matching
+// insertCommonInits.
+static Value initialSrcA(const SyncRegionAnalysis &analysis, Value inputCB,
+                         Value in0CB, Value outputCB) {
+  if ((analysis.hasMatmul || analysis.hasFPUBinary) && in0CB) {
+    return in0CB;
+  }
+  if (!inputCB && outputCB) {
+    return outputCB;
+  }
+  return inputCB;
+}
+
+// Full configures replace the programmed SrcA operand. Short inits (like mm_block_init_short)
+// and copy_tile_init do not.
+static Value srcAProgrammedBy(Operation *op) {
+  if (auto init = dyn_cast<ttk::TransposeInitOp>(op)) {
+    return init.getCbIn();
+  }
+  if (auto init = dyn_cast<ttk::UnaryBcastInitOp>(op)) {
+    return init.getInCb();
+  }
+  if (auto init = dyn_cast<ttk::BinaryOpInitCommonOp>(op)) {
+    return init.getIn0Cb();
+  }
+  if (auto init = dyn_cast<ttk::InitSFPUOp>(op)) {
+    return init.getIcb();
+  }
+  if (auto init = dyn_cast<ttk::MatmulInitOp>(op)) {
+    return init.getIn0Cb();
+  }
+  if (auto init = dyn_cast<ttk::MatmulBlockInitOp>(op)) {
+    return init.getIn0Cb();
+  }
+  if (auto init = dyn_cast<ttk::ComputeKernelHWStartupOp>(op)) {
+    return init.getIcb0();
+  }
+  if (auto reconfig = dyn_cast<ttk::ReconfigDataFormatSrcaOp>(op)) {
+    return reconfig.getSrcaNew();
+  }
+  return Value();
+}
+
+// Keep reconfig immediately before copy_tile_init. That init is the previous
+// op when phase 2 inserted it beside the copy.
+static Operation *reconfigInsertionPoint(Operation *copy, Value srcCB) {
+  if (auto init = dyn_cast_or_null<ttk::CopyTileInitOp>(copy->getPrevNode())) {
+    if (init.getCb0() == srcCB) {
+      return init;
+    }
+  }
+  return copy;
+}
+
+struct SrcAReconfig {
+  Operation *insertBefore;
+  Value oldCB;
+  Value newCB;
+  Location loc;
+};
+
+static void recordCopyReconfig(Operation *copy, Value srcCB, Value &configured,
+                               llvm::SmallVectorImpl<SrcAReconfig> &planned) {
+  if (configured &&
+      unpackElementType(configured) != unpackElementType(srcCB)) {
+    planned.push_back({reconfigInsertionPoint(copy, srcCB), configured, srcCB,
+                       copy->getLoc()});
+  }
+  configured = srcCB;
+}
+
+/// Insert reconfig_data_format_srca before copies whose CB element type
+/// differs from the SrcA format programmed for this sync region.
+/// copy_tile_init does not program that format.
+static LogicalResult insertSrcAReconfigs(ModuleOp moduleOp) {
+  bool hadError = false;
+  moduleOp->walk([&](ttk::TileRegsAcquireOp acquireOp) {
+    Value inputCB, in0CB, in1CB, outputCB;
+    FailureOr<SyncRegionAnalysis> analysis =
+        analyzeSyncRegion(acquireOp, inputCB, in0CB, in1CB, outputCB);
+    if (failed(analysis)) {
+      hadError = true;
+      return;
+    }
+    Value configured = initialSrcA(*analysis, inputCB, in0CB, outputCB);
+    llvm::SmallVector<SrcAReconfig> planned;
+    Block *block = acquireOp->getBlock();
+    for (auto it = std::next(acquireOp->getIterator()); it != block->end();
+         ++it) {
+      if (isa<ttk::TileRegsReleaseOp>(&*it)) {
+        break;
+      }
+      it->walk([&](Operation *op) {
+        if (auto copy = dyn_cast<ttk::CopyTileOp>(op)) {
+          recordCopyReconfig(copy, copy.getCb0(), configured, planned);
+          return;
+        }
+        if (auto copyBlock = dyn_cast<ttk::CopyBlockMatmulPartialsOp>(op)) {
+          recordCopyReconfig(copyBlock, copyBlock.getCb(), configured, planned);
+          return;
+        }
+        if (Value programmed = srcAProgrammedBy(op)) {
+          configured = programmed;
+        }
+      });
+    }
+
+    OpBuilder builder(acquireOp.getContext());
+    for (const SrcAReconfig &item : planned) {
+      builder.setInsertionPoint(item.insertBefore);
+      ttk::ReconfigDataFormatSrcaOp::create(builder, item.loc, item.oldCB,
+                                            item.newCB);
+    }
+  });
+  return hadError ? failure() : success();
+}
+
+//===----------------------------------------------------------------------===//
 // Pass implementation
 //===----------------------------------------------------------------------===//
 
@@ -609,6 +740,11 @@ struct TTKernelInsertInitsPass
         processOp(*it, prevKey, prevReduce);
       }
     });
+
+    if (failed(insertSrcAReconfigs(moduleOp))) {
+      signalPassFailure();
+      return;
+    }
 
     moduleOp->walk([&](Operation *op) { op->removeAttr(kInitInserted); });
   }

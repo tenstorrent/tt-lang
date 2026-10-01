@@ -1545,6 +1545,14 @@ def TTKernelInsertInits
     linear block order. Init tracking resets at sync boundaries
     (`tile_regs_acquire`/`commit`/`wait`/`release`).
 
+    `copy_tile_init` programs the unpack mode and not the SrcA data format.
+    The common init programs that format from the region's first input CB.
+    A later `copy_tile` or `copy_block_matmul_partials` whose CB element type
+    differs gets `reconfig_data_format_srca(old, new)` immediately before its
+    `copy_tile_init`. Full configures (`transpose_wh_init`, `unary_bcast_init`,
+    `binary_op_init_common`, matmul init, `init_sfpu`) replace the tracked
+    SrcA operand.
+
     Example (consecutive same-type ops share one init):
     ```mlir
     // Before:
