@@ -14,10 +14,12 @@
 //      the compute category (FPU binary vs SFPU/copy/bcast) and derives
 //      input/output CBs from compute and pack ops. This programs the SrcA
 //      data format once.
-//   2. Per-op inits: emitted in linear block order whenever the op type
-//      changes (unary SFPU, binary SFPU, minmax, FPU binary). The init
-//      key is (init op TypeID, operand values). An init is inserted only
-//      when the key changes. Tracking resets at sync boundaries.
+//   2. Per-op inits: emitted when the init key changes. The key is the init
+//      op type plus the operands it programs. Tracking follows scf.for,
+//      scf.if, and scf.while, and resets at sync boundaries. The init is
+//      placed immediately before the compute op. A loop that keeps one
+//      non-copy key gets that init once, before the loop. copy_tile_init
+//      stays next to the copy so a SrcA reconfig can precede it.
 //   3. SrcA format reconfiguration: copy_tile_init does not change the
 //      unpack data format. A copy from a CB whose element type differs from
 //      the programmed SrcA operand gets reconfig_data_format_srca. Loop
@@ -613,8 +615,8 @@ static Value srcAProgrammedBy(Operation *op) {
   return Value();
 }
 
-// Keep reconfig immediately before copy_tile_init. That init is the previous
-// op when phase 2 inserted it beside the copy.
+// Phase 2 places copy_tile_init immediately before the copy that needs it.
+// Keep the reconfig in front of that init.
 static Operation *reconfigInsertionPoint(Operation *copy, Value srcCB) {
   if (auto init = dyn_cast_or_null<ttk::CopyTileInitOp>(copy->getPrevNode())) {
     if (init.getCb0() == srcCB) {
@@ -843,6 +845,327 @@ static LogicalResult insertSrcAReconfigs(ModuleOp moduleOp) {
 }
 
 //===----------------------------------------------------------------------===//
+// Per-op init insertion
+//===----------------------------------------------------------------------===//
+
+using ComputeInitMap = llvm::DenseMap<mlir::TypeID, InitOpInfo>;
+
+// A null key means the programmed init is not unique. The next compute must
+// be initialized again; reusing either predecessor can skip a required init.
+struct InitState {
+  std::optional<InitKey> key;
+};
+
+struct InitSim {
+  InitState state;
+  bool changed = false;
+};
+
+struct InitInsertCtx {
+  const ComputeInitMap &inits;
+  llvm::StringRef insertedAttr;
+};
+
+// The lattice is one key or unknown, so a region is simulated a constant
+// number of times rather than once per iteration.
+static constexpr int kInitFixedPointLimit = 4;
+
+static InitSim processInitRegion(Region &region, InitState entry, bool record,
+                                 const InitInsertCtx &ctx);
+static InitSim processInitFor(scf::ForOp forOp, InitState entry, bool record,
+                              const InitInsertCtx &ctx);
+static InitSim processInitIf(scf::IfOp ifOp, InitState entry, bool record,
+                             const InitInsertCtx &ctx);
+static InitSim processInitWhile(scf::WhileOp whileOp, InitState entry,
+                                bool record, const InitInsertCtx &ctx);
+
+static bool sameInit(InitState lhs, InitState rhs) {
+  if (!lhs.key || !rhs.key) {
+    return !lhs.key && !rhs.key;
+  }
+  return *lhs.key == *rhs.key;
+}
+
+static InitState mergeInit(InitState lhs, InitState rhs) {
+  return sameInit(lhs, rhs) ? lhs : InitState{};
+}
+
+static bool isCopyInitKey(const InitKey &key) {
+  return key.typeId == mlir::TypeID::get<ttk::CopyTileOp>() ||
+         key.typeId == mlir::TypeID::get<ttk::CopyBlockMatmulPartialsOp>();
+}
+
+static bool isReduceKey(InitState state) {
+  return state.key &&
+         state.key->typeId == mlir::TypeID::get<ttk::ReduceTileOp>();
+}
+
+static void markInitInserted(Operation *compute, const InitInsertCtx &ctx) {
+  compute->setAttr(ctx.insertedAttr, UnitAttr::get(compute->getContext()));
+}
+
+static bool initValuesDefinedOutside(scf::ForOp forOp, Operation *compute) {
+  InitKey key = computeInitKey(compute);
+  for (Value operand : key.operands) {
+    if (!forOp.isDefinedOutsideOfLoop(operand)) {
+      return false;
+    }
+  }
+  // The short matmul init also reads the dimension operands. Those are not
+  // part of the key because they do not select a different kernel variant.
+  if (auto matmul = dyn_cast<ttk::MatmulBlockOp>(compute)) {
+    Value extras[] = {matmul.getTranspose(), matmul.getCtDim(),
+                      matmul.getRtDim(), matmul.getKtDim()};
+    for (Value operand : extras) {
+      if (!forOp.isDefinedOutsideOfLoop(operand)) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+static Operation *findComputeWithKey(Region &region, const InitKey &key,
+                                     const InitInsertCtx &ctx) {
+  Operation *found = nullptr;
+  region.walk([&](Operation *op) {
+    if (ctx.inits.find(op->getName().getTypeID()) == ctx.inits.end()) {
+      return WalkResult::advance();
+    }
+    if (computeInitKey(op) == key) {
+      found = op;
+      return WalkResult::interrupt();
+    }
+    return WalkResult::advance();
+  });
+  return found;
+}
+
+static InitSim processInitSequence(Block::iterator begin, Block::iterator end,
+                                   InitState entry, bool record,
+                                   const InitInsertCtx &ctx) {
+  InitSim sim;
+  sim.state = entry;
+  for (auto it = begin; it != end; ++it) {
+    Operation &op = *it;
+    if (isSyncBoundary(&op)) {
+      if (isReduceKey(sim.state)) {
+        sim.changed = true;
+        if (record) {
+          OpBuilder builder(&op);
+          ttk::ReduceUninitOp::create(builder, op.getLoc());
+        }
+      }
+      sim.state = {};
+      continue;
+    }
+    if (auto forOp = dyn_cast<scf::ForOp>(op)) {
+      InitSim nested = processInitFor(forOp, sim.state, record, ctx);
+      sim.changed |= nested.changed;
+      sim.state = nested.state;
+      continue;
+    }
+    if (auto ifOp = dyn_cast<scf::IfOp>(op)) {
+      InitSim nested = processInitIf(ifOp, sim.state, record, ctx);
+      sim.changed |= nested.changed;
+      sim.state = nested.state;
+      continue;
+    }
+    if (auto whileOp = dyn_cast<scf::WhileOp>(op)) {
+      InitSim nested = processInitWhile(whileOp, sim.state, record, ctx);
+      sim.changed |= nested.changed;
+      sim.state = nested.state;
+      continue;
+    }
+    if (op.getNumRegions() != 0) {
+      for (Region &region : op.getRegions()) {
+        InitSim nested = processInitRegion(region, {}, record, ctx);
+        sim.changed |= nested.changed;
+      }
+      sim.state = {};
+      continue;
+    }
+    auto mapIt = ctx.inits.find(op.getName().getTypeID());
+    if (mapIt == ctx.inits.end()) {
+      continue;
+    }
+    InitKey key = computeInitKey(&op);
+    bool reduceUninit = isReduceKey(sim.state) &&
+                        key.typeId != mlir::TypeID::get<ttk::ReduceTileOp>();
+    if (!sim.state.key || *sim.state.key != key) {
+      sim.changed = true;
+      if (record) {
+        OpBuilder builder(&op);
+        if (reduceUninit) {
+          ttk::ReduceUninitOp::create(builder, op.getLoc());
+        }
+        mapIt->second.createInit(builder, op.getLoc(), &op);
+      }
+    }
+    if (record) {
+      markInitInserted(&op, ctx);
+    }
+    sim.state.key = key;
+  }
+  return sim;
+}
+
+// copy_tile_init stays in the body. A later SrcA reconfig has to run before
+// it, and this phase cannot yet see that reconfig.
+static InitSim processInitFor(scf::ForOp forOp, InitState entry, bool record,
+                              const InitInsertCtx &ctx) {
+  Region &body = forOp.getRegion();
+  InitSim cold = processInitRegion(body, {}, false, ctx);
+  bool preserves = false;
+  if (cold.state.key) {
+    InitSim warm = processInitRegion(body, cold.state, false, ctx);
+    preserves = !warm.changed && sameInit(warm.state, cold.state);
+  }
+
+  std::optional<llvm::APInt> tripCount = forOp.getStaticTripCount();
+  bool mustRun = tripCount && !tripCount->isZero();
+  auto atExit = [&](InitSim inner) {
+    if (!mustRun) {
+      inner.state = mergeInit(entry, inner.state);
+    }
+    return inner;
+  };
+
+  if (preserves && !isCopyInitKey(*cold.state.key)) {
+    Operation *representative = findComputeWithKey(body, *cold.state.key, ctx);
+    if (representative && initValuesDefinedOutside(forOp, representative)) {
+      bool needsInit = !sameInit(entry, cold.state);
+      if (record && needsInit) {
+        auto mapIt = ctx.inits.find(representative->getName().getTypeID());
+        OpBuilder builder(forOp);
+        if (isReduceKey(entry) && !isReduceKey(cold.state)) {
+          ttk::ReduceUninitOp::create(builder, forOp.getLoc());
+        }
+        mapIt->second.createInit(builder, representative->getLoc(),
+                                 representative);
+      }
+      if (record) {
+        processInitRegion(body, cold.state, true, ctx);
+      }
+      InitSim result;
+      result.state = mustRun ? cold.state : mergeInit(entry, cold.state);
+      result.changed = needsInit;
+      return result;
+    }
+  }
+
+  if (preserves) {
+    InitState bodyEntry = mergeInit(entry, cold.state);
+    return atExit(processInitRegion(body, bodyEntry, record, ctx));
+  }
+
+  InitState bodyEntry = entry;
+  InitState bodyExit = entry;
+  bool stable = false;
+  for (int i = 0; i < kInitFixedPointLimit; ++i) {
+    InitState nextEntry = mergeInit(entry, bodyExit);
+    InitSim next = processInitRegion(body, nextEntry, false, ctx);
+    if (sameInit(nextEntry, bodyEntry) && sameInit(next.state, bodyExit)) {
+      bodyEntry = nextEntry;
+      bodyExit = next.state;
+      stable = true;
+      break;
+    }
+    bodyEntry = nextEntry;
+    bodyExit = next.state;
+  }
+  if (!stable) {
+    bodyEntry = {};
+    bodyExit = processInitRegion(body, bodyEntry, false, ctx).state;
+  }
+  InitSim inner = processInitRegion(body, bodyEntry, record, ctx);
+  inner.state = mustRun ? bodyExit : mergeInit(entry, bodyExit);
+  return inner;
+}
+
+static InitSim processInitIf(scf::IfOp ifOp, InitState entry, bool record,
+                             const InitInsertCtx &ctx) {
+  InitSim thenSim = processInitRegion(ifOp.getThenRegion(), entry, record, ctx);
+  InitSim elseSim =
+      ifOp.getElseRegion().empty()
+          ? InitSim{entry, false}
+          : processInitRegion(ifOp.getElseRegion(), entry, record, ctx);
+  InitSim result;
+  result.state = mergeInit(thenSim.state, elseSim.state);
+  result.changed = thenSim.changed || elseSim.changed;
+  return result;
+}
+
+static InitSim processInitWhile(scf::WhileOp whileOp, InitState entry,
+                                bool record, const InitInsertCtx &ctx) {
+  InitState beforeEntry = entry;
+  InitState beforeExit = entry;
+  InitState afterExit = entry;
+  bool stable = false;
+  for (int i = 0; i < kInitFixedPointLimit; ++i) {
+    InitState nextBeforeEntry = mergeInit(entry, afterExit);
+    InitSim nextBefore =
+        processInitRegion(whileOp.getBefore(), nextBeforeEntry, false, ctx);
+    InitSim nextAfter =
+        processInitRegion(whileOp.getAfter(), nextBefore.state, false, ctx);
+    if (sameInit(nextBeforeEntry, beforeEntry) &&
+        sameInit(nextBefore.state, beforeExit) &&
+        sameInit(nextAfter.state, afterExit)) {
+      beforeEntry = nextBeforeEntry;
+      beforeExit = nextBefore.state;
+      afterExit = nextAfter.state;
+      stable = true;
+      break;
+    }
+    beforeEntry = nextBeforeEntry;
+    beforeExit = nextBefore.state;
+    afterExit = nextAfter.state;
+  }
+  if (!stable) {
+    beforeEntry = {};
+    beforeExit =
+        processInitRegion(whileOp.getBefore(), beforeEntry, false, ctx).state;
+    afterExit =
+        processInitRegion(whileOp.getAfter(), beforeExit, false, ctx).state;
+  }
+  InitSim beforeSim =
+      processInitRegion(whileOp.getBefore(), beforeEntry, record, ctx);
+  InitSim afterSim =
+      processInitRegion(whileOp.getAfter(), beforeExit, record, ctx);
+  // The before region runs on every exit, including the failing condition.
+  InitSim result;
+  result.state = beforeSim.state;
+  result.changed = beforeSim.changed || afterSim.changed;
+  return result;
+}
+
+static InitSim processInitRegion(Region &region, InitState entry, bool record,
+                                 const InitInsertCtx &ctx) {
+  if (region.empty()) {
+    return {entry, false};
+  }
+  if (!region.hasOneBlock()) {
+    InitSim sim;
+    region.walk([&](Operation *op) {
+      auto mapIt = ctx.inits.find(op->getName().getTypeID());
+      if (mapIt == ctx.inits.end()) {
+        return;
+      }
+      sim.changed = true;
+      if (!record) {
+        return;
+      }
+      OpBuilder builder(op);
+      mapIt->second.createInit(builder, op->getLoc(), op);
+      markInitInserted(op, ctx);
+    });
+    return sim;
+  }
+  Block &block = region.front();
+  return processInitSequence(block.begin(), block.end(), entry, record, ctx);
+}
+
+//===----------------------------------------------------------------------===//
 // Pass implementation
 //===----------------------------------------------------------------------===//
 
@@ -859,59 +1182,19 @@ struct TTKernelInsertInitsPass
     }
 
     auto computeToInit = buildComputeToInitMap();
-
-    auto emitReduceUninit = [](OpBuilder &builder, Location loc,
-                               ttk::ReduceTileOp) {
-      ttk::ReduceUninitOp::create(builder, loc);
-    };
-
-    auto processOp = [&](Operation &topOp, std::optional<InitKey> &prevKey,
-                         ttk::ReduceTileOp &prevReduce) {
-      if (isSyncBoundary(&topOp)) {
-        if (prevKey &&
-            prevKey->typeId == mlir::TypeID::get<ttk::ReduceTileOp>()) {
-          OpBuilder builder(&topOp);
-          emitReduceUninit(builder, topOp.getLoc(), prevReduce);
-        }
-        prevKey = std::nullopt;
-        prevReduce = nullptr;
-        return;
-      }
-
-      topOp.walk([&](Operation *inner) {
-        auto mapIt = computeToInit.find(inner->getName().getTypeID());
-        if (mapIt == computeToInit.end()) {
-          return WalkResult::advance();
-        }
-        InitKey key = computeInitKey(inner);
-        if (!prevKey || *prevKey != key) {
-          if (prevKey &&
-              prevKey->typeId == mlir::TypeID::get<ttk::ReduceTileOp>() &&
-              key.typeId != mlir::TypeID::get<ttk::ReduceTileOp>()) {
-            OpBuilder builder(&topOp);
-            emitReduceUninit(builder, topOp.getLoc(), prevReduce);
-          }
-          OpBuilder builder(&topOp);
-          mapIt->second.createInit(builder, inner->getLoc(), inner);
-        }
-        prevKey = key;
-        prevReduce = dyn_cast<ttk::ReduceTileOp>(inner);
-        inner->setAttr(kInitInserted, UnitAttr::get(inner->getContext()));
-        return WalkResult::interrupt();
-      });
-    };
+    InitInsertCtx ctx{computeToInit, kInitInserted};
 
     moduleOp->walk([&](ttk::TileRegsAcquireOp acquireOp) {
       Block *block = acquireOp->getBlock();
-      std::optional<InitKey> prevKey;
-      ttk::ReduceTileOp prevReduce;
-      for (auto it = std::next(acquireOp->getIterator()); it != block->end();
-           ++it) {
+      Block::iterator begin = std::next(acquireOp->getIterator());
+      Block::iterator end = block->end();
+      for (Block::iterator it = begin; it != block->end(); ++it) {
         if (isa<ttk::TileRegsReleaseOp>(&*it)) {
+          end = it;
           break;
         }
-        processOp(*it, prevKey, prevReduce);
       }
+      processInitSequence(begin, end, {}, true, ctx);
     });
 
     if (failed(insertSrcAReconfigs(moduleOp))) {

@@ -175,14 +175,18 @@ func.func @block_copy_reconfig_before_init() {
 }
 
 // The backedge leaves U16, so the next iteration's BF16 copy cannot reuse the
-// preheader operand. The one-operand form always reconfigures.
+// preheader operand. The one-operand form always reconfigures. Each copy also
+// gets its own copy_tile_init: the reconfig changes the format and not the
+// copy unpack mode.
 // CHECK-LABEL: func.func @loop_backedge_reconfig
 // CHECK-DAG: %[[BF16:.*]] = ttkernel.get_compile_time_arg_val(0)
 // CHECK-DAG: %[[U16:.*]] = ttkernel.get_compile_time_arg_val(1)
 // CHECK: scf.for
 // CHECK-NEXT: ttkernel.reconfig_data_format_srca(%[[BF16]]) :
+// CHECK-NEXT: ttkernel.copy_tile_init(%[[BF16]])
 // CHECK-NEXT: ttkernel.copy_tile(%[[BF16]]
 // CHECK-NEXT: ttkernel.reconfig_data_format_srca(%[[BF16]], %[[U16]])
+// CHECK-NEXT: ttkernel.copy_tile_init(%[[U16]])
 // CHECK-NEXT: ttkernel.copy_tile(%[[U16]]
 // CHECK: ttkernel.tile_regs_release
 func.func @loop_backedge_reconfig() {
@@ -203,8 +207,17 @@ func.func @loop_backedge_reconfig() {
 }
 
 // Branch exits disagree, so the copy after the join uses the one-operand form.
+// Each branch copy gets the init beside it.
 // CHECK-LABEL: func.func @branch_join_reconfig
 // CHECK-DAG: %[[BF16:.*]] = ttkernel.get_compile_time_arg_val(0)
+// CHECK-DAG: %[[U16:.*]] = ttkernel.get_compile_time_arg_val(1)
+// CHECK-DAG: %[[F32:.*]] = ttkernel.get_compile_time_arg_val(2)
+// CHECK: scf.if
+// CHECK-NEXT: ttkernel.copy_tile_init(%[[U16]])
+// CHECK-NEXT: ttkernel.copy_tile(%[[U16]]
+// CHECK: ttkernel.reconfig_data_format_srca(%[[U16]], %[[F32]])
+// CHECK-NEXT: ttkernel.copy_tile_init(%[[F32]])
+// CHECK-NEXT: ttkernel.copy_tile(%[[F32]]
 // CHECK: ttkernel.reconfig_data_format_srca(%[[BF16]]) :
 // CHECK-NEXT: ttkernel.copy_tile_init(%[[BF16]])
 // CHECK-NEXT: ttkernel.copy_tile(%[[BF16]]

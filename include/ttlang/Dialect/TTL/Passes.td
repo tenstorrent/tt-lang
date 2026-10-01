@@ -1542,8 +1542,12 @@ def TTKernelInsertInits
     Per-op inits (`exp_tile_init`, `add_tiles_init`, etc.) configure the
     MATH pipeline for a specific operation type. An init is emitted
     whenever the op type changes from the previous compute op in
-    linear block order. Init tracking resets at sync boundaries
-    (`tile_regs_acquire`/`commit`/`wait`/`release`).
+    linear block order. Init tracking follows `scf.for`, `scf.if`, and
+    `scf.while`, and resets at sync boundaries
+    (`tile_regs_acquire`/`commit`/`wait`/`release`). A loop that keeps one
+    non-copy key is initialized once, before the loop. `copy_tile_init`
+    is placed immediately before the copy, including when a backedge
+    changes the operand, so a SrcA reconfig stays in front of it.
 
     `copy_tile_init` programs the unpack mode and not the SrcA data format.
     The common init programs that format from the region's first input CB, or
