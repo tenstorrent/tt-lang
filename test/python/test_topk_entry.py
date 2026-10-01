@@ -74,6 +74,17 @@ def test_math_topk_small_k_returns_one_tile():
     assert "tensor<1x1x!ttcore.tile<32x32, bf16>>" in text
 
 
+def test_math_topk_k64_returns_two_tiles():
+    with _topk_operands() as (values, indices, module):
+        ttl.math.topk(values, 64, indices=indices, largest=False)
+        text = str(module)
+
+    assert "k = 64" in text
+    assert "largest = false" in text
+    assert "tensor<1x2x!ttcore.tile<32x32, bf16>>" in text
+    assert "tensor<1x2x!ttcore.tile<32x32, u16>>" in text
+
+
 # Every constraint the compiler enforces is reported at the call site with a
 # message that names the argument.
 def test_math_topk_rejects_unsupported_k():
@@ -101,6 +112,23 @@ def test_math_topk_rejects_non_u16_indices():
             ttl.math.topk(values, 32, indices=indices)
 
 
+# The fused sort key packs a 16-bit value beside the u16 index.
+def test_math_topk_rejects_non_bf16_values():
+    with _topk_operands(values="tensor<1x2x!ttcore.tile<32x32, f32>>") as (
+        values,
+        indices,
+        _module,
+    ):
+        with pytest.raises(ValueError, match="values must be bf16 tiles, got Float32"):
+            ttl.math.topk(values, 32, indices=indices)
+
+
+def test_math_topk_rejects_non_tile_indices():
+    with _topk_operands(indices="tensor<1x2xi16>") as (values, indices, _module):
+        with pytest.raises(ValueError, match="indices must be a rank-2 block of tiles"):
+            ttl.math.topk(values, 32, indices=indices)
+
+
 def test_math_topk_rejects_indices_shape_mismatch():
     with _topk_operands(indices="tensor<1x4x!ttcore.tile<32x32, u16>>") as (
         values,
@@ -111,21 +139,28 @@ def test_math_topk_rejects_indices_shape_mismatch():
             ttl.math.topk(values, 32, indices=indices)
 
 
-@pytest.mark.parametrize(
-    "width_tiles, message",
-    [
-        (1, "power of two between 2 and 64 tiles"),
-        (3, "power of two between 2 and 64 tiles"),
-        (128, "power of two between 2 and 64 tiles"),
-    ],
-)
-def test_math_topk_rejects_unsupported_width(width_tiles, message):
+# Width 16 is rejected because the unrolled lowering exceeds the kernel
+# binary budget, not because the sort network cannot handle it.
+@pytest.mark.parametrize("width_tiles", [1, 3, 16])
+def test_math_topk_rejects_unsupported_width(width_tiles):
     with _topk_operands(
         values=f"tensor<1x{width_tiles}x!ttcore.tile<32x32, bf16>>",
         indices=f"tensor<1x{width_tiles}x!ttcore.tile<32x32, u16>>",
     ) as (values, indices, _module):
-        with pytest.raises(ValueError, match=message):
+        with pytest.raises(
+            ValueError, match=f"power of two between 2 and 8 tiles, got {width_tiles}"
+        ):
             ttl.math.topk(values, 32, indices=indices)
+
+
+@pytest.mark.parametrize("width_tiles", [2, 4, 8])
+def test_math_topk_accepts_supported_widths(width_tiles):
+    with _topk_operands(
+        values=f"tensor<1x{width_tiles}x!ttcore.tile<32x32, bf16>>",
+        indices=f"tensor<1x{width_tiles}x!ttcore.tile<32x32, u16>>",
+    ) as (values, indices, module):
+        ttl.math.topk(values, 32, indices=indices)
+        assert "ttl.topk" in str(module)
 
 
 def test_math_topk_rejects_scalar_operands():

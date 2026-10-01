@@ -1999,7 +1999,9 @@ def raw_element_write(block, *args):
 
 _TOPK_K_VALUES = (4, 8, 16, 32, 64)
 _TOPK_MIN_WIDTH_TILES = 2
-_TOPK_MAX_WIDTH_TILES = 64
+# The lowering unrolls every tile step; 16 tiles exceed the kernel binary
+# budget.
+_TOPK_MAX_WIDTH_TILES = 8
 
 
 def _topk_tile(tensor_type, what):
@@ -2030,14 +2032,13 @@ def topk(
     (last) dimension only; to select along another dimension, transpose the
     block before and after.
 
-    ``indices`` must hold the column number of every element of ``values``
-    (``indices[r, c] == c``) as ``u16`` tiles, shaped like ``values``. The
-    kernel author reads it from a host tensor; the compiler does not generate
-    it.
+    ``values`` are ``bf16`` tiles. ``indices`` must hold the column number of
+    every element of ``values`` (``indices[r, c] == c``) as ``u16`` tiles,
+    shaped like ``values``. The kernel author reads it from a host tensor; the
+    compiler does not generate it.
 
     ``k``, ``largest``, and ``stable`` are compile-time constants. ``k`` is one
-    of 4, 8, 16, 32, or 64. The row width is a power of two between 2 and 64
-    tiles.
+    of 4, 8, 16, 32, or 64. The row width is 2, 4, or 8 tiles.
 
     The results are whole tiles: ``(rows, ceil(k / 32))``. For ``k`` below 32
     the first ``k`` columns of the single result tile hold the answer and the
@@ -2060,6 +2061,9 @@ def topk(
             "topk indices must have the shape of values, got "
             f"{tuple(indices_type.shape)} and {tuple(values_type.shape)}"
         )
+    values_dtype = ttcore.DataType(values_tile.data_type_as_int)
+    if values_dtype != ttcore.DataType.BFloat16:
+        raise ValueError(f"topk values must be bf16 tiles, got {values_dtype.name}")
     indices_dtype = ttcore.DataType(indices_tile.data_type_as_int)
     if indices_dtype != ttcore.DataType.UInt16:
         raise ValueError(f"topk indices must be u16 tiles, got {indices_dtype.name}")

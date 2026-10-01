@@ -2199,20 +2199,20 @@ def TTL_TopkOp : TTL_Op<"topk", [
     Returns the `k` largest or smallest values in each row, together with
     their indices, in sorted order. The hardware sort network operates along
     the row (last) dimension only; another dimension is selected by
-    transposing before and after, as the metal host op does. `values` and
-    `indices` are rank-2 tensors of tiles with the same static shape. Both
-    operands are read from dataflow buffers. A computed `values` tensor is
-    materialized into a compiler buffer before the sort, so the operation can
-    follow other compute in the same kernel. `indices` is the identity index
-    tensor published by data movement; this operation does not generate that
-    tensor.
+    transposing before and after, as the metal host op does. `values` are
+    bf16 tiles and `indices` are u16 tiles; both are rank-2 tensors with the
+    same static shape and are read from dataflow buffers. A computed `values`
+    tensor is materialized into a compiler buffer before the sort, so the
+    operation can follow other compute in the same kernel. `indices` is the
+    identity index tensor published by data movement; this operation does not
+    generate that tensor.
 
-    `k` is one of {4, 8, 16, 32, 64}. The row width in tiles is a power of
-    two in [2, 64], and `k` divides the row width in elements.
+    `k` is one of {4, 8, 16, 32, 64}. The row width is 2, 4, or 8 tiles; the
+    lowering unrolls every tile step and wider rows exceed the kernel binary
+    budget.
 
     `stable` selects fused-key sort keys. The comparator-stable network is
-    not used. Rank-stamped cascade, widths above 64 tiles, and multi-core
-    merge are not lowered.
+    not used. Rank-stamped cascade and multi-core merge are not lowered.
 
     Results have shape `[height, (k + 31) / 32]` and the input element types.
     Each result is stored once into a reserved dataflow buffer of that shape.

@@ -88,10 +88,11 @@ produces.
 Tile loops are unrolled: every merge, rebuild, and copy-across of an
 unchanged tile is its own destination-register section. The section count per
 row is about `width / 2` for the initial sort plus `2 * width` per merge
-iteration. At the 64-tile limit that is on the order of 800 sections, which
-is a concern for kernel binary size. Hardware coverage is limited to
-`width = 2`; `lower_topk.mlir` checks the merge and rebuild pairing at
-`width = 8`.
+iteration. At 16 tiles the compute kernel binary is about 100 KB, above the
+70 KB kernel config budget, and the program fails to load. The verifier
+therefore caps the row width at 8 tiles; a wider row needs a lowering that
+loops over tiles as the metal kernels do. Hardware tests cover widths 2, 4,
+and 8.
 
 ## Limits
 
@@ -99,17 +100,26 @@ The operation sorts along the row (last) dimension and always returns the
 selection in sorted order; it has no `dim` or `sorted` attribute. The SFPU
 network compares across the columns of a tile pair, so another dimension is
 selected by transposing before and after, which is what the metal host op
-does for `dim != -1`. The verifier accepts `k` in {4, 8, 16, 32, 64} and a
-row width that is a power of two in [2, 64] tiles. `k` must divide the row
-width in elements. `ttl.math.topk` checks the same limits, plus a `u16`
-index block shaped like the values, and raises `ValueError` at the call
-site. The merge network selects whole tiles, so `k` below 32 runs the
+does for `dim != -1`. The verifier accepts `bf16` values, `u16` indices, `k`
+in {4, 8, 16, 32, 64}, and a row width of 2, 4, or 8 tiles. The fused sort
+key packs a 16-bit value beside a 16-bit index, which fixes both element
+types. `ttl.math.topk` checks the same limits and raises `ValueError` at the
+call site. The merge network selects whole tiles, so `k` below 32 runs the
 32-wide network and the sorted result tile holds the requested `k` columns
 first; this matches the metal host op, which rounds `k` up to a tile before
 launching the kernel. Each result must be stored once into a reserved
 dataflow buffer of the result shape. A multiply of a result reads a compiler
 buffer filled by that store. The sequence is emitted at the first result
 store, so a reserve created after the operation still dominates the packs.
+
+The plain (`stable = false`) path copies `bf16` value tiles and `u16` index
+tiles into one destination-register section. TTKernel has no
+`reconfig_data_format_srca`, and `ttkernel-insert-inits` configures the
+unpacker once per section from the first input buffer, so the index tiles
+are unpacked with the `bf16` format and come back wrong on hardware; the
+values are correct. The metal kernel reconfigures the unpacker between the
+two copies. Until the compiler can express that, the plain-path hardware
+tests are marked `xfail`.
 
 The index operand is the identity index tensor published by data movement.
 The compiler does not generate that reader. Rank-stamped lowering,

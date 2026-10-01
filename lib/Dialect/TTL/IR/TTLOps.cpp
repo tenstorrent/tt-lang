@@ -3970,6 +3970,12 @@ mlir::LogicalResult mlir::tt::ttl::TopkOp::verify() {
   if (!valuesTile || !indicesTile) {
     return emitOpError("values and indices must have tile element types");
   }
+  if (!valuesTile.getElementType().isBF16()) {
+    return emitOpError("values must be bf16 tiles");
+  }
+  if (!indicesTile.getElementType().isUnsignedInteger(16)) {
+    return emitOpError("indices must be u16 tiles");
+  }
 
   int64_t k = getK();
   if (!llvm::is_contained(mlir::tt::utils::kTopkSupportedKValues, k)) {
@@ -3978,12 +3984,10 @@ mlir::LogicalResult mlir::tt::ttl::TopkOp::verify() {
 
   int64_t height = valuesType.getShape()[0];
   int64_t width = valuesType.getShape()[1];
-  if (width < 2 || width > 64 || (width & (width - 1)) != 0) {
-    return emitOpError(
-        "width in tiles must be a power of two in the range [2, 64]");
-  }
-  if ((width * 32) % k != 0) {
-    return emitOpError("k must divide the row width in elements");
+  if (width < mlir::tt::utils::kTopkMinWidthTiles ||
+      width > mlir::tt::utils::kTopkMaxWidthTiles ||
+      (width & (width - 1)) != 0) {
+    return emitOpError("width in tiles must be 2, 4, or 8");
   }
 
   int64_t outputWidth = (k + 31) / 32;

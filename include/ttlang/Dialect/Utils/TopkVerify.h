@@ -91,6 +91,11 @@ inline LogicalResult verifyTopkConstantInRange(Operation *op, Value value,
 
 inline constexpr int64_t kTopkSupportedKValues[] = {4, 8, 16, 32, 64};
 
+/// Row width bounds of `ttl.topk` in tiles. The lowering unrolls every tile
+/// step, and 16 tiles exceed the kernel binary budget.
+inline constexpr int64_t kTopkMinWidthTiles = 2;
+inline constexpr int64_t kTopkMaxWidthTiles = 8;
+
 inline LogicalResult verifyTopkConstantK(Operation *op, Value value) {
   std::optional<int64_t> constant = getConstantIntValue(value);
   if (!constant || llvm::is_contained(kTopkSupportedKValues, *constant)) {

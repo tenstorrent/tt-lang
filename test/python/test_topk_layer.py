@@ -8,18 +8,20 @@
 
 """Local top-k selection, the single-core stage of the metal TopK kernel.
 
-The shape is the ``(1, 1, 32, 64)`` family from
+The base shape is the ``(1, 1, 32, 64)`` family from
 ``tests/ttnn/unit_tests/operations/reduce/test_topk.py``: one tile-row of
-scores, two tiles wide. ``k`` is 32 so every column of the result tile is a
-selected element. The identity index tensor is an input, matching that
-test's ``indices_tensor`` argument. The full GLM indexer is a multi-core
-pipeline and is outside this kernel.
+scores, two tiles wide, ``k`` 32. The identity index tensor is an input,
+matching that test's ``indices_tensor`` argument. The full GLM indexer is a
+multi-core pipeline and is outside this kernel.
 
-Golden values and indices come from ``torch.topk`` on the same scores.
-``topk_fused_kernel`` places one or two elementwise ops before a stable
-top-k, after it, and on both sides. ``topk_scoped_kernel`` places a stable
-top-k in the function body, in a loop, and in a second loop nested under
-that loop, so each fuse/defuse pair is lowered in a different region.
+``make_topk_kernel`` covers the parameter matrix: row count, row width, ``k``,
+polarity, and stability. Golden values and indices come from a stable
+``torch.sort`` on the same scores, which pins the lower-index-first tie rule
+that ``torch.topk`` does not guarantee on CPU. ``topk_fused_kernel`` places
+one or two elementwise ops before a stable top-k, after it, and on both sides.
+``topk_scoped_kernel`` places a stable top-k in the function body, in a loop,
+and in a second loop nested under that loop, so each fuse/defuse pair is
+lowered in a different region.
 """
 
 import pytest
@@ -31,99 +33,72 @@ ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
 
 from ttlang_test_utils import to_l1
 
+TILE = 32
 ROWS = 32
 WIDTH = 64
 K = 32
 
 
-@ttl.operation(grid=(1, 1))
-def topk_largest_kernel(scores, indices, out_values, out_indices):
-    """Select the 32 largest scores in each row, largest first."""
-    scores_dfb = ttl.make_dataflow_buffer_like(scores, shape=(1, 2), block_count=1)
-    indices_dfb = ttl.make_dataflow_buffer_like(indices, shape=(1, 2), block_count=1)
-    values_dfb = ttl.make_dataflow_buffer_like(out_values, shape=(1, 1), block_count=1)
-    out_indices_dfb = ttl.make_dataflow_buffer_like(
-        out_indices, shape=(1, 1), block_count=1
-    )
+def make_topk_kernel(height_tiles, width_tiles, k, largest, stable):
+    """Select ``k`` scores from every row of a ``height_tiles x width_tiles`` block.
 
-    @ttl.compute()
-    def select_largest():
-        scores_blk = scores_dfb.wait()
-        indices_blk = indices_dfb.wait()
-        values_blk = values_dfb.reserve()
-        indices_out_blk = out_indices_dfb.reserve()
-        top_values, top_indices = ttl.math.topk(
-            scores_blk, K, indices=indices_blk, stable=True
+    Widths above two tiles exercise the merge and rebuild iterations. ``k``
+    below 32 exercises the tile-wide network with a sliced result. ``k`` of 64
+    flips the bitonic direction and returns two tiles. Several tile rows
+    exercise the row loop.
+    """
+    output_tiles = (k + TILE - 1) // TILE
+
+    @ttl.operation(grid=(1, 1))
+    def topk_kernel(scores, indices, out_values, out_indices):
+        scores_dfb = ttl.make_dataflow_buffer_like(
+            scores, shape=(height_tiles, width_tiles), block_count=1
         )
-        values_blk.store(top_values)
-        indices_out_blk.store(top_indices)
-        scores_blk.pop()
-        indices_blk.pop()
-        values_blk.push()
-        indices_out_blk.push()
-
-    @ttl.datamovement()
-    def dm_read():
-        scores_blk = scores_dfb.reserve()
-        ttl.copy(scores[0:1, 0:2], scores_blk).wait()
-        scores_blk.push()
-        indices_blk = indices_dfb.reserve()
-        ttl.copy(indices[0:1, 0:2], indices_blk).wait()
-        indices_blk.push()
-
-    @ttl.datamovement()
-    def dm_write():
-        values_blk = values_dfb.wait()
-        ttl.copy(values_blk, out_values[0, 0]).wait()
-        values_blk.pop()
-        indices_blk = out_indices_dfb.wait()
-        ttl.copy(indices_blk, out_indices[0, 0]).wait()
-        indices_blk.pop()
-
-
-@ttl.operation(grid=(1, 1))
-def topk_smallest_kernel(scores, indices, out_values, out_indices):
-    """Select the 32 smallest scores in each row, smallest first."""
-    scores_dfb = ttl.make_dataflow_buffer_like(scores, shape=(1, 2), block_count=1)
-    indices_dfb = ttl.make_dataflow_buffer_like(indices, shape=(1, 2), block_count=1)
-    values_dfb = ttl.make_dataflow_buffer_like(out_values, shape=(1, 1), block_count=1)
-    out_indices_dfb = ttl.make_dataflow_buffer_like(
-        out_indices, shape=(1, 1), block_count=1
-    )
-
-    @ttl.compute()
-    def select_smallest():
-        scores_blk = scores_dfb.wait()
-        indices_blk = indices_dfb.wait()
-        values_blk = values_dfb.reserve()
-        indices_out_blk = out_indices_dfb.reserve()
-        top_values, top_indices = ttl.math.topk(
-            scores_blk, K, indices=indices_blk, largest=False, stable=True
+        indices_dfb = ttl.make_dataflow_buffer_like(
+            indices, shape=(height_tiles, width_tiles), block_count=1
         )
-        values_blk.store(top_values)
-        indices_out_blk.store(top_indices)
-        scores_blk.pop()
-        indices_blk.pop()
-        values_blk.push()
-        indices_out_blk.push()
+        values_dfb = ttl.make_dataflow_buffer_like(
+            out_values, shape=(height_tiles, output_tiles), block_count=1
+        )
+        out_indices_dfb = ttl.make_dataflow_buffer_like(
+            out_indices, shape=(height_tiles, output_tiles), block_count=1
+        )
 
-    @ttl.datamovement()
-    def dm_read():
-        scores_blk = scores_dfb.reserve()
-        ttl.copy(scores[0:1, 0:2], scores_blk).wait()
-        scores_blk.push()
-        indices_blk = indices_dfb.reserve()
-        ttl.copy(indices[0:1, 0:2], indices_blk).wait()
-        indices_blk.push()
+        @ttl.compute()
+        def select():
+            scores_blk = scores_dfb.wait()
+            indices_blk = indices_dfb.wait()
+            values_blk = values_dfb.reserve()
+            indices_out_blk = out_indices_dfb.reserve()
+            top_values, top_indices = ttl.math.topk(
+                scores_blk, k, indices=indices_blk, largest=largest, stable=stable
+            )
+            values_blk.store(top_values)
+            indices_out_blk.store(top_indices)
+            scores_blk.pop()
+            indices_blk.pop()
+            values_blk.push()
+            indices_out_blk.push()
 
-    @ttl.datamovement()
-    def dm_write():
-        values_blk = values_dfb.wait()
-        ttl.copy(values_blk, out_values[0, 0]).wait()
-        values_blk.pop()
-        indices_blk = out_indices_dfb.wait()
-        ttl.copy(indices_blk, out_indices[0, 0]).wait()
-        indices_blk.pop()
+        @ttl.datamovement()
+        def dm_read():
+            scores_blk = scores_dfb.reserve()
+            ttl.copy(scores[0:height_tiles, 0:width_tiles], scores_blk).wait()
+            scores_blk.push()
+            indices_blk = indices_dfb.reserve()
+            ttl.copy(indices[0:height_tiles, 0:width_tiles], indices_blk).wait()
+            indices_blk.push()
+
+        @ttl.datamovement()
+        def dm_write():
+            values_blk = values_dfb.wait()
+            ttl.copy(values_blk, out_values[0:height_tiles, 0:output_tiles]).wait()
+            values_blk.pop()
+            indices_blk = out_indices_dfb.wait()
+            ttl.copy(indices_blk, out_indices[0:height_tiles, 0:output_tiles]).wait()
+            indices_blk.pop()
+
+    return topk_kernel
 
 
 @ttl.operation(grid=(1, 1))
@@ -381,123 +356,117 @@ def topk_scoped_kernel(
         neg_indices_blk.pop()
 
 
-def make_topk_wide_kernel(width_tiles, k, largest):
-    """Select ``k`` scores from a ``width_tiles``-tile row.
-
-    Widths above two tiles exercise the merge and rebuild iterations that
-    the two-tile kernels above never reach. ``k`` below 32 exercises the
-    tile-wide network with a sliced result.
-    """
-    output_tiles = (k + 31) // 32
-
-    @ttl.operation(grid=(1, 1))
-    def topk_wide_kernel(scores, indices, out_values, out_indices):
-        scores_dfb = ttl.make_dataflow_buffer_like(
-            scores, shape=(1, width_tiles), block_count=1
-        )
-        indices_dfb = ttl.make_dataflow_buffer_like(
-            indices, shape=(1, width_tiles), block_count=1
-        )
-        values_dfb = ttl.make_dataflow_buffer_like(
-            out_values, shape=(1, output_tiles), block_count=1
-        )
-        out_indices_dfb = ttl.make_dataflow_buffer_like(
-            out_indices, shape=(1, output_tiles), block_count=1
-        )
-
-        @ttl.compute()
-        def select_wide():
-            scores_blk = scores_dfb.wait()
-            indices_blk = indices_dfb.wait()
-            values_blk = values_dfb.reserve()
-            indices_out_blk = out_indices_dfb.reserve()
-            top_values, top_indices = ttl.math.topk(
-                scores_blk, k, indices=indices_blk, largest=largest, stable=True
-            )
-            values_blk.store(top_values)
-            indices_out_blk.store(top_indices)
-            scores_blk.pop()
-            indices_blk.pop()
-            values_blk.push()
-            indices_out_blk.push()
-
-        @ttl.datamovement()
-        def dm_read():
-            scores_blk = scores_dfb.reserve()
-            ttl.copy(scores[0:1, 0:width_tiles], scores_blk).wait()
-            scores_blk.push()
-            indices_blk = indices_dfb.reserve()
-            ttl.copy(indices[0:1, 0:width_tiles], indices_blk).wait()
-            indices_blk.push()
-
-        @ttl.datamovement()
-        def dm_write():
-            values_blk = values_dfb.wait()
-            ttl.copy(values_blk, out_values[0:1, 0:output_tiles]).wait()
-            values_blk.pop()
-            indices_blk = out_indices_dfb.wait()
-            ttl.copy(indices_blk, out_indices[0:1, 0:output_tiles]).wait()
-            indices_blk.pop()
-
-    return topk_wide_kernel
-
-
-def _scores(width=WIDTH):
-    """32 rows of a permutation of the bf16-exact integers [-width/2, width/2)."""
+def _scores(width=WIDTH, rows=ROWS):
+    """Rows of a permutation of the bf16-exact integers [-width/2, width/2)."""
     base = torch.arange(-(width // 2), width // 2, dtype=torch.float32)
     generator = torch.Generator().manual_seed(2005)
-    rows = [base[torch.randperm(width, generator=generator)] for _ in range(ROWS)]
-    return torch.stack(rows).to(torch.bfloat16)
+    return torch.stack(
+        [base[torch.randperm(width, generator=generator)] for _ in range(rows)]
+    ).to(torch.bfloat16)
+
+
+def _tied_scores(width, rows):
+    """Rows drawn from five distinct values, so every selected value has ties."""
+    generator = torch.Generator().manual_seed(2006)
+    return torch.randint(0, 5, (rows, width), generator=generator).to(torch.bfloat16)
 
 
 def _bias():
     return torch.full((ROWS, WIDTH), 40, dtype=torch.bfloat16)
 
 
-def _identity_indices(width=WIDTH):
+def _identity_indices(width=WIDTH, rows=ROWS):
     columns = torch.arange(width, dtype=torch.int64)
-    return columns.unsqueeze(0).expand(ROWS, width).to(torch.uint16).contiguous()
+    return columns.unsqueeze(0).expand(rows, width).to(torch.uint16).contiguous()
 
 
-def _run(kernel, scores, indices, device, bias=None):
-    scores_dev = to_l1(scores, device)
-    indices_dev = to_l1(indices, device)
-    out_values = to_l1(torch.zeros((ROWS, K), dtype=torch.bfloat16), device)
-    out_indices = to_l1(torch.zeros((ROWS, K), dtype=torch.uint16), device)
-    if bias is None:
-        kernel(scores_dev, indices_dev, out_values, out_indices)
-    else:
-        kernel(scores_dev, to_l1(bias, device), indices_dev, out_values, out_indices)
-    got_values = ttnn.to_torch(out_values).reshape(ROWS, K).to(torch.bfloat16)
-    got_indices = ttnn.to_torch(out_indices).reshape(ROWS, K).to(torch.int64)
-    return got_values, got_indices
+def _expected_topk(scores, k, largest):
+    """Stable reference: equal values keep ascending index order."""
+    values, indices = torch.sort(
+        scores.float(), dim=-1, descending=largest, stable=True
+    )
+    return values[:, :k].to(torch.bfloat16), indices[:, :k]
 
 
 def _assert_matches_torch(scores, got_values, got_indices, largest, k=K):
-    expected_values, expected_indices = torch.topk(
-        scores.float(), k, dim=-1, largest=largest, sorted=True
-    )
-    expected_values = expected_values.to(torch.bfloat16)
+    expected_values, expected_indices = _expected_topk(scores, k, largest)
     assert torch.equal(got_values, expected_values)
-    assert torch.equal(got_indices, expected_indices.to(torch.int64))
+    assert torch.equal(got_indices, expected_indices)
     gathered = torch.gather(scores.float(), -1, got_indices)
     assert torch.equal(gathered.to(torch.bfloat16), got_values)
 
 
-def test_topk_largest_matches_torch(device):
-    scores = _scores()
-    got_values, got_indices = _run(
-        topk_largest_kernel, scores, _identity_indices(), device
+def _run_topk(device, scores, height_tiles, width_tiles, k, largest, stable):
+    rows = height_tiles * TILE
+    scores_dev = to_l1(scores, device)
+    indices_dev = to_l1(_identity_indices(width_tiles * TILE, rows), device)
+    out_values = to_l1(torch.zeros((rows, k), dtype=torch.bfloat16), device)
+    out_indices = to_l1(torch.zeros((rows, k), dtype=torch.uint16), device)
+    make_topk_kernel(height_tiles, width_tiles, k, largest, stable)(
+        scores_dev, indices_dev, out_values, out_indices
     )
-    _assert_matches_torch(scores, got_values, got_indices, largest=True)
+    got_values = ttnn.to_torch(out_values).reshape(rows, k).to(torch.bfloat16)
+    got_indices = ttnn.to_torch(out_indices).reshape(rows, k).to(torch.int64)
+    return got_values, got_indices
+
+
+# The plain (stable=False) path copies bf16 value tiles and u16 index tiles
+# into one destination section; the compiler does not reconfigure the unpack
+# data format between them, so the index tiles come back scaled. Values are
+# correct. The entries fail until ttkernel gains reconfig_data_format_srca.
+_PLAIN_PATH_BROKEN = pytest.mark.xfail(
+    strict=True, reason="plain path needs unpack data format reconfiguration"
+)
+
+
+@pytest.mark.parametrize(
+    "height_tiles, width_tiles, k, largest, stable",
+    [
+        (1, 2, 32, True, True),
+        (1, 2, 32, False, True),
+        (1, 4, 32, True, True),
+        (1, 8, 32, True, True),
+        (1, 8, 32, False, True),
+        (1, 8, 64, True, True),
+        (1, 2, 64, True, True),
+        (2, 2, 4, True, True),
+        (1, 4, 8, True, True),
+        (1, 2, 16, False, True),
+        (2, 2, 32, True, True),
+        (2, 4, 32, False, True),
+        pytest.param(1, 2, 32, True, False, marks=_PLAIN_PATH_BROKEN),
+        pytest.param(1, 4, 32, False, False, marks=_PLAIN_PATH_BROKEN),
+        pytest.param(2, 8, 64, True, False, marks=_PLAIN_PATH_BROKEN),
+    ],
+)
+def test_topk_matches_torch(device, height_tiles, width_tiles, k, largest, stable):
+    scores = _scores(width_tiles * TILE, height_tiles * TILE)
+    got_values, got_indices = _run_topk(
+        device, scores, height_tiles, width_tiles, k, largest, stable
+    )
+    _assert_matches_torch(scores, got_values, got_indices, largest, k)
+
+
+# Heavy ties pin the stable contract: among equal values the lower index
+# comes first, in every merge and rebuild iteration and across result tiles.
+@pytest.mark.parametrize(
+    "height_tiles, width_tiles, k, largest",
+    [(1, 2, 32, True), (1, 4, 32, False), (2, 8, 64, True), (1, 8, 32, True)],
+)
+def test_topk_stable_breaks_ties_by_index(
+    device, height_tiles, width_tiles, k, largest
+):
+    scores = _tied_scores(width_tiles * TILE, height_tiles * TILE)
+    got_values, got_indices = _run_topk(
+        device, scores, height_tiles, width_tiles, k, largest, stable=True
+    )
+    _assert_matches_torch(scores, got_values, got_indices, largest, k)
 
 
 def _assert_scaled_topk(scores, got_values, got_indices, scale):
-    expected_values, expected_indices = torch.topk(
-        scores.float(), K, dim=-1, largest=True, sorted=True
-    )
-    expected_values = (expected_values * scale).to(torch.bfloat16)
-    assert torch.equal(got_indices, expected_indices.to(torch.int64))
+    expected_values, expected_indices = _expected_topk(scores, K, largest=True)
+    expected_values = (expected_values.float() * scale).to(torch.bfloat16)
+    assert torch.equal(got_indices, expected_indices)
     assert torch.equal(got_values, expected_values)
     gathered = torch.gather(scores.float(), -1, got_indices) * scale
     assert torch.equal(gathered.to(torch.bfloat16), got_values)
@@ -584,38 +553,3 @@ def test_topk_nested_scopes_match_torch(device):
         got_values = ttnn.to_torch(values_dev).reshape(ROWS, K).to(torch.bfloat16)
         got_indices = ttnn.to_torch(indices_dev).reshape(ROWS, K).to(torch.int64)
         _assert_matches_torch(expected_scores, got_values, got_indices, largest=True)
-
-
-def test_topk_smallest_matches_torch(device):
-    scores = _scores()
-    got_values, got_indices = _run(
-        topk_smallest_kernel, scores, _identity_indices(), device
-    )
-    _assert_matches_torch(scores, got_values, got_indices, largest=False)
-
-
-@pytest.mark.parametrize(
-    "width_tiles, k, largest",
-    [
-        (4, 32, True),
-        (8, 32, True),
-        (8, 32, False),
-        (8, 64, True),
-        (4, 8, True),
-        (2, 16, False),
-    ],
-)
-def test_topk_wide_rows_match_torch(device, width_tiles, k, largest):
-    width = width_tiles * 32
-    scores = _scores(width)
-    indices = _identity_indices(width)
-    scores_dev = to_l1(scores, device)
-    indices_dev = to_l1(indices, device)
-    out_values = to_l1(torch.zeros((ROWS, k), dtype=torch.bfloat16), device)
-    out_indices = to_l1(torch.zeros((ROWS, k), dtype=torch.uint16), device)
-    make_topk_wide_kernel(width_tiles, k, largest)(
-        scores_dev, indices_dev, out_values, out_indices
-    )
-    got_values = ttnn.to_torch(out_values).reshape(ROWS, k).to(torch.bfloat16)
-    got_indices = ttnn.to_torch(out_indices).reshape(ROWS, k).to(torch.int64)
-    _assert_matches_torch(scores, got_values, got_indices, largest=largest, k=k)
