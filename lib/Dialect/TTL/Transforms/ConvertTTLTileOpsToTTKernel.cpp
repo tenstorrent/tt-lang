@@ -1203,6 +1203,154 @@ struct TTLTileMulUnaryConstToTTKernel
   }
 };
 
+// Metal defines the stable tie order as the global sort order, and leaves it
+// unset outside stable mode.
+static ttk::TopkTieOrder getTTKernelTopkTieOrder(bool stableSort,
+                                                 bool descending) {
+  if (!stableSort) {
+    return ttk::TopkTieOrder::Unset;
+  }
+  return descending ? ttk::TopkTieOrder::Descending
+                    : ttk::TopkTieOrder::Ascending;
+}
+
+template <typename SourceOp, typename TargetOp>
+struct TTLTileTopkToTTKernel : OpConversionPattern<SourceOp> {
+  using OpConversionPattern<SourceOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(SourceOp op, typename SourceOp::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    bool descending = op.getOrder() == TopkOrder::Descending;
+    ttk::TopkTieOrder tieOrder =
+        getTTKernelTopkTieOrder(op.getStableSort(), descending);
+    uint32_t tagBits = op.getTagBits();
+    BoolAttr fp32DestAccEn = op.getFp32DestAccEnAttr();
+    if constexpr (std::is_same_v<SourceOp, TileTopkLocalSortOp>) {
+      TargetOp::create(
+          rewriter, op.getLoc(), adaptor.getDstIndex(), adaptor.getDirection(),
+          adaptor.getEndPhase(), adaptor.getStartPhase(), adaptor.getEndStep(),
+          adaptor.getStartStep(), fp32DestAccEn, op.getStableSort(),
+          op.getFused(), op.getRankStamped(), tieOrder, tagBits);
+    } else if constexpr (std::is_same_v<SourceOp, TileTopkMergeOp>) {
+      TargetOp::create(rewriter, op.getLoc(), adaptor.getDstIndex(),
+                       adaptor.getMergeIteration(), adaptor.getK(),
+                       fp32DestAccEn, op.getStableSort(), op.getFused(),
+                       op.getRankStamped(), tieOrder, tagBits,
+                       op.getDirection());
+    } else {
+      TargetOp::create(
+          rewriter, op.getLoc(), adaptor.getDstIndex(), adaptor.getDirection(),
+          adaptor.getMergeIteration(), adaptor.getK(), adaptor.getLogk(),
+          adaptor.getSkipSecond(), fp32DestAccEn, op.getStableSort(),
+          op.getFused(), op.getRankStamped(), tieOrder, tagBits);
+    }
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
+using TTLTileTopkLocalSortToTTKernel =
+    TTLTileTopkToTTKernel<TileTopkLocalSortOp, ttk::TopkLocalSortOp>;
+using TTLTileTopkMergeToTTKernel =
+    TTLTileTopkToTTKernel<TileTopkMergeOp, ttk::TopkMergeOp>;
+using TTLTileTopkRebuildToTTKernel =
+    TTLTileTopkToTTKernel<TileTopkRebuildOp, ttk::TopkRebuildOp>;
+
+struct TTLTileTopkFuseToTTKernel : OpConversionPattern<TileTopkFuseOp> {
+  using OpConversionPattern<TileTopkFuseOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(TileTopkFuseOp op, TileTopkFuseOp::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    bool largest = op.getOrder() == TopkOrder::Descending;
+    ttk::TopkFuseTileOp::create(rewriter, op.getLoc(), adaptor.getDstIndex(),
+                                largest);
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
+struct TTLTileTopkDefuseToTTKernel : OpConversionPattern<TileTopkDefuseOp> {
+  using OpConversionPattern<TileTopkDefuseOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(TileTopkDefuseOp op, TileTopkDefuseOp::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    bool largest = op.getOrder() == TopkOrder::Descending;
+    ttk::TopkDefuseTileOp::create(rewriter, op.getLoc(), adaptor.getDstIndex(),
+                                  adaptor.getNumTiles(), largest);
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
+struct TTLTileTopkStampToTTKernel
+    : OpConversionPattern<TileTopkStampLocalPositionsOp> {
+  using OpConversionPattern<TileTopkStampLocalPositionsOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(TileTopkStampLocalPositionsOp op,
+                  TileTopkStampLocalPositionsOp::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    bool largest = op.getOrder() == TopkOrder::Descending;
+    ttk::TopkStampLocalPositionsOp::create(
+        rewriter, op.getLoc(), adaptor.getDstIndex(), largest, op.getTagBits());
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
+struct TTLTileTopkStripToTTKernel
+    : OpConversionPattern<TileTopkStripRankTagsOp> {
+  using OpConversionPattern<TileTopkStripRankTagsOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(TileTopkStripRankTagsOp op,
+                  TileTopkStripRankTagsOp::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    ttk::TopkStripRankTagsOp::create(
+        rewriter, op.getLoc(), adaptor.getDstIndex(), op.getFp32DestAccEnAttr(),
+        op.getTagBits());
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
+struct TTLTileTopkCanonicalizeToTTKernel
+    : OpConversionPattern<TileTopkCanonicalizeNegzeroValuesOp> {
+  using OpConversionPattern<
+      TileTopkCanonicalizeNegzeroValuesOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(TileTopkCanonicalizeNegzeroValuesOp op,
+                  TileTopkCanonicalizeNegzeroValuesOp::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    ttk::TopkCanonicalizeNegzeroValuesOp::create(rewriter, op.getLoc(),
+                                                 adaptor.getDstIndex(),
+                                                 op.getFp32DestAccEnAttr());
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
+struct TTLTileTopkUint16MoveToTTKernel
+    : OpConversionPattern<TileTopkUint16MoveDestTileToPackHalfOp> {
+  using OpConversionPattern<
+      TileTopkUint16MoveDestTileToPackHalfOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(TileTopkUint16MoveDestTileToPackHalfOp op,
+                  TileTopkUint16MoveDestTileToPackHalfOp::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    ttk::TopkUint16MoveDestTileToPackHalfOp::create(rewriter, op.getLoc(),
+                                                    adaptor.getDstIndex(),
+                                                    op.getFp32DestAccEnAttr());
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
 } // namespace
 
 //===----------------------------------------------------------------------===//
@@ -1244,6 +1392,11 @@ void populateTTLTileOpsToTTKernelPatterns(TypeConverter *typeConverter,
   patterns.add<TTLTileTypecastToTTKernel>(ctx);
   patterns.add<TTLTileExpToTTKernel>(ctx);
   patterns.add<TTLTileAccumulateToTTKernel>(*typeConverter, ctx);
+  patterns.add<TTLTileTopkLocalSortToTTKernel, TTLTileTopkMergeToTTKernel,
+               TTLTileTopkRebuildToTTKernel, TTLTileTopkFuseToTTKernel,
+               TTLTileTopkDefuseToTTKernel, TTLTileTopkStampToTTKernel,
+               TTLTileTopkStripToTTKernel, TTLTileTopkCanonicalizeToTTKernel,
+               TTLTileTopkUint16MoveToTTKernel>(ctx);
 
   // Copy ops need the type converter.
   patterns.add<TTLTileCopyToTTKernel>(*typeConverter, ctx);

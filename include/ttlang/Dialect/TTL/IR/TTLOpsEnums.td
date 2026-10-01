@@ -216,6 +216,29 @@ def TTL_InputClamping : I32EnumAttr<"InputClamping", "TTL exp input clamping mod
   let cppNamespace = "::mlir::tt::ttl";
 }
 
+// Global order of a TopK result. Descending keeps the largest values.
+def TTL_TopkOrder_Ascending : I32EnumAttrCase<"Ascending", 0, "ascending">;
+def TTL_TopkOrder_Descending : I32EnumAttrCase<"Descending", 1, "descending">;
+
+def TTL_TopkOrder : I32EnumAttr<"TopkOrder", "TTL TopK result order",
+    [TTL_TopkOrder_Ascending, TTL_TopkOrder_Descending]> {
+  let genSpecializedAttr = 0;
+  let cppNamespace = "::mlir::tt::ttl";
+}
+
+// Representation carried by a TopK dataflow buffer. Absent means plain tiles.
+def TTL_TopkPayload_Plain : I32EnumAttrCase<"Plain", 0, "plain">;
+def TTL_TopkPayload_FusedKeys : I32EnumAttrCase<"FusedKeys", 1, "fused_keys">;
+def TTL_TopkPayload_RankStamped
+    : I32EnumAttrCase<"RankStamped", 2, "rank_stamped">;
+
+def TTL_TopkPayload : I32EnumAttr<"TopkPayload", "TTL TopK buffer representation",
+    [TTL_TopkPayload_Plain, TTL_TopkPayload_FusedKeys,
+     TTL_TopkPayload_RankStamped]> {
+  let genSpecializedAttr = 0;
+  let cppNamespace = "::mlir::tt::ttl";
+}
+
 def TTL_AccumulationCombiner_Add : I32EnumAttrCase<"Add", 0, "add">;
 def TTL_AccumulationCombiner_Max : I32EnumAttrCase<"Max", 1, "max">;
 
