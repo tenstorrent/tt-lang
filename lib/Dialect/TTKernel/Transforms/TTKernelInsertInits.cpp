@@ -20,7 +20,8 @@
 //      when the key changes. Tracking resets at sync boundaries.
 //   3. SrcA format reconfiguration: copy_tile_init does not change the
 //      unpack data format. A copy from a CB whose element type differs from
-//      the programmed SrcA operand gets reconfig_data_format_srca.
+//      the programmed SrcA operand gets reconfig_data_format_srca. Loop
+//      backedges and branch joins merge that operand per edge.
 //
 // TODO(#329): Emit init_short variants for cheaper re-inits on type switches.
 //
@@ -130,6 +131,12 @@ static llvm::DenseMap<mlir::TypeID, InitOpInfo> buildComputeToInitMap() {
 #include "ttlang/Dialect/TTL/TTLElementwiseOps.def"
 
   map[mlir::TypeID::get<ttk::CopyTileOp>()] = {
+      [](OpBuilder &b, Location l, Operation *computeOp) {
+        ttk::CopyTileInitOp::create(b, l, computeOp->getOperand(0));
+      }};
+
+  // copy_block_matmul_partials uses the same unpack-A init as copy_tile.
+  map[mlir::TypeID::get<ttk::CopyBlockMatmulPartialsOp>()] = {
       [](OpBuilder &b, Location l, Operation *computeOp) {
         ttk::CopyTileInitOp::create(b, l, computeOp->getOperand(0));
       }};
@@ -246,7 +253,7 @@ static InitKey computeInitKey(Operation *op) {
     return {typeId, {op->getOperand(0), op->getOperand(1)}};
   }
 
-  if (isa<ttk::CopyTileOp>(op)) {
+  if (isa<ttk::CopyTileOp, ttk::CopyBlockMatmulPartialsOp>(op)) {
     return {typeId, {op->getOperand(0)}};
   }
 
@@ -473,6 +480,28 @@ static Operation *hoistAboveCompilerLoops(Operation *op) {
   return insertBefore;
 }
 
+// mm_block_init_short is used when this matmul loop shares a pack CB with the
+// preceding annotated loop. The short init does not program the unpack format.
+static bool matmulCommonInitIsShort(Operation *insertBefore) {
+  auto forOp = dyn_cast<scf::ForOp>(insertBefore);
+  if (!forOp) {
+    return false;
+  }
+  if (!forOp->hasAttr(kL1AccLoopAttrName) &&
+      !forOp->hasAttr(kReductionLoopAttrName)) {
+    return false;
+  }
+  for (Operation *prev = forOp->getPrevNode(); prev;
+       prev = prev->getPrevNode()) {
+    if (auto prevFor = dyn_cast<scf::ForOp>(prev)) {
+      return (prevFor->hasAttr(kL1AccLoopAttrName) ||
+              prevFor->hasAttr(kReductionLoopAttrName)) &&
+             sharePackCB(prevFor, forOp);
+    }
+  }
+  return false;
+}
+
 /// Insert common init ops (init_sfpu or binary_op_init_common) before each
 /// sync region. These configure UNPACK + PACK data format routing.
 static LogicalResult insertCommonInits(ModuleOp moduleOp) {
@@ -506,25 +535,8 @@ static LogicalResult insertCommonInits(ModuleOp moduleOp) {
     // Use init_short when sharing an output CB with a preceding sibling
     // annotated loop: the full init reconfigures PACK and clobbers packer
     // state (including L1 acc on Wormhole).
-    bool useInitShort = false;
-    if (analysis.hasMatmul) {
-      if (auto forOp = dyn_cast<scf::ForOp>(insertBefore)) {
-        if (forOp->hasAttr(kL1AccLoopAttrName) ||
-            forOp->hasAttr(kReductionLoopAttrName)) {
-          for (Operation *prev = forOp->getPrevNode(); prev;
-               prev = prev->getPrevNode()) {
-            if (auto prevFor = dyn_cast<scf::ForOp>(prev)) {
-              if ((prevFor->hasAttr(kL1AccLoopAttrName) ||
-                   prevFor->hasAttr(kReductionLoopAttrName)) &&
-                  sharePackCB(prevFor, forOp)) {
-                useInitShort = true;
-              }
-              break;
-            }
-          }
-        }
-      }
-    }
+    bool useInitShort =
+        analysis.hasMatmul && matmulCommonInitIsShort(insertBefore);
 
     if (analysis.hasMatmul && in0CB && in1CB && useInitShort) {
       ttk::MatmulBlockInitShortOp::create(
@@ -552,11 +564,15 @@ static Type unpackElementType(Value cb) {
 }
 
 // The common init is the operand whose format hardware actually programs.
-// Matmul and FPU binary inits take priority over the first copy, matching
-// insertCommonInits.
+// Full matmul init uses SrcOrder::Reverse, so SrcA is in1 and SrcB is in0.
+// FPU binary init programs SrcA from in0. mm_block_init_short programs neither.
 static Value initialSrcA(const SyncRegionAnalysis &analysis, Value inputCB,
-                         Value in0CB, Value outputCB) {
-  if ((analysis.hasMatmul || analysis.hasFPUBinary) && in0CB) {
+                         Value in0CB, Value in1CB, Value outputCB,
+                         bool matmulInitIsShort) {
+  if (outputCB && analysis.hasMatmul && in0CB && in1CB) {
+    return matmulInitIsShort ? Value() : in1CB;
+  }
+  if (outputCB && analysis.hasFPUBinary && in0CB && in1CB) {
     return in0CB;
   }
   if (!inputCB && outputCB) {
@@ -565,8 +581,8 @@ static Value initialSrcA(const SyncRegionAnalysis &analysis, Value inputCB,
   return inputCB;
 }
 
-// Full configures replace the programmed SrcA operand. Short inits (like mm_block_init_short)
-// and copy_tile_init do not.
+// Full configures replace the programmed SrcA operand. mm_block_init_short,
+// copy_tile_init, and binary_dest_reuse_tiles_init do not.
 static Value srcAProgrammedBy(Operation *op) {
   if (auto init = dyn_cast<ttk::TransposeInitOp>(op)) {
     return init.getCbIn();
@@ -581,10 +597,10 @@ static Value srcAProgrammedBy(Operation *op) {
     return init.getIcb();
   }
   if (auto init = dyn_cast<ttk::MatmulInitOp>(op)) {
-    return init.getIn0Cb();
+    return init.getIn1Cb();
   }
   if (auto init = dyn_cast<ttk::MatmulBlockInitOp>(op)) {
-    return init.getIn0Cb();
+    return init.getIn1Cb();
   }
   if (auto init = dyn_cast<ttk::ComputeKernelHWStartupOp>(op)) {
     return init.getIcb0();
@@ -613,14 +629,177 @@ struct SrcAReconfig {
   Location loc;
 };
 
-static void recordCopyReconfig(Operation *copy, Value srcCB, Value &configured,
-                               llvm::SmallVectorImpl<SrcAReconfig> &planned) {
-  if (configured &&
-      unpackElementType(configured) != unpackElementType(srcCB)) {
-    planned.push_back({reconfigInsertionPoint(copy, srcCB), configured, srcCB,
-                       copy->getLoc()});
+// A null CB means the programmed SrcA operand is not unique. The one-operand
+// reconfig always applies; a guessed old operand can skip a required one.
+struct SrcAState {
+  Value cb;
+};
+
+static bool sameSrcA(SrcAState lhs, SrcAState rhs) {
+  if (!lhs.cb || !rhs.cb) {
+    return !lhs.cb && !rhs.cb;
   }
-  configured = srcCB;
+  return unpackElementType(lhs.cb) == unpackElementType(rhs.cb);
+}
+
+static SrcAState mergeSrcA(SrcAState lhs, SrcAState rhs) {
+  return sameSrcA(lhs, rhs) ? lhs : SrcAState{};
+}
+
+static SrcAState
+recordCopyReconfig(Operation *copy, Value srcCB, SrcAState state, bool record,
+                   llvm::SmallVectorImpl<SrcAReconfig> &planned) {
+  bool mismatch =
+      !state.cb || unpackElementType(state.cb) != unpackElementType(srcCB);
+  if (record && mismatch) {
+    planned.push_back(
+        {reconfigInsertionPoint(copy, srcCB), state.cb, srcCB, copy->getLoc()});
+  }
+  return {srcCB};
+}
+
+static SrcAState processRegion(Region &region, SrcAState entry, bool record,
+                               llvm::SmallVectorImpl<SrcAReconfig> &planned);
+
+// The lattice is a known element type or unknown, so a region is simulated a
+// constant number of times rather than once per iteration.
+static constexpr int kSrcAFixedPointLimit = 4;
+
+static SrcAState processFor(scf::ForOp forOp, SrcAState entry, bool record,
+                            llvm::SmallVectorImpl<SrcAReconfig> &planned) {
+  SrcAState bodyEntry = entry;
+  SrcAState bodyExit = entry;
+  bool stable = false;
+  for (int i = 0; i < kSrcAFixedPointLimit; ++i) {
+    SrcAState nextEntry = mergeSrcA(entry, bodyExit);
+    SrcAState nextExit =
+        processRegion(forOp.getRegion(), nextEntry, false, planned);
+    if (sameSrcA(nextEntry, bodyEntry) && sameSrcA(nextExit, bodyExit)) {
+      bodyEntry = nextEntry;
+      bodyExit = nextExit;
+      stable = true;
+      break;
+    }
+    bodyEntry = nextEntry;
+    bodyExit = nextExit;
+  }
+  if (!stable) {
+    bodyEntry = {};
+    bodyExit = processRegion(forOp.getRegion(), bodyEntry, false, planned);
+  }
+  if (record) {
+    processRegion(forOp.getRegion(), bodyEntry, true, planned);
+  }
+  std::optional<llvm::APInt> tripCount = forOp.getStaticTripCount();
+  bool mustRun = tripCount && !tripCount->isZero();
+  return mustRun ? bodyExit : mergeSrcA(entry, bodyExit);
+}
+
+static SrcAState processIf(scf::IfOp ifOp, SrcAState entry, bool record,
+                           llvm::SmallVectorImpl<SrcAReconfig> &planned) {
+  SrcAState thenExit =
+      processRegion(ifOp.getThenRegion(), entry, record, planned);
+  SrcAState elseExit =
+      ifOp.getElseRegion().empty()
+          ? entry
+          : processRegion(ifOp.getElseRegion(), entry, record, planned);
+  return mergeSrcA(thenExit, elseExit);
+}
+
+static SrcAState processWhile(scf::WhileOp whileOp, SrcAState entry,
+                              bool record,
+                              llvm::SmallVectorImpl<SrcAReconfig> &planned) {
+  SrcAState beforeEntry = entry;
+  SrcAState beforeExit = entry;
+  SrcAState afterExit = entry;
+  bool stable = false;
+  for (int i = 0; i < kSrcAFixedPointLimit; ++i) {
+    SrcAState nextBeforeEntry = mergeSrcA(entry, afterExit);
+    SrcAState nextBeforeExit =
+        processRegion(whileOp.getBefore(), nextBeforeEntry, false, planned);
+    SrcAState nextAfterExit =
+        processRegion(whileOp.getAfter(), nextBeforeExit, false, planned);
+    if (sameSrcA(nextBeforeEntry, beforeEntry) &&
+        sameSrcA(nextBeforeExit, beforeExit) &&
+        sameSrcA(nextAfterExit, afterExit)) {
+      beforeEntry = nextBeforeEntry;
+      beforeExit = nextBeforeExit;
+      afterExit = nextAfterExit;
+      stable = true;
+      break;
+    }
+    beforeEntry = nextBeforeEntry;
+    beforeExit = nextBeforeExit;
+    afterExit = nextAfterExit;
+  }
+  if (!stable) {
+    beforeEntry = {};
+    beforeExit =
+        processRegion(whileOp.getBefore(), beforeEntry, false, planned);
+    afterExit = processRegion(whileOp.getAfter(), beforeExit, false, planned);
+  }
+  if (record) {
+    processRegion(whileOp.getBefore(), beforeEntry, true, planned);
+    processRegion(whileOp.getAfter(), beforeExit, true, planned);
+  }
+  // The before region runs on every exit, including the failing condition.
+  return beforeExit;
+}
+
+static SrcAState
+processOperation(Operation *op, SrcAState state, bool record,
+                 llvm::SmallVectorImpl<SrcAReconfig> &planned) {
+  if (auto forOp = dyn_cast<scf::ForOp>(op)) {
+    return processFor(forOp, state, record, planned);
+  }
+  if (auto ifOp = dyn_cast<scf::IfOp>(op)) {
+    return processIf(ifOp, state, record, planned);
+  }
+  if (auto whileOp = dyn_cast<scf::WhileOp>(op)) {
+    return processWhile(whileOp, state, record, planned);
+  }
+  if (op->getNumRegions() != 0) {
+    for (Region &region : op->getRegions()) {
+      processRegion(region, {}, record, planned);
+    }
+    return {};
+  }
+  if (auto copy = dyn_cast<ttk::CopyTileOp>(op)) {
+    return recordCopyReconfig(copy, copy.getCb0(), state, record, planned);
+  }
+  if (auto copyBlock = dyn_cast<ttk::CopyBlockMatmulPartialsOp>(op)) {
+    return recordCopyReconfig(copyBlock, copyBlock.getCb(), state, record,
+                              planned);
+  }
+  if (Value programmed = srcAProgrammedBy(op)) {
+    return {programmed};
+  }
+  return state;
+}
+
+static SrcAState processRegion(Region &region, SrcAState entry, bool record,
+                               llvm::SmallVectorImpl<SrcAReconfig> &planned) {
+  if (region.empty()) {
+    return entry;
+  }
+  if (!region.hasOneBlock()) {
+    if (record) {
+      region.walk([&](Operation *op) {
+        if (auto copy = dyn_cast<ttk::CopyTileOp>(op)) {
+          recordCopyReconfig(copy, copy.getCb0(), {}, true, planned);
+        } else if (auto copyBlock =
+                       dyn_cast<ttk::CopyBlockMatmulPartialsOp>(op)) {
+          recordCopyReconfig(copyBlock, copyBlock.getCb(), {}, true, planned);
+        }
+      });
+    }
+    return {};
+  }
+  SrcAState state = entry;
+  for (Operation &op : region.front().without_terminator()) {
+    state = processOperation(&op, state, record, planned);
+  }
+  return state;
 }
 
 /// Insert reconfig_data_format_srca before copies whose CB element type
@@ -636,7 +815,11 @@ static LogicalResult insertSrcAReconfigs(ModuleOp moduleOp) {
       hadError = true;
       return;
     }
-    Value configured = initialSrcA(*analysis, inputCB, in0CB, outputCB);
+    bool matmulInitIsShort =
+        analysis->hasMatmul &&
+        matmulCommonInitIsShort(hoistAboveCompilerLoops(acquireOp));
+    SrcAState state{initialSrcA(*analysis, inputCB, in0CB, in1CB, outputCB,
+                                matmulInitIsShort)};
     llvm::SmallVector<SrcAReconfig> planned;
     Block *block = acquireOp->getBlock();
     for (auto it = std::next(acquireOp->getIterator()); it != block->end();
@@ -644,19 +827,7 @@ static LogicalResult insertSrcAReconfigs(ModuleOp moduleOp) {
       if (isa<ttk::TileRegsReleaseOp>(&*it)) {
         break;
       }
-      it->walk([&](Operation *op) {
-        if (auto copy = dyn_cast<ttk::CopyTileOp>(op)) {
-          recordCopyReconfig(copy, copy.getCb0(), configured, planned);
-          return;
-        }
-        if (auto copyBlock = dyn_cast<ttk::CopyBlockMatmulPartialsOp>(op)) {
-          recordCopyReconfig(copyBlock, copyBlock.getCb(), configured, planned);
-          return;
-        }
-        if (Value programmed = srcAProgrammedBy(op)) {
-          configured = programmed;
-        }
-      });
+      state = processOperation(&*it, state, true, planned);
     }
 
     OpBuilder builder(acquireOp.getContext());

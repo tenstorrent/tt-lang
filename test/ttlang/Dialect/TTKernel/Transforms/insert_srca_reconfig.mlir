@@ -126,3 +126,107 @@ func.func @existing_reconfig() {
   ttkernel.tile_regs_release() : () -> ()
   func.return
 }
+
+// Full matmul init programs SrcA from in1 (SrcOrder::Reverse), not in0.
+// CHECK-LABEL: func.func @matmul_srca_is_in1
+// CHECK-DAG: %[[IN0:.*]] = ttkernel.get_compile_time_arg_val(0)
+// CHECK-DAG: %[[IN1:.*]] = ttkernel.get_compile_time_arg_val(1)
+// CHECK: ttkernel.mm_block_init"(%[[IN0]], %[[IN1]]
+// CHECK: ttkernel.reconfig_data_format_srca(%[[IN1]], %[[IN0]])
+// CHECK-NEXT: ttkernel.copy_tile_init(%[[IN0]])
+// CHECK-NEXT: ttkernel.copy_tile(%[[IN0]]
+// CHECK: ttkernel.tile_regs_release
+func.func @matmul_srca_is_in1() {
+  %in0 = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>
+  %in1 = ttkernel.get_compile_time_arg_val(1) : () -> !ttkernel.cb<4, !ttcore.tile<32x32, u16>>
+  %out = ttkernel.get_compile_time_arg_val(2) : () -> !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>
+  %c0 = arith.constant 0 : index
+  %i0 = arith.constant 0 : i32
+  %i1 = arith.constant 1 : i32
+  ttkernel.tile_regs_acquire() : () -> ()
+  ttkernel.matmul_block(%in0, %in1, %c0, %c0, %c0, %i0, %i1, %i1, %i1) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, !ttkernel.cb<4, !ttcore.tile<32x32, u16>>, index, index, index, i32, i32, i32, i32) -> ()
+  ttkernel.copy_tile(%in0, %c0, %c0) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index, index) -> ()
+  ttkernel.pack_tile(%c0, %out, %c0, false) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
+  ttkernel.tile_regs_release() : () -> ()
+  func.return
+}
+
+// Block copy uses copy_tile_init. The reconfig precedes that init.
+// CHECK-LABEL: func.func @block_copy_reconfig_before_init
+// CHECK-DAG: %[[BF16:.*]] = ttkernel.get_compile_time_arg_val(0)
+// CHECK-DAG: %[[U16:.*]] = ttkernel.get_compile_time_arg_val(1)
+// CHECK: ttkernel.reconfig_data_format_srca(%[[BF16]], %[[U16]])
+// CHECK-NEXT: ttkernel.copy_tile_init(%[[U16]])
+// CHECK-NEXT: ttkernel.copy_block_matmul_partials(%[[U16]]
+// CHECK: ttkernel.tile_regs_release
+func.func @block_copy_reconfig_before_init() {
+  %bf16 = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>
+  %u16 = ttkernel.get_compile_time_arg_val(1) : () -> !ttkernel.cb<4, !ttcore.tile<32x32, u16>>
+  %out = ttkernel.get_compile_time_arg_val(2) : () -> !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c4 = arith.constant 4 : index
+  ttkernel.tile_regs_acquire() : () -> ()
+  ttkernel.copy_tile(%bf16, %c0, %c0) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index, index) -> ()
+  ttkernel.copy_block_matmul_partials(%u16, %c0, %c1, %c4) : (!ttkernel.cb<4, !ttcore.tile<32x32, u16>>, index, index, index) -> ()
+  ttkernel.pack_tile(%c0, %out, %c0, false) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
+  ttkernel.tile_regs_release() : () -> ()
+  func.return
+}
+
+// The backedge leaves U16, so the next iteration's BF16 copy cannot reuse the
+// preheader operand. The one-operand form always reconfigures.
+// CHECK-LABEL: func.func @loop_backedge_reconfig
+// CHECK-DAG: %[[BF16:.*]] = ttkernel.get_compile_time_arg_val(0)
+// CHECK-DAG: %[[U16:.*]] = ttkernel.get_compile_time_arg_val(1)
+// CHECK: scf.for
+// CHECK-NEXT: ttkernel.reconfig_data_format_srca(%[[BF16]]) :
+// CHECK-NEXT: ttkernel.copy_tile(%[[BF16]]
+// CHECK-NEXT: ttkernel.reconfig_data_format_srca(%[[BF16]], %[[U16]])
+// CHECK-NEXT: ttkernel.copy_tile(%[[U16]]
+// CHECK: ttkernel.tile_regs_release
+func.func @loop_backedge_reconfig() {
+  %bf16 = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>
+  %u16 = ttkernel.get_compile_time_arg_val(1) : () -> !ttkernel.cb<4, !ttcore.tile<32x32, u16>>
+  %out = ttkernel.get_compile_time_arg_val(2) : () -> !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c4 = arith.constant 4 : index
+  ttkernel.tile_regs_acquire() : () -> ()
+  scf.for %iv = %c0 to %c4 step %c1 {
+    ttkernel.copy_tile(%bf16, %c0, %c0) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index, index) -> ()
+    ttkernel.copy_tile(%u16, %c0, %c1) : (!ttkernel.cb<4, !ttcore.tile<32x32, u16>>, index, index) -> ()
+  }
+  ttkernel.pack_tile(%c0, %out, %c0, false) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
+  ttkernel.tile_regs_release() : () -> ()
+  func.return
+}
+
+// Branch exits disagree, so the copy after the join uses the one-operand form.
+// CHECK-LABEL: func.func @branch_join_reconfig
+// CHECK-DAG: %[[BF16:.*]] = ttkernel.get_compile_time_arg_val(0)
+// CHECK: ttkernel.reconfig_data_format_srca(%[[BF16]]) :
+// CHECK-NEXT: ttkernel.copy_tile_init(%[[BF16]])
+// CHECK-NEXT: ttkernel.copy_tile(%[[BF16]]
+// CHECK: ttkernel.tile_regs_release
+func.func @branch_join_reconfig() {
+  %bf16 = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>
+  %u16 = ttkernel.get_compile_time_arg_val(1) : () -> !ttkernel.cb<4, !ttcore.tile<32x32, u16>>
+  %f32 = ttkernel.get_compile_time_arg_val(2) : () -> !ttkernel.cb<4, !ttcore.tile<32x32, f32>>
+  %out = ttkernel.get_compile_time_arg_val(3) : () -> !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %cond = arith.constant true
+  ttkernel.tile_regs_acquire() : () -> ()
+  scf.if %cond {
+    ttkernel.copy_tile(%u16, %c0, %c0) : (!ttkernel.cb<4, !ttcore.tile<32x32, u16>>, index, index) -> ()
+    scf.yield
+  } else {
+    ttkernel.copy_tile(%f32, %c0, %c1) : (!ttkernel.cb<4, !ttcore.tile<32x32, f32>>, index, index) -> ()
+    scf.yield
+  }
+  ttkernel.copy_tile(%bf16, %c0, %c0) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index, index) -> ()
+  ttkernel.pack_tile(%c0, %out, %c0, false) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
+  ttkernel.tile_regs_release() : () -> ()
+  func.return
+}

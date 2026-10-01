@@ -1546,12 +1546,16 @@ def TTKernelInsertInits
     (`tile_regs_acquire`/`commit`/`wait`/`release`).
 
     `copy_tile_init` programs the unpack mode and not the SrcA data format.
-    The common init programs that format from the region's first input CB.
-    A later `copy_tile` or `copy_block_matmul_partials` whose CB element type
-    differs gets `reconfig_data_format_srca(old, new)` immediately before its
-    `copy_tile_init`. Full configures (`transpose_wh_init`, `unary_bcast_init`,
+    The common init programs that format from the region's first input CB, or
+    from the matmul's second input when the full matmul init is used (SrcA is
+    in1). A later `copy_tile` or `copy_block_matmul_partials` whose element
+    type differs gets `reconfig_data_format_srca` immediately before its
+    `copy_tile_init`. The one-operand form is used when the incoming format is
+    not a single CB, which happens on a loop backedge or a branch join. Full
+    configures (`transpose_wh_init`, `unary_bcast_init`,
     `binary_op_init_common`, matmul init, `init_sfpu`) replace the tracked
-    SrcA operand.
+    SrcA operand. `mm_block_init_short` and `binary_dest_reuse_tiles_init` do
+    not.
 
     Example (consecutive same-type ops share one init):
     ```mlir

@@ -224,20 +224,20 @@ def TTKernel_ReconfigDataFormatSrcaOp : TTKernel_Op<"reconfig_data_format_srca">
     let summary = "Reconfigure SrcA unpacker and math data format.";
     let description = [{
       Reconfigures the SrcA unpacker and math unit to the data format and tile
-      size of `srca_new`. `srca_old` must be the operand currently programmed
-      for SrcA. The call compares those operand descriptors and skips the
-      reconfiguration when they match. A stale `srca_old` can skip a required
-      reconfiguration.
+      size of `srca_new`. When `srca_old` is present it must be the operand
+      currently programmed for SrcA. The call compares those operand
+      descriptors and skips the reconfiguration when they match. A stale
+      `srca_old` can skip a required reconfiguration. Omitting `srca_old`
+      always reconfigures, which is required when the programmed operand is
+      not a single known CB.
 
       `copy_tile_init` programs the unpack mode only. It does not change this
       format.
     }];
 
-    let arguments = (ins TTKernel_CB:$srca_old, TTKernel_CB:$srca_new);
+    let arguments = (ins Optional<TTKernel_CB>:$srca_old, TTKernel_CB:$srca_new);
 
-    let assemblyFormat = [{
-      `(` $srca_old `,` $srca_new `)` attr-dict `:` functional-type(operands, results)
-    }];
+    let hasCustomAssemblyFormat = 1;
 }
 
 def TTKernel_CopyTileInitOp : TTKernel_InitOp<"copy_tile_init"> {
