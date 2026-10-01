@@ -582,7 +582,9 @@ static Value initialSrcA(const SyncRegionAnalysis &analysis, Value inputCB,
 }
 
 // Full configures replace the programmed SrcA operand. mm_block_init_short,
-// copy_tile_init, and binary_dest_reuse_tiles_init do not.
+// copy_tile_init, binary_dest_reuse_tiles_init, add/sub/mul_tiles_init, and
+// reduce_init do not. The tiles inits assert the unpacker format already
+// matches. reduce_init expects a preceding reconfig and does not write it.
 static Value srcAProgrammedBy(Operation *op) {
   if (auto init = dyn_cast<ttk::TransposeInitOp>(op)) {
     return init.getCbIn();

@@ -223,13 +223,18 @@ def TTKernel_PackReconfigDataFormatOp : TTKernel_Op<"pack_reconfig_data_format">
 def TTKernel_ReconfigDataFormatSrcaOp : TTKernel_Op<"reconfig_data_format_srca"> {
     let summary = "Reconfigure SrcA unpacker and math data format.";
     let description = [{
-      Reconfigures the SrcA unpacker and math unit to the data format and tile
-      size of `srca_new`. When `srca_old` is present it must be the operand
-      currently programmed for SrcA. The call compares those operand
-      descriptors and skips the reconfiguration when they match. A stale
-      `srca_old` can skip a required reconfiguration. Omitting `srca_old`
-      always reconfigures, which is required when the programmed operand is
-      not a single known CB.
+      Reconfigures the SrcA unpacker and math data format to `srca_new`.
+
+      When `srca_old` is present it must be the operand currently programmed
+      for SrcA. The call compares those operand descriptors and skips the
+      reconfiguration when they match. That overload also updates face
+      geometry when it differs. A stale `srca_old` can skip a required
+      reconfiguration.
+
+      Omitting `srca_old` always reconfigures the data format. It does not
+      reprogram tile or face geometry. That form is used when the programmed
+      operand is not a single known CB, so a geometry change on that path is
+      not applied.
 
       `copy_tile_init` programs the unpack mode only. It does not change this
       format.

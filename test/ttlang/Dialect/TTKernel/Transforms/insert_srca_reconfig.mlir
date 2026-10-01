@@ -230,3 +230,50 @@ func.func @branch_join_reconfig() {
   ttkernel.tile_regs_release() : () -> ()
   func.return
 }
+
+// add_tiles_init asserts the unpacker format already matches. It does not
+// replace the programmed SrcA operand, so the following copy of that operand
+// is not reconfigured again.
+// CHECK-LABEL: func.func @add_init_leaves_srca
+// CHECK-DAG: %[[BF16:.*]] = ttkernel.get_compile_time_arg_val(0)
+// CHECK-DAG: %[[U16:.*]] = ttkernel.get_compile_time_arg_val(1)
+// CHECK: ttkernel.reconfig_data_format_srca(%[[U16]], %[[BF16]])
+// CHECK: ttkernel.add_tiles_init(%[[U16]]
+// CHECK-NOT: ttkernel.reconfig_data_format_srca
+// CHECK: ttkernel.copy_tile(%[[BF16]]
+// CHECK: ttkernel.tile_regs_release
+func.func @add_init_leaves_srca() {
+  %bf16 = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>
+  %u16 = ttkernel.get_compile_time_arg_val(1) : () -> !ttkernel.cb<4, !ttcore.tile<32x32, u16>>
+  %out = ttkernel.get_compile_time_arg_val(2) : () -> !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>
+  %c0 = arith.constant 0 : index
+  ttkernel.tile_regs_acquire() : () -> ()
+  ttkernel.copy_tile(%bf16, %c0, %c0) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index, index) -> ()
+  ttkernel.add_tiles(%u16, %u16, %c0, %c0, %c0) : (!ttkernel.cb<4, !ttcore.tile<32x32, u16>>, !ttkernel.cb<4, !ttcore.tile<32x32, u16>>, index, index, index) -> ()
+  ttkernel.copy_tile(%bf16, %c0, %c0) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index, index) -> ()
+  ttkernel.pack_tile(%c0, %out, %c0, false) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
+  ttkernel.tile_regs_release() : () -> ()
+  func.return
+}
+
+// reduce_init does not write the unpack data format. The caller reconfigs
+// before it. A later copy of the already programmed operand stays as is.
+// CHECK-LABEL: func.func @reduce_init_leaves_srca
+// CHECK-DAG: %[[BF16:.*]] = ttkernel.get_compile_time_arg_val(0)
+// CHECK: ttkernel.reduce_init
+// CHECK-NOT: ttkernel.reconfig_data_format_srca
+// CHECK: ttkernel.copy_tile(%[[BF16]]
+// CHECK: ttkernel.tile_regs_release
+func.func @reduce_init_leaves_srca() {
+  %bf16 = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>
+  %scaler = ttkernel.get_compile_time_arg_val(1) : () -> !ttkernel.cb<4, !ttcore.tile<32x32, u16>>
+  %out = ttkernel.get_compile_time_arg_val(2) : () -> !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>
+  %c0 = arith.constant 0 : index
+  ttkernel.tile_regs_acquire() : () -> ()
+  ttkernel.copy_tile(%bf16, %c0, %c0) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index, index) -> ()
+  ttkernel.reduce_tile(%bf16, %scaler, %c0, %c0, %c0, <reduce_sum>, <reduce_dim_row>) {ttl.reduce_output_cb_index = 2 : index} : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, !ttkernel.cb<4, !ttcore.tile<32x32, u16>>, index, index, index) -> ()
+  ttkernel.copy_tile(%bf16, %c0, %c0) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index, index) -> ()
+  ttkernel.pack_tile(%c0, %out, %c0, false) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
+  ttkernel.tile_regs_release() : () -> ()
+  func.return
+}

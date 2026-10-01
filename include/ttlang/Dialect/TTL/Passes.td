@@ -1551,11 +1551,14 @@ def TTKernelInsertInits
     in1). A later `copy_tile` or `copy_block_matmul_partials` whose element
     type differs gets `reconfig_data_format_srca` immediately before its
     `copy_tile_init`. The one-operand form is used when the incoming format is
-    not a single CB, which happens on a loop backedge or a branch join. Full
+    not a single CB, which happens on a loop backedge or a branch join. That
+    form updates the data format only; it does not reprogram tile or face
+    geometry. The two-operand form does when the geometry differs. Full
     configures (`transpose_wh_init`, `unary_bcast_init`,
     `binary_op_init_common`, matmul init, `init_sfpu`) replace the tracked
-    SrcA operand. `mm_block_init_short` and `binary_dest_reuse_tiles_init` do
-    not.
+    SrcA operand. `mm_block_init_short`, `binary_dest_reuse_tiles_init`,
+    `add_tiles_init`, `sub_tiles_init`, `mul_tiles_init`, and `reduce_init`
+    do not: they require the unpacker format to already match.
 
     Example (consecutive same-type ops share one init):
     ```mlir
