@@ -24,6 +24,7 @@
 namespace mlir::tt::ttl {
 
 class DFBPhysicalConflictModelBuilder;
+class DFBConcurrentKernelLivenessAnalysis;
 
 /// Required relationship between one DFB's L1 addresses on launch nodes.
 enum class DFBAddressScope { Local, RemoteUniform };
@@ -157,6 +158,9 @@ struct DFBConflictEvidence {
 /// Immutable complete conflict relation used by every allocation policy.
 class DFBPhysicalConflictModel {
 public:
+  /// Builds byte-storage conflicts for analyzed DFB lifetimes.
+  static DFBPhysicalConflictModel
+  buildStorage(const DFBConcurrentKernelLivenessAnalysis &liveness);
   bool conflicts(unsigned lhsLogicalIndex, unsigned rhsLogicalIndex) const {
     assert(lhsLogicalIndex < adjacency.size() &&
            rhsLogicalIndex < adjacency.size());
