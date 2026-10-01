@@ -1,0 +1,180 @@
+# SPDX-FileCopyrightText: (c) 2026 Tenstorrent AI ULC
+# SPDX-License-Identifier: Apache-2.0
+
+name: Measure tt-emule on standard hosted runners
+
+on:
+  workflow_dispatch:
+    inputs:
+      image:
+        description: Approved private GHCR runtime image, pinned by sha256 digest
+        required: true
+        type: string
+      company_policy_approved:
+        description: Company approval covers the runtime, runner, logs and registry access
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: emule-hosted-experiment
+  cancel-in-progress: false
+
+jobs:
+  serial:
+    if: >-
+      inputs.company_policy_approved &&
+      github.repository == 'tenstorrent/tt-lang' &&
+      github.ref == 'refs/heads/kostas/tt-lang-emule-hosted-ci-experiment'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    permissions:
+      contents: read
+      packages: read
+    outputs:
+      plan_ready: ${{ steps.plan.outputs.ready }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Validate immutable company image reference
+        env:
+          IMAGE: ${{ inputs.image }}
+        run: |
+          if [[ ! "$IMAGE" =~ ^ghcr\.io/tenstorrent/[a-z0-9._/-]+@sha256:[0-9a-f]{64}$ ]]; then
+            exit 2
+          fi
+
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Measure cold pull
+        timeout-minutes: 20
+        env:
+          IMAGE: ${{ inputs.image }}
+        run: |
+          bash scripts/emule-ci/pull.sh "$IMAGE" "$RUNNER_TEMP/emule-pull"
+
+      - name: Measure serial compiler execution suites
+        id: measure
+        continue-on-error: true
+        env:
+          IMAGE: ${{ inputs.image }}
+        run: |
+          python3 scripts/emule-ci/worker.py --image "$IMAGE" \
+            --worker serial --output "$RUNNER_TEMP/emule-serial" \
+            --cpus 4 --memory-gib 12 --disk-floor-gib 2 --timeout-seconds 18000
+
+      - name: Balance complete timing baseline
+        id: plan
+        if: ${{ !cancelled() }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/emule-public"
+          python3 scripts/emule-ci/benchmark.py balance \
+            --manifest "$RUNNER_TEMP/emule-serial/private/container/collection/manifest.json" \
+            --results "$RUNNER_TEMP/emule-serial/private/container/run/results.json" \
+            --shards 3 --output "$RUNNER_TEMP/emule-public/plan.json" \
+            --public-manifest "$RUNNER_TEMP/emule-public/manifest.json"
+          echo 'ready=true' >> "$GITHUB_OUTPUT"
+
+      - name: Stage bounded summary
+        id: bounded
+        if: ${{ always() }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/emule-public"
+          if test -d "$RUNNER_TEMP/emule-pull/public"; then
+            cp "$RUNNER_TEMP/emule-pull/public/"*.txt "$RUNNER_TEMP/emule-public/"
+          fi
+          if test -f "$RUNNER_TEMP/emule-serial/summary.json"; then
+            cp "$RUNNER_TEMP/emule-serial/summary.json" "$RUNNER_TEMP/emule-public/summary.json"
+          fi
+          test "$(du -sk "$RUNNER_TEMP/emule-public" | cut -f1)" -le 4096
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ always() && steps.bounded.outcome == 'success' }}
+        with:
+          name: emule-serial-summary
+          path: ${{ runner.temp }}/emule-public/
+          retention-days: 1
+          if-no-files-found: error
+
+      - name: Preserve serial test failure status
+        if: ${{ steps.measure.outcome != 'success' }}
+        run: exit 1
+
+  shards:
+    needs: serial
+    if: ${{ !cancelled() && needs.serial.outputs.plan_ready == 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    permissions:
+      contents: read
+      packages: read
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        shard: [1, 2, 3]
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: emule-serial-summary
+          path: ${{ runner.temp }}/emule-plan
+
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Measure the same immutable runtime pull
+        timeout-minutes: 20
+        env:
+          IMAGE: ${{ inputs.image }}
+        run: |
+          bash scripts/emule-ci/pull.sh "$IMAGE" "$RUNNER_TEMP/emule-pull"
+
+      - name: Measure independent shard
+        env:
+          IMAGE: ${{ inputs.image }}
+          SHARD: ${{ matrix.shard }}
+        run: |
+          python3 scripts/emule-ci/worker.py --image "$IMAGE" \
+            --worker "shard-$SHARD" --output "$RUNNER_TEMP/emule-shard" \
+            --cpus 4 --memory-gib 12 --disk-floor-gib 2 --timeout-seconds 9000 \
+            --manifest "$RUNNER_TEMP/emule-plan/manifest.json" \
+            --plan "$RUNNER_TEMP/emule-plan/plan.json" --shard "$SHARD"
+
+      - name: Stage bounded summary
+        id: bounded
+        if: ${{ always() }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/emule-public"
+          if test -d "$RUNNER_TEMP/emule-pull/public"; then
+            cp "$RUNNER_TEMP/emule-pull/public/"*.txt "$RUNNER_TEMP/emule-public/"
+          fi
+          if test -f "$RUNNER_TEMP/emule-shard/summary.json"; then
+            cp "$RUNNER_TEMP/emule-shard/summary.json" "$RUNNER_TEMP/emule-public/summary.json"
+          fi
+          test "$(du -sk "$RUNNER_TEMP/emule-public" | cut -f1)" -le 4096
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ always() && steps.bounded.outcome == 'success' }}
+        with:
+          name: emule-shard-${{ matrix.shard }}-summary
+          path: ${{ runner.temp }}/emule-public/
+          retention-days: 1
+          if-no-files-found: error
