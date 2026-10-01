@@ -71,9 +71,13 @@ is legal only beside a comparator-stable local sort; this lowering does not
 emit it.
 
 Fused stages report a 32-bit destination requirement through
-`TileExecutionInfo`. `ttl-set-compute-kernel-config` resolves it against the
-kernel policy and rejects an explicit `fp32_dest_acc_en = false`; the
-lowering does not rewrite that attribute. The lowering runs before
+`TileExecutionInfo`. The helpers (`fuse`, `defuse`, `stamp`, `strip`, and the
+u16 pack-half move) are not tile execution ops and report the same
+requirement through `TTLRequiresFp32DestinationAccumulationTrait`, so a
+section that holds only helpers, such as the defuse section, constrains the
+kernel as well. `ttl-set-compute-kernel-config` resolves the requirement
+against the kernel policy and rejects an explicit `fp32_dest_acc_en = false`;
+the lowering does not rewrite that attribute. The lowering runs before
 `ttl-finalize-dfb-indices`, so the scratch buffers receive logical identities
 and L1 allocation entries.
 

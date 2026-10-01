@@ -1592,6 +1592,13 @@ def TTKernelInsertInits
     lifetime, and `ttl-verify-topk-epoch` rejects a fused or rank-stamped
     stage that does not stay on that lifetime.
 
+    The common init configures the packer for the sync region's first pack.
+    `pack_reconfig_data_format` precedes any later pack, or `transpose_wh_init`
+    output, of a different element type. The packer format is tracked per
+    control-flow path: region exits are merged with the incoming state, loop
+    bodies are re-analyzed until stable, and a pack reached with conflicting
+    formats is always reconfigured.
+
     Example (consecutive same-type ops share one init):
     ```mlir
     // Before:

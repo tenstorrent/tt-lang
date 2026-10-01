@@ -921,6 +921,10 @@ static FailureOr<KernelRequirements> collectKernelRequirementsImpl(
         operation->emitOpError("does not implement TileExecutionOpInterface");
         return WalkResult::interrupt();
       }
+      if (operation->hasTrait<TTLRequiresFp32DestinationAccumulationTrait>() &&
+          includeOperation(operation)) {
+        requirements.fp32DestinationAccumulationUses.push_back(operation);
+      }
       return WalkResult::advance();
     }
     bool contributesConfiguration = includeOperation(operation);

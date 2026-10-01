@@ -36,6 +36,7 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Builders.h"
+#include "mlir/Interfaces/LoopLikeInterface.h"
 
 #define DEBUG_TYPE "ttkernel-insert-inits"
 
@@ -592,6 +593,130 @@ static LogicalResult insertCommonInits(ModuleOp moduleOp) {
 }
 
 //===----------------------------------------------------------------------===//
+// Pack data format tracking
+//===----------------------------------------------------------------------===//
+
+/// Packer data format on every path reaching a program point. `configured`
+/// is the circular buffer whose element type the packer holds; the section
+/// starts with the first pack's buffer, which is what the common init
+/// configures. `ambiguous` means paths disagree, so every pack reconfigures.
+struct PackFormatState {
+  Value configured;
+  bool ambiguous = false;
+
+  bool operator==(const PackFormatState &other) const {
+    return configured == other.configured && ambiguous == other.ambiguous;
+  }
+};
+
+static PackFormatState mergePackFormat(PackFormatState lhs,
+                                       PackFormatState rhs) {
+  if (lhs == rhs) {
+    return lhs;
+  }
+  if (lhs.configured && rhs.configured &&
+      cast<ttk::CBType>(lhs.configured.getType()).getElementType() ==
+          cast<ttk::CBType>(rhs.configured.getType()).getElementType()) {
+    return lhs;
+  }
+  return {Value(), /*ambiguous=*/true};
+}
+
+static Value getPackOutputCB(Operation *op) {
+  if (auto pack = dyn_cast<ttk::PackTileOp>(op)) {
+    return pack.getOutCb();
+  }
+  if (auto pack = dyn_cast<ttk::PackWaitedTileOp>(op)) {
+    return pack.getOutCb();
+  }
+  if (auto pack = dyn_cast<ttk::PackTileBlockOp>(op)) {
+    return pack.getOutCb();
+  }
+  return Value();
+}
+
+// The same walk order analyzeSyncRegion uses to pick the common init's
+// output buffer.
+static Value findFirstPackCB(ttk::TileRegsAcquireOp acquireOp) {
+  Block *block = acquireOp->getBlock();
+  Value firstPackCB;
+  for (auto it = std::next(acquireOp->getIterator());
+       it != block->end() && !firstPackCB; ++it) {
+    if (isa<ttk::TileRegsReleaseOp>(&*it)) {
+      break;
+    }
+    (&*it)->walk([&](Operation *inner) {
+      firstPackCB = getPackOutputCB(inner);
+      return firstPackCB ? WalkResult::interrupt() : WalkResult::advance();
+    });
+  }
+  return firstPackCB;
+}
+
+static PackFormatState
+trackPackFormat(Operation *op, PackFormatState state,
+                SmallVectorImpl<std::pair<Operation *, Value>> &reconfigs);
+
+static PackFormatState
+trackPackFormat(Block &block, PackFormatState state,
+                SmallVectorImpl<std::pair<Operation *, Value>> &reconfigs) {
+  for (Operation &op : block) {
+    state = trackPackFormat(&op, state, reconfigs);
+  }
+  return state;
+}
+
+// Region exit states are merged with the incoming state: a region may be
+// skipped (scf.if without else, zero-trip scf.for), and including the
+// incoming state is conservative where it cannot. A loop body is re-analyzed
+// with the merged state until it is stable, so a pack at the top of the body
+// sees the format left by the bottom of the previous iteration. Blocks of a
+// multi-block region start ambiguous.
+static PackFormatState
+trackPackFormat(Operation *op, PackFormatState state,
+                SmallVectorImpl<std::pair<Operation *, Value>> &reconfigs) {
+  if (auto transpose = dyn_cast<ttk::TransposeInitOp>(op)) {
+    return {transpose.getCbOut(), /*ambiguous=*/false};
+  }
+  if (Value packCB = getPackOutputCB(op)) {
+    bool needsReconfig = state.ambiguous;
+    if (!needsReconfig && state.configured) {
+      Type configuredType =
+          cast<ttk::CBType>(state.configured.getType()).getElementType();
+      Type packType = cast<ttk::CBType>(packCB.getType()).getElementType();
+      needsReconfig = configuredType != packType;
+    }
+    if (needsReconfig) {
+      reconfigs.push_back({op, packCB});
+    }
+    return {packCB, /*ambiguous=*/false};
+  }
+  if (op->getNumRegions() == 0) {
+    return state;
+  }
+  const PackFormatState ambiguous{Value(), /*ambiguous=*/true};
+  PackFormatState entry = state;
+  SmallVector<std::pair<Operation *, Value>> regionReconfigs;
+  while (true) {
+    regionReconfigs.clear();
+    PackFormatState merged = entry;
+    for (Region &region : op->getRegions()) {
+      bool singleBlock = region.hasOneBlock();
+      for (Block &block : region) {
+        PackFormatState exit = trackPackFormat(
+            block, singleBlock ? entry : ambiguous, regionReconfigs);
+        merged = mergePackFormat(merged, singleBlock ? exit : ambiguous);
+      }
+    }
+    if (!isa<LoopLikeOpInterface>(op) || merged == entry) {
+      reconfigs.append(regionReconfigs);
+      return merged;
+    }
+    entry = merged;
+  }
+}
+
+//===----------------------------------------------------------------------===//
 // Pass implementation
 //===----------------------------------------------------------------------===//
 
@@ -671,39 +796,14 @@ struct TTKernelInsertInitsPass
     // point only until one of these inits runs.
     moduleOp->walk([&](ttk::TileRegsAcquireOp acquireOp) {
       Block *block = acquireOp->getBlock();
-      Value configured;
       SmallVector<std::pair<Operation *, Value>> reconfigs;
+      PackFormatState state{findFirstPackCB(acquireOp), /*ambiguous=*/false};
       for (auto it = std::next(acquireOp->getIterator()); it != block->end();
            ++it) {
         if (isa<ttk::TileRegsReleaseOp>(&*it)) {
           break;
         }
-        (&*it)->walk([&](Operation *inner) {
-          if (auto transpose = dyn_cast<ttk::TransposeInitOp>(inner)) {
-            configured = transpose.getCbOut();
-            return;
-          }
-          Value packCB;
-          if (auto pack = dyn_cast<ttk::PackTileOp>(inner)) {
-            packCB = pack.getOutCb();
-          } else if (auto pack = dyn_cast<ttk::PackWaitedTileOp>(inner)) {
-            packCB = pack.getOutCb();
-          } else if (auto pack = dyn_cast<ttk::PackTileBlockOp>(inner)) {
-            packCB = pack.getOutCb();
-          } else {
-            return;
-          }
-          if (configured) {
-            Type configuredType =
-                cast<ttk::CBType>(configured.getType()).getElementType();
-            Type packType =
-                cast<ttk::CBType>(packCB.getType()).getElementType();
-            if (configuredType != packType) {
-              reconfigs.push_back({inner, packCB});
-            }
-          }
-          configured = packCB;
-        });
+        state = trackPackFormat(&*it, state, reconfigs);
       }
       for (auto [pack, packCB] : reconfigs) {
         OpBuilder builder(pack);

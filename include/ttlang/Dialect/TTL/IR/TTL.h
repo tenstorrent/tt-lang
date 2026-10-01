@@ -292,6 +292,15 @@ class TTLStrategyDependentBinaryOpTrait
     : public mlir::OpTrait::TraitBase<ConcreteType,
                                       TTLStrategyDependentBinaryOpTrait> {};
 
+/// Marks destination-register helpers that execute correctly only with
+/// 32-bit destination elements, independent of any operand type. The kernel
+/// configuration analysis consumes this for operations that do not implement
+/// TileExecutionOpInterface.
+template <typename ConcreteType>
+class TTLRequiresFp32DestinationAccumulationTrait
+    : public mlir::OpTrait::TraitBase<
+          ConcreteType, TTLRequiresFp32DestinationAccumulationTrait> {};
+
 /// Trait for tile operations whose result overwrites the DST input in-place.
 template <typename ConcreteType>
 class TTLInPlaceOpTrait

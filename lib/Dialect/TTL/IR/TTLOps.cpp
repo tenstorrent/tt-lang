@@ -3970,6 +3970,13 @@ mlir::LogicalResult mlir::tt::ttl::TopkOp::verify() {
   if (!valuesTile || !indicesTile) {
     return emitOpError("values and indices must have tile element types");
   }
+  // The lowering addresses 32 columns per tile.
+  auto is32x32 = [](ttcore::TileType tile) {
+    return tile.getHeight() == 32 && tile.getWidth() == 32;
+  };
+  if (!is32x32(valuesTile) || !is32x32(indicesTile)) {
+    return emitOpError("values and indices must be 32x32 tiles");
+  }
   // TODO(#295): The fused key fixes bf16 values and u16 indices. The plain
   // path can take f32 values and u32 indices once the unpack data format is
   // reconfigured between the value and index copies; relax this per mode then.

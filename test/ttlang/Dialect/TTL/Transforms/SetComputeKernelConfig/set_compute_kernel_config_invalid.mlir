@@ -306,3 +306,16 @@ func.func @topk_explicit_fp32_requires_fp32()
       : (index, i32, i32, i32) -> ()
   return
 }
+
+// -----
+
+// A TopK helper without a stage op in its section still requires 32-bit
+// destination accumulation.
+func.func @topk_helper_requires_fp32() attributes {fp32_dest_acc_en = false} {
+  %dst = arith.constant 0 : index
+  %one = arith.constant 1 : i32
+  // expected-error @below {{'ttl.tile_topk_defuse' op requires 32-bit destination elements, but fp32 destination accumulation is explicitly disabled}}
+  ttl.tile_topk_defuse dst[%dst] num_tiles = %one
+      {order = #ttl.topk_order<descending>} : (index, i32) -> ()
+  return
+}

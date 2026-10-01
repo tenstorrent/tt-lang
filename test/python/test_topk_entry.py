@@ -123,6 +123,16 @@ def test_math_topk_rejects_non_bf16_values():
             ttl.math.topk(values, 32, indices=indices)
 
 
+# The lowering addresses 32 columns per tile.
+def test_math_topk_rejects_non_32x32_tiles():
+    with _topk_operands(
+        values="tensor<1x2x!ttcore.tile<32x16, bf16>>",
+        indices="tensor<1x2x!ttcore.tile<32x16, u16>>",
+    ) as (values, indices, _module):
+        with pytest.raises(ValueError, match="values must be 32x32 tiles, got 32x16"):
+            ttl.math.topk(values, 32, indices=indices)
+
+
 def test_math_topk_rejects_non_tile_indices():
     with _topk_operands(indices="tensor<1x2xi16>") as (values, indices, _module):
         with pytest.raises(ValueError, match="indices must be a rank-2 block of tiles"):

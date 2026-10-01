@@ -47,3 +47,63 @@ func.func @transpose_then_pack_different_format() {
   ttkernel.tile_regs_release() : () -> ()
   func.return
 }
+
+// The arms of an scf.if leave the packer in different formats. The pack after
+// the if cannot rely on the last arm visited, so it is reconfigured. Inside
+// the arms, only the f32 pack differs from the bf16 pack before the if.
+// CHECK-LABEL: func.func @divergent_if_arms_reconfigure_join
+// CHECK: ttkernel.pack_tile(%{{.*}}, %[[BF16:.*]], %{{.*}}, false)
+// CHECK: scf.if
+// CHECK-NOT: ttkernel.pack_reconfig_data_format
+// CHECK: ttkernel.pack_tile({{.*}}%[[BF16]]
+// CHECK: } else {
+// CHECK-NEXT: ttkernel.pack_reconfig_data_format(%[[F32:.*]]) : (!ttkernel.cb<2, !ttcore.tile<32x32, f32>>)
+// CHECK-NEXT: ttkernel.pack_tile({{.*}}%[[F32]]
+// CHECK: }
+// CHECK-NEXT: ttkernel.pack_reconfig_data_format(%[[BF16]])
+// CHECK-NEXT: ttkernel.pack_tile({{.*}}%[[BF16]]
+func.func @divergent_if_arms_reconfigure_join(%cond: i1) {
+  %cb_bf16 = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<2, !ttcore.tile<32x32, bf16>>
+  %cb_f32 = ttkernel.get_compile_time_arg_val(1) : () -> !ttkernel.cb<2, !ttcore.tile<32x32, f32>>
+  %c0 = arith.constant 0 : index
+  ttkernel.tile_regs_acquire() : () -> ()
+  ttkernel.copy_tile(%cb_bf16, %c0, %c0) : (!ttkernel.cb<2, !ttcore.tile<32x32, bf16>>, index, index) -> ()
+  ttkernel.exp_tile(%c0) : (index) -> ()
+  ttkernel.pack_tile(%c0, %cb_bf16, %c0, false) : (index, !ttkernel.cb<2, !ttcore.tile<32x32, bf16>>, index) -> ()
+  scf.if %cond {
+    ttkernel.pack_tile(%c0, %cb_bf16, %c0, false) : (index, !ttkernel.cb<2, !ttcore.tile<32x32, bf16>>, index) -> ()
+  } else {
+    ttkernel.pack_tile(%c0, %cb_f32, %c0, false) : (index, !ttkernel.cb<2, !ttcore.tile<32x32, f32>>, index) -> ()
+  }
+  ttkernel.pack_tile(%c0, %cb_bf16, %c0, false) : (index, !ttkernel.cb<2, !ttcore.tile<32x32, bf16>>, index) -> ()
+  ttkernel.tile_regs_commit() : () -> ()
+  ttkernel.tile_regs_wait() : () -> ()
+  ttkernel.tile_regs_release() : () -> ()
+  func.return
+}
+
+// A loop body that ends in a different format than it starts with sees that
+// format again at the top of the next iteration, so the first pack of the
+// body is reconfigured as well as the second.
+// CHECK-LABEL: func.func @loop_body_reconfigures_at_top
+// CHECK: scf.for
+// CHECK-NEXT: ttkernel.pack_reconfig_data_format(%[[BF16:.*]]) : (!ttkernel.cb<2, !ttcore.tile<32x32, bf16>>)
+// CHECK-NEXT: ttkernel.pack_tile({{.*}}%[[BF16]]
+// CHECK-NEXT: ttkernel.pack_reconfig_data_format(%[[F32:.*]]) : (!ttkernel.cb<2, !ttcore.tile<32x32, f32>>)
+// CHECK-NEXT: ttkernel.pack_tile({{.*}}%[[F32]]
+func.func @loop_body_reconfigures_at_top(%lb: index, %ub: index, %step: index) {
+  %cb_bf16 = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<2, !ttcore.tile<32x32, bf16>>
+  %cb_f32 = ttkernel.get_compile_time_arg_val(1) : () -> !ttkernel.cb<2, !ttcore.tile<32x32, f32>>
+  %c0 = arith.constant 0 : index
+  ttkernel.tile_regs_acquire() : () -> ()
+  ttkernel.copy_tile(%cb_bf16, %c0, %c0) : (!ttkernel.cb<2, !ttcore.tile<32x32, bf16>>, index, index) -> ()
+  ttkernel.exp_tile(%c0) : (index) -> ()
+  scf.for %i = %lb to %ub step %step {
+    ttkernel.pack_tile(%c0, %cb_bf16, %c0, false) : (index, !ttkernel.cb<2, !ttcore.tile<32x32, bf16>>, index) -> ()
+    ttkernel.pack_tile(%c0, %cb_f32, %c0, false) : (index, !ttkernel.cb<2, !ttcore.tile<32x32, f32>>, index) -> ()
+  }
+  ttkernel.tile_regs_commit() : () -> ()
+  ttkernel.tile_regs_wait() : () -> ()
+  ttkernel.tile_regs_release() : () -> ()
+  func.return
+}

@@ -37,6 +37,18 @@ func.func @scalar_elements(%values: tensor<1x2xbf16>, %indices: tensor<1x2xi16>)
 
 // -----
 
+// The lowering addresses 32 columns per tile.
+func.func @half_width_tiles(%values: tensor<1x2x!ttcore.tile<32x16, bf16>>,
+                            %indices: tensor<1x2x!ttcore.tile<32x16, u16>>) {
+  // expected-error @below {{values and indices must be 32x32 tiles}}
+  %values_out, %indices_out = ttl.topk %values, %indices k = 32
+      : (tensor<1x2x!ttcore.tile<32x16, bf16>>, tensor<1x2x!ttcore.tile<32x16, u16>>)
+        -> (tensor<1x1x!ttcore.tile<32x16, bf16>>, tensor<1x1x!ttcore.tile<32x16, u16>>)
+  return
+}
+
+// -----
+
 // The fused sort key holds a 16-bit value.
 func.func @values_are_not_bf16(%values: tensor<1x2x!ttcore.tile<32x32, f32>>,
                                %indices: tensor<1x2x!ttcore.tile<32x32, u16>>) {

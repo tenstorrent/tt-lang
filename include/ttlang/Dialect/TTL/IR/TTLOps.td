@@ -2095,7 +2095,8 @@ def TTL_TileTopkRebuildOp :
 // packed-key lifetime and defuse at its end.
 
 def TTL_TileTopkFuseOp : TTL_Op<"tile_topk_fuse",
-    [MemoryEffects<[MemRead, MemWrite]>]> {
+    [MemoryEffects<[MemRead, MemWrite]>,
+     TTL_RequiresFp32DestinationAccumulationTrait]> {
   let summary = "Pack a two-tile TopK slab into fused sort keys";
   let description = [{
     Packs the value and index tiles at `dst_index` into fused sort keys.
@@ -2108,7 +2109,8 @@ def TTL_TileTopkFuseOp : TTL_Op<"tile_topk_fuse",
 }
 
 def TTL_TileTopkDefuseOp : TTL_Op<"tile_topk_defuse",
-    [MemoryEffects<[MemRead, MemWrite]>]> {
+    [MemoryEffects<[MemRead, MemWrite]>,
+     TTL_RequiresFp32DestinationAccumulationTrait]> {
   let summary = "Unpack fused TopK keys into value and index tiles";
   let description = [{
     Splits packed TopK keys back into value and index tiles. `num_tiles` is
@@ -2125,7 +2127,8 @@ def TTL_TileTopkDefuseOp : TTL_Op<"tile_topk_defuse",
 
 def TTL_TileTopkStampLocalPositionsOp
     : TTL_Op<"tile_topk_stamp_local_positions",
-             [MemoryEffects<[MemRead, MemWrite]>]> {
+             [MemoryEffects<[MemRead, MemWrite]>,
+              TTL_RequiresFp32DestinationAccumulationTrait]> {
   let summary = "Stamp local rank tags onto a TopK value slab";
   let description = [{
     Writes local rank tags into the two-tile value slab at `dst_index`.
@@ -2141,7 +2144,8 @@ def TTL_TileTopkStampLocalPositionsOp
 }
 
 def TTL_TileTopkStripRankTagsOp : TTL_Op<"tile_topk_strip_rank_tags",
-    [MemoryEffects<[MemRead, MemWrite]>]> {
+    [MemoryEffects<[MemRead, MemWrite]>,
+     TTL_RequiresFp32DestinationAccumulationTrait]> {
   let summary = "Clear rank tags from one TopK value tile";
   let description = [{
     Clears rank tags from one value tile. Requires 32-bit destination
@@ -2175,7 +2179,8 @@ def TTL_TileTopkCanonicalizeNegzeroValuesOp
 
 def TTL_TileTopkUint16MoveDestTileToPackHalfOp
     : TTL_Op<"tile_topk_uint16_move_dest_tile_to_pack_half",
-             [MemoryEffects<[MemRead, MemWrite]>]> {
+             [MemoryEffects<[MemRead, MemWrite]>,
+              TTL_RequiresFp32DestinationAccumulationTrait]> {
   let summary = "Move a u16 TopK index tile into the packer-visible half";
   let description = [{
     Moves u16 index datums from the low half of each 32-bit destination word
@@ -2200,8 +2205,9 @@ def TTL_TopkOp : TTL_Op<"topk", [
     their indices, in sorted order. The hardware sort network operates along
     the row (last) dimension only; another dimension is selected by
     transposing before and after, as the metal host op does. `values` are
-    bf16 tiles and `indices` are u16 tiles; both are rank-2 tensors with the
-    same static shape and are read from dataflow buffers. A computed `values`
+    32x32 bf16 tiles and `indices` are 32x32 u16 tiles; both are rank-2
+    tensors with the same static shape and are read from dataflow buffers. A
+    computed `values`
     tensor is materialized into a compiler buffer before the sort, so the
     operation can follow other compute in the same kernel. `indices` is the
     identity index tensor published by data movement; this operation does not

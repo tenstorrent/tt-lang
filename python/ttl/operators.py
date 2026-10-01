@@ -2012,6 +2012,11 @@ def _topk_tile(tensor_type, what):
     tile = ttcore.ir.TileType.maybe_downcast(tensor_type.element_type)
     if tile is None:
         raise ValueError(f"topk {what} must be a rank-2 block of tiles")
+    if list(tile.shape) != [DEFAULT_TILE_SIZE, DEFAULT_TILE_SIZE]:
+        raise ValueError(
+            f"topk {what} must be {DEFAULT_TILE_SIZE}x{DEFAULT_TILE_SIZE} tiles, "
+            f"got {tile.shape[0]}x{tile.shape[1]}"
+        )
     return tile
 
 
@@ -2032,10 +2037,10 @@ def topk(
     (last) dimension only; to select along another dimension, transpose the
     block before and after.
 
-    ``values`` are ``bf16`` tiles. ``indices`` must hold the column number of
-    every element of ``values`` (``indices[r, c] == c``) as ``u16`` tiles,
-    shaped like ``values``. The kernel author reads it from a host tensor; the
-    compiler does not generate it.
+    ``values`` are 32x32 ``bf16`` tiles. ``indices`` must hold the column
+    number of every element of ``values`` (``indices[r, c] == c``) as 32x32
+    ``u16`` tiles, shaped like ``values``. The kernel author reads it from a
+    host tensor; the compiler does not generate it.
 
     ``k``, ``largest``, and ``stable`` are compile-time constants. ``k`` is one
     of 4, 8, 16, 32, or 64. The row width is 2, 4, or 8 tiles.
@@ -2044,10 +2049,11 @@ def topk(
     the first ``k`` columns of the single result tile hold the answer and the
     rest are unspecified; slice on the host.
 
-    ``stable=True`` resolves ties by the lower index, like
-    ``torch.topk(stable=True)``. It sorts values and indices as one packed
-    key, which requires fp32 destination accumulation and two extra ``u32``
-    scratch buffers in L1.
+    ``stable=True`` resolves ties by the lower index, so the result equals
+    the first ``k`` entries of a stable sort of the row. With ``stable=False``
+    the order among equal values is unspecified. Stable mode sorts values and
+    indices as one packed key, which requires fp32 destination accumulation
+    and two extra ``u32`` scratch buffers in L1.
     """
     from ttl.dialects import ttcore
 
@@ -2082,8 +2088,7 @@ def topk(
             f"{_TOPK_MIN_WIDTH_TILES} and {_TOPK_MAX_WIDTH_TILES} tiles, "
             f"got {width_tiles}"
         )
-    tile_width = values_tile.shape[1]
-    output_width = (k_i + tile_width - 1) // tile_width
+    output_width = (k_i + DEFAULT_TILE_SIZE - 1) // DEFAULT_TILE_SIZE
     values_result = RankedTensorType.get(
         [height, output_width], values_type.element_type
     )
