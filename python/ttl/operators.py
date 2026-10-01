@@ -2061,6 +2061,8 @@ def topk(
             "topk indices must have the shape of values, got "
             f"{tuple(indices_type.shape)} and {tuple(values_type.shape)}"
         )
+    # TODO(#295): Relax to f32 values and u32 indices for stable=False once the
+    # plain path reconfigures the unpack data format; see TopkOp::verify.
     values_dtype = ttcore.DataType(values_tile.data_type_as_int)
     if values_dtype != ttcore.DataType.BFloat16:
         raise ValueError(f"topk values must be bf16 tiles, got {values_dtype.name}")

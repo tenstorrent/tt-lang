@@ -118,8 +118,11 @@ tiles into one destination-register section. TTKernel has no
 unpacker once per section from the first input buffer, so the index tiles
 are unpacked with the `bf16` format and come back wrong on hardware; the
 values are correct. The metal kernel reconfigures the unpacker between the
-two copies. Until the compiler can express that, the plain-path hardware
-tests are marked `xfail`.
+two copies. Until the compiler can express that
+([tt-lang#295](https://github.com/tenstorrent/tt-lang/issues/295)), the
+plain-path hardware tests are marked `xfail`. The same fix allows the plain
+path to accept `f32` values and `u32` indices, which the fused key cannot
+hold.
 
 The index operand is the identity index tensor published by data movement.
 The compiler does not generate that reader. Rank-stamped lowering,

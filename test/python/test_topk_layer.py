@@ -413,9 +413,10 @@ def _run_topk(device, scores, height_tiles, width_tiles, k, largest, stable):
 # The plain (stable=False) path copies bf16 value tiles and u16 index tiles
 # into one destination section; the compiler does not reconfigure the unpack
 # data format between them, so the index tiles come back scaled. Values are
-# correct. The entries fail until ttkernel gains reconfig_data_format_srca.
+# correct. The entries fail until ttkernel gains reconfig_data_format_srca
+# (issue #295).
 _PLAIN_PATH_BROKEN = pytest.mark.xfail(
-    strict=True, reason="plain path needs unpack data format reconfiguration"
+    strict=True, reason="plain path needs unpack data format reconfiguration (#295)"
 )
 
 

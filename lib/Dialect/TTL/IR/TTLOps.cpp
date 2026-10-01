@@ -3970,6 +3970,9 @@ mlir::LogicalResult mlir::tt::ttl::TopkOp::verify() {
   if (!valuesTile || !indicesTile) {
     return emitOpError("values and indices must have tile element types");
   }
+  // TODO(#295): The fused key fixes bf16 values and u16 indices. The plain
+  // path can take f32 values and u32 indices once the unpack data format is
+  // reconfigured between the value and index copies; relax this per mode then.
   if (!valuesTile.getElementType().isBF16()) {
     return emitOpError("values must be bf16 tiles");
   }
