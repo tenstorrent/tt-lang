@@ -40,7 +40,7 @@ func.func @computed_values_are_materialized()
   %added = ttl.add %values, %bias
       : tensor<1x2x!ttcore.tile<32x32, bf16>>, tensor<1x2x!ttcore.tile<32x32, bf16>>
         -> tensor<1x2x!ttcore.tile<32x32, bf16>>
-  %out_values, %out_indices = ttl.topk %added, %indices k = 32 dim = -1
+  %out_values, %out_indices = ttl.topk %added, %indices k = 32
       : (tensor<1x2x!ttcore.tile<32x32, bf16>>, tensor<1x2x!ttcore.tile<32x32, u16>>)
         -> (tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, u16>>)
   return
@@ -82,7 +82,7 @@ func.func @computed_indices_are_materialized()
   %added = ttl.add %indices, %bias
       : tensor<1x2x!ttcore.tile<32x32, u16>>, tensor<1x2x!ttcore.tile<32x32, u16>>
         -> tensor<1x2x!ttcore.tile<32x32, u16>>
-  %out_values, %out_indices = ttl.topk %values, %added k = 32 dim = -1
+  %out_values, %out_indices = ttl.topk %values, %added k = 32
       : (tensor<1x2x!ttcore.tile<32x32, bf16>>, tensor<1x2x!ttcore.tile<32x32, u16>>)
         -> (tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, u16>>)
   return
@@ -109,7 +109,7 @@ func.func @attached_operands_stay_attached()
   %indices = ttl.attach_cb %indices_wait, %indices_cb
       : (tensor<1x2x!ttcore.tile<32x32, u16>>, !ttl.cb<[1, 2], !ttcore.tile<32x32, u16>, 2>)
         -> tensor<1x2x!ttcore.tile<32x32, u16>>
-  %out_values, %out_indices = ttl.topk %values, %indices k = 32 dim = -1
+  %out_values, %out_indices = ttl.topk %values, %indices k = 32
       : (tensor<1x2x!ttcore.tile<32x32, bf16>>, tensor<1x2x!ttcore.tile<32x32, u16>>)
         -> (tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, u16>>)
   return
@@ -144,7 +144,7 @@ func.func @mul_unary_const_of_result_is_materialized()
   %indices = ttl.attach_cb %indices_wait, %indices_cb
       : (tensor<1x2x!ttcore.tile<32x32, u16>>, !ttl.cb<[1, 2], !ttcore.tile<32x32, u16>, 2>)
         -> tensor<1x2x!ttcore.tile<32x32, u16>>
-  %out_values, %out_indices = ttl.topk %values, %indices k = 32 dim = -1
+  %out_values, %out_indices = ttl.topk %values, %indices k = 32
       : (tensor<1x2x!ttcore.tile<32x32, bf16>>, tensor<1x2x!ttcore.tile<32x32, u16>>)
         -> (tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, u16>>)
   %scaled = ttl.mul_unary_const %out_values, 2.000000e+00
@@ -186,7 +186,7 @@ func.func @mul_of_result_is_materialized()
   %scale = ttl.attach_cb %scale_wait, %scale_cb
       : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>)
         -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-  %out_values, %out_indices = ttl.topk %values, %indices k = 32 dim = -1
+  %out_values, %out_indices = ttl.topk %values, %indices k = 32
       : (tensor<1x2x!ttcore.tile<32x32, bf16>>, tensor<1x2x!ttcore.tile<32x32, u16>>)
         -> (tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, u16>>)
   %scaled = ttl.mul %out_values, %scale
@@ -217,7 +217,7 @@ func.func @abs_of_result_is_not_materialized()
   %indices = ttl.attach_cb %indices_wait, %indices_cb
       : (tensor<1x2x!ttcore.tile<32x32, u16>>, !ttl.cb<[1, 2], !ttcore.tile<32x32, u16>, 2>)
         -> tensor<1x2x!ttcore.tile<32x32, u16>>
-  %out_values, %out_indices = ttl.topk %values, %indices k = 32 dim = -1
+  %out_values, %out_indices = ttl.topk %values, %indices k = 32
       : (tensor<1x2x!ttcore.tile<32x32, bf16>>, tensor<1x2x!ttcore.tile<32x32, u16>>)
         -> (tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, u16>>)
   %absolute = ttl.abs %out_values

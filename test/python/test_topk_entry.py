@@ -128,18 +128,19 @@ def test_math_topk_small_k_returns_one_tile():
 
 # Every constraint the compiler enforces is reported at the call site with a
 # message that names the argument.
-@pytest.mark.parametrize(
-    "kwargs, message",
-    [
-        ({"k": 12}, "k must be one of"),
-        ({"k": 32, "dim": 0}, "only the last dimension"),
-        ({"k": 32, "sorted": False}, "sorted=False is not supported"),
-    ],
-)
-def test_math_topk_rejects_unsupported_arguments(kwargs, message):
+def test_math_topk_rejects_unsupported_k():
     with _topk_operands() as (values, indices, _module):
-        with pytest.raises(ValueError, match=message):
-            ttl.math.topk(values, indices=indices, **kwargs)
+        with pytest.raises(ValueError, match="k must be one of"):
+            ttl.math.topk(values, 12, indices=indices)
+
+
+# The result is always sorted along the row; torch's dim and sorted knobs
+# have no counterpart.
+@pytest.mark.parametrize("kwarg", [{"dim": -1}, {"sorted": True}])
+def test_math_topk_has_no_dim_or_sorted_parameter(kwarg):
+    with _topk_operands() as (values, indices, _module):
+        with pytest.raises(TypeError, match="unexpected keyword"):
+            ttl.math.topk(values, 32, indices=indices, **kwarg)
 
 
 def test_math_topk_rejects_non_u16_indices():

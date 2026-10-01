@@ -52,7 +52,7 @@ func.func @topk_stable(%values: tensor<1x2x!ttcore.tile<32x32, bf16>>,
   %indices_view = ttl.cb_reserve %out_indices_cb
       : <[1, 1], !ttcore.tile<32x32, u16>, 1> -> tensor<1x1x!ttcore.tile<32x32, u16>>
   %out_values, %out_indices = ttl.topk %values_attached, %indices_attached
-      k = 32 dim = -1 {stable = true}
+      k = 32 {stable = true}
       : (tensor<1x2x!ttcore.tile<32x32, bf16>>, tensor<1x2x!ttcore.tile<32x32, u16>>)
         -> (tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, u16>>)
   ttl.store %out_values, %values_view
@@ -103,7 +103,7 @@ func.func @topk_unstable(%values: tensor<1x2x!ttcore.tile<32x32, bf16>>,
   %indices_view = ttl.cb_reserve %out_indices_cb
       : <[1, 1], !ttcore.tile<32x32, u16>, 1> -> tensor<1x1x!ttcore.tile<32x32, u16>>
   %out_values, %out_indices = ttl.topk %values_attached, %indices_attached
-      k = 32 dim = -1
+      k = 32
       : (tensor<1x2x!ttcore.tile<32x32, bf16>>, tensor<1x2x!ttcore.tile<32x32, u16>>)
         -> (tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, u16>>)
   ttl.store %out_values, %values_view
@@ -146,7 +146,7 @@ func.func @topk_smallest(%values: tensor<1x2x!ttcore.tile<32x32, bf16>>,
   %indices_view = ttl.cb_reserve %out_indices_cb
       : <[1, 1], !ttcore.tile<32x32, u16>, 1> -> tensor<1x1x!ttcore.tile<32x32, u16>>
   %out_values, %out_indices = ttl.topk %values_attached, %indices_attached
-      k = 32 dim = -1 {largest = false, stable = true}
+      k = 32 {largest = false, stable = true}
       : (tensor<1x2x!ttcore.tile<32x32, bf16>>, tensor<1x2x!ttcore.tile<32x32, u16>>)
         -> (tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, u16>>)
   ttl.store %out_values, %values_view
@@ -191,7 +191,7 @@ func.func @topk_k4_runs_tile_network(%values: tensor<1x2x!ttcore.tile<32x32, bf1
   %indices_view = ttl.cb_reserve %out_indices_cb
       : <[1, 1], !ttcore.tile<32x32, u16>, 1> -> tensor<1x1x!ttcore.tile<32x32, u16>>
   %out_values, %out_indices = ttl.topk %values_attached, %indices_attached
-      k = 4 dim = -1 {stable = true}
+      k = 4 {stable = true}
       : (tensor<1x2x!ttcore.tile<32x32, bf16>>, tensor<1x2x!ttcore.tile<32x32, u16>>)
         -> (tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, u16>>)
   ttl.store %out_values, %values_view
@@ -235,7 +235,7 @@ func.func @topk_wide_copies_unwritten_column(
   %indices_view = ttl.cb_reserve %out_indices_cb
       : <[1, 1], !ttcore.tile<32x32, u16>, 1> -> tensor<1x1x!ttcore.tile<32x32, u16>>
   %out_values, %out_indices = ttl.topk %values_attached, %indices_attached
-      k = 32 dim = -1 {stable = true}
+      k = 32 {stable = true}
       : (tensor<1x4x!ttcore.tile<32x32, bf16>>, tensor<1x4x!ttcore.tile<32x32, u16>>)
         -> (tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, u16>>)
   ttl.store %out_values, %values_view
@@ -282,7 +282,7 @@ func.func @topk_k64_flips_direction(
   %indices_view = ttl.cb_reserve %out_indices_cb
       : <[1, 2], !ttcore.tile<32x32, u16>, 1> -> tensor<1x2x!ttcore.tile<32x32, u16>>
   %out_values, %out_indices = ttl.topk %values_attached, %indices_attached
-      k = 64 dim = -1 {stable = true}
+      k = 64 {stable = true}
       : (tensor<1x8x!ttcore.tile<32x32, bf16>>, tensor<1x8x!ttcore.tile<32x32, u16>>)
         -> (tensor<1x2x!ttcore.tile<32x32, bf16>>, tensor<1x2x!ttcore.tile<32x32, u16>>)
   ttl.store %out_values, %values_view
@@ -364,7 +364,7 @@ func.func @topk_wide_merge_pairs(
   %indices_view = ttl.cb_reserve %out_indices_cb
       : <[1, 1], !ttcore.tile<32x32, u16>, 1> -> tensor<1x1x!ttcore.tile<32x32, u16>>
   %out_values, %out_indices = ttl.topk %values_attached, %indices_attached
-      k = 32 dim = -1 {stable = true}
+      k = 32 {stable = true}
       : (tensor<1x8x!ttcore.tile<32x32, bf16>>, tensor<1x8x!ttcore.tile<32x32, u16>>)
         -> (tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, u16>>)
   ttl.store %out_values, %values_view
@@ -405,7 +405,7 @@ func.func @topk_keeps_fp32_policy(%values: tensor<1x2x!ttcore.tile<32x32, bf16>>
   %indices_view = ttl.cb_reserve %out_indices_cb
       : <[1, 1], !ttcore.tile<32x32, u16>, 1> -> tensor<1x1x!ttcore.tile<32x32, u16>>
   %out_values, %out_indices = ttl.topk %values_attached, %indices_attached
-      k = 32 dim = -1 {stable = true}
+      k = 32 {stable = true}
       : (tensor<1x2x!ttcore.tile<32x32, bf16>>, tensor<1x2x!ttcore.tile<32x32, u16>>)
         -> (tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, u16>>)
   ttl.store %out_values, %values_view
@@ -441,7 +441,7 @@ func.func @topk_row_loop(%values: tensor<3x2x!ttcore.tile<32x32, bf16>>,
   %indices_view = ttl.cb_reserve %out_indices_cb
       : <[3, 1], !ttcore.tile<32x32, u16>, 1> -> tensor<3x1x!ttcore.tile<32x32, u16>>
   %out_values, %out_indices = ttl.topk %values_attached, %indices_attached
-      k = 32 dim = -1 {stable = true}
+      k = 32 {stable = true}
       : (tensor<3x2x!ttcore.tile<32x32, bf16>>, tensor<3x2x!ttcore.tile<32x32, u16>>)
         -> (tensor<3x1x!ttcore.tile<32x32, bf16>>, tensor<3x1x!ttcore.tile<32x32, u16>>)
   ttl.store %out_values, %values_view
@@ -481,7 +481,7 @@ func.func @topk_inside_scf_if(%values: tensor<1x2x!ttcore.tile<32x32, bf16>>,
     %indices_view = ttl.cb_reserve %out_indices_cb
         : <[1, 1], !ttcore.tile<32x32, u16>, 1> -> tensor<1x1x!ttcore.tile<32x32, u16>>
     %out_values, %out_indices = ttl.topk %values_attached, %indices_attached
-        k = 32 dim = -1 {stable = true}
+        k = 32 {stable = true}
         : (tensor<1x2x!ttcore.tile<32x32, bf16>>, tensor<1x2x!ttcore.tile<32x32, u16>>)
           -> (tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, u16>>)
     ttl.store %out_values, %values_view
@@ -520,7 +520,7 @@ func.func @topk_sequence_follows_result_reserve(
       : (tensor<1x2x!ttcore.tile<32x32, u16>>, !ttl.cb<[1, 2], !ttcore.tile<32x32, u16>, 1>)
         -> tensor<1x2x!ttcore.tile<32x32, u16>>
   %out_values, %out_indices = ttl.topk %values_attached, %indices_attached
-      k = 32 dim = -1 {stable = true}
+      k = 32 {stable = true}
       : (tensor<1x2x!ttcore.tile<32x32, bf16>>, tensor<1x2x!ttcore.tile<32x32, u16>>)
         -> (tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, u16>>)
   %marker = arith.constant 7 : i32
@@ -564,7 +564,7 @@ func.func @topk_uses_the_earlier_result_store(
   %indices_view = ttl.cb_reserve %out_indices_cb
       : <[1, 1], !ttcore.tile<32x32, u16>, 1> -> tensor<1x1x!ttcore.tile<32x32, u16>>
   %out_values, %out_indices = ttl.topk %values_attached, %indices_attached
-      k = 32 dim = -1 {stable = true}
+      k = 32 {stable = true}
       : (tensor<1x2x!ttcore.tile<32x32, bf16>>, tensor<1x2x!ttcore.tile<32x32, u16>>)
         -> (tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, u16>>)
   ttl.store %out_indices, %indices_view

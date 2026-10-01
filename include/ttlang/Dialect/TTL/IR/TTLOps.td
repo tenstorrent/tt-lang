@@ -2194,19 +2194,21 @@ def TTL_TileTopkUint16MoveDestTileToPackHalfOp
 def TTL_TopkOp : TTL_Op<"topk", [
     MemoryEffects<[MemRead, MemWrite]>,
     DeclareOpInterfaceMethods<TTL_DFBInputOpInterface>]> {
-  let summary = "Select the top k values along the last dimension";
+  let summary = "Select the sorted top k values of each row";
   let description = [{
     Returns the `k` largest or smallest values in each row, together with
-    their indices. `values` and `indices` are rank-2 tensors of tiles with
-    the same static shape. Both operands are read from dataflow buffers. A
-    computed `values` tensor is materialized into a compiler buffer before
-    the sort, so the operation can follow other compute in the same kernel.
-    `indices` is the identity index tensor published by data movement; this
-    operation does not generate that tensor.
+    their indices, in sorted order. The hardware sort network operates along
+    the row (last) dimension only; another dimension is selected by
+    transposing before and after, as the metal host op does. `values` and
+    `indices` are rank-2 tensors of tiles with the same static shape. Both
+    operands are read from dataflow buffers. A computed `values` tensor is
+    materialized into a compiler buffer before the sort, so the operation can
+    follow other compute in the same kernel. `indices` is the identity index
+    tensor published by data movement; this operation does not generate that
+    tensor.
 
-    `dim` is -1 or the last dimension. `k` is one of {4, 8, 16, 32, 64}.
-    The row width in tiles is a power of two in [2, 64], and `k` divides the
-    row width in elements. `sorted` must be true.
+    `k` is one of {4, 8, 16, 32, 64}. The row width in tiles is a power of
+    two in [2, 64], and `k` divides the row width in elements.
 
     `stable` selects fused-key sort keys. The comparator-stable network is
     not used. Rank-stamped cascade, widths above 64 tiles, and multi-core
@@ -2220,14 +2222,12 @@ def TTL_TopkOp : TTL_Op<"topk", [
     AnyRankedTensor:$values,
     AnyRankedTensor:$indices,
     I64Attr:$k,
-    I64Attr:$dim,
     DefaultValuedAttr<BoolAttr, "true">:$largest,
-    DefaultValuedAttr<BoolAttr, "true">:$sorted,
     DefaultValuedAttr<BoolAttr, "false">:$stable);
   let results = (outs AnyRankedTensor:$result_values,
                       AnyRankedTensor:$result_indices);
   let assemblyFormat = [{
-    $values `,` $indices `k` `=` $k `dim` `=` $dim attr-dict `:`
+    $values `,` $indices `k` `=` $k attr-dict `:`
     functional-type(operands, results)
   }];
   let hasVerifier = 1;

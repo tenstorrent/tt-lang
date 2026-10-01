@@ -95,21 +95,24 @@ is a concern for kernel binary size. Hardware coverage is limited to
 
 ## Limits
 
-The verifier accepts `k` in {4, 8, 16, 32, 64}, a last-dimension `dim`,
-`sorted = true`, and a row width that is a power of two in [2, 64] tiles.
-`k` must divide the row width in elements. `ttl.math.topk` checks the same
-limits, plus a `u16` index block shaped like the values, and raises
-`ValueError` at the call site. The merge network selects whole
-tiles, so `k` below 32 runs the 32-wide network and the sorted result tile
-holds the requested `k` columns first; this matches the metal host op, which
-rounds `k` up to a tile before launching the kernel. Each result must be stored once
-into a reserved dataflow buffer of the result shape. A multiply of a result
-reads a compiler buffer filled by that store. The sequence is emitted at the
-first result store, so a reserve created after the operation still dominates
-the packs.
+The operation sorts along the row (last) dimension and always returns the
+selection in sorted order; it has no `dim` or `sorted` attribute. The SFPU
+network compares across the columns of a tile pair, so another dimension is
+selected by transposing before and after, which is what the metal host op
+does for `dim != -1`. The verifier accepts `k` in {4, 8, 16, 32, 64} and a
+row width that is a power of two in [2, 64] tiles. `k` must divide the row
+width in elements. `ttl.math.topk` checks the same limits, plus a `u16`
+index block shaped like the values, and raises `ValueError` at the call
+site. The merge network selects whole tiles, so `k` below 32 runs the
+32-wide network and the sorted result tile holds the requested `k` columns
+first; this matches the metal host op, which rounds `k` up to a tile before
+launching the kernel. Each result must be stored once into a reserved
+dataflow buffer of the result shape. A multiply of a result reads a compiler
+buffer filled by that store. The sequence is emitted at the first result
+store, so a reserve created after the operation still dominates the packs.
 
 The index operand is the identity index tensor published by data movement.
 The compiler does not generate that reader. Rank-stamped lowering,
-`topk_stamp_tile_rank_range`, `k` above 64, multi-core merge, and
-`sorted = false` are not implemented. The epoch verifier still checks
+`topk_stamp_tile_rank_range`, `k` above 64, and multi-core merge are not
+implemented. The epoch verifier still checks
 rank-stamped edges so a later lowering can use them.

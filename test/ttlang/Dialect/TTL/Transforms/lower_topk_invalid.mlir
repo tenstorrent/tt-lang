@@ -21,7 +21,7 @@ func.func @values_not_attached(%values: tensor<1x2x!ttcore.tile<32x32, bf16>>,
       : <[1, 1], !ttcore.tile<32x32, u16>, 1> -> tensor<1x1x!ttcore.tile<32x32, u16>>
   // expected-error @below {{values must be attached to a dataflow buffer}}
   %out_values, %out_indices = ttl.topk %values, %indices_attached
-      k = 32 dim = -1
+      k = 32
       : (tensor<1x2x!ttcore.tile<32x32, bf16>>, tensor<1x2x!ttcore.tile<32x32, u16>>)
         -> (tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, u16>>)
   ttl.store %out_values, %values_view
@@ -50,7 +50,7 @@ func.func @indices_not_attached(%values: tensor<1x2x!ttcore.tile<32x32, bf16>>,
       : <[1, 1], !ttcore.tile<32x32, u16>, 1> -> tensor<1x1x!ttcore.tile<32x32, u16>>
   // expected-error @below {{index tensor is the identity indices}}
   %out_values, %out_indices = ttl.topk %values_attached, %indices
-      k = 32 dim = -1
+      k = 32
       : (tensor<1x2x!ttcore.tile<32x32, bf16>>, tensor<1x2x!ttcore.tile<32x32, u16>>)
         -> (tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, u16>>)
   ttl.store %out_values, %values_view
@@ -88,7 +88,7 @@ func.func @result_stored_twice(%values: tensor<1x2x!ttcore.tile<32x32, bf16>>,
       : <[1, 1], !ttcore.tile<32x32, u16>, 1> -> tensor<1x1x!ttcore.tile<32x32, u16>>
   // expected-error @below {{each result must be stored exactly once}}
   %out_values, %out_indices = ttl.topk %values_attached, %indices_attached
-      k = 32 dim = -1
+      k = 32
       : (tensor<1x2x!ttcore.tile<32x32, bf16>>, tensor<1x2x!ttcore.tile<32x32, u16>>)
         -> (tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, u16>>)
   ttl.store %out_values, %values_view
@@ -125,7 +125,7 @@ func.func @store_view_is_a_wait(
       : <[1, 1], !ttcore.tile<32x32, u16>, 1> -> tensor<1x1x!ttcore.tile<32x32, u16>>
   // expected-error @below {{each result must be stored into a reserved dataflow buffer}}
   %out_values, %out_indices = ttl.topk %values_attached, %indices_attached
-      k = 32 dim = -1
+      k = 32
       : (tensor<1x2x!ttcore.tile<32x32, bf16>>, tensor<1x2x!ttcore.tile<32x32, u16>>)
         -> (tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, u16>>)
   ttl.store %out_values, %values_view
@@ -160,7 +160,7 @@ func.func @stores_in_different_blocks(
       : <[1, 1], !ttcore.tile<32x32, u16>, 1> -> tensor<1x1x!ttcore.tile<32x32, u16>>
   // expected-error @below {{value and index results must be stored in the same block}}
   %out_values, %out_indices = ttl.topk %values_attached, %indices_attached
-      k = 32 dim = -1
+      k = 32
       : (tensor<1x2x!ttcore.tile<32x32, bf16>>, tensor<1x2x!ttcore.tile<32x32, u16>>)
         -> (tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, u16>>)
   scf.if %cond {
@@ -198,7 +198,7 @@ func.func @reserve_does_not_dominate_first_store(
       : <[1, 1], !ttcore.tile<32x32, u16>, 1> -> tensor<1x1x!ttcore.tile<32x32, u16>>
   // expected-error @below {{result buffer reserves must dominate both result stores}}
   %out_values, %out_indices = ttl.topk %values_attached, %indices_attached
-      k = 32 dim = -1
+      k = 32
       : (tensor<1x2x!ttcore.tile<32x32, bf16>>, tensor<1x2x!ttcore.tile<32x32, u16>>)
         -> (tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, u16>>)
   ttl.store %out_indices, %indices_view

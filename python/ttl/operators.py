@@ -2214,15 +2214,16 @@ def topk(
     k,
     *,
     indices,
-    dim=-1,
     largest=True,
-    sorted=True,
     stable=False,
 ):
     """Select the ``k`` largest or smallest values in each row, with their indices.
 
-    Mirrors ``torch.topk`` on a block of ``(rows, width_tiles)`` tiles and
-    returns ``(top_values, top_indices)``.
+    Follows ``torch.topk`` on a block of ``(rows, width_tiles)`` tiles and
+    returns ``(top_values, top_indices)``, each row sorted from the most to
+    the least extreme value. The hardware sort network runs along the row
+    (last) dimension only; to select along another dimension, transpose the
+    block before and after.
 
     ``indices`` must hold the column number of every element of ``values``
     (``indices[r, c] == c``) as ``u16`` tiles, shaped like ``values``. The
@@ -2231,8 +2232,7 @@ def topk(
 
     ``k``, ``largest``, and ``stable`` are compile-time constants. ``k`` is one
     of 4, 8, 16, 32, or 64. The row width is a power of two between 2 and 64
-    tiles. Only the last dimension (``dim=-1``) and ``sorted=True`` are
-    supported.
+    tiles.
 
     The results are whole tiles: ``(rows, ceil(k / 32))``. For ``k`` below 32
     the first ``k`` columns of the single result tile hold the answer and the
@@ -2246,7 +2246,6 @@ def topk(
     from ttl.dialects import ttcore
 
     k_i = _get_constant_int(k)
-    dim_i = _get_constant_int(dim)
     values_type = values.type
     indices_type = indices.type
     values_tile = _topk_tile(values_type, "values")
@@ -2259,10 +2258,6 @@ def topk(
     indices_dtype = ttcore.DataType(indices_tile.data_type_as_int)
     if indices_dtype != ttcore.DataType.UInt16:
         raise ValueError(f"topk indices must be u16 tiles, got {indices_dtype.name}")
-    if dim_i not in (-1, 1):
-        raise ValueError(f"topk supports only the last dimension (dim=-1), got {dim_i}")
-    if not _get_constant_bool(sorted):
-        raise ValueError("topk sorted=False is not supported")
     if k_i not in _TOPK_K_VALUES:
         raise ValueError(f"topk k must be one of {_TOPK_K_VALUES}, got {k_i}")
     height, width_tiles = values_type.shape
@@ -2290,9 +2285,7 @@ def topk(
         values,
         indices,
         k_i,
-        dim_i,
         largest=_get_constant_bool(largest),
-        sorted=_get_constant_bool(sorted),
         stable=_get_constant_bool(stable),
     )
     return (results[0], results[1])

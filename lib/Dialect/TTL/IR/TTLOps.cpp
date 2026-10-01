@@ -3971,20 +3971,9 @@ mlir::LogicalResult mlir::tt::ttl::TopkOp::verify() {
     return emitOpError("values and indices must have tile element types");
   }
 
-  int64_t dim = getDim();
-  if (dim < 0) {
-    dim += valuesType.getRank();
-  }
-  if (dim != valuesType.getRank() - 1) {
-    return emitOpError("dim must be -1 or the last dimension");
-  }
-
   int64_t k = getK();
   if (!llvm::is_contained(mlir::tt::utils::kTopkSupportedKValues, k)) {
     return emitOpError("k must be one of {4, 8, 16, 32, 64}");
-  }
-  if (!getSorted()) {
-    return emitOpError("unsorted topk is not lowered");
   }
 
   int64_t height = valuesType.getShape()[0];

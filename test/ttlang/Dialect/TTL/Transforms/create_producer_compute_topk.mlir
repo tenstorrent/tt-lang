@@ -35,7 +35,7 @@ func.func @topk_store_is_not_a_compute_creation()
   %indices = ttl.attach_cb %indices_wait, %indices_cb
       : (tensor<1x2x!ttcore.tile<32x32, u16>>, !ttl.cb<[1, 2], !ttcore.tile<32x32, u16>, 2>)
         -> tensor<1x2x!ttcore.tile<32x32, u16>>
-  %out_values, %out_indices = ttl.topk %values, %indices k = 32 dim = -1
+  %out_values, %out_indices = ttl.topk %values, %indices k = 32
       : (tensor<1x2x!ttcore.tile<32x32, bf16>>, tensor<1x2x!ttcore.tile<32x32, u16>>)
         -> (tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, u16>>)
   %values_view = ttl.cb_reserve %out_values_cb
