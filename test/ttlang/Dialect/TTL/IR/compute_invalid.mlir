@@ -929,3 +929,78 @@ func.func @tile_accumulate_without_reduction_iterator(
   } -> tensor<1x1x!ttcore.tile<32x32, bf16>>
   func.return %result : tensor<1x1x!ttcore.tile<32x32, bf16>>
 }
+
+// -----
+
+// Test: attach_cb result type must equal the tensor operand type
+// (AttachCBOp::verify). Element types match so the element-type check passes;
+// the result shape (2x3) differs from the tensor operand shape (2x2).
+func.func @attach_cb_result_type_mismatch(
+    %t: tensor<2x2x!ttcore.tile<32x32, f32>>,
+    %cb: !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>) {
+  // expected-error @below {{result type must equal tensor operand type}}
+  %att = ttl.attach_cb %t, %cb
+      : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>)
+        -> tensor<2x3x!ttcore.tile<32x32, f32>>
+  func.return
+}
+
+// -----
+
+// Test: indexing map dim count must equal the iterator domain size
+// (ComputeOp::verify). The iterator domain has 1 dim but the input map
+// declares 2.
+func.func @compute_map_wrong_dim_count(
+    %a: tensor<2x2x!ttcore.tile<32x32, f32>>,
+    %cba: !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>,
+    %cbout: !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>)
+    -> tensor<2x2x!ttcore.tile<32x32, f32>> {
+  %init = tensor.empty() : tensor<2x2x!ttcore.tile<32x32, f32>>
+  %a_att = ttl.attach_cb %a, %cba
+      : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>)
+        -> tensor<2x2x!ttcore.tile<32x32, f32>>
+  %init_att = ttl.attach_cb %init, %cbout
+      : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>)
+        -> tensor<2x2x!ttcore.tile<32x32, f32>>
+  // expected-error @below {{indexing map expected 1 dims (iterator domain) but got 2}}
+  %0 = ttl.compute
+      ins(%a_att : tensor<2x2x!ttcore.tile<32x32, f32>>)
+      outs(%init_att : tensor<2x2x!ttcore.tile<32x32, f32>>)
+      {indexing_maps = [affine_map<(d0, d1) -> (d0, d1)>,
+                        affine_map<(d0, d1) -> (d0, d1)>],
+       iterator_types = ["parallel"]} {
+  ^bb0(%arg0: !ttcore.tile<32x32, f32>, %arg1: !ttcore.tile<32x32, f32>):
+    ttl.yield
+  } -> tensor<2x2x!ttcore.tile<32x32, f32>>
+  func.return %0 : tensor<2x2x!ttcore.tile<32x32, f32>>
+}
+
+// -----
+
+// Test: indexing map result count must match the operand rank
+// (ComputeOp::verify). The input operand has rank 2 but its map produces only
+// 1 result.
+func.func @compute_map_wrong_result_count(
+    %a: tensor<2x2x!ttcore.tile<32x32, f32>>,
+    %cba: !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>,
+    %cbout: !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>)
+    -> tensor<2x2x!ttcore.tile<32x32, f32>> {
+  %init = tensor.empty() : tensor<2x2x!ttcore.tile<32x32, f32>>
+  %a_att = ttl.attach_cb %a, %cba
+      : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>)
+        -> tensor<2x2x!ttcore.tile<32x32, f32>>
+  %init_att = ttl.attach_cb %init, %cbout
+      : (tensor<2x2x!ttcore.tile<32x32, f32>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>)
+        -> tensor<2x2x!ttcore.tile<32x32, f32>>
+  // expected-error @below {{indexing map expected 2 results to match operand rank, but got 1}}
+  %0 = ttl.compute
+      ins(%a_att : tensor<2x2x!ttcore.tile<32x32, f32>>)
+      outs(%init_att : tensor<2x2x!ttcore.tile<32x32, f32>>)
+      {indexing_maps = [affine_map<(d0, d1) -> (d0)>,
+                        affine_map<(d0, d1) -> (d0, d1)>],
+       iterator_types = ["parallel", "parallel"]} {
+  ^bb0(%arg0: !ttcore.tile<32x32, f32>, %arg1: !ttcore.tile<32x32, f32>):
+    ttl.yield
+  } -> tensor<2x2x!ttcore.tile<32x32, f32>>
+  func.return %0 : tensor<2x2x!ttcore.tile<32x32, f32>>
+}
