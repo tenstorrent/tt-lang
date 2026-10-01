@@ -1376,7 +1376,7 @@ public:
           "0x" + llvm::utohexstr(packedWords.front()) + "U");
       auto call = emitc::CallOpaqueOp::create(
           rewriter, op.getLoc(), resultType,
-          "experimental::constant_table_lookup_word", ArrayAttr(),
+          "::experimental::constant_table_lookup_word", ArrayAttr(),
           rewriter.getArrayAttr(templateArgs),
           ValueRange{adaptor.getIndex(), packedWord});
       rewriter.replaceOp(op, call.getResult(0));
@@ -1390,7 +1390,7 @@ public:
 
     auto call = emitc::CallOpaqueOp::create(
         rewriter, op.getLoc(), resultType,
-        "experimental::constant_table_lookup", ArrayAttr(),
+        "::experimental::constant_table_lookup", ArrayAttr(),
         rewriter.getArrayAttr(templateArgs),
         ValueRange{adaptor.getIndex(), tableRef});
     rewriter.replaceOp(op, call.getResult(0));
