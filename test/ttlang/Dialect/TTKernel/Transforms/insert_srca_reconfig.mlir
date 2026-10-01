@@ -244,16 +244,17 @@ func.func @branch_join_reconfig() {
   func.return
 }
 
-// add_tiles_init asserts the unpacker format already matches. It does not
-// replace the programmed SrcA operand, so the following copy of that operand
-// is not reconfigured again.
+// add_tiles_init asserts SrcA already matches in0. The copy switches SrcA to
+// BF16, so the add reconfigures back to U16 before its init, and the final
+// copy reconfigures again.
 // CHECK-LABEL: func.func @add_init_leaves_srca
 // CHECK-DAG: %[[BF16:.*]] = ttkernel.get_compile_time_arg_val(0)
 // CHECK-DAG: %[[U16:.*]] = ttkernel.get_compile_time_arg_val(1)
 // CHECK: ttkernel.reconfig_data_format_srca(%[[U16]], %[[BF16]])
-// CHECK: ttkernel.add_tiles_init(%[[U16]]
-// CHECK-NOT: ttkernel.reconfig_data_format_srca
-// CHECK: ttkernel.copy_tile(%[[BF16]]
+// CHECK: ttkernel.reconfig_data_format_srca(%[[BF16]], %[[U16]])
+// CHECK-NEXT: ttkernel.add_tiles_init(%[[U16]]
+// CHECK: ttkernel.reconfig_data_format_srca(%[[U16]], %[[BF16]])
+// CHECK-NEXT: ttkernel.copy_tile_init(%[[BF16]])
 // CHECK: ttkernel.tile_regs_release
 func.func @add_init_leaves_srca() {
   %bf16 = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>
@@ -269,13 +270,16 @@ func.func @add_init_leaves_srca() {
   func.return
 }
 
-// reduce_init does not write the unpack data format. The caller reconfigs
-// before it. A later copy of the already programmed operand stays as is.
+// Row sum unpacks the scaler through SrcA. reduce_init does not write that
+// format, so the scaler is reconfigured before the init. The following copy
+// reconfigures back.
 // CHECK-LABEL: func.func @reduce_init_leaves_srca
 // CHECK-DAG: %[[BF16:.*]] = ttkernel.get_compile_time_arg_val(0)
-// CHECK: ttkernel.reduce_init
-// CHECK-NOT: ttkernel.reconfig_data_format_srca
-// CHECK: ttkernel.copy_tile(%[[BF16]]
+// CHECK-DAG: %[[U16:.*]] = ttkernel.get_compile_time_arg_val(1)
+// CHECK: ttkernel.reconfig_data_format_srca(%[[BF16]], %[[U16]])
+// CHECK-NEXT: ttkernel.reduce_init
+// CHECK: ttkernel.reconfig_data_format_srca(%[[U16]], %[[BF16]])
+// CHECK-NEXT: ttkernel.copy_tile_init(%[[BF16]])
 // CHECK: ttkernel.tile_regs_release
 func.func @reduce_init_leaves_srca() {
   %bf16 = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>
@@ -286,6 +290,84 @@ func.func @reduce_init_leaves_srca() {
   ttkernel.copy_tile(%bf16, %c0, %c0) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index, index) -> ()
   ttkernel.reduce_tile(%bf16, %scaler, %c0, %c0, %c0, <reduce_sum>, <reduce_dim_row>) {ttl.reduce_output_cb_index = 2 : index} : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, !ttkernel.cb<4, !ttcore.tile<32x32, u16>>, index, index, index) -> ()
   ttkernel.copy_tile(%bf16, %c0, %c0) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index, index) -> ()
+  ttkernel.pack_tile(%c0, %out, %c0, false) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
+  ttkernel.tile_regs_release() : () -> ()
+  func.return
+}
+
+// A copy leaves SrcA on in0. mm_block_init_short does not restore in1, so
+// the matmul reconfigures before that init.
+// CHECK-LABEL: func.func @matmul_restores_srca
+// CHECK-DAG: %[[IN0:.*]] = ttkernel.get_compile_time_arg_val(0)
+// CHECK-DAG: %[[IN1:.*]] = ttkernel.get_compile_time_arg_val(1)
+// CHECK: ttkernel.reconfig_data_format_srca(%[[IN1]], %[[IN0]])
+// CHECK-NEXT: ttkernel.copy_tile_init(%[[IN0]])
+// CHECK: ttkernel.reconfig_data_format_srca(%[[IN0]], %[[IN1]])
+// CHECK-NEXT: "ttkernel.mm_block_init_short"(%[[IN0]], %[[IN1]]
+// CHECK: ttkernel.tile_regs_release
+func.func @matmul_restores_srca() {
+  %in0 = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>
+  %in1 = ttkernel.get_compile_time_arg_val(1) : () -> !ttkernel.cb<4, !ttcore.tile<32x32, u16>>
+  %out = ttkernel.get_compile_time_arg_val(2) : () -> !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>
+  %c0 = arith.constant 0 : index
+  %i0 = arith.constant 0 : i32
+  %i1 = arith.constant 1 : i32
+  ttkernel.tile_regs_acquire() : () -> ()
+  ttkernel.copy_tile(%in0, %c0, %c0) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index, index) -> ()
+  ttkernel.matmul_block(%in0, %in1, %c0, %c0, %c0, %i0, %i1, %i1, %i1) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, !ttkernel.cb<4, !ttcore.tile<32x32, u16>>, index, index, index, i32, i32, i32, i32) -> ()
+  ttkernel.pack_tile(%c0, %out, %c0, false) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
+  ttkernel.tile_regs_release() : () -> ()
+  func.return
+}
+
+// One branch ends in reduce and the other does not. The join still has to
+// clear the packer edge mask before commit.
+// CHECK-LABEL: func.func @reduce_uninit_at_branch_join
+// CHECK: } else {
+// CHECK: ttkernel.copy_tile
+// CHECK: ttkernel.reduce_uninit
+// CHECK-NEXT: ttkernel.tile_regs_commit
+func.func @reduce_uninit_at_branch_join() {
+  %bf16 = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>
+  %scaler = ttkernel.get_compile_time_arg_val(1) : () -> !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>
+  %out = ttkernel.get_compile_time_arg_val(2) : () -> !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>
+  %c0 = arith.constant 0 : index
+  %cond = arith.constant true
+  ttkernel.tile_regs_acquire() : () -> ()
+  scf.if %cond {
+    ttkernel.reduce_tile(%bf16, %scaler, %c0, %c0, %c0, <reduce_sum>, <reduce_dim_col>) {ttl.reduce_output_cb_index = 2 : index} : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index, index, index) -> ()
+    scf.yield
+  } else {
+    ttkernel.copy_tile(%bf16, %c0, %c0) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index, index) -> ()
+    scf.yield
+  }
+  ttkernel.tile_regs_commit() : () -> ()
+  ttkernel.tile_regs_wait() : () -> ()
+  ttkernel.pack_tile(%c0, %out, %c0, false) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
+  ttkernel.tile_regs_release() : () -> ()
+  func.return
+}
+
+// The loop may not run, so a reduce inside it still requires reduce_uninit
+// before the following commit.
+// CHECK-LABEL: func.func @reduce_uninit_when_loop_may_skip
+// CHECK: ttkernel.reduce_init
+// CHECK-NEXT: scf.for
+// CHECK: ttkernel.reduce_tile
+// CHECK: ttkernel.reduce_uninit
+// CHECK-NEXT: ttkernel.tile_regs_commit
+func.func @reduce_uninit_when_loop_may_skip(%n: index) {
+  %bf16 = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>
+  %scaler = ttkernel.get_compile_time_arg_val(1) : () -> !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>
+  %out = ttkernel.get_compile_time_arg_val(2) : () -> !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  ttkernel.tile_regs_acquire() : () -> ()
+  scf.for %i = %c0 to %n step %c1 {
+    ttkernel.reduce_tile(%bf16, %scaler, %c0, %c0, %c0, <reduce_sum>, <reduce_dim_col>) {ttl.reduce_output_cb_index = 2 : index} : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index, index, index) -> ()
+  }
+  ttkernel.tile_regs_commit() : () -> ()
+  ttkernel.tile_regs_wait() : () -> ()
   ttkernel.pack_tile(%c0, %out, %c0, false) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
   ttkernel.tile_regs_release() : () -> ()
   func.return

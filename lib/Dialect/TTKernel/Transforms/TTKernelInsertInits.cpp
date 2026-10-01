@@ -21,9 +21,11 @@
 //      non-copy key gets that init once, before the loop. copy_tile_init
 //      stays next to the copy so a SrcA reconfig can precede it.
 //   3. SrcA format reconfiguration: copy_tile_init does not change the
-//      unpack data format. A copy from a CB whose element type differs from
-//      the programmed SrcA operand gets reconfig_data_format_srca. Loop
-//      backedges and branch joins merge that operand per edge.
+//      unpack data format, and the short inits assert that it already
+//      matches. A copy, add, sub, mul, dest-reuse, reduce, or matmul whose
+//      required SrcA element type differs gets reconfig_data_format_srca
+//      immediately before that init. Loop backedges and branch joins merge
+//      the programmed operand per edge.
 //
 // TODO(#329): Emit init_short variants for cheaper re-inits on type switches.
 //
@@ -615,15 +617,99 @@ static Value srcAProgrammedBy(Operation *op) {
   return Value();
 }
 
-// Phase 2 places copy_tile_init immediately before the copy that needs it.
-// Keep the reconfig in front of that init.
-static Operation *reconfigInsertionPoint(Operation *copy, Value srcCB) {
-  if (auto init = dyn_cast_or_null<ttk::CopyTileInitOp>(copy->getPrevNode())) {
-    if (init.getCb0() == srcCB) {
-      return init;
-    }
+// Short inits assert that unpacker A already has this operand's format.
+// add/sub/mul take it from in0. Dest reuse unpacks its one CB through SrcA.
+// Row sum and row average swap the scaler into SrcA. Other reduces use the
+// data CB. Matmul's short init keeps SrcA on in1.
+static Value srcARequiredBy(Operation *op) {
+  if (auto binary = dyn_cast<ttk::AddTilesOp>(op)) {
+    return binary.getIn0Cb();
   }
-  return copy;
+  if (auto binary = dyn_cast<ttk::SubTilesOp>(op)) {
+    return binary.getIn0Cb();
+  }
+  if (auto binary = dyn_cast<ttk::MulTilesOp>(op)) {
+    return binary.getIn0Cb();
+  }
+  if (auto reuse = dyn_cast<ttk::BinaryDestReuseTilesOp>(op)) {
+    return reuse.getInCb();
+  }
+  if (auto reduce = dyn_cast<ttk::ReduceTileOp>(op)) {
+    bool scalerIsSrcA = reduce.getReduceDim() == ttk::ReduceDim::Row &&
+                        reduce.getReduceType() != ttk::ReduceType::Max;
+    return scalerIsSrcA ? reduce.getScalingCb() : reduce.getInCb();
+  }
+  if (auto matmul = dyn_cast<ttk::MatmulBlockOp>(op)) {
+    return matmul.getIn1CbId();
+  }
+  return Value();
+}
+
+static Value srcAOperand(Operation *op) {
+  if (auto copy = dyn_cast<ttk::CopyTileOp>(op)) {
+    return copy.getCb0();
+  }
+  if (auto copyBlock = dyn_cast<ttk::CopyBlockMatmulPartialsOp>(op)) {
+    return copyBlock.getCb();
+  }
+  return srcARequiredBy(op);
+}
+
+// The short init sits immediately before the consumer, or before the loop
+// when that init was hoisted. The reconfig has to run before the init.
+static bool isPairedShortInit(Operation *init, Operation *consumer,
+                              Value srcCB) {
+  if (!init) {
+    return false;
+  }
+  if (isa<ttk::CopyTileOp, ttk::CopyBlockMatmulPartialsOp>(consumer)) {
+    auto copyInit = dyn_cast<ttk::CopyTileInitOp>(init);
+    return copyInit && copyInit.getCb0() == srcCB;
+  }
+  if (isa<ttk::AddTilesOp>(consumer)) {
+    auto add = dyn_cast<ttk::AddTilesInitOp>(init);
+    return add && add.getIn0Cb() == srcCB;
+  }
+  if (isa<ttk::SubTilesOp>(consumer)) {
+    auto sub = dyn_cast<ttk::SubTilesInitOp>(init);
+    return sub && sub.getIn0Cb() == srcCB;
+  }
+  if (isa<ttk::MulTilesOp>(consumer)) {
+    auto mul = dyn_cast<ttk::MulTilesInitOp>(init);
+    return mul && mul.getIn0Cb() == srcCB;
+  }
+  if (isa<ttk::BinaryDestReuseTilesOp>(consumer)) {
+    auto reuse = dyn_cast<ttk::BinaryDestReuseTilesInitOp>(init);
+    return reuse && reuse.getInCb() == srcCB;
+  }
+  if (isa<ttk::ReduceTileOp>(consumer)) {
+    auto reduce = dyn_cast<ttk::ReduceInitOp>(init);
+    return reduce &&
+           (reduce.getInCb() == srcCB || reduce.getScalingCb() == srcCB);
+  }
+  if (isa<ttk::MatmulBlockOp>(consumer)) {
+    auto matmul = dyn_cast<ttk::MatmulBlockInitShortOp>(init);
+    return matmul && matmul.getIn1Cb() == srcCB;
+  }
+  return false;
+}
+
+static Operation *reconfigInsertionPoint(Operation *consumer, Value srcCB) {
+  if (isPairedShortInit(consumer->getPrevNode(), consumer, srcCB)) {
+    return consumer->getPrevNode();
+  }
+  Operation *cursor = consumer;
+  while (auto forOp = dyn_cast<scf::ForOp>(cursor->getParentOp())) {
+    Operation *prev = forOp->getPrevNode();
+    if (isPairedShortInit(prev, consumer, srcCB)) {
+      return prev;
+    }
+    if (prev) {
+      break;
+    }
+    cursor = forOp;
+  }
+  return consumer;
 }
 
 struct SrcAReconfig {
@@ -768,12 +854,8 @@ processOperation(Operation *op, SrcAState state, bool record,
     }
     return {};
   }
-  if (auto copy = dyn_cast<ttk::CopyTileOp>(op)) {
-    return recordCopyReconfig(copy, copy.getCb0(), state, record, planned);
-  }
-  if (auto copyBlock = dyn_cast<ttk::CopyBlockMatmulPartialsOp>(op)) {
-    return recordCopyReconfig(copyBlock, copyBlock.getCb(), state, record,
-                              planned);
+  if (Value srcCB = srcAOperand(op)) {
+    return recordCopyReconfig(op, srcCB, state, record, planned);
   }
   if (Value programmed = srcAProgrammedBy(op)) {
     return {programmed};
@@ -789,11 +871,8 @@ static SrcAState processRegion(Region &region, SrcAState entry, bool record,
   if (!region.hasOneBlock()) {
     if (record) {
       region.walk([&](Operation *op) {
-        if (auto copy = dyn_cast<ttk::CopyTileOp>(op)) {
-          recordCopyReconfig(copy, copy.getCb0(), {}, true, planned);
-        } else if (auto copyBlock =
-                       dyn_cast<ttk::CopyBlockMatmulPartialsOp>(op)) {
-          recordCopyReconfig(copyBlock, copyBlock.getCb(), {}, true, planned);
+        if (Value srcCB = srcAOperand(op)) {
+          recordCopyReconfig(op, srcCB, {}, true, planned);
         }
       });
     }
@@ -806,9 +885,9 @@ static SrcAState processRegion(Region &region, SrcAState entry, bool record,
   return state;
 }
 
-/// Insert reconfig_data_format_srca before copies whose CB element type
-/// differs from the SrcA format programmed for this sync region.
-/// copy_tile_init does not program that format.
+/// Insert reconfig_data_format_srca before a copy or short-init consumer
+/// whose required SrcA element type differs from the programmed operand.
+/// Those inits do not program the format.
 static LogicalResult insertSrcAReconfigs(ModuleOp moduleOp) {
   bool hadError = false;
   moduleOp->walk([&](ttk::TileRegsAcquireOp acquireOp) {
@@ -852,8 +931,11 @@ using ComputeInitMap = llvm::DenseMap<mlir::TypeID, InitOpInfo>;
 
 // A null key means the programmed init is not unique. The next compute must
 // be initialized again; reusing either predecessor can skip a required init.
+// mayReduce stays set when any incoming path can still have the packer edge
+// mask from reduce_init. Merging keys must not drop that fact.
 struct InitState {
   std::optional<InitKey> key;
+  bool mayReduce = false;
 };
 
 struct InitSim {
@@ -879,15 +961,24 @@ static InitSim processInitIf(scf::IfOp ifOp, InitState entry, bool record,
 static InitSim processInitWhile(scf::WhileOp whileOp, InitState entry,
                                 bool record, const InitInsertCtx &ctx);
 
-static bool sameInit(InitState lhs, InitState rhs) {
+static bool sameInitKey(InitState lhs, InitState rhs) {
   if (!lhs.key || !rhs.key) {
     return !lhs.key && !rhs.key;
   }
   return *lhs.key == *rhs.key;
 }
 
+static bool sameInit(InitState lhs, InitState rhs) {
+  return sameInitKey(lhs, rhs) && lhs.mayReduce == rhs.mayReduce;
+}
+
 static InitState mergeInit(InitState lhs, InitState rhs) {
-  return sameInit(lhs, rhs) ? lhs : InitState{};
+  InitState result;
+  result.mayReduce = lhs.mayReduce || rhs.mayReduce;
+  if (sameInitKey(lhs, rhs)) {
+    result.key = lhs.key;
+  }
+  return result;
 }
 
 static bool isCopyInitKey(const InitKey &key) {
@@ -949,7 +1040,7 @@ static InitSim processInitSequence(Block::iterator begin, Block::iterator end,
   for (auto it = begin; it != end; ++it) {
     Operation &op = *it;
     if (isSyncBoundary(&op)) {
-      if (isReduceKey(sim.state)) {
+      if (sim.state.mayReduce) {
         sim.changed = true;
         if (record) {
           OpBuilder builder(&op);
@@ -990,22 +1081,26 @@ static InitSim processInitSequence(Block::iterator begin, Block::iterator end,
       continue;
     }
     InitKey key = computeInitKey(&op);
-    bool reduceUninit = isReduceKey(sim.state) &&
+    bool reduceUninit = sim.state.mayReduce &&
                         key.typeId != mlir::TypeID::get<ttk::ReduceTileOp>();
-    if (!sim.state.key || *sim.state.key != key) {
+    bool keyChanged = !sim.state.key || *sim.state.key != key;
+    if (keyChanged || reduceUninit) {
       sim.changed = true;
       if (record) {
         OpBuilder builder(&op);
         if (reduceUninit) {
           ttk::ReduceUninitOp::create(builder, op.getLoc());
         }
-        mapIt->second.createInit(builder, op.getLoc(), &op);
+        if (keyChanged) {
+          mapIt->second.createInit(builder, op.getLoc(), &op);
+        }
       }
     }
     if (record) {
       markInitInserted(&op, ctx);
     }
     sim.state.key = key;
+    sim.state.mayReduce = isReduceKey(sim.state);
   }
   return sim;
 }
@@ -1035,10 +1130,12 @@ static InitSim processInitFor(scf::ForOp forOp, InitState entry, bool record,
     Operation *representative = findComputeWithKey(body, *cold.state.key, ctx);
     if (representative && initValuesDefinedOutside(forOp, representative)) {
       bool needsInit = !sameInit(entry, cold.state);
+      // Uninit runs before the loop, including when the loop does not run.
+      bool clearReduce = entry.mayReduce && !isReduceKey(cold.state);
       if (record && needsInit) {
         auto mapIt = ctx.inits.find(representative->getName().getTypeID());
         OpBuilder builder(forOp);
-        if (isReduceKey(entry) && !isReduceKey(cold.state)) {
+        if (clearReduce) {
           ttk::ReduceUninitOp::create(builder, forOp.getLoc());
         }
         mapIt->second.createInit(builder, representative->getLoc(),
@@ -1047,8 +1144,12 @@ static InitSim processInitFor(scf::ForOp forOp, InitState entry, bool record,
       if (record) {
         processInitRegion(body, cold.state, true, ctx);
       }
+      InitState carried = entry;
+      if (clearReduce) {
+        carried.mayReduce = false;
+      }
       InitSim result;
-      result.state = mustRun ? cold.state : mergeInit(entry, cold.state);
+      result.state = mustRun ? cold.state : mergeInit(carried, cold.state);
       result.changed = needsInit;
       return result;
     }

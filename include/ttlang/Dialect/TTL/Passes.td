@@ -1552,17 +1552,24 @@ def TTKernelInsertInits
     `copy_tile_init` programs the unpack mode and not the SrcA data format.
     The common init programs that format from the region's first input CB, or
     from the matmul's second input when the full matmul init is used (SrcA is
-    in1). A later `copy_tile` or `copy_block_matmul_partials` whose element
-    type differs gets `reconfig_data_format_srca` immediately before its
-    `copy_tile_init`. The one-operand form is used when the incoming format is
+    in1). A later `copy_tile`, `copy_block_matmul_partials`, `add_tiles`,
+    `sub_tiles`, `mul_tiles`, `binary_dest_reuse_tiles`, `reduce_tile`, or
+    `matmul_block` whose required SrcA element type differs gets
+    `reconfig_data_format_srca` immediately before its short init. add, sub,
+    and mul require in0. Dest reuse requires the unpacked CB. Row sum and row
+    average require the scaler; other reduces require the data CB. Matmul
+    requires in1. The one-operand form is used when the incoming format is
     not a single CB, which happens on a loop backedge or a branch join. That
     form updates the data format only; it does not reprogram tile or face
     geometry. The two-operand form does when the geometry differs. Full
     configures (`transpose_wh_init`, `unary_bcast_init`,
     `binary_op_init_common`, matmul init, `init_sfpu`) replace the tracked
-    SrcA operand. `mm_block_init_short`, `binary_dest_reuse_tiles_init`,
-    `add_tiles_init`, `sub_tiles_init`, `mul_tiles_init`, and `reduce_init`
-    do not: they require the unpacker format to already match.
+    SrcA operand. The short inits above do not write it.
+
+    `reduce_uninit` runs before the next non-reduce compute and before a
+    sync boundary when any incoming path may still be in reduction. A branch
+    join or a loop that might not run keeps that fact after the init key is
+    no longer unique.
 
     Example (consecutive same-type ops share one init):
     ```mlir
