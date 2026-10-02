@@ -1546,7 +1546,8 @@ def TTKernelInsertInits
     `scf.while`, and resets at sync boundaries
     (`tile_regs_acquire`/`commit`/`wait`/`release`). A loop whose every
     iteration computes with one key and loop-invariant operands is
-    initialized once, before the loop.
+    initialized once, before the loop. An existing SrcA write invalidates the
+    key, so the next compute gets its own init.
 
     `copy_tile_init` programs the unpack mode and not the SrcA data format.
     That format is written by the full configures (`init_sfpu`,

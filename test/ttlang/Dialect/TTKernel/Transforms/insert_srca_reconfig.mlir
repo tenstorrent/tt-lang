@@ -130,6 +130,55 @@ func.func @existing_reconfig() {
   func.return
 }
 
+// An existing reconfig changes SrcA between two copies from one CB. The SrcA
+// write invalidates the copy init, so the second copy gets its own init and
+// the format is restored before it.
+// CHECK-LABEL: func.func @reconfig_between_same_copies
+// CHECK-DAG: %[[BF16:.*]] = ttkernel.get_compile_time_arg_val(0)
+// CHECK-DAG: %[[U16:.*]] = ttkernel.get_compile_time_arg_val(1)
+// CHECK: ttkernel.copy_tile_init(%[[BF16]])
+// CHECK-NEXT: ttkernel.copy_tile(%[[BF16]]
+// CHECK-NEXT: ttkernel.reconfig_data_format_srca(%[[U16]]) :
+// CHECK-NEXT: ttkernel.reconfig_data_format_srca(%[[U16]], %[[BF16]])
+// CHECK-NEXT: ttkernel.copy_tile_init(%[[BF16]])
+// CHECK-NEXT: ttkernel.copy_tile(%[[BF16]]
+// CHECK: ttkernel.tile_regs_release
+func.func @reconfig_between_same_copies() {
+  %bf16 = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>
+  %u16 = ttkernel.get_compile_time_arg_val(1) : () -> !ttkernel.cb<4, !ttcore.tile<32x32, u16>>
+  %out = ttkernel.get_compile_time_arg_val(2) : () -> !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  ttkernel.tile_regs_acquire() : () -> ()
+  ttkernel.copy_tile(%bf16, %c0, %c0) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index, index) -> ()
+  ttkernel.reconfig_data_format_srca(%u16) : (!ttkernel.cb<4, !ttcore.tile<32x32, u16>>) -> ()
+  ttkernel.copy_tile(%bf16, %c0, %c1) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index, index) -> ()
+  ttkernel.pack_tile(%c0, %out, %c0, false) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
+  ttkernel.tile_regs_release() : () -> ()
+  func.return
+}
+
+// A SrcA write forgets the init key but not the pending reduce_uninit.
+// CHECK-LABEL: func.func @reconfig_keeps_reduce_uninit
+// CHECK: ttkernel.reduce_tile
+// CHECK-NEXT: ttkernel.reconfig_data_format_srca
+// CHECK-NEXT: ttkernel.reduce_uninit
+// CHECK-NEXT: ttkernel.tile_regs_commit
+func.func @reconfig_keeps_reduce_uninit() {
+  %bf16 = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>
+  %scaler = ttkernel.get_compile_time_arg_val(1) : () -> !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>
+  %out = ttkernel.get_compile_time_arg_val(2) : () -> !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>
+  %c0 = arith.constant 0 : index
+  ttkernel.tile_regs_acquire() : () -> ()
+  ttkernel.reduce_tile(%bf16, %scaler, %c0, %c0, %c0, <reduce_sum>, <reduce_dim_col>) {ttl.reduce_output_cb_index = 2 : index} : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index, index, index) -> ()
+  ttkernel.reconfig_data_format_srca(%bf16) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>) -> ()
+  ttkernel.tile_regs_commit() : () -> ()
+  ttkernel.tile_regs_wait() : () -> ()
+  ttkernel.pack_tile(%c0, %out, %c0, false) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
+  ttkernel.tile_regs_release() : () -> ()
+  func.return
+}
+
 // Full matmul init programs SrcA from in1 (SrcOrder::Reverse), not in0.
 // CHECK-LABEL: func.func @matmul_srca_is_in1
 // CHECK-DAG: %[[IN0:.*]] = ttkernel.get_compile_time_arg_val(0)

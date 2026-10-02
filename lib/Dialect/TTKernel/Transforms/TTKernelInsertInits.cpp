@@ -19,7 +19,8 @@
 //      scf.if, and scf.while, and resets at sync boundaries. The init is
 //      placed immediately before the compute op. A loop whose every
 //      iteration computes with one key and loop-invariant operands gets
-//      that init once, before the loop.
+//      that init once, before the loop. A SrcA write invalidates the key, so
+//      every compute after one has its own init for phase 3 to check.
 //   3. SrcA format reconfiguration: copy_tile_init does not change the
 //      unpack data format, and the short inits assert that it already
 //      matches. A copy, add, sub, mul, dest-reuse, reduce, or matmul short
@@ -965,6 +966,11 @@ struct InitSummary {
     return {InitTransfer::assign({}), nullptr, false};
   }
 
+  // Joining with the unknown state forgets the key and keeps mayReduce.
+  static InitSummary forgettingKey() {
+    return {{InitTransfer::Kind::Join, {}}, nullptr, false};
+  }
+
   void absorbUniformity(const InitSummary &other) {
     uniform = uniform && other.uniform;
     if (!other.representative) {
@@ -1054,6 +1060,9 @@ InitSummary InitInserter::summarize(Operation *op) {
   }
   if (op->getNumRegions() != 0) {
     return InitSummary::discarding();
+  }
+  if (srcAProgrammedBy(op)) {
+    return InitSummary::forgettingKey();
   }
   if (!isCompute(op)) {
     return {};
@@ -1149,6 +1158,9 @@ InitState InitInserter::insert(Operation *op, InitState state) {
       insert(region, {});
     }
     return {};
+  }
+  if (srcAProgrammedBy(op)) {
+    return InitSummary::forgettingKey().transfer.apply(state);
   }
   if (!isCompute(op)) {
     return state;
