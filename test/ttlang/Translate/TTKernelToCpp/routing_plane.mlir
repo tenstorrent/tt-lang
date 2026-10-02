@@ -1,7 +1,16 @@
 // Verify that routing-plane operations translate to the tt-fabric linear API.
 // RUN: ttlang-opt --convert-ttkernel-to-emitc %s -o %t.emitc.mlir
+// RUN: FileCheck %s --input-file=%t.emitc.mlir --check-prefix=EMITC
 // RUN: ttlang-translate --ttkernel-to-cpp -o %t.cpp %t.emitc.mlir
 // RUN: FileCheck %s --input-file=%t.cpp
+
+// EMITC-LABEL: func.func @routing_plane
+// EMITC: emitc.verbatim "::experimental::RoutingPlaneConnectionManager routing_plane_connection_manager_{{[0-9]+}};"
+// EMITC: !emitc.opaque<"::experimental::RoutingPlaneConnectionManager">
+// EMITC: emitc.call_opaque "::experimental::routing_plane_atomic_inc"
+// EMITC: emitc.call_opaque "::experimental::routing_plane_write"
+// EMITC: emitc.call_opaque "::experimental::routing_plane_scatter_write"
+// EMITC: emitc.call_opaque "::experimental::routing_plane_fused_write_atomic_inc"
 
 // CHECK: #include "tt_metal/fabric/fabric_edm_packet_header.hpp"
 // CHECK-NEXT: #include "tt_metal/fabric/hw/inc/fabric_config.h"
@@ -44,14 +53,14 @@
 // CHECK: noc_async_writes_flushed();
 // CHECK-LABEL: void kernel_main() {
 // CHECK: size_t [[RUNTIME_ARG_BASE:.*]] = 5;
-// CHECK: experimental::RoutingPlaneConnectionManager [[MANAGER:.*]];
+// CHECK: ::experimental::RoutingPlaneConnectionManager [[MANAGER:.*]];
 // CHECK: uint32_t [[ROUTE_ID:.*]] = 0;
 // CHECK: if ([[COUNT:.*]] != 0) {
 // CHECK-NEXT: [[ROUTE_ID]] = [[MANAGER]].open([[COUNT]], [[RUNTIME_ARG_BASE]]);
-// CHECK: experimental::routing_plane_atomic_inc([[MANAGER]], [[ROUTE_ID]], [[INDEX:[^,]+]], [[DEST_DEVICE:[^,]+]], [[DEST_MESH:[^,]+]], [[HOPS:[^,]+]],
-// CHECK: experimental::routing_plane_write([[MANAGER]], [[ROUTE_ID]], [[INDEX]], [[DEST_DEVICE]], [[DEST_MESH]], [[HOPS]],
-// CHECK: experimental::routing_plane_scatter_write([[MANAGER]], [[ROUTE_ID]], [[INDEX]], [[DEST_DEVICE]], [[DEST_MESH]], [[HOPS]],
-// CHECK: experimental::routing_plane_fused_write_atomic_inc([[MANAGER]], [[ROUTE_ID]], [[INDEX]], [[DEST_DEVICE]], [[DEST_MESH]], [[HOPS]],
+// CHECK: ::experimental::routing_plane_atomic_inc([[MANAGER]], [[ROUTE_ID]], [[INDEX:[^,]+]], [[DEST_DEVICE:[^,]+]], [[DEST_MESH:[^,]+]], [[HOPS:[^,]+]],
+// CHECK: ::experimental::routing_plane_write([[MANAGER]], [[ROUTE_ID]], [[INDEX]], [[DEST_DEVICE]], [[DEST_MESH]], [[HOPS]],
+// CHECK: ::experimental::routing_plane_scatter_write([[MANAGER]], [[ROUTE_ID]], [[INDEX]], [[DEST_DEVICE]], [[DEST_MESH]], [[HOPS]],
+// CHECK: ::experimental::routing_plane_fused_write_atomic_inc([[MANAGER]], [[ROUTE_ID]], [[INDEX]], [[DEST_DEVICE]], [[DEST_MESH]], [[HOPS]],
 // CHECK: if ([[COUNT]] != 0) {
 // CHECK-NEXT: [[MANAGER]].close([[COUNT]]);
 

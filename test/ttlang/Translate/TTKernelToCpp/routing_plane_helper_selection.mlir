@@ -8,13 +8,13 @@
 // CHECK: routing_plane_write(
 // CHECK-NOT: routing_plane_scatter_write(
 // CHECK: void kernel_main() {
-// CHECK-NEXT: experimental::routing_plane_write();
+// CHECK-NEXT: ::experimental::routing_plane_write();
 // CHECK-NOT: routing_plane_scatter_write(
 // CHECK: SPLIT-OUTPUT
 
 module {
   func.func @write_only() attributes {ttkernel.thread = #ttkernel.thread<noc>} {
-    emitc.call_opaque "experimental::routing_plane_write"() : () -> ()
+    emitc.call_opaque "::experimental::routing_plane_write"() : () -> ()
     return
   }
 }
@@ -26,11 +26,11 @@ module {
 // CHECK: FORCE_INLINE void routing_plane_scatter_write(
 // CHECK-NOT: routing_plane_write(
 // CHECK: void kernel_main() {
-// CHECK-NEXT: experimental::routing_plane_scatter_write();
+// CHECK-NEXT: ::experimental::routing_plane_scatter_write();
 
 module {
   func.func @scatter_only() attributes {ttkernel.thread = #ttkernel.thread<noc>} {
-    emitc.call_opaque "experimental::routing_plane_scatter_write"() : () -> ()
+    emitc.call_opaque "::experimental::routing_plane_scatter_write"() : () -> ()
     return
   }
 }
@@ -43,11 +43,11 @@ module {
 // CHECK-NOT: routing_plane_write(
 // CHECK-NOT: routing_plane_scatter_write(
 // CHECK: void kernel_main() {
-// CHECK-NEXT: experimental::RoutingPlaneConnectionManager routing_plane_connection_manager_0;
+// CHECK-NEXT: ::experimental::RoutingPlaneConnectionManager routing_plane_connection_manager_0;
 
 module {
   func.func @manager_only() attributes {ttkernel.thread = #ttkernel.thread<noc>} {
-    emitc.verbatim "experimental::RoutingPlaneConnectionManager routing_plane_connection_manager_0;"
+    emitc.verbatim "::experimental::RoutingPlaneConnectionManager routing_plane_connection_manager_0;"
     return
   }
 }
