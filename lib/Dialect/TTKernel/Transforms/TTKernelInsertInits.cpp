@@ -47,6 +47,7 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Builders.h"
+#include "mlir/IR/Matchers.h"
 #include "llvm/ADT/SmallVector.h"
 
 #define DEBUG_TYPE "ttkernel-insert-inits"
@@ -243,13 +244,34 @@ struct InitKey {
   mlir::TypeID typeId;
   llvm::SmallVector<Value, 2> operands;
   int64_t discriminator = 0; // for attribute differences (e.g., bcast type)
+  // Non-CB init operands. Constants compare by value because lowering
+  // materializes one constant per op and this pass runs before CSE.
+  llvm::SmallVector<OpFoldResult, 4> parameters = {};
 
   bool operator==(const InitKey &other) const {
     return typeId == other.typeId && operands == other.operands &&
-           discriminator == other.discriminator;
+           discriminator == other.discriminator &&
+           parameters == other.parameters;
   }
   bool operator!=(const InitKey &other) const { return !(*this == other); }
 };
+
+// mm_block_init_short forwards these to the unpack and math inits.
+static llvm::SmallVector<Value, 4> initParameterValues(Operation *op) {
+  if (auto matmul = dyn_cast<ttk::MatmulBlockOp>(op)) {
+    return {matmul.getTranspose(), matmul.getCtDim(), matmul.getRtDim(),
+            matmul.getKtDim()};
+  }
+  return {};
+}
+
+static OpFoldResult initParameter(Value value) {
+  Attribute constant;
+  if (matchPattern(value, m_Constant(&constant))) {
+    return constant;
+  }
+  return value;
+}
 
 static InitKey computeInitKey(Operation *op) {
   mlir::TypeID typeId = op->getName().getTypeID();
@@ -258,8 +280,12 @@ static InitKey computeInitKey(Operation *op) {
     return {typeId, {op->getOperand(0), op->getOperand(1)}};
   }
 
-  if (isa<ttk::MatmulBlockOp>(op)) {
-    return {typeId, {op->getOperand(0), op->getOperand(1)}};
+  if (auto matmul = dyn_cast<ttk::MatmulBlockOp>(op)) {
+    InitKey key{typeId, {matmul.getIn0CbId(), matmul.getIn1CbId()}};
+    for (Value parameter : initParameterValues(op)) {
+      key.parameters.push_back(initParameter(parameter));
+    }
+    return key;
   }
 
   if (isa<ttk::CopyTileOp, ttk::CopyBlockMatmulPartialsOp>(op)) {
@@ -918,15 +944,10 @@ static bool initValuesDefinedOutside(scf::ForOp forOp, Operation *compute) {
       return false;
     }
   }
-  // The short matmul init also reads the dimension operands. Those are not
-  // part of the key because they do not select a different kernel variant.
-  if (auto matmul = dyn_cast<ttk::MatmulBlockOp>(compute)) {
-    Value extras[] = {matmul.getTranspose(), matmul.getCtDim(),
-                      matmul.getRtDim(), matmul.getKtDim()};
-    for (Value operand : extras) {
-      if (!forOp.isDefinedOutsideOfLoop(operand)) {
-        return false;
-      }
+  // The hoisted init consumes the original SSA values, not the folded key.
+  for (Value parameter : initParameterValues(compute)) {
+    if (!forOp.isDefinedOutsideOfLoop(parameter)) {
+      return false;
     }
   }
   return true;
