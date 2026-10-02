@@ -391,12 +391,13 @@ func.func @no_common_init() {
 }
 
 // Nested loops that keep one copy key hoist copy_tile_init above the outer
-// loop. The reconfig is placed in front of that hoisted init, once.
+// loop. The reconfig is placed in front of that hoisted init, once, and uses
+// the operand programmed at that point.
 // CHECK-LABEL: func.func @hoisted_copy_init_nested_loops
 // CHECK-DAG: %[[BF16:.*]] = ttkernel.get_compile_time_arg_val(0)
 // CHECK-DAG: %[[U16:.*]] = ttkernel.get_compile_time_arg_val(1)
 // CHECK: ttkernel.copy_tile(%[[BF16]]
-// CHECK-NEXT: ttkernel.reconfig_data_format_srca(%[[U16]]) :
+// CHECK-NEXT: ttkernel.reconfig_data_format_srca(%[[BF16]], %[[U16]])
 // CHECK-NEXT: ttkernel.copy_tile_init(%[[U16]])
 // CHECK-NEXT: scf.for
 // CHECK-NEXT: scf.for
@@ -417,6 +418,40 @@ func.func @hoisted_copy_init_nested_loops() {
   scf.for %i = %c0 to %c4 step %c1 {
     scf.for %j = %c0 to %c4 step %c1 {
       ttkernel.copy_tile(%u16, %j, %j) : (!ttkernel.cb<4, !ttcore.tile<32x32, u16>>, index, index) -> ()
+    }
+  }
+  ttkernel.pack_tile(%c0, %out, %c0, false) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
+  ttkernel.tile_regs_release() : () -> ()
+  func.return
+}
+
+// A loop-local op between the outer and inner loop does not separate the
+// hoisted init from its reconfig: both precede the outer loop.
+// CHECK-LABEL: func.func @hoisted_copy_init_loop_local_op
+// CHECK-DAG: %[[BF16:.*]] = ttkernel.get_compile_time_arg_val(0)
+// CHECK-DAG: %[[U16:.*]] = ttkernel.get_compile_time_arg_val(1)
+// CHECK: ttkernel.copy_tile(%[[BF16]]
+// CHECK-NEXT: ttkernel.reconfig_data_format_srca(%[[BF16]], %[[U16]])
+// CHECK-NEXT: ttkernel.copy_tile_init(%[[U16]])
+// CHECK-NEXT: scf.for
+// CHECK-NEXT: arith.addi
+// CHECK-NEXT: scf.for
+// CHECK-NEXT: ttkernel.copy_tile(%[[U16]]
+// CHECK-NOT: ttkernel.reconfig_data_format_srca
+// CHECK: ttkernel.tile_regs_release
+func.func @hoisted_copy_init_loop_local_op() {
+  %bf16 = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>
+  %u16 = ttkernel.get_compile_time_arg_val(1) : () -> !ttkernel.cb<4, !ttcore.tile<32x32, u16>>
+  %out = ttkernel.get_compile_time_arg_val(2) : () -> !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c4 = arith.constant 4 : index
+  ttkernel.tile_regs_acquire() : () -> ()
+  ttkernel.copy_tile(%bf16, %c0, %c0) : (!ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index, index) -> ()
+  scf.for %i = %c0 to %c4 step %c1 {
+    %row = arith.addi %i, %c1 : index
+    scf.for %j = %c0 to %c4 step %c1 {
+      ttkernel.copy_tile(%u16, %row, %j) : (!ttkernel.cb<4, !ttcore.tile<32x32, u16>>, index, index) -> ()
     }
   }
   ttkernel.pack_tile(%c0, %out, %c0, false) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>, index) -> ()
