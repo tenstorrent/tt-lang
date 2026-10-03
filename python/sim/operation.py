@@ -67,6 +67,7 @@ def operation(
     fp32_dest_acc_en: Optional[bool] = None,
     dst_full_sync_en: Optional[bool] = None,
     math_fidelity: Optional[str] = None,
+    dispatcher: bool = False,
     **unknown: Any,
 ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
     """
@@ -86,6 +87,7 @@ def operation(
         fp32_dest_acc_en: Ignored; accepted for compiler compatibility.
         dst_full_sync_en: Ignored; accepted for compiler compatibility.
         math_fidelity: Ignored; accepted for compiler compatibility.
+        dispatcher: Marks the operation as a static dispatch controller. Other operations and kernels in this the operation marked with dispatcher = True will be executed as part of the af dispatch.
 
     Returns:
         Decorated function with grid configuration
@@ -107,6 +109,9 @@ def operation(
             f"ttl.operation() received unexpected keyword argument(s): "
             f"{', '.join(sorted(unknown))}"
         )
+
+    if not isinstance(dispatcher, bool):
+        raise TypeError("ttl.operation() dispatcher must be a bool")
 
     validate_math_fidelity(math_fidelity)
 
@@ -175,6 +180,7 @@ def operation(
 
         # Store the decorator parameters for later access
         setattr(wrapper, "__pykernel_config__", {"grid": grid})
+        setattr(wrapper, "dispatcher", dispatcher)
         return wrapper
 
     return decorator

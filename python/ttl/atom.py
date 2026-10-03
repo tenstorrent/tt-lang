@@ -234,6 +234,7 @@ class _AtomSpec:
     source: str
     source_file: str
     line_offset: int
+    dispatcher_ast: Optional[ast.FunctionDef]
     fn_ast: ast.FunctionDef  # post-inline
     params: List[_ParamInfo]
     dfb_param_names: List[str]
@@ -283,7 +284,10 @@ def _classify_params(fn: Callable) -> List[_ParamInfo]:
 
 
 def _build_atom_spec(
-    fn: Callable, *, bind_fabric_manager_claims: bool = True
+    fn: Callable,
+    *,
+    dispatcher: bool = False,
+    bind_fabric_manager_claims: bool = True,
 ) -> _AtomSpec:
     name = fn.__name__
     try:
@@ -307,6 +311,9 @@ def _build_atom_spec(
     scope = function_scope(fn)
     enclosing_scope = dict(scope)
     captured_values = _referenced_operation_values(fn)
+    dispatcher_ast = copy.deepcopy(fn_def) if dispatcher else None
+    if dispatcher_ast is not None:
+        specialize_static_boolean_branches(dispatcher_ast, captured_values)
 
     # Inline statement-level calls to other unified operations, then keep
     # the post-inline AST + source.
@@ -498,6 +505,7 @@ def _build_atom_spec(
         source=source,
         source_file=source_file,
         line_offset=line_offset,
+        dispatcher_ast=dispatcher_ast,
         fn_ast=fn_def,
         params=params,
         dfb_param_names=[p.name for p in params if p.kind == "dfb"],
@@ -950,7 +958,8 @@ class Atom:
     def __init__(self, spec: _AtomSpec, decorator_options: dict):
         self._spec = spec
         self._grid = decorator_options["grid"]
-        self._ttl_operation_kind = "unified"
+        self._dispatcher = decorator_options["dispatcher"]
+        self._ttl_operation_kind = "dispatcher" if self._dispatcher else "unified"
 
         expand_only_params = [
             param.name for param in spec.params if param.kind in {"dfb", "pipenet"}
@@ -982,6 +991,14 @@ class Atom:
     def name(self) -> str:
         return self._spec.name
 
+    @property
+    def dispatcher(self) -> bool:
+        return self._dispatcher
+
+    @property
+    def dispatcher_ast(self) -> Optional[ast.FunctionDef]:
+        return copy.deepcopy(self._spec.dispatcher_ast)
+
     def _operation_identity_capture(self) -> tuple[str, str]:
         return ("operation", self._spec.operation_identity)
 
@@ -1008,6 +1025,7 @@ def _unified_operation(
     runtime_resource_factory: Optional[Callable[..., ProgramRuntimeResources]] = None,
     factory_cache: Optional[MutableMapping] = None,
     factory_cache_key: Optional[Hashable] = None,
+    dispatcher: bool = False,
 ) -> Callable:
     """Build the unified-body form selected by ``@ttl.operation``.
 
@@ -1020,6 +1038,7 @@ def _unified_operation(
     def _decorator(f):
         spec = _build_atom_spec(
             f,
+            dispatcher=dispatcher,
             bind_fabric_manager_claims=grid is not None,
         )
         return Atom(
@@ -1038,6 +1057,7 @@ def _unified_operation(
                 "runtime_resource_factory": runtime_resource_factory,
                 "factory_cache": factory_cache,
                 "factory_cache_key": factory_cache_key,
+                "dispatcher": dispatcher,
             },
         )
 
@@ -1060,6 +1080,7 @@ def operation(
     runtime_resource_factory: Optional[Callable[..., ProgramRuntimeResources]] = None,
     factory_cache: Optional[MutableMapping] = None,
     factory_cache_key: Optional[Hashable] = None,
+    dispatcher: bool = False,
 ) -> Callable:
     """Define a unified-body or explicit multi-kernel operation.
 
@@ -1068,7 +1089,13 @@ def operation(
     omitted, an operation with a device domain executes on the full domain.
     Explicit placements must include every graph-based PipeNet endpoint.
     Placements must use one coordinate rank and must not overlap.
+
+    ``dispatcher=True`` marks a unified operation as a static dispatch
+    controller and preserves its operation-call AST before composition inlining.
     """
+
+    if not isinstance(dispatcher, bool):
+        raise TypeError("ttl.operation() dispatcher must be a bool")
 
     def _decorator(fn):
         validate_operation_interface(fn)
@@ -1089,7 +1116,12 @@ def operation(
                     "enclosing factory"
                 )
         explicit_options = indexing_maps is not None or iterator_types is not None
-        if explicit_options or _has_explicit_kernels(fn):
+        has_explicit_kernels = _has_explicit_kernels(fn)
+        if dispatcher and (explicit_options or has_explicit_kernels):
+            raise ValueError(
+                "@ttl.operation dispatcher=True requires a unified operation body"
+            )
+        if explicit_options or has_explicit_kernels:
             prepare_call = functools.partial(_canonical_tensor_args, fn)
             wrapped = pykernel_gen(
                 grid=grid,
@@ -1126,6 +1158,7 @@ def operation(
             runtime_resource_factory=runtime_resource_factory,
             factory_cache=factory_cache,
             factory_cache_key=factory_cache_key,
+            dispatcher=dispatcher,
         )(fn)
 
     return _decorator

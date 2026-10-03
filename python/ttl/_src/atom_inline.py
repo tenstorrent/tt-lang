@@ -870,6 +870,11 @@ def _reject_unsupported_operation_calls(
                 f"@ttl.operation: cannot compose multi-kernel operation "
                 f"{reference!r} into {caller_name!r}"
             )
+        if operation_kind == "dispatcher":
+            raise ValueError(
+                f"@ttl.operation: cannot compose dispatcher operation "
+                f"{reference!r} into {caller_name!r}"
+            )
         if isinstance(node.func, ast.Attribute):
             raise ValueError(
                 f"@ttl.operation: compose {reference!r} through a captured "

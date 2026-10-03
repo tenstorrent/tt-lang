@@ -1316,6 +1316,20 @@ class TestHardwareKeywordsIgnored:
         )
         kernel(a, b)
 
+    def test_dispatcher_marker_accepted(self) -> None:
+        """dispatcher=True marks the wrapper and executes normally."""
+        a = ttnn.from_torch(torch.zeros(32, 32))
+        b = ttnn.from_torch(torch.zeros(32, 32))
+        kernel = _make_passthrough_kernel(ttl.operation(grid=(1, 1), dispatcher=True))
+
+        assert kernel.dispatcher
+        kernel(a, b)
+
+    def test_dispatcher_marker_requires_bool(self) -> None:
+        """Non-boolean dispatcher values are rejected."""
+        with pytest.raises(TypeError, match="dispatcher must be a bool"):
+            ttl.operation(grid=(1, 1), dispatcher=1)
+
     def test_invalid_math_fidelity_rejected(self) -> None:
         """Unsupported math fidelity raises before execution."""
         with pytest.raises(ValueError, match="math_fidelity must be one of"):
