@@ -35,9 +35,9 @@ namespace mlir::tt::ttl {
 namespace {
 
 static Value stripDFBAssociation(Value view) {
-  view = traceUnrealizedCasts(view);
+  view = traceDFBShapeViews(view);
   while (auto attach = view.getDefiningOp<AttachCBOp>()) {
-    view = traceUnrealizedCasts(attach.getTensor());
+    view = traceDFBShapeViews(attach.getTensor());
   }
   return view;
 }
@@ -50,8 +50,8 @@ static bool isSameStoredView(Value lhs, Value rhs) {
 }
 
 /// Return true when `operation` contains a non-accumulating store to the same
-/// storage view. DFB association ops do not change storage identity. Slice and
-/// extract ops remain distinct because this pass has no alias proof for them.
+/// storage view. DFB associations and checked singleton views preserve storage
+/// identity. Slices and extracts remain distinct without an alias proof.
 static bool containsPlainStoreToView(Operation *operation, Value view) {
   bool found = false;
   operation->walk([&](StoreOp store) {
@@ -65,10 +65,7 @@ static bool containsPlainStoreToView(Operation *operation, Value view) {
 }
 
 static Value getGuardedThenYieldedView(Value view, Operation *use) {
-  view = traceUnrealizedCasts(view);
-  if (auto attach = view.getDefiningOp<AttachCBOp>()) {
-    view = traceUnrealizedCasts(attach.getTensor());
-  }
+  view = stripDFBAssociation(view);
 
   auto result = dyn_cast<OpResult>(view);
   if (!result) {

@@ -66,7 +66,8 @@ bool verifyLaunchNodeDomainAlgebra() {
   return valid;
 }
 
-bool verifyPipeNetRecordInductionValues() {
+bool verifyPipeNetRecordInductionValues(mlir::ModuleOp module) {
+  using mlir::tt::ttl::forEachPipeRecord;
   using mlir::tt::ttl::getPipeNetRecordLoopInductionValue;
   using mlir::tt::ttl::LaunchExecutionLocation;
   using mlir::tt::ttl::PipeNetRecordLoop;
@@ -78,6 +79,11 @@ bool verifyPipeNetRecordInductionValues() {
   LaunchExecutionLocation rightNode({1, 0});
   std::optional<std::uint64_t> directInduction =
       getPipeNetRecordLoopInductionValue(directLoop, leftNode, 4);
+  PipeNetRecordLoop stridedLoop{
+      mlir::tt::ttl::PipeNetRecordsAttr(), PipeNetRecordSelection::Source, {}};
+  stridedLoop.inductionValueStride = 2;
+  std::optional<std::uint64_t> stridedInduction =
+      getPipeNetRecordLoopInductionValue(stridedLoop, leftNode, 4);
 
   PipeNetRecordLoop indirectLoop{mlir::tt::ttl::PipeNetRecordsAttr(),
                                  PipeNetRecordSelection::Destination,
@@ -91,8 +97,65 @@ bool verifyPipeNetRecordInductionValues() {
   std::optional<std::uint64_t> absentInduction =
       getPipeNetRecordLoopInductionValue(indirectLoop, leftNode, 2);
 
-  bool valid = directInduction == 4 && leftInduction == 1 &&
-               rightInduction == 3 && !absentInduction;
+  auto graphRecords = module->getAttrOfType<mlir::tt::ttl::PipeNetRecordsAttr>(
+      "test.closed_form_records");
+  if (!graphRecords || graphRecords.getMappings().size() != 1) {
+    llvm::errs() << "closed-form induction fixture is unavailable\n";
+    return false;
+  }
+  constexpr std::uint64_t selectedRecordIndex = 3;
+  std::optional<mlir::tt::ttl::PipeRecordAttr> selectedRecord;
+  forEachPipeRecord(graphRecords, [&](std::uint64_t recordIndex,
+                                      mlir::tt::ttl::PipeRecordAttr record) {
+    if (recordIndex == selectedRecordIndex) {
+      selectedRecord = record;
+    }
+  });
+  if (!selectedRecord) {
+    llvm::errs() << "closed-form induction record is unavailable\n";
+    return false;
+  }
+  mlir::tt::ttl::DeviceTransferAttr transfer =
+      selectedRecord->getDeviceTransfer();
+  LaunchExecutionLocation sourceLocation({1, 0}, transfer.getDomain(),
+                                         transfer.getEdge().getSource());
+  LaunchExecutionLocation destinationLocation(
+      {1, 0}, transfer.getDomain(), transfer.getEdge().getDestination());
+  LaunchExecutionLocation wrongNode({0, 0}, transfer.getDomain(),
+                                    transfer.getEdge().getSource());
+  LaunchExecutionLocation wrongDevice({1, 0}, transfer.getDomain(),
+                                      transfer.getEdge().getDestination());
+
+  PipeNetRecordLoop graphSourceLoop{graphRecords,
+                                    PipeNetRecordSelection::Source};
+  graphSourceLoop.closedFormMapping = graphRecords.getMappings().front();
+  std::optional<std::uint64_t> graphSourceInduction =
+      getPipeNetRecordLoopInductionValue(graphSourceLoop, sourceLocation,
+                                         selectedRecordIndex, *selectedRecord);
+  std::optional<std::uint64_t> graphWrongNode =
+      getPipeNetRecordLoopInductionValue(graphSourceLoop, wrongNode,
+                                         selectedRecordIndex, *selectedRecord);
+  std::optional<std::uint64_t> graphWrongDevice =
+      getPipeNetRecordLoopInductionValue(graphSourceLoop, wrongDevice,
+                                         selectedRecordIndex, *selectedRecord);
+  graphSourceLoop.usesMatchingNodeCoordinates = true;
+  std::optional<std::uint64_t> graphMatchingInduction =
+      getPipeNetRecordLoopInductionValue(graphSourceLoop, sourceLocation,
+                                         selectedRecordIndex, *selectedRecord);
+
+  PipeNetRecordLoop graphDestinationLoop{graphRecords,
+                                         PipeNetRecordSelection::Destination};
+  graphDestinationLoop.closedFormMapping = graphRecords.getMappings().front();
+  std::optional<std::uint64_t> graphDestinationInduction =
+      getPipeNetRecordLoopInductionValue(graphDestinationLoop,
+                                         destinationLocation,
+                                         selectedRecordIndex, *selectedRecord);
+
+  bool valid = directInduction == 4 && stridedInduction == 2 &&
+               leftInduction == 1 && rightInduction == 3 && !absentInduction &&
+               graphSourceInduction == 3 && graphDestinationInduction == 1 &&
+               graphMatchingInduction == 1 && !graphWrongNode &&
+               !graphWrongDevice;
   if (!valid) {
     llvm::errs() << "PipeNet record induction validation failed\n";
   }
@@ -109,10 +172,6 @@ int main(int argumentCount, char **argumentValues) {
   if (!verifyLaunchNodeDomainAlgebra()) {
     return 1;
   }
-  if (!verifyPipeNetRecordInductionValues()) {
-    return 1;
-  }
-
   mlir::DialectRegistry registry;
   mlir::registerAllDialects(registry);
   registry
@@ -124,6 +183,9 @@ int main(int argumentCount, char **argumentValues) {
   mlir::OwningOpRef<mlir::ModuleOp> module =
       mlir::parseSourceFile<mlir::ModuleOp>(argumentValues[1], parserConfig);
   if (!module) {
+    return 1;
+  }
+  if (!verifyPipeNetRecordInductionValues(*module)) {
     return 1;
   }
 

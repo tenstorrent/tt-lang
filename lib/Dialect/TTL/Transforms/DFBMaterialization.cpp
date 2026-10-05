@@ -63,7 +63,8 @@ BindCBOp createCompilerAllocatedDFB(RankedTensorType tensorType, Location loc,
   auto bindDFB = BindCBOp::create(builder, loc, dfbType, indexAttr,
                                   blockCountAttr, /*dfbId=*/nullptr,
                                   /*tensorBacking=*/nullptr,
-                                  /*allocationGroup=*/nullptr);
+                                  /*allocationGroup=*/nullptr,
+                                  /*addressScope=*/nullptr);
   bindDFB->setAttr(kCompilerAllocatedAttrName, builder.getUnitAttr());
   return bindDFB;
 }
@@ -72,14 +73,16 @@ StoreOp createDFBStore(Value tensor, Value dfb, OpBuilder &builder) {
   auto tensorType = cast<RankedTensorType>(tensor.getType());
   Location loc = tensor.getLoc();
 
-  auto reserve = CBReserveOp::create(builder, loc, tensorType, dfb);
+  auto reserve =
+      CBReserveOp::create(builder, loc, tensorType, dfb, /*num_tiles=*/nullptr);
   return StoreOp::create(builder, loc, tensor, reserve.getResult(),
-                         /*accumulate=*/nullptr);
+                         /*accumulate=*/nullptr, /*row_prefix=*/nullptr);
 }
 
 AttachCBOp createDFBWaitAndAttach(Value dfb, RankedTensorType tensorType,
                                   Location loc, OpBuilder &builder) {
-  auto wait = CBWaitOp::create(builder, loc, tensorType, dfb);
+  auto wait =
+      CBWaitOp::create(builder, loc, tensorType, dfb, /*num_tiles=*/nullptr);
   return AttachCBOp::create(builder, loc, tensorType, wait.getResult(), dfb);
 }
 

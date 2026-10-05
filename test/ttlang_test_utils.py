@@ -31,7 +31,14 @@ def _has_tenstorrent_device_node() -> bool:
     return bool(glob.glob("/dev/tenstorrent/*") or glob.glob("/dev/tenstorrent[0-9]*"))
 
 
-if os.environ.get("TT_METAL_SIMULATOR"):
+def is_simulated_device() -> bool:
+    """Check whether Metal uses a simulator or emulator instead of hardware."""
+    return bool(
+        os.environ.get("TT_METAL_EMULE_MODE") or os.environ.get("TT_METAL_SIMULATOR")
+    )
+
+
+if is_simulated_device():
     _hardware_available = True
 elif os.environ.get("TTLANG_HAS_DEVICE") == "1":
     _hardware_available = True
@@ -101,12 +108,13 @@ def is_hardware_available() -> bool:
     Check if Tenstorrent hardware is available.
 
     Checks in order:
-    1. TT_METAL_SIMULATOR environment variable (simulation mode)
-    2. TTLANG_HAS_DEVICE environment variable (set by CMake)
-    3. Runtime device nodes (/dev/tenstorrent/* or /dev/tenstorrent[0-9]*)
-    4. ttl.config.HAS_TT_DEVICE, the wheel's build-time value (fallback)
+    1. TT_METAL_EMULE_MODE environment variable (emulation mode)
+    2. TT_METAL_SIMULATOR environment variable (simulation mode)
+    3. TTLANG_HAS_DEVICE environment variable (set by CMake)
+    4. Runtime device nodes (/dev/tenstorrent/* or /dev/tenstorrent[0-9]*)
+    5. ttl.config.HAS_TT_DEVICE, the wheel's build-time value (fallback)
 
-    Step 3 precedes step 4 so an installed light wheel, built with no device
+    Step 4 precedes step 5 so an installed light wheel, built with no device
     and therefore HAS_TT_DEVICE=False, still runs on a host that has a chip.
 
     Returns:
@@ -179,6 +187,11 @@ class FabricMeshUnavailable(RuntimeError):
     pass
 
 
+_UNMAPPABLE_FABRIC_TOPOLOGY = (
+    "Graph specified in MGD could not fit in the discovered physical topology"
+)
+
+
 def _get_current_fabric_mesh_shape(ttnn_module) -> tuple[int, ...]:
     return tuple(
         int(extent)
@@ -217,6 +230,14 @@ def get_fabric_mesh_shape(
             ),
         )
         return _get_current_fabric_mesh_shape(ttnn_module)
+    except RuntimeError as error:
+        # TTNN exposes topology support only by attempting configuration.
+        if _UNMAPPABLE_FABRIC_TOPOLOGY not in str(error):
+            raise
+        raise FabricMeshUnavailable(
+            f"fabric configuration {fabric_config} cannot be mapped to the "
+            "discovered physical topology"
+        ) from error
     finally:
         ttnn_module.set_fabric_config(ttnn_module.FabricConfig.DISABLED)
 
@@ -320,7 +341,7 @@ def to_dram(torch_tensor, device, tile=None, *, mesh_mapper=None):
     )
 
 
-def to_l1(torch_tensor, device, tile=None):
+def to_l1(torch_tensor, device, tile=None, *, mesh_mapper=None):
     """Create a TTNN tensor in L1 from a torch tensor.
 
     Default tiles are created in DRAM then moved to L1. Custom tiles are
@@ -328,12 +349,13 @@ def to_l1(torch_tensor, device, tile=None):
     descriptor.
 
     Args:
-        torch_tensor: Source torch tensor
-        device: TTNN device handle
-        tile: Optional physical tile dimensions
+        torch_tensor: Source torch tensor.
+        device: TTNN device or mesh handle.
+        tile: Optional physical tile dimensions.
+        mesh_mapper: Optional mapping from the source tensor to a device mesh.
 
     Returns:
-        TTNN tensor in L1 with TILE_LAYOUT
+        TTNN tensor in L1 with TILE_LAYOUT.
     """
     ttnn = _get_ttnn()
     if ttnn is None:
@@ -349,9 +371,10 @@ def to_l1(torch_tensor, device, tile=None):
             layout=ttnn.TILE_LAYOUT,
             device=device,
             memory_config=ttnn.L1_MEMORY_CONFIG,
+            mesh_mapper=mesh_mapper,
             tile=ttnn.Tile(tile),
         )
-    dram_tensor = to_dram(torch_tensor, device, tile=tile)
+    dram_tensor = to_dram(torch_tensor, device, tile=tile, mesh_mapper=mesh_mapper)
     return ttnn.to_memory_config(dram_tensor, memory_config=ttnn.L1_MEMORY_CONFIG)
 
 

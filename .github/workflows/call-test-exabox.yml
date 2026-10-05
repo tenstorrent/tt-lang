@@ -62,6 +62,8 @@ jobs:
         with:
           key: Linux-ttlang-hw-galaxy
           max-size: 1G
+          save: ${{ github.ref == 'refs/heads/main' }}
+          evict-old-files: job
 
       - name: Stage workspace on every host
         id: stage

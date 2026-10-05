@@ -19,6 +19,22 @@ import sysconfig
 from pathlib import Path
 
 
+def check_kernel_headers() -> int:
+    from ttl import config
+
+    package_dir = Path(config.__file__).resolve().parent
+    if config.kernel_include_paths([]) != [str(config.KERNEL_INCLUDE_DIR)]:
+        print("Installed kernel header include path is missing", file=sys.stderr)
+        return 1
+    for name in ("experimental_dfb_reset.h", "experimental_dfb_reconfiguration.h"):
+        header = config.KERNEL_INCLUDE_DIR / config.KERNEL_HEADER_DIR / name
+        if not header.is_file() or not header.resolve().is_relative_to(package_dir):
+            print(f"Missing or non-installed kernel header: {header}", file=sys.stderr)
+            return 1
+    print("Installed kernel headers OK")
+    return 0
+
+
 def main() -> int:
     import ttl
     import ttl.sim
@@ -31,6 +47,9 @@ def main() -> int:
         import ttl.pykernel  # noqa: F401
         from ttl import operation, compute, datamovement  # noqa: F401
         from ttl.pykernel._src.kernel_ast import TTCompilerBase  # noqa: F401
+
+        if check_kernel_headers() != 0:
+            return 1
 
     version = ttl.__version__
     if version == "0.0.0":

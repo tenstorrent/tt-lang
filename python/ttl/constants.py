@@ -5,6 +5,7 @@
 """Constants used throughout the DSL."""
 
 DEFAULT_TILE_SIZE = 32
+MAX_NOC_TRANSFER_BYTES = (1 << 32) - 1
 SUPPORTED_MEMORY_SPACES = frozenset(["L1", "DRAM"])
 SUPPORTED_MATH_FIDELITIES = ("LoFi", "HiFi2", "HiFi3", "HiFi4")
 SUPPORTED_TENSOR_BACKED_DFB_MEMORY_LAYOUTS = frozenset(

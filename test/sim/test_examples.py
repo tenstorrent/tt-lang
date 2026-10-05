@@ -192,6 +192,25 @@ def test_example_cli(script_name: str, scheduler: str) -> None:
     assert code == 0, f"Script failed with code {code}. Output:\n{out}"
 
 
+@pytest.mark.parametrize("scheduler", ["greedy", "fair"])
+def test_compiler_only_external_call_requires_compiler_backend(
+    scheduler: str,
+) -> None:
+    """The Python simulator rejects the compiler's external-C++ escape hatch."""
+    script = EXAMPLES_DIR / "compiler_only_external_call.py"
+    code, out = run_script_in_process(script, scheduler)
+
+    assert code != 0, (
+        "compiler_only_external_call.py unexpectedly ran on the Python "
+        f"simulator. Output:\n{out}"
+    )
+    assert "ttl.call_extern_func is not supported by the Python simulator" in out, (
+        "The compiler-only example failed somewhere other than "
+        f"ttl.call_extern_func(). Output:\n{out}"
+    )
+    assert "use tt-lang-sim --backend=emule" in out
+
+
 @pytest.mark.parametrize(
     "example_path",
     [
@@ -299,17 +318,17 @@ def test_copy_source_lock_error_fails_with_expected_error(scheduler: str) -> Non
         and "in-flight" in out.lower()
     ), f"Expected ROR copy-source lock message in output:\n{out}"
     assert (
-        "examples/errors/copy_source_lock_error.py:87" in out
+        "examples/errors/copy_source_lock_error.py:89" in out
     ), f"Expected diagnostic line for bad store in output:\n{out}"
     assert (
         "Where: copy from this block was requested at" in out
-        and "copy_source_lock_error.py:85" in out
-    ), f"Expected pending-copy callsite (ttl.copy from block, line 85) in output:\n{out}"
+        and "copy_source_lock_error.py:87" in out
+    ), f"Expected pending-copy callsite (ttl.copy from block, line 87) in output:\n{out}"
 
     source_file = ERRORS_DIR / "copy_source_lock_error.py"
     lines = source_file.read_text().splitlines()
-    assert "tx_src = ttl.copy(a_block, out[row_slice, col_slice])" in lines[84].strip()
-    assert "a_block.store(a_block)" in lines[86].strip()
+    assert "tx_src = ttl.copy(a_block, out[row_slice, col_slice])" in lines[86].strip()
+    assert "a_block.store(a_block)" in lines[88].strip()
 
 
 @pytest.mark.parametrize("scheduler", ["greedy", "fair"])

@@ -23,7 +23,7 @@
 // CHECK-LABEL: func.func @compute
 // CHECK-SAME: ttl.base_cta_index = 2 : i32
 
-module attributes {ttl.launch_grid = [1, 1]} {
+module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blackhole>} {
   func.func @compute() attributes {
     ttl.base_cta_index = 2 : i32,
     ttl.kernel_thread = #ttkernel.thread<compute>,
@@ -83,7 +83,7 @@ module attributes {ttl.launch_grid = [1, 1]} {
 // CHECK-SAME: entry_reconfiguration = 0 : i64
 // CHECK-SAME: nodes = {{\[\[1, 0\]\]}}
 // CHECK-SAME: tensor_backing = #ttl.tensor_backing<tensor_index = 0
-module attributes {ttl.launch_grid = [2, 1]} {
+module attributes {ttl.launch_grid = [2, 1], ttl.target_arch = #ttcore.arch<blackhole>} {
   func.func @compute() attributes {
     ttl.kernel_thread = #ttkernel.thread<compute>,
     ttl.logical_kernel = #compute

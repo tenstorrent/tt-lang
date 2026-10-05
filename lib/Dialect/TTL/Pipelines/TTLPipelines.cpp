@@ -18,6 +18,21 @@ using namespace mlir;
 
 namespace mlir::tt::ttl {
 
+// Resolve record-loop transfers before finalizing runtime arguments in either
+// specialization mode. Adjacent function passes share one module traversal.
+static void buildTTKernelRecordCleanupPipeline(OpPassManager &pm) {
+  OpPassManager &functionPasses = pm.nest<func::FuncOp>();
+  functionPasses.addPass(createTTKernelBatchStaticPipeNetReceives());
+  functionPasses.addPass(createTTKernelUnrollStaticPipeNetRecordLoops());
+  // Expose affine index arithmetic before folding tables and scheduling writes.
+  pm.addPass(createLowerAffinePass());
+  pm.addPass(createCanonicalizerPass());
+  pm.addPass(createCSEPass());
+  pm.addPass(createTTKernelCleanup());
+  pm.addPass(createTTKernelFinalizeTensorRuntimeArgs());
+  pm.addPass(createCanonicalizerPass());
+}
+
 void createTTLToTTKernelPipeline(OpPassManager &pm,
                                  const TTLToTTKernelPipelineOptions &options) {
   {
@@ -34,7 +49,7 @@ void createTTLToTTKernelPipeline(OpPassManager &pm,
   }
   pm.addNestedPass<func::FuncOp>(createTTLMaterializeLoopState());
   pm.addNestedPass<func::FuncOp>(createTTLInsertCopyWait());
-  buildTTLAutoSyncPipeline(pm.nest<func::FuncOp>());
+  buildTTLAutoSyncPipeline(pm.nest<func::FuncOp>(), options.autoSyncUserDFBs);
   {
     TTLInsertAccumulationScopesOptions insertOptions;
     insertOptions.kind = "dfb";
@@ -54,7 +69,11 @@ void createTTLToTTKernelPipeline(OpPassManager &pm,
     pm.addNestedPass<func::FuncOp>(createTTLInsertIntermediateDFBs(dfbOpts));
   }
   pm.addNestedPass<func::FuncOp>(createTTLConvertTTLToCompute());
-  pm.addNestedPass<func::FuncOp>(createTTLInsertCBSync());
+  {
+    TTLInsertCBSyncOptions syncOptions;
+    syncOptions.syncUserDFBs = options.autoSyncUserDFBs;
+    pm.addNestedPass<func::FuncOp>(createTTLInsertCBSync(syncOptions));
+  }
   // Verify the complete high-level schedule while logical DFB identities are
   // still distinct and before later transformations rewrite pipe operations.
   buildTTLVerifyPipeNetPipeline(pm);
@@ -64,7 +83,12 @@ void createTTLToTTKernelPipeline(OpPassManager &pm,
     transportOpts.l1BudgetOverride = options.l1BudgetOverride;
     pm.addPass(createTTLFormPipeTransports(transportOpts));
   }
-  pm.addNestedPass<func::FuncOp>(createTTLCoalesceDFBAcquires());
+  {
+    TTLCoalesceDFBAcquiresOptions coalesceOptions;
+    coalesceOptions.syncUserDFBs = options.autoSyncUserDFBs;
+    pm.addNestedPass<func::FuncOp>(
+        createTTLCoalesceDFBAcquires(coalesceOptions));
+  }
   {
     TTLFinalizeDFBIndicesOptions finalizeOptions;
     finalizeOptions.reuseUserDFBs = options.reuseUserDFBs;
@@ -101,6 +125,7 @@ void createTTLToTTKernelPipeline(OpPassManager &pm,
   }
   pm.addNestedPass<func::FuncOp>(createTTLAnnotateCBAssociations());
   pm.addPass(createTTLVerifyDFBSPSC());
+  pm.addPass(createTTLVerifyDFBLifecycle());
   pm.addPass(createTTLErasePipeNetScopes());
   {
     TTLValidateCBBudgetOptions budgetOpts;
@@ -113,6 +138,7 @@ void createTTLToTTKernelPipeline(OpPassManager &pm,
     ttkOpts.pipeComputedAddresses = options.pipeComputedAddresses;
     ttkOpts.pipeCapacitySync = options.pipeCapacitySync;
     ttkOpts.pipeGlobalSemaphoresOnly = options.pipeGlobalSemaphoresOnly;
+    ttkOpts.fabricMux = options.fabricMux;
     ttkOpts.l1BudgetOverride = options.l1BudgetOverride;
     pm.addPass(createTTLConvertTTLToTTKernel(ttkOpts));
   }
@@ -126,11 +152,9 @@ void createTTLToTTKernelPipeline(OpPassManager &pm,
   if (options.specializeCores) {
     buildTTKernelSpecializationPipeline(pm);
   } else {
-    pm.addPass(createTTKernelFinalizeTensorRuntimeArgs());
-    pm.addPass(createCanonicalizerPass());
+    buildTTKernelRecordCleanupPipeline(pm);
   }
   if (options.lowerToEmitC) {
-    pm.addPass(createLowerAffinePass());
     pm.addPass(::mlir::tt::createConvertTTKernelToEmitC());
     pm.addPass(createCanonicalizerPass());
     pm.addPass(mlir::emitc::createFormExpressionsPass());
@@ -142,17 +166,21 @@ void buildTTLVerifyPipeNetPipeline(OpPassManager &pm) {
   pm.addPass(createTTLVerifyPipeNetSchedule());
 }
 
-void buildTTLAutoSyncPipeline(OpPassManager &pm) {
-  pm.addPass(createTTLInsertCBSync());
-  pm.addPass(createTTLCoalesceDFBAcquires());
+void buildTTLAutoSyncPipeline(OpPassManager &pm, bool syncUserDFBs) {
+  TTLInsertCBSyncOptions syncOptions;
+  syncOptions.syncUserDFBs = syncUserDFBs;
+  pm.addPass(createTTLInsertCBSync(syncOptions));
+  TTLCoalesceDFBAcquiresOptions coalesceOptions;
+  coalesceOptions.syncUserDFBs = syncUserDFBs;
+  pm.addPass(createTTLCoalesceDFBAcquires(coalesceOptions));
 }
 
 void buildTTKernelSpecializationPipeline(OpPassManager &pm) {
   pm.addPass(createTTKernelSpecializeCores());
   pm.addPass(createCanonicalizerPass());
   pm.addPass(createCSEPass());
-  pm.addPass(createTTKernelFinalizeTensorRuntimeArgs());
-  pm.addPass(createCanonicalizerPass());
+  buildTTKernelRecordCleanupPipeline(pm);
+  pm.addPass(createTTKernelSpecializeDFBReconfiguration());
   pm.addPass(createTTKernelAnnotateDFBUse());
 }
 
@@ -166,14 +194,20 @@ void registerTTLPipelines() {
       "ttl-verify-pipenet",
       "Verify PipeNet launch domains and synchronization schedules.",
       buildTTLVerifyPipeNetPipeline);
-  PassPipelineRegistration<>("ttl-auto-sync",
-                             "Insert auto pop/push and coalesce DFB acquires.",
-                             buildTTLAutoSyncPipeline);
+  PassPipelineRegistration<>(
+      "ttl-auto-sync", "Insert auto pop/push and coalesce DFB acquires.",
+      [](OpPassManager &pm) { buildTTLAutoSyncPipeline(pm); });
+  PassPipelineRegistration<>(
+      "ttkernel-cleanup-and-finalize-runtime-args",
+      "Batch and expand static PipeNet records, optimize resolved transfers, "
+      "and finalize surviving runtime arguments.",
+      buildTTKernelRecordCleanupPipeline);
   PassPipelineRegistration<>(
       "ttkernel-specialize-and-annotate-dfb-use",
-      "Specialize kernels per launch coordinate, fold unused branches, "
-      "compact tensor runtime arguments, and record surviving DFB "
-      "compile-time argument indices.",
+      "Specialize kernels per launch coordinate, fold coordinate-dependent "
+      "control flow, compact tensor runtime arguments, specialize DFB "
+      "reconfiguration calls, and record surviving DFB compile-time argument "
+      "indices.",
       buildTTKernelSpecializationPipeline);
 }
 

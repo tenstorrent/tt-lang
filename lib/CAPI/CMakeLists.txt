@@ -28,6 +28,7 @@ add_mlir_library(TTLangCAPI
   MLIRTTCoreDialect
   MLIRTTKernelDialect
   MLIRTTLDialect
+  MLIRTensorDialect
   MLIRTransforms
   MLIRUBDialect
   TTKernelTargetCpp

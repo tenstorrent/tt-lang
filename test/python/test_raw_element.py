@@ -31,7 +31,6 @@ ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
 
 from ttlang_test_utils import to_l1
 
-
 # =============================================================================
 # Pattern 1: Element copy  (raw_element_simple pattern)
 # =============================================================================
@@ -59,7 +58,8 @@ def f32_element_copy_kernel(inp, out):
             val = ttl.raw_element_read(rblk, 0, 5)
             with out_dfb.reserve() as wblk:
                 ttl.raw_element_write(wblk, 0, 0, val)
-                tx = ttl.copy(wblk, out[0, 0])
+            with out_dfb.wait() as output_block:
+                tx = ttl.copy(output_block, out[0, 0])
                 tx.wait()
 
 
@@ -85,7 +85,8 @@ def bf16_element_copy_kernel(inp, out):
             val = ttl.raw_element_read(rblk, 0, 5)
             with out_dfb.reserve() as wblk:
                 ttl.raw_element_write(wblk, 0, 0, val)
-                tx = ttl.copy(wblk, out[0, 0])
+            with out_dfb.wait() as output_block:
+                tx = ttl.copy(output_block, out[0, 0])
                 tx.wait()
 
 
@@ -136,7 +137,8 @@ def f32_constant_write_kernel(out):
         val = 3.14
         with out_dfb.reserve() as wblk:
             ttl.raw_element_write(wblk, 0, 0, val)
-            tx = ttl.copy(wblk, out[0, 0])
+        with out_dfb.wait() as output_block:
+            tx = ttl.copy(output_block, out[0, 0])
             tx.wait()
 
 
@@ -161,7 +163,8 @@ def bf16_constant_write_kernel(out):
         val = 3.14
         with out_dfb.reserve() as wblk:
             ttl.raw_element_write(wblk, 0, 0, val)
-            tx = ttl.copy(wblk, out[0, 0])
+        with out_dfb.wait() as output_block:
+            tx = ttl.copy(output_block, out[0, 0])
             tx.wait()
 
 
@@ -222,7 +225,8 @@ def f32_sort_pair_kernel(inp, out):
                     ttl.raw_element_write(wblk, 0, 0, b)
                     ttl.raw_element_write(wblk, 0, 1, a)
 
-                tx = ttl.copy(wblk, out[0, 0])
+            with out_dfb.wait() as output_block:
+                tx = ttl.copy(output_block, out[0, 0])
                 tx.wait()
 
 
@@ -254,7 +258,8 @@ def bf16_sort_pair_kernel(inp, out):
                     ttl.raw_element_write(wblk, 0, 0, b)
                     ttl.raw_element_write(wblk, 0, 1, a)
 
-                tx = ttl.copy(wblk, out[0, 0])
+            with out_dfb.wait() as output_block:
+                tx = ttl.copy(output_block, out[0, 0])
                 tx.wait()
 
 
@@ -354,7 +359,8 @@ def f32_min_pair_kernel(inp, out):
                     ttl.raw_element_write(wblk, 0, 0, b)
                     ttl.raw_element_write(wblk, 0, 1, a)
 
-                tx = ttl.copy(wblk, out[0, 0])
+            with out_dfb.wait() as output_block:
+                tx = ttl.copy(output_block, out[0, 0])
                 tx.wait()
 
 
@@ -389,7 +395,8 @@ def bf16_min_pair_kernel(inp, out):
                     ttl.raw_element_write(wblk, 0, 0, b)
                     ttl.raw_element_write(wblk, 0, 1, a)
 
-                tx = ttl.copy(wblk, out[0, 0])
+            with out_dfb.wait() as output_block:
+                tx = ttl.copy(output_block, out[0, 0])
                 tx.wait()
 
 
@@ -497,7 +504,8 @@ def f32_compute_then_read_kernel(inp, out):
             val = ttl.raw_element_read(cblk, 0, 5)
             with out_dfb.reserve() as wblk:
                 ttl.raw_element_write(wblk, 0, 0, val)
-                tx = ttl.copy(wblk, out[0, 0])
+            with out_dfb.wait() as output_block:
+                tx = ttl.copy(output_block, out[0, 0])
                 tx.wait()
 
 
@@ -525,7 +533,8 @@ def bf16_compute_then_read_kernel(inp, out):
             val = ttl.raw_element_read(cblk, 0, 5)
             with out_dfb.reserve() as wblk:
                 ttl.raw_element_write(wblk, 0, 0, val)
-                tx = ttl.copy(wblk, out[0, 0])
+            with out_dfb.wait() as output_block:
+                tx = ttl.copy(output_block, out[0, 0])
                 tx.wait()
 
 
@@ -675,7 +684,8 @@ def f32_argmax_row_kernel(inp, out):
                     if val > max_val:
                         max_val = val
                 ttl.raw_element_write(wblk, 0, 0, max_val)
-                tx = ttl.copy(wblk, out[0, 0])
+            with out_dfb.wait() as output_block:
+                tx = ttl.copy(output_block, out[0, 0])
                 tx.wait()
 
 
@@ -705,7 +715,8 @@ def bf16_argmax_row_kernel(inp, out):
                     if val > max_val:
                         max_val = val
                 ttl.raw_element_write(wblk, 0, 0, max_val)
-                tx = ttl.copy(wblk, out[0, 0])
+            with out_dfb.wait() as output_block:
+                tx = ttl.copy(output_block, out[0, 0])
                 tx.wait()
 
 

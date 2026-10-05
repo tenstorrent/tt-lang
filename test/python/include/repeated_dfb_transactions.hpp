@@ -45,17 +45,17 @@ inline void read_high_water_dfb_logical_dm(SourceAccessor source) {
   constexpr uint32_t highWaterTiles = 2 * Destination::pages_per_block;
 
   CircularBuffer destination(get_compile_time_arg_val(Destination::index));
-  Noc noc0(0);
+  Noc noc;
   destination.reserve_back(highWaterTiles);
   for (uint32_t transaction = 0; transaction < transactionCount;
        ++transaction) {
     for (uint32_t tile = 0; tile < transactionTiles; ++tile) {
       uint32_t pageId = transaction * transactionTiles + tile;
-      noc0.async_read(source, destination, Destination::page_size_bytes,
-                      {.page_id = pageId},
-                      {.offset_bytes = tile * Destination::page_size_bytes});
+      noc.async_read(source, destination, Destination::page_size_bytes,
+                     {.page_id = pageId},
+                     {.offset_bytes = tile * Destination::page_size_bytes});
     }
-    noc0.async_read_barrier();
+    noc.async_read_barrier();
     destination.push_back(transactionTiles);
     if (transaction + 1 < transactionCount) {
       destination.reserve_back(highWaterTiles);
@@ -72,17 +72,17 @@ inline void write_high_water_dfb_logical_dm(DestinationAccessor destination) {
   constexpr uint32_t transactionCount = 4;
   constexpr uint32_t transactionTiles = Source::pages_per_block;
   CircularBuffer source(get_compile_time_arg_val(Source::index));
-  Noc noc0(0);
+  Noc noc;
   for (uint32_t transaction = 0; transaction < transactionCount;
        ++transaction) {
     source.wait_front(transactionTiles);
     for (uint32_t tile = 0; tile < transactionTiles; ++tile) {
       uint32_t pageId = transaction * transactionTiles + tile;
-      noc0.async_write(source, destination, Source::page_size_bytes,
-                       {.offset_bytes = tile * Source::page_size_bytes},
-                       {.page_id = pageId});
+      noc.async_write(source, destination, Source::page_size_bytes,
+                      {.offset_bytes = tile * Source::page_size_bytes},
+                      {.page_id = pageId});
     }
-    noc0.async_write_barrier();
+    noc.async_write_barrier();
     source.pop_front(transactionTiles);
   }
 #endif

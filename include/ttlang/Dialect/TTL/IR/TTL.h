@@ -46,8 +46,8 @@ constexpr llvm::StringLiteral
 /// Selected strategy on tile operations with execution alternatives.
 constexpr llvm::StringLiteral
     kTileExecutionStrategyAttrName("ttl.tile_execution_strategy");
-/// PipeNet role exposed by `is_src` / `is_dst` / `is_active` predicate ops
-/// and by `pipenet_scope` declarations.
+/// PipeNet role queried by `is_src`, `is_dst`, and `is_active` operations and
+/// declared by `pipenet_scope`.
 enum class PipeRole : int64_t {
   Source = 0,
   Destination = 1,
@@ -95,6 +95,12 @@ constexpr llvm::StringLiteral kKernelThreadAttrName("ttl.kernel_thread");
 /// Func-level target-independent logical-kernel identity.
 constexpr llvm::StringLiteral kLogicalKernelAttrName("ttl.logical_kernel");
 
+/// Module-level two-dimensional launch-grid extent.
+constexpr llvm::StringLiteral kLaunchGridAttrName("ttl.launch_grid");
+
+/// Launch coordinates assigned to a core-specialized function.
+constexpr llvm::StringLiteral kCoreCoordAttrName("ttl.core_coord");
+
 /// Global tensor indices represented by the function's common runtime-argument
 /// prefix.
 constexpr llvm::StringLiteral kCRTAIndicesAttrName("ttl.crta_indices");
@@ -108,7 +114,7 @@ constexpr llvm::StringLiteral kUnrollFactorAttrName("ttl.unroll_factor");
 
 /// Func-level: NOC index (0 = reader/NCRISC, 1 = writer/BRISC) of a
 /// datamovement kernel; set by the frontend, read via getNocIndex during
-/// TTL->TTKernel lowering and by the ttnn runtime bridge for reader/writer
+/// TTL->TTKernel lowering and by Python kernel construction for reader/writer
 /// config assignment. Mirrored in python/ttl/ttl_api.py.
 constexpr llvm::StringLiteral kNocIndexAttrName("ttl.noc_index");
 
@@ -127,6 +133,15 @@ constexpr llvm::StringLiteral
 /// Marks an scf.for as a compiler-generated tile loop. Integer value is the
 /// linearization stride for this dimension.
 constexpr llvm::StringLiteral kTileLoopStrideAttrName("ttl.tile_loop_stride");
+
+/// Marks a compiler-generated loop over the local PipeNet records selected for
+/// one launch node.
+constexpr llvm::StringLiteral
+    kPipeNetLocalRecordLoopAttrName("ttl.pipenet_local_record_loop");
+
+/// Page capacity proven available for an initial PipeNet receive sequence.
+constexpr llvm::StringLiteral kPipeNetInitialReceiveCapacityAttrName(
+    "ttl.pipenet_initial_receive_capacity");
 
 /// Marks an scf.for loop as iterating over a reduction dimension.
 constexpr llvm::StringLiteral kReductionLoopAttrName("ttl.reduction_loop");
@@ -165,9 +180,18 @@ constexpr llvm::StringLiteral kDFBAllocationsAttrName("ttl.dfb_allocations");
 constexpr llvm::StringLiteral
     kAssumedDFBAllocationGroupsAttrName("ttl.assumed_dfb_allocation_groups");
 
+/// Module attribute recording that per-launch-node DFB protocol-domain checks
+/// were skipped.
+constexpr llvm::StringLiteral kRelaxedDFBProtocolDomainVerificationAttrName(
+    "ttl.relaxed_dfb_protocol_domain_verification");
+
 /// Module attribute containing physical DFB configuration-epoch metadata.
 constexpr llvm::StringLiteral
     kDFBReconfigurationPlanAttrName("ttl.dfb_reconfiguration_plan");
+
+/// Associates a lowered DFB reconfiguration call with its plan entry.
+constexpr llvm::StringLiteral
+    kDFBReconfigurationOrdinalAttrName("ttl.dfb_reconfiguration_ordinal");
 
 /// Module attributes carrying compiler-owned pipe resource allocation.
 constexpr llvm::StringLiteral
@@ -195,14 +219,16 @@ constexpr llvm::StringLiteral kFabricRuntimeArgBaseCommonIndexAttrName(
     "ttl.fabric_runtime_arg_base_common_index");
 constexpr llvm::StringLiteral
     kFabricManagerIntervalsAttrName("ttl.fabric_manager_intervals");
+constexpr llvm::StringLiteral
+    kFabricMuxCapableAttrName("ttl.fabric_mux_capable");
 
 /// Marker on BindCBOp to distinguish compiler-allocated DFBs from user-declared
 /// ones.
 constexpr llvm::StringLiteral
     kCompilerAllocatedAttrName("ttl.compiler_allocated");
 
-/// Function attribute recording the base compile-time argument index.
-/// CTA layout is [CBs, TAs], so this equals the number of CBs.
+/// Function attribute recording the first tensor-accessor argument index.
+/// CTA layout is [DFBs, compiler-defined arguments, tensor accessors].
 constexpr llvm::StringLiteral kBaseCTAIndexAttrName("ttl.base_cta_index");
 
 /// Function attribute recording physical DFB indices referenced by the final

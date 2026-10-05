@@ -515,6 +515,63 @@ def test_pipe_send_receive_drains_queue_in_dry_run(dm_kernel_context):
     assert len(pipe_buffer[pipe]["queue"]) == 0
 
 
+def test_byte_counted_dfb_and_pipe_copies_in_dry_run(dm_kernel_context):
+    """Byte-counted copies use DFB metadata instead of sentinel capacity."""
+    set_dry_run(True)
+
+    pipe = Pipe(6050, 6051)
+    source_dfb = DataflowBuffer(
+        likeness_tensor=make_ones_tile(), shape=(1, 1), block_count=1
+    )
+    local_dfb = DataflowBuffer(
+        likeness_tensor=make_ones_tile(), shape=(1, 1), block_count=1
+    )
+    receiver_dfb = DataflowBuffer(
+        likeness_tensor=make_ones_tile(), shape=(1, 1), block_count=1
+    )
+
+    with source_dfb.reserve() as source_block:
+        copy(make_ones_tile(), source_block).wait()
+    with source_dfb.wait() as source_block:
+        with local_dfb.reserve() as local_block:
+            copy(source_block, local_block, byte_count=64).wait()
+    with local_dfb.wait() as local_block:
+        copy(local_block, pipe, byte_count=64).wait()
+    with receiver_dfb.reserve() as receiver_block:
+        copy(pipe, receiver_block, byte_count=64).wait()
+
+    assert len(get_context().copy_state.pipe_buffer[pipe]["queue"]) == 0
+
+
+def test_byte_counted_pipe_format_mismatch_in_dry_run(dm_kernel_context):
+    """Dry-run messages retain enough metadata to reject format changes."""
+    set_dry_run(True)
+
+    pipe = Pipe(6060, 6061)
+    source_dfb = DataflowBuffer(
+        likeness_tensor=Tensor(torch.ones(32, 32), dtype=ttnn.bfloat16),
+        shape=(1, 1),
+        block_count=1,
+    )
+    receiver_dfb = DataflowBuffer(
+        likeness_tensor=Tensor(torch.ones(32, 32, dtype=torch.float32)),
+        shape=(1, 1),
+        block_count=1,
+    )
+
+    with source_dfb.reserve() as source_block:
+        copy(
+            Tensor(torch.ones(32, 32), dtype=ttnn.bfloat16),
+            source_block,
+        ).wait()
+    with source_dfb.wait() as source_block:
+        copy(source_block, pipe, byte_count=64).wait()
+
+    with pytest.raises(ValueError, match="requires matching data types"):
+        with receiver_dfb.reserve() as receiver_block:
+            copy(pipe, receiver_block, byte_count=64).wait()
+
+
 def test_pipe_shape_mismatch_caught_in_dry_run(dm_kernel_context):
     """The structural pipe shape check runs in dry-run, not just in normal mode.
 

@@ -2,15 +2,11 @@
 // RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(ttkernel-specialize-cores,canonicalize,cse)' | FileCheck %s --check-prefix=FOLDED
 
 // Summary: per-core specialization is a single module pass run at the TTKernel
-// level. For every kernel whose control flow branches on a core coordinate (an
-// `scf.if` whose condition is derived from `ttkernel.my_logical_x_` /
-// `my_logical_y_`), it clones the function once per launch coordinate, replaces
-// the coordinate reads with constants for that core, and tags the clone with
-// `ttl.core_coord`. Downstream canonicalize/cse fold the now-constant
-// conditions and delete the untaken regions. Kernels that only use coordinates
-// as data (no branch) are left as a single whole-grid binary. The pass does not
-// special-case pipe participants: any kernel that branches on a coordinate is
-// cloned, whether or not the module uses pipes.
+// level. It clones kernels whose structured branch or loop control depends on
+// core coordinates, replaces coordinate reads with constants, and tags each
+// clone with `ttl.core_coord`. Downstream canonicalization resolves the
+// coordinate-dependent control flow. Coordinate data uses that do not index
+// immutable tables remain in one whole-grid kernel.
 
 // -- Test 1: coordinate used only as data -> no branch, no specialization. ----
 // The coordinates feed an addi that reaches the return (a data use) and drive
@@ -121,10 +117,62 @@ module attributes {ttl.launch_grid = [1 : i64, 3 : i64]} {
 
 // -----
 
+// A known-inactive core predicate must eliminate its branch even when another
+// conjunction operand is runtime-dependent.
+
+// FOLDED-LABEL: func.func @partially_known_conjunction_c0_0
+// FOLDED-NOT:     ttkernel.opaque_call "uses_local_tensor"
+// FOLDED-NOT:     scf.if
+// FOLDED:         return
+// FOLDED-LABEL: func.func @partially_known_conjunction_c1_0
+// FOLDED:         ttkernel.opaque_call "runtime_rank"
+// FOLDED:         scf.if
+// FOLDED:           ttkernel.opaque_call "uses_local_tensor"
+// FOLDED-LABEL: func.func @partially_known_disjunction_c0_0
+// FOLDED:         ttkernel.opaque_call "uses_local_tensor"
+// FOLDED-NOT:     scf.if
+// FOLDED-LABEL: func.func @partially_known_disjunction_c1_0
+// FOLDED:         ttkernel.opaque_call "runtime_rank"
+// FOLDED:         scf.if
+// FOLDED:           ttkernel.opaque_call "uses_local_tensor"
+
+module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
+  func.func @partially_known_conjunction() {
+    %zero = arith.constant 0 : index
+    %limit = arith.constant 96 : index
+    %core_x = "ttkernel.my_logical_x_"() : () -> index
+    %is_expert = arith.cmpi eq, %core_x, %zero : index
+    %active_projection = emitc.logical_not %is_expert : i1
+    %runtime_rank = ttkernel.opaque_call "runtime_rank" () {header = "runtime_rank.hpp"} : () -> index
+    %selected_rank = arith.cmpi sge, %runtime_rank, %limit : index
+    %active = arith.andi %active_projection, %selected_rank : i1
+    scf.if %active {
+      ttkernel.opaque_call "uses_local_tensor" () {header = "uses_local_tensor.hpp"} : () -> ()
+    }
+    return
+  }
+
+  func.func @partially_known_disjunction() {
+    %zero = arith.constant 0 : index
+    %limit = arith.constant 96 : index
+    %core_x = "ttkernel.my_logical_x_"() : () -> index
+    %is_expert = arith.cmpi eq, %core_x, %zero : index
+    %runtime_rank = ttkernel.opaque_call "runtime_rank" () {header = "runtime_rank.hpp"} : () -> index
+    %selected_rank = arith.cmpi sge, %runtime_rank, %limit : index
+    %active = arith.ori %is_expert, %selected_rank : i1
+    scf.if %active {
+      ttkernel.opaque_call "uses_local_tensor" () {header = "uses_local_tensor.hpp"} : () -> ()
+    }
+    return
+  }
+}
+
+// -----
+
 // -- Test 4: pipe participants are specialized like any other kernel. --------
-// The module used a pipe, so a semaphore op is present. The pass no longer
-// special-cases pipes: because core_y drives an scf.if, the 1x2 grid is cloned
-// per row. The semaphore op is carried into each clone unchanged.
+// A live semaphore operation does not change specialization. Because core_y
+// drives an scf.if, the 1x2 grid is cloned per row, and the semaphore access is
+// retained in each clone.
 
 // CHECK-NOT:   func.func @kpipe()
 // CHECK-LABEL: func.func @kpipe_c0_0
@@ -140,6 +188,9 @@ module attributes {ttl.launch_grid = [1 : i64, 2 : i64]} {
     %c7 = arith.constant 7 : index
     %c9 = arith.constant 9 : index
     %sem = ttkernel.get_semaphore(%c0) : (index) -> !ttkernel.local_semaphore
+    %sem_ptr = ttkernel.reinterpret_cast(%sem) : (!ttkernel.local_semaphore) -> !ttkernel.l1_addr_ptr
+    %one = arith.constant 1 : i32
+    ttkernel.experimental.semaphore_wait_min(%sem_ptr, %one) : (!ttkernel.l1_addr_ptr, i32) -> ()
     %y = "ttkernel.my_logical_y_"() : () -> index
     %pred = arith.cmpi eq, %y, %c0 : index
     %r = scf.if %pred -> (index) {
@@ -153,7 +204,243 @@ module attributes {ttl.launch_grid = [1 : i64, 2 : i64]} {
 
 // -----
 
-// -- Test 5: single-core launch grid is a legitimate no-op. ------------------
+// Coordinate-indexed tables require specialization.
+// A constant-table lookup selects worker-specific metadata even when its result
+// does not control a region. Specialization preserves one table entry in each
+// per-core clone; canonicalization then replaces the lookup with that entry.
+
+// CHECK-NOT:   func.func @ktable_data()
+// CHECK-LABEL: func.func @ktable_data_c0_0
+// CHECK-SAME:    ttl.core_coord = {{\[\[}}0, 0]]
+// CHECK:         ttkernel.experimental.constant_table_lookup
+// CHECK-LABEL: func.func @ktable_data_c0_1
+// CHECK-SAME:    ttl.core_coord = {{\[\[}}0, 1]]
+// CHECK:         ttkernel.experimental.constant_table_lookup
+
+// FOLDED-LABEL: func.func @ktable_data_c0_0
+// FOLDED-NEXT:    %[[FIRST:.*]] = arith.constant 17 : index
+// FOLDED-NEXT:    return %[[FIRST]] : index
+// FOLDED-LABEL: func.func @ktable_data_c0_1
+// FOLDED-NEXT:    %[[SECOND:.*]] = arith.constant 29 : index
+// FOLDED-NEXT:    return %[[SECOND]] : index
+
+module attributes {ttl.launch_grid = [1 : i64, 2 : i64]} {
+  func.func @ktable_data() -> index {
+    %core_y = "ttkernel.my_logical_y_"() : () -> index
+    %value = ttkernel.experimental.constant_table_lookup %core_y, [17, 29] : index
+    return %value : index
+  }
+}
+
+// -----
+
+// Coordinate-dependent selectors and loop conditions require specialization.
+// This covers region control flow beyond scf.if and scf.for.
+
+// CHECK-NOT:   func.func @kindex_switch()
+// CHECK-LABEL: func.func @kindex_switch_c0_0
+// CHECK-SAME:    ttl.core_coord = {{\[\[}}0, 0]]
+// CHECK-NOT:   func.func @kindex_switch()
+// CHECK-LABEL: func.func @kindex_switch_c0_1
+// CHECK-SAME:    ttl.core_coord = {{\[\[}}0, 1]]
+// CHECK-NOT:   func.func @kwhile()
+// CHECK-LABEL: func.func @kwhile_c0_0
+// CHECK-SAME:    ttl.core_coord = {{\[\[}}0, 0]]
+// CHECK-NOT:   func.func @kwhile()
+// CHECK-LABEL: func.func @kwhile_c0_1
+// CHECK-SAME:    ttl.core_coord = {{\[\[}}0, 1]]
+
+module attributes {ttl.launch_grid = [1 : i64, 2 : i64]} {
+  func.func @kindex_switch() {
+    %core_y = "ttkernel.my_logical_y_"() : () -> index
+    scf.index_switch %core_y
+    case 0 {
+      scf.yield
+    }
+    default {
+      scf.yield
+    }
+    return
+  }
+
+  func.func @kwhile() {
+    %zero = arith.constant 0 : index
+    %core_y = "ttkernel.my_logical_y_"() : () -> index
+    %result = scf.while (%current = %core_y) : (index) -> index {
+      %continue = arith.cmpi sgt, %current, %zero : index
+      scf.condition(%continue) %current : index
+    } do {
+    ^bb0(%current : index):
+      scf.yield %zero : index
+    }
+    return
+  }
+}
+
+// -----
+
+// -- Test 5: coordinate-dependent loop bounds require specialization. -------
+// A table-selected upper bound becomes constant in every per-core clone.
+
+// CHECK-NOT:   func.func @kloop()
+// CHECK-LABEL: func.func @kloop_c0_0
+// CHECK-SAME:    ttl.core_coord = {{\[\[}}0, 0]]
+// CHECK-NOT:     my_logical_y_
+// CHECK-LABEL: func.func @kloop_c0_1
+// CHECK-SAME:    ttl.core_coord = {{\[\[}}0, 1]]
+// CHECK-NOT:     my_logical_y_
+// CHECK-NOT:   func.func @klower()
+// CHECK-LABEL: func.func @klower_c0_0
+// CHECK-SAME:    ttl.core_coord = {{\[\[}}0, 0]]
+// CHECK-LABEL: func.func @klower_c0_1
+// CHECK-SAME:    ttl.core_coord = {{\[\[}}0, 1]]
+// CHECK-NOT:   func.func @kstep()
+// CHECK-LABEL: func.func @kstep_c0_0
+// CHECK-SAME:    ttl.core_coord = {{\[\[}}0, 0]]
+// CHECK-LABEL: func.func @kstep_c0_1
+// CHECK-SAME:    ttl.core_coord = {{\[\[}}0, 1]]
+// CHECK-NOT:   func.func @kregion()
+// CHECK-LABEL: func.func @kregion_c0_0
+// CHECK-SAME:    ttl.core_coord = {{\[\[}}0, 0]]
+// CHECK-NOT:     my_logical_y_
+// CHECK-LABEL: func.func @kregion_c0_1
+// CHECK-SAME:    ttl.core_coord = {{\[\[}}0, 1]]
+// CHECK-NOT:     my_logical_y_
+
+// FOLDED-LABEL: func.func @kloop_c0_0
+// FOLDED-NEXT:    %[[LOOP_ZERO_0:.*]] = arith.constant 0 : index
+// FOLDED-NEXT:    call @consume(%[[LOOP_ZERO_0]]) : (index) -> ()
+// FOLDED-NEXT:    return
+// FOLDED-LABEL: func.func @kloop_c0_1
+// FOLDED-NOT:     ttkernel.experimental.constant_table_lookup
+// FOLDED-DAG:     %[[LOOP_ZERO_1:.*]] = arith.constant 0 : index
+// FOLDED-DAG:     %[[LOOP_ONE_1:.*]] = arith.constant 1 : index
+// FOLDED-DAG:     %[[LOOP_TWO_1:.*]] = arith.constant 2 : index
+// FOLDED:         scf.for %{{.*}} = %[[LOOP_ZERO_1]] to %[[LOOP_TWO_1]] step %[[LOOP_ONE_1]]
+// FOLDED-LABEL: func.func @klower_c0_0
+// FOLDED-DAG:     %[[LOWER_ZERO_0:.*]] = arith.constant 0 : index
+// FOLDED-DAG:     %[[LOWER_ONE_0:.*]] = arith.constant 1 : index
+// FOLDED-DAG:     %[[LOWER_THREE_0:.*]] = arith.constant 3 : index
+// FOLDED:         scf.for %{{.*}} = %[[LOWER_ZERO_0]] to %[[LOWER_THREE_0]] step %[[LOWER_ONE_0]]
+// FOLDED-LABEL: func.func @klower_c0_1
+// FOLDED-DAG:     %[[LOWER_ONE_1:.*]] = arith.constant 1 : index
+// FOLDED-DAG:     %[[LOWER_THREE_1:.*]] = arith.constant 3 : index
+// FOLDED:         scf.for %{{.*}} = %[[LOWER_ONE_1]] to %[[LOWER_THREE_1]] step %[[LOWER_ONE_1]]
+// FOLDED-LABEL: func.func @kstep_c0_0
+// FOLDED-DAG:     %[[STEP_ZERO_0:.*]] = arith.constant 0 : index
+// FOLDED-DAG:     %[[STEP_ONE_0:.*]] = arith.constant 1 : index
+// FOLDED-DAG:     %[[STEP_FOUR_0:.*]] = arith.constant 4 : index
+// FOLDED:         scf.for %{{.*}} = %[[STEP_ZERO_0]] to %[[STEP_FOUR_0]] step %[[STEP_ONE_0]]
+// FOLDED-LABEL: func.func @kstep_c0_1
+// FOLDED-DAG:     %[[STEP_ZERO_1:.*]] = arith.constant 0 : index
+// FOLDED-DAG:     %[[STEP_TWO_1:.*]] = arith.constant 2 : index
+// FOLDED-DAG:     %[[STEP_FOUR_1:.*]] = arith.constant 4 : index
+// FOLDED:         scf.for %{{.*}} = %[[STEP_ZERO_1]] to %[[STEP_FOUR_1]] step %[[STEP_TWO_1]]
+
+module attributes {ttl.launch_grid = [1 : i64, 2 : i64]} {
+  func.func private @consume(index)
+
+  func.func @kloop() {
+    %lower = arith.constant 0 : index
+    %step = arith.constant 1 : index
+    %core_y = "ttkernel.my_logical_y_"() : () -> index
+    %upper = ttkernel.experimental.constant_table_lookup %core_y, [1, 2] : index
+    scf.for %record = %lower to %upper step %step {
+      func.call @consume(%record) : (index) -> ()
+    }
+    return
+  }
+
+  func.func @klower() {
+    %upper = arith.constant 3 : index
+    %step = arith.constant 1 : index
+    %core_y = "ttkernel.my_logical_y_"() : () -> index
+    %lower = ttkernel.experimental.constant_table_lookup %core_y, [0, 1] : index
+    scf.for %record = %lower to %upper step %step {
+      func.call @consume(%record) : (index) -> ()
+    }
+    return
+  }
+
+  func.func @kstep() {
+    %lower = arith.constant 0 : index
+    %upper = arith.constant 4 : index
+    %core_y = "ttkernel.my_logical_y_"() : () -> index
+    %step = ttkernel.experimental.constant_table_lookup %core_y, [1, 2] : index
+    scf.for %record = %lower to %upper step %step {
+      func.call @consume(%record) : (index) -> ()
+    }
+    return
+  }
+
+  func.func @kregion(%select_coord : i1) {
+    %lower = arith.constant 0 : index
+    %one = arith.constant 1 : index
+    %core_y = "ttkernel.my_logical_y_"() : () -> index
+    %upper = scf.if %select_coord -> (index) {
+      scf.yield %core_y : index
+    } else {
+      scf.yield %one : index
+    }
+    scf.for %record = %lower to %upper step %one {
+      func.call @consume(%record) : (index) -> ()
+    }
+    return
+  }
+}
+
+// -----
+
+// -- Test 6: unrelated region coordinate use does not specialize. -----------
+// A coordinate used inside an scf.if region but not yielded into the loop
+// bound is outside the bound's backward slice.
+
+// CHECK-LABEL: func.func @kindependent_region
+// CHECK-NOT:     ttl.core_coord
+// CHECK:         my_logical_y_
+// CHECK-NOT:   func.func @kindependent_region_c
+// CHECK-LABEL: func.func @kforwarded_region_value
+// CHECK-NOT:     ttl.core_coord
+// CHECK:         my_logical_y_
+// CHECK-NOT:   func.func @kforwarded_region_value_c
+
+module attributes {ttl.launch_grid = [1 : i64, 2 : i64]} {
+  func.func private @consume(index)
+
+  func.func @kindependent_region(%select_value : i1) {
+    %lower = arith.constant 0 : index
+    %one = arith.constant 1 : index
+    %two = arith.constant 2 : index
+    %upper = scf.if %select_value -> (index) {
+      %core_y = "ttkernel.my_logical_y_"() : () -> index
+      func.call @consume(%core_y) : (index) -> ()
+      scf.yield %one : index
+    } else {
+      scf.yield %two : index
+    }
+    scf.for %record = %lower to %upper step %one {
+      func.call @consume(%record) : (index) -> ()
+    }
+    return
+  }
+
+  func.func @kforwarded_region_value() {
+    %lower = arith.constant 0 : index
+    %upper = arith.constant 2 : index
+    %step = arith.constant 1 : index
+    %core_y = "ttkernel.my_logical_y_"() : () -> index
+    %result = scf.for %record = %lower to %upper step %step
+        iter_args(%carried = %core_y) -> index {
+      func.call @consume(%carried) : (index) -> ()
+      scf.yield %carried : index
+    }
+    return
+  }
+}
+
+// -----
+
+// -- Test 7: single-core launch grid is a legitimate no-op. ------------------
 // A valid `ttl.launch_grid` whose product is <= 1 has nothing to specialize
 // CHECK-LABEL: func.func @ksingle
 // CHECK-NOT:     ttl.core_coord
@@ -178,7 +465,7 @@ module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
 
 // -----
 
-// -- Test 6: functions with symbol uses are skipped, others still clone. -----
+// -- Test 8: functions with symbol uses are skipped, others still clone. -----
 // `kcallee` branches on a coordinate but is referenced by `kcaller`, so it is
 // left unspecialized (erasing it would leave a dangling call). `kleaf` has no
 // symbol uses and is still cloned per core.
@@ -225,5 +512,48 @@ module attributes {ttl.launch_grid = [1 : i64, 2 : i64]} {
       scf.yield %c9 : index
     }
     return %r : index
+  }
+}
+
+// -----
+
+// -- Test 10: specialization applies per function. ----------------------------
+// The reader branches on core_x, so it is cloned per coordinate and the
+// original is erased. The compute kernel uses coordinates only as data and
+// remains whole-grid. Each occupies a different processor.
+
+// CHECK-NOT:   func.func @mixed_reader()
+// CHECK-LABEL: func.func @mixed_reader_c0_0
+// CHECK-SAME:    ttl.core_coord = {{\[\[}}0, 0]]
+// CHECK-NOT:     my_logical_x_
+// CHECK-LABEL: func.func @mixed_reader_c1_0
+// CHECK-SAME:    ttl.core_coord = {{\[\[}}1, 0]]
+// CHECK-LABEL: func.func @mixed_compute
+// CHECK-NOT:     ttl.core_coord
+// CHECK:         my_logical_x_
+
+module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
+  func.func @mixed_reader() -> index attributes {
+      ttl.kernel_thread = #ttkernel.thread<noc>,
+      ttl.noc_index = 0 : i32} {
+    %c0 = arith.constant 0 : index
+    %c3 = arith.constant 3 : index
+    %c5 = arith.constant 5 : index
+    %x = "ttkernel.my_logical_x_"() : () -> index
+    %pred = arith.cmpi eq, %x, %c0 : index
+    %r = scf.if %pred -> (index) {
+      scf.yield %c3 : index
+    } else {
+      scf.yield %c5 : index
+    }
+    return %r : index
+  }
+
+  func.func @mixed_compute() -> index attributes {
+      ttl.kernel_thread = #ttkernel.thread<compute>} {
+    %x = "ttkernel.my_logical_x_"() : () -> index
+    %y = "ttkernel.my_logical_y_"() : () -> index
+    %s = arith.addi %x, %y : index
+    return %s : index
   }
 }

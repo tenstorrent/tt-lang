@@ -22,18 +22,27 @@ class DFBReconfiguration:
     kind. A ``Kernel`` handle names a specific logical kernel captured by the
     enclosing operation. Every participant executes the same reconfiguration
     calls in the same order. A call may execute at most once per dispatch and
-    launch node, or once in every iteration of nested sequential loops with
-    compile-time-known trip counts. Repeated execution requires at least two
-    calls in equivalent loop nests and in the same order in every participant.
+    launch node, or once in every iteration of one sequential loop with a
+    compile-time-known trip count. Whether it executes may depend on the launch
+    node but not on runtime values; a call under a condition on a runtime value
+    or in nested loops is a compilation error. Repeated execution requires at
+    least two calls in equivalent loops and in the same order in every
+    participant.
     At each call, the runtime waits for prior DFB-interface work to complete,
     installs the next compiler-derived descriptors, and then allows following
-    DFB-interface work to begin. Independent math and SFPU work may overlap the
-    descriptor update.
+    DFB-interface work to begin. When ``discard_dfb_state`` is true, unread
+    producer payload and opaque external protocol state whose final access
+    precedes the call may end there. Reassignment resets the physical DFB
+    interface before subsequent work. Independent math and SFPU work may
+    overlap the descriptor update.
     """
 
     participants: tuple[KernelSelector, ...]
+    discard_dfb_state: bool = False
 
     def __post_init__(self) -> None:
+        if not isinstance(self.discard_dfb_state, bool):
+            raise TypeError("DFBReconfiguration discard_dfb_state must be a bool")
         if not isinstance(self.participants, tuple) or not self.participants:
             raise TypeError("DFBReconfiguration participants must be a nonempty tuple")
         seen_kinds: set[KernelKind] = set()
@@ -77,6 +86,10 @@ class _BoundDFBReconfiguration:
     @property
     def participants(self) -> tuple[KernelSelector, ...]:
         return self.declaration.participants
+
+    @property
+    def discard_dfb_state(self) -> bool:
+        return self.declaration.discard_dfb_state
 
 
 class _DFBReconfigurationBinder:
@@ -153,11 +166,13 @@ def _participant_topology(
 def _dfb_reconfiguration_topology(
     boundaries: Mapping[str, DFBReconfiguration],
     logical_kernels: Mapping[str, Kernel],
-) -> tuple[tuple[int, tuple[tuple[str, str], ...]], ...]:
+) -> tuple[tuple[int, bool, tuple[tuple[str, str], ...]], ...]:
+    # State-discard semantics change allocation validity and operation identity.
     bindings = _bind_dfb_reconfigurations(boundaries)
     return tuple(
         (
             binding.ordinal,
+            binding.discard_dfb_state,
             tuple(
                 sorted(
                     _participant_topology(participant, logical_kernels)

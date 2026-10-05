@@ -101,7 +101,8 @@ static void cloneComputeBodyWithMaterializedStores(
       auto materializedStore = TileStoreOp::create(
           builder, clonedStore.getLoc(), clonedStore.getTile(),
           output.reserve.getResult(), clonedStore.getIndices(),
-          clonedStore.getDstIndex());
+          clonedStore.getDstIndex(), DFBTileStoreKind::Producer,
+          /*row_prefix=*/nullptr);
       materializedStore->setAttrs(clonedStore->getAttrs());
       materializedStore.setStoreKind(DFBTileStoreKind::Producer);
       ++output.storeCount;
@@ -151,7 +152,8 @@ static void applyComputeMaterializationPlan(
   for (MaterializedOutput &output : materializedOutputs) {
     output.reserve =
         CBReserveOp::create(builder, producerCompute.getLoc(),
-                            output.tensorType, output.bind.getResult());
+                            output.tensorType, output.bind.getResult(),
+                            /*num_tiles=*/nullptr);
     Value init = tensor::EmptyOp::create(builder, producerCompute.getLoc(),
                                          output.tensorType.getShape(),
                                          output.tensorType.getElementType());

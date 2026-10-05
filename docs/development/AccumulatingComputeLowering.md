@@ -88,10 +88,12 @@ Deferred features are tracked separately:
 The current design preserves these invariants:
 
 - `ttl.accumulation_scope` declares accumulation outputs and policies. It
-  does not encode DST, L1 packer, or explicit DFB state.
+  does not encode DST, L1 packer, or explicit DFB state. When the accumulator
+  type differs from the output type, the body must explicitly store the final
+  accumulator to that output.
 - Conditional rejection belongs in `ttl-insert-accumulation-scopes{kind=dfb}`,
-  not in
-  the `ttl.accumulation_scope` verifier. The verifier remains structural.
+  not in the `ttl.accumulation_scope` verifier. The verifier remains
+  structural.
 - `ttl.l1_acc_loop` plus `ttl.l1_acc_initial` is static first-update
   lowering metadata, not the full accumulation model.
 - TTKernel passes must not infer accumulation semantics from neighboring DFB
@@ -119,19 +121,26 @@ body. It produces no tensor results. Tensor recurrence scopes are consumed
 before general loop-state materialization, so value-style accumulation is a
 deferred feature rather than part of the current op contract.
 
-The verifier is structural:
+The accumulator state is the value passed between loop iterations. Its type
+comes from the init operand for `init` mode and from the output for other modes.
+This permits, for example, a 32x32 accumulator whose first 16 rows are stored
+into a 16x32 output tile.
+
+The verifier checks:
 
 - initial-mode count equals output count;
 - init modes have matching init operands;
-- init operand types match their corresponding outputs;
+- each `init` body state type matches its init operand; other body state types
+  match their corresponding outputs;
 - the body has one block argument and one yielded value per output;
-- body arguments and yielded values match their output types;
+- body arguments and yielded values match their state types;
 - nested `ttl.accumulation_scope` is rejected until nested accumulation
   semantics are defined.
 
-The verifier does not prove that stores target the declared outputs or that
-control flow reaches an update. Those are nonlocal insertion and strategy
-lowering responsibilities.
+When accumulator and output types differ, the verifier requires a store of the
+yielded accumulator to its corresponding output directly in the scope body.
+Broader checks of update ordering and control flow belong to scope insertion
+and strategy lowering.
 
 Initial modes have these meanings:
 
@@ -142,7 +151,8 @@ Initial modes have these meanings:
   participates in the result. For L1 packer accumulation, iteration 0 must
   pack with L1 accumulation enabled.
 - `init`: an init operand seeds the accumulator, independent of the final
-  output location.
+  output location. The accumulator may retain a full tile while an explicit
+  row-prefix store writes only the leading rows to a shorter output tile.
 
 Tensor recurrence scope form:
 

@@ -121,9 +121,10 @@ def add_loop_kernel(lhs, rhs, out):
 # CHECK-CPP: tile_regs_release();
 # CHECK-CPP: init_sfpu(get_compile_time_arg_val(1), get_compile_time_arg_val(2));
 # CHECK-CPP: llk_pack_reconfig_l1_acc([[ONE]])
+# One initialization serves all iterations of this nonempty copy/pack loop.
+# CHECK-CPP: copy_tile_init(get_compile_time_arg_val(1));
 # CHECK-CPP: for (size_t {{.*}} < {{.*}};
 # CHECK-CPP: tile_regs_acquire();
-# CHECK-CPP: copy_tile_init(get_compile_time_arg_val(1));
 # CHECK-CPP: copy_tile(get_compile_time_arg_val(1),
 # CHECK-CPP: tile_regs_commit();
 # CHECK-CPP: tile_regs_wait();
@@ -158,9 +159,9 @@ def add_loop_kernel(lhs, rhs, out):
 # CHECK-CPP-FPU: tile_regs_release();
 # CHECK-CPP-FPU: init_sfpu(get_compile_time_arg_val(1), get_compile_time_arg_val(2));
 # CHECK-CPP-FPU: llk_pack_reconfig_l1_acc([[ONE]])
+# CHECK-CPP-FPU: copy_tile_init(get_compile_time_arg_val(1));
 # CHECK-CPP-FPU: for (size_t {{.*}} < {{.*}};
 # CHECK-CPP-FPU: tile_regs_acquire();
-# CHECK-CPP-FPU: copy_tile_init(get_compile_time_arg_val(1));
 # CHECK-CPP-FPU: copy_tile(get_compile_time_arg_val(1),
 # CHECK-CPP-FPU: tile_regs_commit();
 # CHECK-CPP-FPU: tile_regs_wait();

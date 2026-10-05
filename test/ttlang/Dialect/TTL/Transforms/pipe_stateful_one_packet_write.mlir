@@ -74,15 +74,15 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
 
 // -----
 
-// An inline word write uses a separate NoC command buffer, so it does not
-// prevent reuse of the resident asynchronous-write command on the same core.
-// CHECK-LABEL: func.func @inline_word_write_preserves_async_write_state
-// CHECK: ttkernel.noc_async_write_one_packet_set_state
+// An inline L1 write may use the ordinary asynchronous-write command, so the
+// loop cannot reuse resident write state across iterations.
+// CHECK-LABEL: func.func @inline_word_write_invalidates_async_write_state
+// CHECK-NOT: ttkernel.noc_async_write_one_packet_set_state
 // CHECK: scf.for
 // CHECK: ttkernel.noc_inline_dw_write
-// CHECK: ttkernel.noc_async_write_one_packet_with_state
-// CHECK-NOT: ttkernel.noc_async_write{{[ (]}}
-func.func @inline_word_write_preserves_async_write_state(
+// CHECK: ttkernel.noc_async_write{{[ (]}}
+// CHECK-NOT: ttkernel.noc_async_write_one_packet_with_state
+func.func @inline_word_write_invalidates_async_write_state(
     %src_addr: i32, %dst_addr: i32) {
   %c0 = arith.constant 0 : index
   %c1 = arith.constant 1 : index
@@ -97,6 +97,30 @@ func.func @inline_word_write_preserves_async_write_state(
         : (index, index, i32, i32, i8, i8) -> ()
     ttkernel.noc_async_write
         %src_addr, core[%c1, %c0], %dst_addr, %size, noc %c0_i8
+        : (i32, index, index, i32, i32, i8) -> ()
+  }
+  func.return
+}
+
+// -----
+
+// Stateful lowering must preserve posted response mode on both operations;
+// mixing response modes would program and issue different command semantics.
+// CHECK-LABEL: func.func @posted_write_preserves_response_mode
+// CHECK: ttkernel.noc_async_write_one_packet_set_state({{.*}}) posted true
+// CHECK: scf.for
+// CHECK: ttkernel.noc_async_write_one_packet_with_state({{.*}}) posted true
+// CHECK-NOT: ttkernel.noc_async_write{{[ (]}}
+func.func @posted_write_preserves_response_mode(
+    %src_addr: i32, %dst_addr: i32) {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c4 = arith.constant 4 : index
+  %noc = arith.constant 0 : i8
+  %size = arith.constant 896 : i32
+  scf.for %iteration = %c0 to %c4 step %c1 {
+    ttkernel.noc_async_write
+        %src_addr, core[%c1, %c0], %dst_addr, %size, noc %noc posted true
         : (i32, index, index, i32, i32, i8) -> ()
   }
   func.return

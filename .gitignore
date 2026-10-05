@@ -12,6 +12,8 @@ third_party/ttnn-python
 /venv
 .cache
 .claude/*
+# Skills checked in for everyone working on this repo.
+!.claude/skills/
 *pycache*
 *.egg-info
 cluster_descriptor.yaml

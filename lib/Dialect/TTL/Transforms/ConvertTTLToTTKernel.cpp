@@ -6,11 +6,13 @@
 
 #include "CommonRuntimeArgLayout.h"
 #include "DFBAllocationLimits.h"
+#include "DFBStateDiscard.h"
 #include "FabricManagerLifetimeAnalysis.h"
 #include "PipeGraph.h"
 #include "PipeLowering.h"
 #include "PipeNetForeachLowering.h"
 #include "PipePlanning.h"
+#include "PipeReceiveBatching.h"
 #include "PipeTransferExpansion.h"
 #include "ttlang/Dialect/TTKernel/Transforms/TTKernelCleanupPatterns.h"
 
@@ -422,18 +424,58 @@ static FailureOr<unsigned> getTensorFuncArgIndex(Value tensor) {
   return blockArg.getArgNumber();
 }
 
-static FailureOr<int32_t> getValidatedDFBIndex(Value dfb, Operation *op) {
-  std::optional<int64_t> dfbIndex = getCBIndex(dfb);
-  if (!dfbIndex) {
-    return op->emitError("cannot resolve finalized DFB index");
+// Canonicalizes index sets for TTKernel's strict attribute-ordering invariant.
+static void sortAndDeduplicateDFBIndices(SmallVectorImpl<int32_t> &indices) {
+  llvm::sort(indices);
+  indices.erase(llvm::unique(indices), indices.end());
+}
+
+// Converts DFB operands into a canonical set of finalized physical indices.
+static FailureOr<SmallVector<int32_t>>
+getValidatedPhysicalDFBIndices(ValueRange dfbs, Operation *op) {
+  SmallVector<int32_t> indices;
+  indices.reserve(dfbs.size());
+  for (Value dfb : dfbs) {
+    FailureOr<int32_t> index = getValidatedDFBIndex(dfb, op);
+    if (failed(index)) {
+      return failure();
+    }
+    indices.push_back(*index);
   }
-  int32_t targetMaxDFBIndices = getTargetMaxDFBIndices(op);
-  if (*dfbIndex < 0 || *dfbIndex >= targetMaxDFBIndices) {
-    return op->emitError("finalized DFB index ")
-           << *dfbIndex << " is outside [0, " << targetMaxDFBIndices - 1
-           << "] for " << getTargetDFBIndexCapacityDescription(op);
+  sortAndDeduplicateDFBIndices(indices);
+  return indices;
+}
+
+// Unknown external calls can name user-managed DFBs by physical index without
+// explicit operands, so collect every such index in the module.
+static FailureOr<SmallVector<int32_t>>
+collectUserManagedPhysicalDFBIndices(ModuleOp module) {
+  SmallVector<int32_t> indices;
+  WalkResult result = module.walk([&](BindCBOp bind) -> WalkResult {
+    if (bind->hasAttr(kCompilerAllocatedAttrName)) {
+      return WalkResult::advance();
+    }
+    FailureOr<int32_t> index = getValidatedDFBIndex(bind.getResult(), bind);
+    if (failed(index)) {
+      return WalkResult::interrupt();
+    }
+    indices.push_back(*index);
+    return WalkResult::advance();
+  });
+  if (result.wasInterrupted()) {
+    return failure();
   }
-  return static_cast<int32_t>(*dfbIndex);
+  sortAndDeduplicateDFBIndices(indices);
+  return indices;
+}
+
+// Absence denotes no descriptor requirement; an explicit empty list is invalid.
+static DenseI32ArrayAttr getRequiredDFBIndicesAttr(ArrayRef<int32_t> indices,
+                                                   RewriterBase &rewriter) {
+  if (indices.empty()) {
+    return {};
+  }
+  return rewriter.getDenseI32ArrayAttr(indices);
 }
 
 /// Read one L1 address from the function's common runtime arguments.
@@ -443,33 +485,6 @@ static Value getCommonRuntimeArg(unsigned argIdx, Location loc,
   return ttk::GetCommonArgValOp::create(rewriter, loc, rewriter.getI32Type(),
                                         idxConst)
       .getResult();
-}
-
-/// Build a TensorAccessor using tt-metal's constexpr CTA offset chaining.
-///
-/// The CTA offset for tensor N is computed at device compile time via
-/// get_tensor_accessor_args_cta_offset<N, baseCTA>(). This chains through
-/// all preceding tensors' configs to find the correct offset, regardless of
-/// whether each tensor is interleaved (2 CTAs) or sharded (variable CTAs).
-static Value buildTensorAccessor(Location loc,
-                                 ConversionPatternRewriter &rewriter,
-                                 int32_t baseCTA, int32_t globalTensorIdx,
-                                 int32_t crtaIndex, Value bankBase,
-                                 Value pageSize = Value()) {
-  std::string ctaExpr =
-      "tensor_accessor::detail::get_tensor_accessor_args_cta_offset<" +
-      std::to_string(globalTensorIdx) + ", " + std::to_string(baseCTA) + ">()";
-
-  // Verifier requires cta_base even when cta_expr is set; EmitC ignores it.
-  auto dummyCTA = arith::ConstantIntOp::create(rewriter, loc, 0, 32);
-  auto crtaConst = arith::ConstantIntOp::create(rewriter, loc, crtaIndex, 32);
-  auto args = ttk::TensorAccessorArgsOp::create(
-      rewriter, loc, dummyCTA.getResult(), crtaConst.getResult(),
-      /*prev_args=*/Value(), rewriter.getStringAttr(ctaExpr),
-      /*crta_expr=*/nullptr);
-  auto accessor = ttk::TensorAccessorOp::create(rewriter, loc, args.getResult(),
-                                                bankBase, pageSize);
-  return accessor.getResult();
 }
 
 template <typename FuncLike>
@@ -647,6 +662,7 @@ private:
 /// Traverses ViewLikeOpInterface ops (CBReserveOp, CBWaitOp) and casts.
 static FailureOr<Value> getCBFromView(Value v) {
   while (v) {
+    v = traceDFBShapeViews(v);
     if (llvm::isa<ttk::CBType>(v.getType())) {
       return v;
     }
@@ -656,16 +672,14 @@ static FailureOr<Value> getCBFromView(Value v) {
       break;
     }
 
-    if (auto viewLike = llvm::dyn_cast<ViewLikeOpInterface>(def)) {
-      v = viewLike.getViewSource();
+    if (isa<tensor::ExpandShapeOp, tensor::CollapseShapeOp>(def)) {
+      v = getSingletonDimensionShapeViewSource(def);
       continue;
     }
 
-    if (auto cast = llvm::dyn_cast<UnrealizedConversionCastOp>(def)) {
-      if (cast.getInputs().size() == 1) {
-        v = cast.getInputs()[0];
-        continue;
-      }
+    if (auto viewLike = llvm::dyn_cast<ViewLikeOpInterface>(def)) {
+      v = viewLike.getViewSource();
+      continue;
     }
 
     if (auto cast = llvm::dyn_cast<tensor::CastOp>(def)) {
@@ -738,16 +752,8 @@ struct TileStoreLowering : OpConversionPattern<TileStoreOp> {
       }
     }
 
-    // Linearize multi-dimensional CB indices to a flat tile index.
-    auto viewTy = mlir::cast<RankedTensorType>(op.getView().getType());
-    ValueRange indices = adaptor.getIndices();
-    Value cbTileIndex = affine::AffineLinearizeIndexOp::create(
-        rewriter, loc, indices, viewTy.getShape());
-
-    // If the view is a subblock slice, add the slice offset to produce
-    // the global DFB tile index.
-    cbTileIndex =
-        utils::addSliceOffset(op.getView(), cbTileIndex, rewriter, loc);
+    Value cbTileIndex = utils::computeDFBTileIndex(
+        op.getView(), adaptor.getIndices(), rewriter, loc);
 
     Value dstIndex = adaptor.getDstIndex();
 
@@ -919,9 +925,9 @@ static Value materializeTensorAccessor(Value tensor, Value bankBase,
   auto pageSize =
       arith::ConstantIntOp::create(rewriter, loc, info.pageSizeBytes, 32);
 
-  return buildTensorAccessor(loc, rewriter, info.baseCTA, info.globalTensorIdx,
-                             static_cast<int32_t>(info.argIdx), bankBase,
-                             pageSize);
+  return buildDistributedTensorAccessor(
+      loc, rewriter, info.baseCTA, info.globalTensorIdx,
+      static_cast<int32_t>(info.argIdx), bankBase, pageSize);
 }
 
 /// Extract tile grid shape from a Value with a static ranked tensor type.
@@ -1119,6 +1125,9 @@ static LogicalResult lowerTensorCBCopy(
         cbTileIdxOp->setAttr(kExpandLinearizeIndexAttr,
                              loopBuilder.getUnitAttr());
         Value cbTileIdx = cbTileIdxOp.getResult();
+        Value dfbEndpoint = isRead ? op.getDst() : op.getSrc();
+        cbTileIdx =
+            utils::addSliceOffset(dfbEndpoint, cbTileIdx, loopBuilder, bodyLoc);
 
         // Compute CB address: cbPtr + cbTileIdx * pageSize
         Value byteOffset =
@@ -1140,6 +1149,44 @@ static LogicalResult lowerTensorCBCopy(
               loopBuilder, bodyLoc, tensorTileIdx32, accessor, cbAddr, nocVal);
         }
       });
+
+  rewriter.replaceOp(op, makeZeroI32(loc, rewriter));
+  return success();
+}
+
+// Tile-copy lowering cannot preserve a partial-page byte count or copy between
+// different tile geometries, so direct DFB copies use the raw NoC operation.
+static LogicalResult lowerDFBToDFBCopy(CopyOp op,
+                                       ConversionPatternRewriter &rewriter,
+                                       const TypeConverter &typeConverter) {
+  IntegerAttr byteCountAttr = op.getByteCountAttr();
+  Value srcDFB = getAttachedCB(op.getSrc());
+  Value dstDFB = getAttachedCB(op.getDst());
+  if (!byteCountAttr || !srcDFB || !dstDFB ||
+      !isa<CircularBufferType>(srcDFB.getType()) ||
+      !isa<CircularBufferType>(dstDFB.getType())) {
+    return rewriter.notifyMatchFailure(
+        op, "DFB block copy requires byte_count and two attached DFBs");
+  }
+
+  uint64_t byteCount = static_cast<uint64_t>(byteCountAttr.getInt());
+  Location loc = op.getLoc();
+  FailureOr<Value> srcCB =
+      utils::convertTTLCBToTTKernel(srcDFB, rewriter, loc, &typeConverter);
+  FailureOr<Value> dstCB =
+      utils::convertTTLCBToTTKernel(dstDFB, rewriter, loc, &typeConverter);
+  assert(succeeded(srcCB) && succeeded(dstCB) && "preflight checked DFB types");
+
+  Value srcAddress = ttk::GetReadPtrOp::create(rewriter, loc, *srcCB);
+  Value dstAddress = ttk::GetWritePtrOp::create(rewriter, loc, *dstCB);
+  int64_t nocIndex = getNocIndex(op);
+  Value noc = arith::ConstantOp::create(rewriter, loc, rewriter.getI8Type(),
+                                        rewriter.getI8IntegerAttr(nocIndex));
+  Value srcX = ttk::MyXOp::create(rewriter, loc, noc);
+  Value srcY = ttk::MyYOp::create(rewriter, loc, noc);
+  Value size = arith::ConstantIntOp::create(rewriter, loc, byteCount, 32);
+  ttk::NocAsyncReadOp::create(rewriter, loc, ValueRange{srcX, srcY},
+                              ValueRange{}, srcAddress, dstAddress, size, noc);
 
   rewriter.replaceOp(op, makeZeroI32(loc, rewriter));
   return success();
@@ -1185,6 +1232,7 @@ struct CopyLowering : OpConversionPattern<CopyOp> {
     bool srcIsSlice = srcKind == CopyOperandKind::TensorSlice;
     bool srcIsCB = srcKind == CopyOperandKind::CircularBuffer;
     bool srcIsPipe = srcKind == CopyOperandKind::Pipe;
+    bool srcIsDFBAttachedTensor = srcKind == CopyOperandKind::DFBAttachedTensor;
     bool dstIsSlice = dstKind == CopyOperandKind::TensorSlice;
     bool dstIsCB = dstKind == CopyOperandKind::CircularBuffer;
     bool dstIsPipe = dstKind == CopyOperandKind::Pipe;
@@ -1204,35 +1252,40 @@ struct CopyLowering : OpConversionPattern<CopyOp> {
           op, "pipe copy requires CB <-> Pipe, got invalid combination");
     }
 
-    // Non-pipe transfers: validate exactly one TensorSlice and one CB.
-    if (!((srcIsSlice && dstIsCB) || (srcIsCB && dstIsSlice))) {
+    if (srcIsDFBAttachedTensor && dstIsDFBAttachedTensor) {
+      return lowerDFBToDFBCopy(op, rewriter, *typeConverter);
+    }
+
+    // Non-pipe transfers require one tensor slice and one DFB endpoint.
+    if (!((srcIsSlice && (dstIsCB || dstIsDFBAttachedTensor)) ||
+          ((srcIsCB || srcIsDFBAttachedTensor) && dstIsSlice))) {
       return rewriter.notifyMatchFailure(op, [&](Diagnostic &diag) {
-        diag << "ttl.copy requires one tensor_slice and one circular_buffer, "
+        diag << "ttl.copy requires one tensor_slice and one DFB endpoint, "
              << "got src=" << src.getType() << " dst=" << dst.getType();
       });
     }
 
-    // TensorSlice -> CB: read tiles from tensor into circular buffer.
-    if (srcIsSlice && dstIsCB) {
+    // TensorSlice -> DFB: read tiles from tensor into DFB storage.
+    if (srcIsSlice && (dstIsCB || dstIsDFBAttachedTensor)) {
       auto sliceOp = src.getDefiningOp<TensorSliceOp>();
       if (!sliceOp) {
         return rewriter.notifyMatchFailure(
             op, "tensor_slice source must come from ttl.tensor_slice op");
       }
-      return lowerTensorCBCopy(op, sliceOp, adaptor.getDst(),
-                               NocCopyDirection::Read,
+      Value dstDFB = dstIsCB ? adaptor.getDst() : getAttachedCB(dst);
+      return lowerTensorCBCopy(op, sliceOp, dstDFB, NocCopyDirection::Read,
                                pipeTransportPlan.lookupStorageAccess(op),
                                slotCounters, rewriter, *typeConverter);
     }
 
-    // CB -> TensorSlice: write tiles from circular buffer to tensor.
+    // DFB -> TensorSlice: write tiles from DFB storage to tensor.
     auto sliceOp = dst.getDefiningOp<TensorSliceOp>();
     if (!sliceOp) {
       return rewriter.notifyMatchFailure(
           op, "tensor_slice destination must come from ttl.tensor_slice op");
     }
-    return lowerTensorCBCopy(op, sliceOp, adaptor.getSrc(),
-                             NocCopyDirection::Write,
+    Value srcDFB = srcIsCB ? adaptor.getSrc() : getAttachedCB(src);
+    return lowerTensorCBCopy(op, sliceOp, srcDFB, NocCopyDirection::Write,
                              pipeTransportPlan.lookupStorageAccess(op),
                              slotCounters, rewriter, *typeConverter);
   }
@@ -1294,14 +1347,18 @@ struct PipeTransferSendLowering : OpConversionPattern<PipeTransferSendOp> {
         fabricRuntime(fabricRuntime) {}
 
   LogicalResult
-  matchAndRewrite(PipeTransferSendOp op, OpAdaptor adaptor,
+  matchAndRewrite(PipeTransferSendOp op, OpAdaptor,
                   ConversionPatternRewriter &rewriter) const override {
     if (pipeResourcePlan.staticallyInactiveOps.contains(op.getOperation())) {
       lowerInactivePipeTransferSend(op, rewriter);
       return success();
     }
+    Value sourceDFB = isa<CircularBufferType>(op.getSrc().getType())
+                          ? op.getSrc()
+                          : getAttachedCB(op.getSrc());
+    assert(sourceDFB && "verified pipe send must have a source DFB");
     return lowerPipeTransferSend(
-        op, adaptor.getSrc(), pipeModulePlan.getTransferPlan(op.getOperation()),
+        op, sourceDFB, pipeModulePlan.getTransferPlan(op.getOperation()),
         pipeModulePlan.getTransportPlan(), pipeResourcePlan, pipeCapacityPlan,
         senderCapacityCounters, fabricReadyCounters, computedAddressCounters,
         fabricRuntime, rewriter);
@@ -1535,25 +1592,11 @@ buildDFBResetLoweringPlan(ModuleOp module) {
   }
   plan.scratchBytes = static_cast<int64_t>(*scratchBytes);
 
-  WalkResult allocationResult = module.walk([&](BindCBOp bind) -> WalkResult {
-    std::optional<int64_t> dfbIndex = getCBIndex(bind.getResult());
-    if (!dfbIndex) {
-      bind.emitOpError("requires a finalized DFB index before reset lowering");
-      return WalkResult::interrupt();
-    }
-    int32_t targetMaxDFBIndices = getTargetMaxDFBIndices(bind);
-    if (*dfbIndex < 0 || *dfbIndex >= targetMaxDFBIndices) {
-      bind.emitOpError("finalized DFB index ")
-          << *dfbIndex << " is outside [0, " << targetMaxDFBIndices - 1
-          << "] for " << getTargetDFBIndexCapacityDescription(bind);
-      return WalkResult::interrupt();
-    }
-    plan.allDFBMask |= uint64_t{1} << static_cast<unsigned>(*dfbIndex);
-    return WalkResult::advance();
-  });
-  if (allocationResult.wasInterrupted()) {
+  FailureOr<uint64_t> allocatedMask = getAllocatedDFBMask(module);
+  if (failed(allocatedMask)) {
     return failure();
   }
+  plan.allDFBMask = *allocatedMask;
 
   if (!orderedResets.empty()) {
     Builder builder(module.getContext());
@@ -1579,12 +1622,21 @@ static LogicalResult lowerDFBReset(Operation *operation,
       rewriter, location, static_cast<uint32_t>(dfbMask), 32);
   Value highMask = arith::ConstantIntOp::create(
       rewriter, location, static_cast<uint32_t>(dfbMask >> 32), 32);
+  // Lowering removes the reset's DFB operands, so retain every selected index
+  // as a descriptor requirement.
+  SmallVector<int32_t> requiredPhysicalDFBIndices;
+  for (unsigned index = 0; index < 64; ++index) {
+    if ((dfbMask & (uint64_t{1} << index)) != 0) {
+      requiredPhysicalDFBIndices.push_back(static_cast<int32_t>(index));
+    }
+  }
   ttk::OpaqueCallOp::create(
       rewriter, location, TypeRange{},
-      rewriter.getStringAttr("experimental::reset_dfb_interfaces"),
+      rewriter.getStringAttr("::experimental::reset_dfb_interfaces"),
       rewriter.getStringAttr("<cstdint>"),
       ValueRange{synchronizationAddress, lowMask, highMask}, ArrayAttr(),
-      rewriter.getDenseI32ArrayAttr({0, 1, 2}));
+      rewriter.getDenseI32ArrayAttr({0, 1, 2}),
+      getRequiredDFBIndicesAttr(requiredPhysicalDFBIndices, rewriter));
   rewriter.eraseOp(operation);
   return success();
 }
@@ -1597,15 +1649,12 @@ struct ResetDFBsLowering : OpConversionPattern<ResetDFBsOp> {
   LogicalResult
   matchAndRewrite(ResetDFBsOp op, OpAdaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    uint64_t dfbMask = 0;
-    for (Value dfb : op.getDfbs()) {
-      FailureOr<int32_t> dfbIndex = getValidatedDFBIndex(dfb, op);
-      if (failed(dfbIndex)) {
-        return failure();
-      }
-      dfbMask |= uint64_t{1} << static_cast<unsigned>(*dfbIndex);
+    FailureOr<uint64_t> dfbMask =
+        getSynchronizedResetDFBMask(op, plan.allDFBMask);
+    if (failed(dfbMask)) {
+      return failure();
     }
-    return lowerDFBReset(op, op.getReset(), dfbMask, plan, rewriter);
+    return lowerDFBReset(op, op.getReset(), *dfbMask, plan, rewriter);
   }
 
 private:
@@ -1620,7 +1669,12 @@ struct ResetAllDFBsLowering : OpConversionPattern<ResetAllDFBsOp> {
   LogicalResult
   matchAndRewrite(ResetAllDFBsOp op, OpAdaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    return lowerDFBReset(op, op.getReset(), plan.allDFBMask, plan, rewriter);
+    FailureOr<uint64_t> dfbMask =
+        getSynchronizedResetDFBMask(op, plan.allDFBMask);
+    if (failed(dfbMask)) {
+      return failure();
+    }
+    return lowerDFBReset(op, op.getReset(), *dfbMask, plan, rewriter);
   }
 
 private:
@@ -1677,11 +1731,13 @@ struct DFBReconfigurationLowering : OpConversionPattern<DFBReconfigurationOp> {
         rewriter, op.getLoc(),
         IntegerType::get(rewriter.getContext(), 32, IntegerType::Unsigned),
         runtimeArgIndex);
-    ttk::OpaqueCallOp::create(
+    auto reconfigurationCall = ttk::OpaqueCallOp::create(
         rewriter, op.getLoc(), TypeRange{},
-        rewriter.getStringAttr("experimental::reconfigure_dfb_interfaces"),
+        rewriter.getStringAttr("::experimental::reconfigure_dfb_interfaces"),
         rewriter.getStringAttr("<cstdint>"), ValueRange{configurationAddress},
-        ArrayAttr(), rewriter.getDenseI32ArrayAttr({0}));
+        ArrayAttr(), rewriter.getDenseI32ArrayAttr({0}), DenseI32ArrayAttr());
+    reconfigurationCall->setAttr(kDFBReconfigurationOrdinalAttrName,
+                                 rewriter.getI64IntegerAttr(ordinal));
     rewriter.eraseOp(op);
     return success();
   }
@@ -1709,12 +1765,30 @@ using OpaqueArgumentPlan =
     std::variant<OpaqueScalarArgument, OpaqueDFBArgument, OpaqueTensorArgument>;
 
 struct OpaqueCallLowering : OpConversionPattern<OpaqueCallOp> {
-  using OpConversionPattern::OpConversionPattern;
+  OpaqueCallLowering(TypeConverter &typeConverter, MLIRContext *context,
+                     ArrayRef<int32_t> userManagedPhysicalDFBIndices)
+      : OpConversionPattern(typeConverter, context),
+        userManagedPhysicalDFBIndices(userManagedPhysicalDFBIndices) {}
 
   LogicalResult
   matchAndRewrite(OpaqueCallOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     Location location = op.getLoc();
+
+    // Dependency operands name every descriptor required by a typed external
+    // call, including operands that are absent from the emitted C++ call.
+    FailureOr<SmallVector<int32_t>> requiredPhysicalDFBIndices =
+        getValidatedPhysicalDFBIndices(op.getDFBDependencyOperands(), op);
+    if (failed(requiredPhysicalDFBIndices)) {
+      return failure();
+    }
+    if (op.hasUnknownDFBAccess()) {
+      // An untyped external call may refer to any user-managed physical DFB
+      // index without listing it as an operand.
+      llvm::append_range(*requiredPhysicalDFBIndices,
+                         userManagedPhysicalDFBIndices);
+      sortAndDeduplicateDFBIndices(*requiredPhysicalDFBIndices);
+    }
 
     SmallVector<Attribute> templateArgs;
     if (std::optional<ArrayAttr> sourceTemplateArgs = op.getTemplateArgs()) {
@@ -1815,9 +1889,9 @@ struct OpaqueCallLowering : OpConversionPattern<OpaqueCallOp> {
       Value accessor;
       if (tensor.ctaInfo) {
         auto [baseCTA, globalTensorIdx] = *tensor.ctaInfo;
-        accessor =
-            buildTensorAccessor(location, rewriter, baseCTA, globalTensorIdx,
-                                static_cast<int32_t>(tensor.argIdx), bankBase);
+        accessor = buildDistributedTensorAccessor(
+            location, rewriter, baseCTA, globalTensorIdx,
+            static_cast<int32_t>(tensor.argIdx), bankBase);
       } else {
         accessor =
             ttk::LocalTensorAccessorOp::create(rewriter, location, bankBase)
@@ -1833,12 +1907,15 @@ struct OpaqueCallLowering : OpConversionPattern<OpaqueCallOp> {
     }
     auto newOp = ttk::OpaqueCallOp::create(
         rewriter, location, resultTypes, op.getCalleeAttr(), op.getHeaderAttr(),
-        convertedArgs, templateArgsAttr, op.getUnsignedArgIndicesAttr());
+        convertedArgs, templateArgsAttr, op.getUnsignedArgIndicesAttr(),
+        getRequiredDFBIndicesAttr(*requiredPhysicalDFBIndices, rewriter));
     rewriter.replaceOp(op, newOp->getResults());
     return success();
   }
 
 private:
+  SmallVector<int32_t> userManagedPhysicalDFBIndices;
+
   /// Resolve DFB metadata before type conversion discards block geometry.
   static FailureOr<Attribute>
   convertTemplateArg(ExternalTemplateArgAttr templateArg,
@@ -1948,7 +2025,7 @@ struct FuncKernelFinalize : OpRewritePattern<FuncOp> {
             ttk::ArgSpecAttr::get(op.getContext(),
                                   /*rtArgs=*/ArrayRef<ttk::ArgAttr>{},
                                   /*ctArgs=*/ctArgSpecs);
-        op->setAttr("ttkernel.arg_spec", argSpecAttr);
+        op->setAttr(ttk::ArgSpecAttr::name, argSpecAttr);
       }
 
       // Only erase arguments that are now unused after conversion. If any are
@@ -2303,7 +2380,9 @@ struct RawElementWriteLowering : OpConversionPattern<RawElementWriteOp> {
 static LogicalResult lowerTTLOpsToTTKernel(
     ModuleOp mod, MLIRContext &ctx, TTLToTTKernelTypeConverter &typeConverter,
     StringRef passName, bool pipeComputedAddresses, bool pipeCapacitySync,
-    bool pipeGlobalSemaphoresOnly, std::optional<uint64_t> l1BudgetOverride) {
+    bool pipeGlobalSemaphoresOnly,
+    const GraphPipeNetForeachPlans &graphForeachPlans, bool fabricMux,
+    std::optional<uint64_t> l1BudgetOverride) {
   ConversionTarget target(ctx);
   target.addIllegalDialect<tt::ttl::TTLDialect>();
   target.addLegalDialect<affine::AffineDialect, arith::ArithDialect,
@@ -2360,7 +2439,7 @@ static LogicalResult lowerTTLOpsToTTKernel(
   // Preserve the generated record-selection regions so pipe graph ordering
   // does not mistake them for independent user control flow.
   PipeForeachLoweringInfo foreachLoweringInfo;
-  lowerPipeNetForeachOps(mod, foreachLoweringInfo);
+  lowerPipeNetForeachOps(mod, foreachLoweringInfo, graphForeachPlans);
 
   // Validate explicit transfer IR and resolve every high-level pipe copy before
   // expansion mutates the values used by the analysis.
@@ -2399,6 +2478,9 @@ static LogicalResult lowerTTLOpsToTTKernel(
   if (failed(pipeGraphOrErr)) {
     return failure();
   }
+  if (failed(preparePipeTensorDestinationRuntimeArguments(*pipeGraphOrErr))) {
+    return failure();
+  }
 
   FabricRoutePlan fabricRoutePlan;
   if (failed(
@@ -2412,6 +2494,12 @@ static LogicalResult lowerTTLOpsToTTKernel(
   FailureOr<DFBResetLoweringPlan> resetLoweringPlan =
       buildDFBResetLoweringPlan(mod);
   if (failed(resetLoweringPlan)) {
+    return failure();
+  }
+
+  FailureOr<SmallVector<int32_t>> userManagedPhysicalDFBIndices =
+      collectUserManagedPhysicalDFBIndices(mod);
+  if (failed(userManagedPhysicalDFBIndices)) {
     return failure();
   }
   pipePlanningOptions.enableComputedAddresses = pipeComputedAddresses;
@@ -2430,6 +2518,8 @@ static LogicalResult lowerTTLOpsToTTKernel(
     return failure();
   }
   PipeModulePlan pipeModulePlan = std::move(*maybePipeModulePlan);
+  annotateInitialPipeReceiveBatches(mod, foreachLoweringInfo, *pipeGraphOrErr,
+                                    pipeModulePlan.getResourcePlan());
   resetLoweringPlan->scratchBaseOffset =
       pipeModulePlan.getTrailingSramScratchOffset();
   FailureOr<FinalizedDFBStorageFootprint> allocationFootprint =
@@ -2456,7 +2546,7 @@ static LogicalResult lowerTTLOpsToTTKernel(
   }
   mod->removeAttr(kPipeConservativeL1BytesAttrName);
   applyPipeModuleAttributes(mod, pipeModulePlan);
-  applyFabricRoutePlan(mod, fabricRoutePlan);
+  applyFabricRoutePlan(mod, fabricRoutePlan, fabricMux);
   const PipeResourcePlan &pipeResourcePlan = pipeModulePlan.getResourcePlan();
   const PipeCapacityPlan &pipeCapacityPlan = pipeModulePlan.getCapacityPlan();
   // [Device 2.0] The kPipeSyncSemaphoreCountAttrName,
@@ -2512,16 +2602,17 @@ static LogicalResult lowerTTLOpsToTTKernel(
       typeConverter, &ctx, pipeTransportPlan);
   patterns.add<ResetDFBsLowering, ResetAllDFBsLowering>(typeConverter, &ctx,
                                                         *resetLoweringPlan);
-  patterns
-      .add<BindCBLowering, TensorSliceLowering, TileStoreLowering,
-           StoreLowering, CoreXLowering, CoreYLowering, RawElementReadLowering,
-           ReadIndexLowering, RawElementWriteLowering, RawAddrLowering,
-           DFBReconfigurationLowering, OpaqueCallLowering, GetDfbIdLowering,
-           IsDeviceLowering, CurrentDeviceIndexLowering,
-           IsDeviceInRangeLowering, SelectedPipeSourceDeviceIndexLowering,
-           SelectedPipeDestinationDeviceIndexLowering,
-           SelectedPipeSourceCoordinatesLowering,
-           SelectedPipeDestinationCoordinatesLowering>(typeConverter, &ctx);
+  patterns.add<
+      BindCBLowering, TensorSliceLowering, TileStoreLowering, StoreLowering,
+      CoreXLowering, CoreYLowering, RawElementReadLowering, ReadIndexLowering,
+      RawElementWriteLowering, RawAddrLowering, DFBReconfigurationLowering,
+      GetDfbIdLowering, IsDeviceLowering, CurrentDeviceIndexLowering,
+      IsDeviceInRangeLowering, SelectedPipeSourceDeviceIndexLowering,
+      SelectedPipeDestinationDeviceIndexLowering,
+      SelectedPipeSourceCoordinatesLowering,
+      SelectedPipeDestinationCoordinatesLowering>(typeConverter, &ctx);
+  patterns.add<OpaqueCallLowering>(typeConverter, &ctx,
+                                   *userManagedPhysicalDFBIndices);
   patterns.add<CBPopLowering>(typeConverter, &ctx, pipeCapacityPlan,
                               pipeTransportPlan, transportSlotCounters,
                               pipeResourcePlan);
@@ -2648,15 +2739,16 @@ removeStructuralTTLOps(ModuleOp mod, MLIRContext &ctx,
 static void removeTensorDataflowOps(func::FuncOp func) {
   SmallVector<Operation *> deadOps;
   func.walk([&](Operation *op) {
-    if (mlir::isa<tensor::ExtractOp, tensor::ExtractSliceOp, tensor::EmptyOp>(
-            op) &&
-        op->use_empty()) {
+    if (mlir::isa<tensor::ExtractOp, tensor::ExtractSliceOp, tensor::EmptyOp,
+                  tensor::ExpandShapeOp, tensor::CollapseShapeOp>(op)) {
       deadOps.push_back(op);
     }
   });
-  // Erase innermost-first to avoid dangling uses.
+  // Users precede their definitions so a dead view chain is removed together.
   for (auto *op : llvm::reverse(deadOps)) {
-    op->erase();
+    if (op->use_empty()) {
+      op->erase();
+    }
   }
 }
 
@@ -2769,6 +2861,39 @@ static void expandDstSections(ModuleOp mod) {
 // TTLConvertTTLToTTKernelPass
 //===----------------------------------------------------------------------===//
 
+static LogicalResult validateDFBShapeViews(ModuleOp module) {
+  WalkResult result = module.walk([&](Operation *operation) {
+    if (auto cast = dyn_cast<UnrealizedConversionCastOp>(operation)) {
+      bool hasBlockInput = llvm::any_of(cast.getInputs(), [](Value source) {
+        return getAttachedCB(source) || isCBAcquireView(source);
+      });
+      if (hasBlockInput && !getDFBConversionCastSource(operation)) {
+        operation->emitOpError(
+            "DFB views cannot use tensor reinterpretation casts; use checked "
+            "singleton-dimension expand_shape or collapse_shape operations");
+        return WalkResult::interrupt();
+      }
+      return WalkResult::advance();
+    }
+    if (!isa<tensor::ExpandShapeOp, tensor::CollapseShapeOp>(operation)) {
+      return WalkResult::advance();
+    }
+    Value source = operation->getOperand(0);
+    auto sourceType = dyn_cast<RankedTensorType>(source.getType());
+    bool isBlockView =
+        (sourceType && isa<ttcore::TileType>(sourceType.getElementType())) ||
+        getAttachedCB(source) || isCBAcquireView(source);
+    if (isBlockView && !getSingletonDimensionShapeViewSource(operation)) {
+      operation->emitOpError(
+          "block shape views require static shapes, identical element types "
+          "and encodings, and singleton-dimension insertion or removal");
+      return WalkResult::interrupt();
+    }
+    return WalkResult::advance();
+  });
+  return failure(result.wasInterrupted());
+}
+
 static LogicalResult
 validateTileOperationsForTarget(ModuleOp module,
                                 const ComputeTargetEnvironment &target) {
@@ -2797,6 +2922,10 @@ struct TTLConvertTTLToTTKernelPass
     ModuleOp mod = getOperation();
     TTLToTTKernelTypeConverter typeConverter;
 
+    if (failed(validateDFBShapeViews(mod))) {
+      signalPassFailure();
+      return;
+    }
     if (failed(validateSynchronizedDFBResetTarget(mod))) {
       signalPassFailure();
       return;
@@ -2822,6 +2951,13 @@ struct TTLConvertTTLToTTKernelPass
       return;
     }
 
+    FailureOr<GraphPipeNetForeachPlans> graphForeachPlans =
+        buildGraphPipeNetForeachPlans(mod);
+    if (failed(graphForeachPlans)) {
+      signalPassFailure();
+      return;
+    }
+
     // Phase 0: Expand DstSectionOp into four TTL sync ops. This inlines the
     // DstSectionOp body and inserts acquire/commit/wait/release around it,
     // with stores reordered to the pack phase (after wait).
@@ -2830,7 +2966,8 @@ struct TTLConvertTTLToTTKernelPass
     // Phase 1: Lower TTL ops to TTKernel (bind_cb, copy, wait, cb ops, store)
     if (failed(lowerTTLOpsToTTKernel(
             mod, ctx, typeConverter, getName(), pipeComputedAddresses,
-            pipeCapacitySync, pipeGlobalSemaphoresOnly,
+            pipeCapacitySync, pipeGlobalSemaphoresOnly, *graphForeachPlans,
+            fabricMux,
             l1BudgetOverride == 0
                 ? std::nullopt
                 : std::optional<uint64_t>(l1BudgetOverride)))) {

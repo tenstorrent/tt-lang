@@ -34,7 +34,18 @@ import inspect
 import os
 import types
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple, Union
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    Hashable,
+    List,
+    Mapping,
+    MutableMapping,
+    Optional,
+    Tuple,
+    Union,
+)
 
 import ttl as _ttl
 from ttl.pykernel._src.utils import _cleanup_source_code
@@ -43,6 +54,7 @@ from ._src.atom_inline import (
     _INLINED_OPERATION_STATEMENT,
     _collect_local_names,
     inline_atom_calls,
+    specialize_static_boolean_branches,
 )
 from ._src.atom_rules import (
     defines_kernels_by_spelling,
@@ -54,7 +66,7 @@ from ._src.atom_rules import (
     validate_resource_declarations,
 )
 from ._src.atom_split import split_function_body
-from ._src.tensor_registry import register_tensor_name
+from ._src.tensor_registry import register_tensor_arguments
 from .compiler_options import CompilerOptions
 from .condition import (
     DispatchCondition,
@@ -79,6 +91,7 @@ from .dfb_allocation_group import (
     make_dfb_allocation_group,
 )
 from .dataflow_buffer import (
+    DFBAddressScope,
     DataflowBuffer,
     _reset_cb_counter,
     make_dataflow_buffer_like,
@@ -88,6 +101,7 @@ from .dataflow_buffer import (
 from .dtype_utils import is_ttnn_tensor
 from .kernel import (
     Kernel,
+    KernelKind,
     KernelSelector,
     _bind_kernel_declarations,
     _operation_identity,
@@ -96,6 +110,7 @@ from .kernel import (
     _selector_kind,
     _transitive_participant_kernels,
 )
+from .template_argument import UInt32TemplateArgument
 from .fabric import (
     FabricManagerClaim,
     _bind_fabric_manager_claims,
@@ -112,9 +127,9 @@ from .ttl_api import (
     _backend_kernel_slots,
     _build_pipenet_graph,
     _canonical_tensor_args,
-    _default_mesh_program_placements_with_domain,
     _lower_program_to_kernel,
     _make_operation_wrapper,
+    _resolve_mesh_program_placements,
     _run_thread_compiler,
     _slot_idle_kernel,
     _validate_operation_options,
@@ -277,14 +292,12 @@ def _build_atom_spec(
         source_file = "<unknown>"
 
     raw_lines, start_lineno = inspect.getsourcelines(fn)
-    num_decorator_lines = 0
-    for line in raw_lines:
-        stripped = line.strip()
-        if stripped.startswith("@"):
-            num_decorator_lines += 1
-        elif stripped.startswith("def ") or stripped.startswith("async def "):
-            break
-    line_offset = start_lineno + num_decorator_lines - 1
+    def_line_index = next(
+        index
+        for index, line in enumerate(raw_lines)
+        if line.lstrip().startswith(("def ", "async def "))
+    )
+    line_offset = start_lineno + def_line_index - 1
     module = ast.parse(_cleanup_source_code(fn))
     if len(module.body) != 1 or not isinstance(module.body[0], ast.FunctionDef):
         raise ValueError(
@@ -292,6 +305,8 @@ def _build_atom_spec(
         )
     fn_def: ast.FunctionDef = module.body[0]
     scope = function_scope(fn)
+    enclosing_scope = dict(scope)
+    captured_values = _referenced_operation_values(fn)
 
     # Inline statement-level calls to other unified operations, then keep
     # the post-inline AST + source.
@@ -304,6 +319,7 @@ def _build_atom_spec(
         inlined_dfb_resets,
         inlined_dfb_reconfigurations,
     ) = inline_atom_calls(fn_def, scope, caller_name=name)
+    specialize_static_boolean_branches(fn_def, captured_values)
     _hoist_inlined_resource_declarations(fn_def, scope, name)
     validate_resource_declarations(fn_def, name)
 
@@ -311,8 +327,21 @@ def _build_atom_spec(
     for node in ast.walk(fn_def):
         if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
             loaded_names.add(node.id)
-
-    captured_values = _referenced_operation_values(fn)
+    # Code-object names exclude nested-scope locals; inlining adds the names it
+    # binds into scope, which the original function's code does not reference.
+    inlined_names = {
+        capture_name
+        for capture_name, value in scope.items()
+        if capture_name not in enclosing_scope
+        or enclosing_scope[capture_name] is not value
+    }
+    params = _classify_params(fn)
+    local_names = _collect_local_names(fn_def) | {param.name for param in params}
+    captured_values = {
+        capture_name: scope[capture_name]
+        for capture_name in ((captured_values.keys() | inlined_names) & loaded_names)
+        - local_names
+    }
     external_pipenets = dict(inlined_pipenets)
     compile_time_captures: Dict[str, Any] = {}
     logical_kernels: Dict[str, Kernel] = dict(inlined_logical_kernels)
@@ -331,7 +360,7 @@ def _build_atom_spec(
     captured_names = sorted(loaded_names & captured_values.keys())
     for capture_name in captured_names:
         value = captured_values[capture_name]
-        if not isinstance(value, Kernel):
+        if not isinstance(value, Kernel) or _selector_implicit_role(value) is not None:
             continue
         if not any(value is kernel for kernel in logical_kernels.values()):
             captured_logical_kernels[capture_name] = value
@@ -346,7 +375,7 @@ def _build_atom_spec(
             )
         if isinstance(value, PipeNet):
             external_pipenets[capture_name] = value
-        elif isinstance(value, Kernel):
+        elif isinstance(value, (Kernel, KernelKind)):
             continue
         elif isinstance(value, FabricManagerClaim):
             if not any(value is claim for claim in fabric_manager_claims.values()):
@@ -427,12 +456,12 @@ def _build_atom_spec(
     )
     if reconfiguration_topology:
         encoded_reconfiguration_topology = ";".join(
-            f"{ordinal}:"
+            f"{ordinal}:{int(discard_dfb_state)}:"
             + ",".join(
                 f"{participant_kind}:{participant_identity}"
                 for participant_kind, participant_identity in participants
             )
-            for ordinal, participants in reconfiguration_topology
+            for ordinal, discard_dfb_state, participants in reconfiguration_topology
         )
         reconfiguration_topology_digest = hashlib.sha256(
             encoded_reconfiguration_topology.encode("utf-8")
@@ -462,7 +491,6 @@ def _build_atom_spec(
     frozen_scope.update(dfb_reconfigurations)
     source = ast.unparse(fn_def)
 
-    params = _classify_params(fn)
     return _AtomSpec(
         name=name,
         operation_identity=operation_identity,
@@ -495,7 +523,19 @@ def _bind_logical_kernels(
 def _is_compile_time_literal(value: Any) -> bool:
     if value is ScalarType:
         return True
-    if value is None or isinstance(value, (bool, int, float, str, ScalarType)):
+    if value is None or isinstance(
+        value,
+        (
+            bool,
+            int,
+            float,
+            str,
+            ScalarType,
+            KernelKind,
+            UInt32TemplateArgument,
+            DFBAddressScope,
+        ),
+    ):
         return True
     if isinstance(value, (tuple, list)):
         return all(_is_compile_time_literal(element) for element in value)
@@ -725,6 +765,7 @@ def _compile_atom(
     compiler_options: CompilerOptions,
     l1_budget_override: int,
     device_domain=None,
+    mesh_program_placements=None,
     runtime_resource_factory: Optional[Callable[..., ProgramRuntimeResources]] = None,
     runtime_resource_cache=None,
 ):
@@ -746,9 +787,11 @@ def _compile_atom(
 
     # Register ttnn tensors so the per-thread compiler can resolve global
     # tensor indices for its tensor accessors.
-    for idx, (pname, val) in enumerate(bound_arguments.items()):
-        if is_ttnn_tensor(val):
-            register_tensor_name(val, pname, index=idx)
+    register_tensor_arguments(
+        (val, pname, idx)
+        for idx, (pname, val) in enumerate(bound_arguments.items())
+        if is_ttnn_tensor(val)
+    )
 
     _reset_cb_counter()
     _set_current_grid(grid)
@@ -837,8 +880,11 @@ def _compile_atom(
         "debug_locations": True,
     }
     program = Program(*threads, args=args, kwargs=injected_program_kwargs)
-    mesh_program_placements = _default_mesh_program_placements_with_domain(
-        args, device_domain
+    resolved_mesh_program_placements = _resolve_mesh_program_placements(
+        args,
+        device_domain,
+        mesh_program_placements,
+        required_devices=pipe_graph.device_endpoints(),
     )
 
     return _lower_program_to_kernel(
@@ -855,7 +901,7 @@ def _compile_atom(
         l1_budget_override=l1_budget_override,
         kernel_source_file=spec.source_file,
         kernel_line_offset=spec.line_offset,
-        mesh_program_placements=mesh_program_placements,
+        mesh_program_placements=resolved_mesh_program_placements,
         device_domain=device_domain,
         logical_kernels=thread_logical_kernels,
         operation_name=spec.name,
@@ -891,6 +937,7 @@ def _compile_unified_operation(
         target_arch=target_arch,
         compiler_options=compiler_options,
         device_domain=decorator_options["device_domain"],
+        mesh_program_placements=decorator_options.get("mesh_program_placements"),
         l1_budget_override=l1_budget_override,
         runtime_resource_factory=decorator_options.get("runtime_resource_factory"),
         runtime_resource_cache=runtime_resource_cache,
@@ -925,6 +972,9 @@ class Atom:
             math_fidelity=decorator_options["math_fidelity"],
             options=decorator_options["options"],
             prepare_call=prepare_call,
+            factory_cache=decorator_options["factory_cache"],
+            factory_cache_key=decorator_options["factory_cache_key"],
+            runtime_resource_factory=decorator_options["runtime_resource_factory"],
         )
         functools.update_wrapper(self, spec.fn)
 
@@ -954,7 +1004,10 @@ def _unified_operation(
     math_fidelity: Optional[str] = None,
     options: Optional[str] = None,
     device_domain=None,
+    mesh_program_placements=None,
     runtime_resource_factory: Optional[Callable[..., ProgramRuntimeResources]] = None,
+    factory_cache: Optional[MutableMapping] = None,
+    factory_cache_key: Optional[Hashable] = None,
 ) -> Callable:
     """Build the unified-body form selected by ``@ttl.operation``.
 
@@ -981,7 +1034,10 @@ def _unified_operation(
                 "math_fidelity": math_fidelity,
                 "options": options,
                 "device_domain": device_domain,
+                "mesh_program_placements": mesh_program_placements,
                 "runtime_resource_factory": runtime_resource_factory,
+                "factory_cache": factory_cache,
+                "factory_cache_key": factory_cache_key,
             },
         )
 
@@ -1000,9 +1056,19 @@ def operation(
     math_fidelity: Optional[str] = None,
     options: Optional[str] = None,
     device_domain=None,
+    mesh_program_placements=None,
     runtime_resource_factory: Optional[Callable[..., ProgramRuntimeResources]] = None,
+    factory_cache: Optional[MutableMapping] = None,
+    factory_cache_key: Optional[Hashable] = None,
 ) -> Callable:
-    """Define a unified-body or explicit multi-kernel operation."""
+    """Define a unified-body or explicit multi-kernel operation.
+
+    ``mesh_program_placements`` optionally limits execution to logical device
+    coordinate tuples or inclusive ``ttl.MeshProgramPlacement`` ranges. When
+    omitted, an operation with a device domain executes on the full domain.
+    Explicit placements must include every graph-based PipeNet endpoint.
+    Placements must use one coordinate rank and must not overlap.
+    """
 
     def _decorator(fn):
         validate_operation_interface(fn)
@@ -1037,8 +1103,11 @@ def operation(
                 math_fidelity=math_fidelity,
                 options=options,
                 runtime_resource_factory=runtime_resource_factory,
+                factory_cache=factory_cache,
+                factory_cache_key=factory_cache_key,
                 _prepare_call=prepare_call,
                 device_domain=device_domain,
+                mesh_program_placements=mesh_program_placements,
             )(fn)
             wrapped._ttl_operation_kind = "multi_kernel"
             return wrapped
@@ -1053,7 +1122,10 @@ def operation(
             math_fidelity=math_fidelity,
             options=options,
             device_domain=device_domain,
+            mesh_program_placements=mesh_program_placements,
             runtime_resource_factory=runtime_resource_factory,
+            factory_cache=factory_cache,
+            factory_cache_key=factory_cache_key,
         )(fn)
 
     return _decorator

@@ -20,6 +20,7 @@
 #include "llvm/ADT/SmallPtrSet.h"
 
 #include <cstddef>
+#include <memory>
 #include <optional>
 
 namespace mlir::tt {
@@ -30,8 +31,16 @@ namespace mlir::tt::ttl {
 
 class PipeTransferIndex;
 
+/// Build a TTKernel tensor accessor from the global tensor descriptor and its
+/// function-local common runtime argument.
+Value buildDistributedTensorAccessor(Location loc, OpBuilder &builder,
+                                     int32_t baseCTA, int32_t globalTensorIndex,
+                                     int32_t commonRuntimeArgIndex,
+                                     Value bankBase, Value pageSize = Value());
+
 /// One logical device route used by `sourceNodes` in a kernel function.
-/// `routeIndex` identifies the connection within `localDevice`.
+/// `routeIndex` selects this route's target metadata; host binding separately
+/// maps that route to a shared physical connection slot.
 struct FabricRoute {
   DeviceRefAttr localDevice;
   DeviceRefAttr remoteDevice;
@@ -77,13 +86,16 @@ struct FabricManagerIntervalPlan {
   std::optional<SmallVector<LaunchNodeCoord>> launchNodes;
 };
 
-/// Fabric routes and transfer associations derived before PipeNet lowering.
+/// Fabric routes and transfer associations derived before transport emission.
 struct FabricRoutePlan {
   /// Routes grouped by the kernel function that submits each transfer.
   llvm::MapVector<func::FuncOp, FunctionFabricRoutePlan> routesByFunction;
-  /// Connection indices in selected-record order. Static operations have one
-  /// entry.
+  /// Logical route indices in selected-record order. Static operations have
+  /// one entry.
   llvm::MapVector<Operation *, SmallVector<std::size_t>> routeIndices;
+  /// Fabric protocol operations whose disjoint DRAM destination requires no
+  /// receiver-to-sender readiness signal.
+  llvm::SmallPtrSet<Operation *, 16> noRendezvousProtocolOps;
   /// Non-overlapping connection ownership intervals.
   SmallVector<FabricRuntimeIntervalPlan> runtimeIntervals;
   /// Generated and external manager intervals used by target binding.
@@ -145,7 +157,21 @@ struct PipeComputedAddressInfo {
 enum class PipeAddressMode {
   ReceiverPublishedAddressTable,
   ComputedReceiverDFB,
+  ComputedReceiverTensor,
   TransportScratch,
+};
+
+/// Static tensor-region formula materialized by the sender for a fabric write.
+struct PipeComputedTensorAddressInfo {
+  int32_t baseCTA = 0;
+  int32_t globalTensorIndex = 0;
+  int64_t senderTensorArgumentIndex = 0;
+  SmallVector<int64_t> tensorGridShape;
+  SmallVector<int64_t> startIndices;
+  SmallVector<SmallVector<int64_t>> occurrenceStartIndices;
+  std::optional<int64_t> occurrenceCounterIndex;
+  SmallVector<int64_t> regionShape;
+  int64_t pageSizeBytes = 0;
 };
 
 struct PipeResourcePlan;
@@ -160,6 +186,9 @@ class PipeTransportStream;
 /// Receiver-side completion state for one transfer definition.
 struct PipeCompletionInfo {
   PipeCounterInfo counter;
+  /// Exactly one update over this counter's lifetime permits an absolute store
+  /// instead of atomic accumulation.
+  bool hasSingleLifetimeUpdate = false;
 };
 
 /// Address storage used by one transfer-allocation unit.
@@ -168,19 +197,27 @@ struct PipeAddressStorageInfo {
   receiverPublishedAddressTable(PipeSramAddressTableInfo sramAddressTable) {
     return PipeAddressStorageInfo{
         PipeAddressMode::ReceiverPublishedAddressTable, sramAddressTable,
-        std::nullopt};
+        std::nullopt, nullptr};
   }
 
   static PipeAddressStorageInfo
   computedReceiverDFB(PipeComputedAddressInfo computedAddress) {
     return PipeAddressStorageInfo{PipeAddressMode::ComputedReceiverDFB,
-                                  std::nullopt, computedAddress};
+                                  std::nullopt, computedAddress, nullptr};
+  }
+
+  static PipeAddressStorageInfo
+  computedReceiverTensor(PipeComputedTensorAddressInfo computedTensorAddress) {
+    return PipeAddressStorageInfo{
+        PipeAddressMode::ComputedReceiverTensor, std::nullopt, std::nullopt,
+        std::make_shared<const PipeComputedTensorAddressInfo>(
+            std::move(computedTensorAddress))};
   }
 
   static PipeAddressStorageInfo
   transportScratch(PipeComputedAddressInfo computedAddress) {
     return PipeAddressStorageInfo{PipeAddressMode::TransportScratch,
-                                  std::nullopt, computedAddress};
+                                  std::nullopt, computedAddress, nullptr};
   }
 
   bool usesComputedReceiverAddress() const {
@@ -191,6 +228,10 @@ struct PipeAddressStorageInfo {
     return mode == PipeAddressMode::ComputedReceiverDFB;
   }
 
+  bool usesComputedReceiverTensor() const {
+    return mode == PipeAddressMode::ComputedReceiverTensor;
+  }
+
   bool usesTransportScratch() const {
     return mode == PipeAddressMode::TransportScratch;
   }
@@ -198,6 +239,7 @@ struct PipeAddressStorageInfo {
   PipeAddressMode mode = PipeAddressMode::ReceiverPublishedAddressTable;
   std::optional<PipeSramAddressTableInfo> sramAddressTable;
   std::optional<PipeComputedAddressInfo> computedAddress;
+  std::shared_ptr<const PipeComputedTensorAddressInfo> computedTensorAddress;
 };
 
 /// Lowering information shared by one transfer definition's send, receiver
@@ -310,7 +352,8 @@ LogicalResult buildFabricRoutePlan(
     bool enableLocalManagerOwnership, FabricRoutePlan &plan);
 
 /// Materialize the function attributes recorded by `plan`.
-void applyFabricRoutePlan(ModuleOp module, const FabricRoutePlan &plan);
+void applyFabricRoutePlan(ModuleOp module, const FabricRoutePlan &plan,
+                          bool enableFabricMux);
 
 /// Materialize routing-plane state for each planned connection interval.
 void initializeFabricRuntime(const FabricRoutePlan &plan,
@@ -326,6 +369,11 @@ LogicalResult buildPipeResourcePlan(
     PipeCounterAllocationPolicy counterPolicy =
         PipeCounterAllocationPolicy::LocalThenGlobal,
     const PipeSynchronizationSelection *synchronizationSelection = nullptr);
+
+/// Ensure each fabric sender has the tensor runtime argument needed to compute
+/// its receiver's DRAM page addresses.
+LogicalResult
+preparePipeTensorDestinationRuntimeArguments(PipeGraph &pipeGraph);
 
 /// Replace grouped transport DFB backing with compiler-managed SRAM scratch.
 ///

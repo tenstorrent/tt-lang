@@ -4,7 +4,6 @@
 
 #include "ttlang/Dialect/TTKernel/Transforms/TTKernelCleanupPatterns.h"
 
-#include "ttlang/Dialect/TTCore/IR/TTCoreOpsTypes.h"
 #include "ttlang/Dialect/TTKernel/IR/TTKernel.h"
 #include "ttlang/Dialect/TTKernel/IR/TTKernelOps.h"
 #include "ttlang/Target/TargetInfo.h"
@@ -13,13 +12,12 @@
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Utils/StaticValueUtils.h"
 #include "mlir/IR/PatternMatch.h"
-#include "mlir/Interfaces/CallInterfaces.h"
 #include "mlir/Interfaces/ControlFlowInterfaces.h"
 #include "mlir/Interfaces/LoopLikeInterface.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Support/LogicalResult.h"
 #include "mlir/Transforms/LoopInvariantCodeMotionUtils.h"
-#include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/SmallPtrSet.h"
 
 #include <optional>
 
@@ -44,56 +42,13 @@ static bool isDefinedOutsideRegion(Value value, Region *region) {
   return !region->isAncestor(definingOp->getParentRegion());
 }
 
-/// Return execution-domain constraints between `op` and `limit`.
-static SmallVector<ArrayAttr>
-getEnclosingExecutionCoreRanges(Operation *op, Operation *limit) {
-  SmallVector<ArrayAttr> domains;
-  for (Operation *ancestor = op->getParentOp(); ancestor && ancestor != limit;
-       ancestor = ancestor->getParentOp()) {
-    if (auto ranges =
-            ancestor->getAttrOfType<ArrayAttr>(kExecutionCoreRangesAttrName)) {
-      domains.push_back(ranges);
-    }
-  }
-  return domains;
-}
-
-/// Return whether two core-range arrays have an empty intersection.
-static bool haveDisjointCoreRanges(ArrayAttr lhs, ArrayAttr rhs) {
-  if (lhs.empty() || rhs.empty()) {
-    return false;
-  }
-  for (Attribute lhsAttr : lhs) {
-    auto lhsRange = dyn_cast<ttcore::CoreRangeAttr>(lhsAttr);
-    if (!lhsRange) {
-      return false;
-    }
-    for (Attribute rhsAttr : rhs) {
-      auto rhsRange = dyn_cast<ttcore::CoreRangeAttr>(rhsAttr);
-      if (!rhsRange || lhsRange.intersects(rhsRange)) {
-        return false;
-      }
-    }
-  }
-  return true;
-}
-
 /// Return whether two operations cannot execute on the same loop iteration.
 static bool haveMutuallyExclusiveExecution(Operation *lhs, Operation *rhs,
                                            Operation *loop) {
   if (insideMutuallyExclusiveRegions(lhs, rhs)) {
     return true;
   }
-
-  SmallVector<ArrayAttr> lhsDomains =
-      getEnclosingExecutionCoreRanges(lhs, loop);
-  SmallVector<ArrayAttr> rhsDomains =
-      getEnclosingExecutionCoreRanges(rhs, loop);
-  return llvm::any_of(lhsDomains, [&](ArrayAttr lhsDomain) {
-    return llvm::any_of(rhsDomains, [&](ArrayAttr rhsDomain) {
-      return haveDisjointCoreRanges(lhsDomain, rhsDomain);
-    });
-  });
+  return haveDisjointExecutionCoreRanges(lhs, rhs, loop);
 }
 
 /// Deduplicate consecutive barriers of the same type and NoC. Barriers only
@@ -176,61 +131,201 @@ struct HoistLoopInvariantValueOps : OpRewritePattern<scf::ForOp> {
   }
 };
 
+// Check whether `operation` preserves the unpack/math configuration for copies
+// from `sourceDFB`. Unclassified hardware operations and calls are
+// conservative.
+static bool preservesCopyTileConfiguration(Operation *operation,
+                                           Value sourceDFB) {
+  if (auto copy = dyn_cast<CopyTileOp>(operation)) {
+    return copy.getCb0() == sourceDFB;
+  }
+  return isa<CBWaitFrontOp, CBPopFrontOp, CBReserveBackOp, CBPushBackOp,
+             TileRegsAcquireOp, TileRegsCommitOp, TileRegsWaitOp,
+             TileRegsReleaseOp, PackTileOp, PackTileBlockOp, scf::YieldOp>(
+             operation) ||
+         isHoistableTTKernelValueComputation(operation);
+}
+
+// Share one copy initialization across a nonempty loop whose straight-line
+// body preserves that configuration and uses an invariant source DFB.
+struct HoistInvariantCopyTileInit : OpRewritePattern<scf::ForOp> {
+  using OpRewritePattern<scf::ForOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(scf::ForOp loop,
+                                PatternRewriter &rewriter) const override {
+    std::optional<APInt> tripCount = loop.getStaticTripCount();
+    if (!tripCount || tripCount->isZero()) {
+      return rewriter.notifyMatchFailure(loop,
+                                         "loop execution is not guaranteed");
+    }
+    SmallVector<CopyTileInitOp> initializations;
+    Value sourceDFB;
+    bool foundCopy = false;
+    for (Operation &operation : loop.getBody()->getOperations()) {
+      if (operation.getNumRegions() != 0) {
+        return rewriter.notifyMatchFailure(
+            loop, "copy loop contains nested control flow");
+      }
+      if (auto init = dyn_cast<CopyTileInitOp>(operation)) {
+        if (!loop.isDefinedOutsideOfLoop(init.getCb0()) ||
+            (sourceDFB && sourceDFB != init.getCb0())) {
+          return rewriter.notifyMatchFailure(
+              loop, "copy source is not loop invariant");
+        }
+        sourceDFB = init.getCb0();
+        initializations.push_back(init);
+        continue;
+      }
+      if (!preservesCopyTileConfiguration(&operation, sourceDFB)) {
+        return rewriter.notifyMatchFailure(
+            loop, "operation may change copy configuration");
+      }
+      foundCopy |= isa<CopyTileOp>(operation);
+    }
+    if (initializations.empty() || !foundCopy) {
+      return failure();
+    }
+
+    // All iterations execute the same initialization before their first copy;
+    // the complete body has been checked before moving or erasing any init.
+    rewriter.moveOpBefore(initializations.front(), loop);
+    for (CopyTileInitOp redundant : llvm::drop_begin(initializations)) {
+      rewriter.eraseOp(redundant);
+    }
+    return success();
+  }
+};
+
 /// A loop and the predicates that must guard its stateful write setup.
 struct StatefulWriteLoop {
   scf::ForOp loop;
   SmallVector<scf::IfOp> predicates;
 };
 
-/// Cached transitive write-command interference for a callable operation.
-enum class CallableWriteCommandInterference {
-  Analyzing,
-  Preserves,
-  Interferes,
-};
-
-/// Return whether `operation` or a called function may interfere with setup.
-static bool mayTransitivelyInterfereWithWriteCommand(
-    Operation *operation,
-    DenseMap<Operation *, CallableWriteCommandInterference> &callableEffects) {
-  if (mayReprogramNocCommand(operation, NocCommandClass::Write) ||
-      usesNocCommandState(operation, NocCommandClass::Write)) {
-    return true;
-  }
-
-  auto call = dyn_cast<CallOpInterface>(operation);
-  if (!call) {
-    return false;
-  }
-  Operation *callableOperation = call.resolveCallable();
-  auto callable = dyn_cast_or_null<CallableOpInterface>(callableOperation);
-  Region *callableRegion = callable ? callable.getCallableRegion() : nullptr;
-  if (!callableRegion) {
-    return true;
-  }
-
-  auto cachedEffect = callableEffects.find(callableOperation);
-  if (cachedEffect != callableEffects.end()) {
-    // The remaining operations in an active recursive component have not been
-    // analyzed, so the component cannot yet be proven to preserve command
-    // state.
-    return cachedEffect->second != CallableWriteCommandInterference::Preserves;
-  }
-
-  callableEffects[callableOperation] =
-      CallableWriteCommandInterference::Analyzing;
-  WalkResult walkResult = callableRegion->walk([&](Operation *nested) {
-    if (mayTransitivelyInterfereWithWriteCommand(nested, callableEffects)) {
-      return WalkResult::interrupt();
-    }
-    return WalkResult::advance();
+// Check `operation`, its nested operations, and their callees for uses or
+// overwrites of resident write-command state.
+static bool
+mayUseOrOverwriteWriteCommand(Operation *operation,
+                              NocCommandEffectsAnalysis &commandEffects) {
+  WalkResult result = operation->walk([&](Operation *nested) {
+    NocCommandEffects effects = commandEffects.getEffects(nested);
+    return effects.mayReprogram || effects.mayUseState ? WalkResult::interrupt()
+                                                       : WalkResult::advance();
   });
-  bool interferes = walkResult.wasInterrupted();
-  callableEffects[callableOperation] =
-      interferes ? CallableWriteCommandInterference::Interferes
-                 : CallableWriteCommandInterference::Preserves;
-  return interferes;
+  return result.wasInterrupted();
 }
+
+// Collect pure same-block definitions that must precede `anchor`.
+// Dependencies precede their users in `definitions`.
+static LogicalResult
+collectValueDefinitionsToMove(Value value, Operation *anchor,
+                              SmallPtrSetImpl<Operation *> &visited,
+                              SmallVectorImpl<Operation *> &definitions) {
+  Operation *definition = value.getDefiningOp();
+  if (!definition || definition->getBlock() != anchor->getBlock() ||
+      definition->isBeforeInBlock(anchor)) {
+    return success();
+  }
+  if (!visited.insert(definition).second) {
+    return success();
+  }
+  if (!isHoistableTTKernelValueComputation(definition)) {
+    return failure();
+  }
+  for (Value operand : definition->getOperands()) {
+    if (failed(collectValueDefinitionsToMove(operand, anchor, visited,
+                                             definitions))) {
+      return failure();
+    }
+  }
+  definitions.push_back(definition);
+  return success();
+}
+
+// Schedule one-packet write-state configuration before a blocking wait so the
+// NoC command setup overlaps sender synchronization.
+struct SchedulePostedNocWriteStateBeforeWait
+    : OpRewritePattern<NocAsyncWriteOp> {
+  using OpRewritePattern<NocAsyncWriteOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(NocAsyncWriteOp op,
+                                PatternRewriter &rewriter) const override {
+    std::optional<bool> posted = op.getPosted();
+    if (!posted || !*posted) {
+      return rewriter.notifyMatchFailure(op, "write is not posted");
+    }
+    if (op.getDstCoreXY().size() != 2 || !op.getDstBankId().empty()) {
+      return rewriter.notifyMatchFailure(op,
+                                         "write is not a unicast core write");
+    }
+    std::optional<int64_t> transferSize = getConstantIntValue(op.getSize());
+    if (!transferSize || *transferSize <= 0 ||
+        *transferSize > getTargetNocMaxBurstBytes(op)) {
+      return rewriter.notifyMatchFailure(
+          op, "write size is not a valid one-packet transfer");
+    }
+    if (op->getParentOfType<scf::ForOp>()) {
+      return rewriter.notifyMatchFailure(
+          op, "loop writes use loop-invariant state selection");
+    }
+
+    Operation *firstBlockingWait = nullptr;
+    NocCommandEffectsAnalysis commandEffects(NocCommandClass::Write);
+    for (Operation *previous = op->getPrevNode(); previous;
+         previous = previous->getPrevNode()) {
+      if (mayUseOrOverwriteWriteCommand(previous, commandEffects)) {
+        break;
+      }
+      if (isa<CBWaitFrontOp, SemaphoreWaitOp, SemaphoreWaitMinOp>(previous)) {
+        firstBlockingWait = previous;
+      }
+    }
+    if (!firstBlockingWait) {
+      return rewriter.notifyMatchFailure(
+          op, "no preceding blocking wait can hide command setup");
+    }
+
+    SmallPtrSet<Operation *, 8> movedDefinitions;
+    SmallVector<Operation *, 8> definitionsToMove;
+    for (Value coordinate : op.getDstCoreXY()) {
+      if (failed(collectValueDefinitionsToMove(coordinate, firstBlockingWait,
+                                               movedDefinitions,
+                                               definitionsToMove))) {
+        return rewriter.notifyMatchFailure(
+            op, "destination coordinate cannot dominate the blocking wait");
+      }
+    }
+    if (failed(collectValueDefinitionsToMove(op.getSize(), firstBlockingWait,
+                                             movedDefinitions,
+                                             definitionsToMove)) ||
+        (op.getNoc() && failed(collectValueDefinitionsToMove(
+                            op.getNoc(), firstBlockingWait, movedDefinitions,
+                            definitionsToMove)))) {
+      return rewriter.notifyMatchFailure(
+          op, "write configuration cannot dominate the blocking wait");
+    }
+    for (Operation *definition : definitionsToMove) {
+      rewriter.moveOpBefore(definition, firstBlockingWait);
+    }
+
+    Location loc = op.getLoc();
+    rewriter.setInsertionPoint(firstBlockingWait);
+    Value zero = arith::ConstantIntOp::create(rewriter, loc, 0, 32);
+    Value destinationNocAddress =
+        GetNocAddrOp::create(rewriter, loc, op.getDstCoreXY()[0],
+                             op.getDstCoreXY()[1], zero, op.getNoc());
+    NocAsyncWriteOnePacketSetStateOp::create(
+        rewriter, loc, destinationNocAddress, op.getSize(), op.getNoc(),
+        op.getPostedAttr());
+
+    rewriter.setInsertionPoint(op);
+    NocAsyncWriteOnePacketWithStateOp::create(
+        rewriter, loc, op.getSrcLocalL1Addr(), op.getDstAddress(), op.getNoc(),
+        op.getPostedAttr());
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
 
 /// Return whether `loop` preserves the write command and setup predicate.
 static LogicalResult analyzeStatefulWriteLoop(NocAsyncWriteOp op,
@@ -270,12 +365,13 @@ static LogicalResult analyzeStatefulWriteLoop(NocAsyncWriteOp op,
     }
   }
 
-  DenseMap<Operation *, CallableWriteCommandInterference> callableEffects;
+  NocCommandEffectsAnalysis commandEffects(NocCommandClass::Write);
   WalkResult commandCheck = loop.walk([&](Operation *nestedOp) {
     if (nestedOp == op.getOperation()) {
       return WalkResult::advance();
     }
-    if (mayTransitivelyInterfereWithWriteCommand(nestedOp, callableEffects) &&
+    NocCommandEffects effects = commandEffects.getEffects(nestedOp);
+    if ((effects.mayReprogram || effects.mayUseState) &&
         !haveMutuallyExclusiveExecution(op, nestedOp, loop)) {
       return WalkResult::interrupt();
     }
@@ -364,11 +460,13 @@ struct UseStatefulNocWriteInLoop : OpRewritePattern<NocAsyncWriteOp> {
       rewriter.setInsertionPointToStart(&setupIf.getThenRegion().front());
     }
     NocAsyncWriteOnePacketSetStateOp::create(
-        rewriter, loc, destinationNocAddress, op.getSize(), op.getNoc());
+        rewriter, loc, destinationNocAddress, op.getSize(), op.getNoc(),
+        op.getPostedAttr());
 
     rewriter.setInsertionPoint(op);
     NocAsyncWriteOnePacketWithStateOp::create(
-        rewriter, loc, op.getSrcLocalL1Addr(), op.getDstAddress(), op.getNoc());
+        rewriter, loc, op.getSrcLocalL1Addr(), op.getDstAddress(), op.getNoc(),
+        op.getPostedAttr());
     rewriter.eraseOp(op);
     return success();
   }
@@ -381,8 +479,10 @@ void populateTTKernelCleanupPatterns(RewritePatternSet &patterns) {
       patterns.getContext());
   patterns.add<DeduplicateConsecutiveBarriers<NocAsyncWriteBarrierOp>>(
       patterns.getContext());
-  patterns.add<HoistIfRegionInvariantValueOps, HoistLoopInvariantValueOps,
-               UseStatefulNocWriteInLoop>(patterns.getContext());
+  patterns
+      .add<HoistIfRegionInvariantValueOps, HoistLoopInvariantValueOps,
+           HoistInvariantCopyTileInit, SchedulePostedNocWriteStateBeforeWait,
+           UseStatefulNocWriteInLoop>(patterns.getContext());
 }
 
 } // namespace mlir::tt::ttkernel

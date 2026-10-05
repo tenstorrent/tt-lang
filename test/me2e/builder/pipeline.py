@@ -17,7 +17,6 @@ from ttl.passmanager import PassManager
 
 from .device_arch import get_mock_arch_from_device
 
-
 _TTCORE_ARCH_BY_DEVICE_NAME = {
     "blackhole": ttcore.Arch.Blackhole,
     "wormhole_b0": ttcore.Arch.WormholeB0,
@@ -45,8 +44,9 @@ def compile_ttl_to_ttkernel(
         accumulation_strategy: Accumulation storage strategy.
         enable_fpu_binary_ops: Allow FPU strategy selection for add/sub/mul.
         specialize_cores: Run the ttkernel-specialize-and-annotate-dfb-use
-            sub-pipeline. Clones kernels that branch on a core coordinate
-            once per launch coordinate, then records surviving DFB uses.
+            sub-pipeline. Clones kernels whose control flow depends on a core
+            coordinate once per launch coordinate, then records surviving DFB
+            uses.
 
     Returns:
         Compiled module with TTKernel/EmitC ops.

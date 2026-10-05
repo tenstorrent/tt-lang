@@ -1,6 +1,12 @@
 // Summary: Verifies the external DFB domain override in PipeNet guard analysis.
 
-// RUN: env TTL_RELAX_DFB_SPSC=1 ttlang-opt %s -ttl-verify-pipenet-guards -o /dev/null
+// RUN: env TTL_RELAX_DFB_SPSC=0 ttlang-opt %s -ttl-verify-pipenet-guards 2>%t.warning | FileCheck %s
+// RUN: FileCheck %s --check-prefix=WARNING < %t.warning
+
+// A standalone guard pass records the same audit marker and warning.
+// CHECK: ttl.relaxed_dfb_protocol_domain_verification
+// WARNING-COUNT-1: warning: `TTL_RELAX_DFB_SPSC` disables per-launch-node DFB producer, consumer, and wait correspondence checks
+// WARNING-NOT: warning: `TTL_RELAX_DFB_SPSC`
 
 module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
   func.func @wait_without_represented_producer()

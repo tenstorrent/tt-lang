@@ -28,6 +28,7 @@
 #include <limits>
 #include <numeric>
 #include <optional>
+#include <utility>
 
 namespace mlir::tt::ttl {
 
@@ -132,6 +133,33 @@ FailureOr<uint64_t> getSynchronizedDFBResetStateBytes(ModuleOp module) {
   return *stateBytes;
 }
 
+// Both runtime mechanisms require the same resolved Blackhole architecture;
+// sharing this check prevents their diagnostics and accepted targets diverging.
+static LogicalResult validateBlackholeOnlyDFBTarget(ModuleOp module,
+                                                    Operation *operation,
+                                                    StringRef featureName) {
+  std::string failureReason;
+  FailureOr<std::optional<ttcore::Arch>> targetArch =
+      resolveTargetArch(module, failureReason);
+  if (failed(targetArch)) {
+    module.emitOpError(failureReason);
+    return failure();
+  }
+  if (!*targetArch) {
+    operation->emitOpError()
+        << "requires a resolved target architecture; " << featureName
+        << " is supported only for Blackhole";
+    return failure();
+  }
+  if (**targetArch == ttcore::Arch::Blackhole) {
+    return success();
+  }
+  operation->emitOpError()
+      << "is supported only for Blackhole; selected target is "
+      << ttcore::ArchAttr::get(module.getContext(), **targetArch);
+  return failure();
+}
+
 LogicalResult validateDFBReconfigurationTarget(ModuleOp module) {
   DFBReconfigurationOp firstBoundary;
   module.walk([&](DFBReconfigurationOp boundary) -> WalkResult {
@@ -141,21 +169,8 @@ LogicalResult validateDFBReconfigurationTarget(ModuleOp module) {
   if (!firstBoundary) {
     return success();
   }
-
-  std::string failureReason;
-  FailureOr<std::optional<ttcore::Arch>> targetArch =
-      resolveTargetArch(module, failureReason);
-  if (failed(targetArch)) {
-    module.emitOpError(failureReason);
-    return failure();
-  }
-  if (!*targetArch || **targetArch == ttcore::Arch::Blackhole) {
-    return success();
-  }
-  firstBoundary.emitOpError()
-      << "is supported only for Blackhole; selected target is "
-      << ttcore::ArchAttr::get(module.getContext(), **targetArch);
-  return failure();
+  return validateBlackholeOnlyDFBTarget(module, firstBoundary,
+                                        "DFB reconfiguration");
 }
 
 FailureOr<uint64_t> getDFBReconfigurationStateBytes(ModuleOp module) {
@@ -224,27 +239,8 @@ LogicalResult validateSynchronizedDFBResetTarget(ModuleOp module) {
   if (!firstReset) {
     return success();
   }
-
-  std::string failureReason;
-  FailureOr<std::optional<ttcore::Arch>> targetArch =
-      resolveTargetArch(module, failureReason);
-  if (failed(targetArch)) {
-    module.emitOpError(failureReason);
-    return failure();
-  }
-  if (!*targetArch) {
-    firstReset->emitOpError(
-        "requires a resolved target architecture; synchronized DFB reset is "
-        "supported only for Blackhole");
-    return failure();
-  }
-  if (**targetArch == ttcore::Arch::Blackhole) {
-    return success();
-  }
-  firstReset->emitOpError()
-      << "is supported only for Blackhole; selected target is "
-      << ttcore::ArchAttr::get(module.getContext(), **targetArch);
-  return failure();
+  return validateBlackholeOnlyDFBTarget(module, firstReset,
+                                        "synchronized DFB reset");
 }
 
 FailureOr<uint64_t> getDFBAllocationSizeBytes(CircularBufferType type,
@@ -594,6 +590,10 @@ getFinalizedDFBStorageFootprint(ModuleOp module) {
           return failure();
         }
         staticStorageDomain = LaunchNodeDomain{};
+        // Computed addressing requires one tensor argument and byte offset for
+        // every storage segment of a physical DFB.
+        bool hasSingleTensorBase = !storageSegments.empty();
+        std::optional<std::pair<int64_t, int64_t>> commonTensorBase;
         for (auto indexedSegment : llvm::enumerate(storageSegments)) {
           auto segment = dyn_cast<DictionaryAttr>(indexedSegment.value());
           if (!segment) {
@@ -630,11 +630,53 @@ getFinalizedDFBStorageFootprint(ModuleOp module) {
           }
           if (!tensorBacking) {
             staticStorageDomain = staticStorageDomain.unionWith(*segmentDomain);
+            hasSingleTensorBase = false;
+            continue;
           }
+          result.tensorBackedPhysicalIndices.insert(physicalIndex);
+          auto backing = cast<TensorBackingAttr>(tensorBacking);
+          std::pair<int64_t, int64_t> segmentBase{backing.getTensorIndex(),
+                                                  backing.getByteOffset()};
+          if (!commonTensorBase) {
+            commonTensorBase = segmentBase;
+          } else if (*commonTensorBase != segmentBase) {
+            hasSingleTensorBase = false;
+          }
+        }
+        if (hasSingleTensorBase) {
+          result.singleTensorBasePhysicalIndices.insert(physicalIndex);
         }
       }
       domainByPhysicalIndex.try_emplace(physicalIndex,
                                         std::move(staticStorageDomain));
+    }
+  }
+
+  if (auto reconfigurationPlan = module->getAttrOfType<DictionaryAttr>(
+          kDFBReconfigurationPlanAttrName)) {
+    auto dfbEntries = reconfigurationPlan.getAs<ArrayAttr>("dfbs");
+    if (!dfbEntries) {
+      module.emitOpError() << kDFBReconfigurationPlanAttrName
+                           << " requires a dfbs array";
+      return failure();
+    }
+    for (auto indexedEntry : llvm::enumerate(dfbEntries)) {
+      auto entry = dyn_cast<DictionaryAttr>(indexedEntry.value());
+      auto physicalIndex =
+          entry ? entry.getAs<IntegerAttr>("dfb_index") : IntegerAttr();
+      auto configurations =
+          entry ? entry.getAs<ArrayAttr>("configurations") : ArrayAttr();
+      if (!entry || !physicalIndex || physicalIndex.getInt() < 0 ||
+          !configurations) {
+        module.emitOpError()
+            << kDFBReconfigurationPlanAttrName << " dfbs entry "
+            << indexedEntry.index()
+            << " requires a nonnegative dfb_index and configurations array";
+        return failure();
+      }
+      if (configurations.size() > 1) {
+        result.reconfiguredPhysicalIndices.insert(physicalIndex.getInt());
+      }
     }
   }
 
@@ -688,6 +730,8 @@ getFinalizedDFBStorageFootprint(ModuleOp module) {
 
   WalkResult walkResult = module.walk([&](BindCBOp bindOp) -> WalkResult {
     if (bindOp.getTensorBackingAttr()) {
+      result.tensorBackedPhysicalIndices.insert(
+          bindOp.getCbIndex().getSExtValue());
       return WalkResult::advance();
     }
     int64_t physicalIndex = bindOp.getCbIndex().getSExtValue();

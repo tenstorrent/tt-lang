@@ -2,19 +2,12 @@
 
 ## 1. Introduction
 
-This document specifies proposed lowering rewrites for `ttl.create_pipe`
-that select the NoC primitive based on the PipeNet pattern. The current
-`convert-ttl-to-ttkernel` policy is one fixed primitive per Pipe shape
-(`noc_async_write_multicast` for `slice` destinations,
-`noc_async_write` for point destinations, slot-per-pipe receiver
-dataflow buffers when multiple pipes target the same receiver). This
-policy is independent of
-the receiver compute and the destination geometry, and emits a
-sub-optimal primitive for several common patterns. The
-performance-tuned tt-metal kernels (`minimal_matmul`,
-`llama_all_gather_matmul_async`, `reduce_scatter_minimal_async`)
-select different primitives for these patterns by hand. Closing the
-gap is a lowering-policy change, not a dialect change.
+This document describes implemented PipeNet communication protocols in
+section 2 and proposed optimizations in sections 3 onward. A PipeNet describes
+which worker cores exchange data. Lowering selects NoC operations and
+synchronization from those endpoints, receiver DFB reservations, and transfer
+counts. The [PipeNet reference](PipeNets.md#semantics) defines the address and
+synchronization mechanisms used here.
 
 Goals:
 
@@ -23,34 +16,32 @@ Goals:
 2. Emit the primitives that the tuned tt-metal kernels use for each
    pattern (forwarding chain for 1→K broadcast, ring for N→1
    reductions), without changing the user-facing PipeNet language.
-3. Remove the limit on overlapping multicast width. Today, when `N`
-   pipes target the same receiver and share its dataflow buffer, the
-   receiver's `block_count` must be at least `N` because each pipe
-   gets its own dedicated slot in that buffer. The resulting DFB allocation
-   grows with `N` until it exceeds available L1. The compiler should let one
-   wide overlapping multicast use bounded storage independent of `N`.
+3. Bound storage for overlapping multicast. If `N` receive reservations remain
+   live together, their DFB needs space for all `N` payloads. Scheduling those
+   reservations in smaller groups would reduce the required L1 storage.
 
 ## 2. Background
 
-Currently `convert-ttl-to-ttkernel` lowers each `ttl.create_pipe` to one fixed
-primitive based on the Pipe shape. The mapping is:
+The ordinary payload and completion operations are listed below. Eligible
+one-shot point-to-point transfers use the posted-write protocol described later
+in this section. DFB capacity follows the reservation schedule; it is not a
+fixed number determined by whether the transfer is unicast or multicast.
 
-| Pipe shape | Primitive | Receiver dataflow buffer |
-| --- | --- | --- |
-| `Pipe(src=p, dst=p')` (point) | `noc_async_write` + `noc_semaphore_inc` | `block_count = 2` |
-| `Pipe(src=p, dst=slice(...))` (rectangular multicast) | `noc_async_write_multicast` + `noc_semaphore_inc_multicast` | `block_count = max gather slot + 1` |
-| Loopback multicast (`src` in dst range) | `noc_async_write_multicast_loopback_src` + remote `inc_multicast` + local `noc_semaphore_inc` | same as above |
+| Endpoints | Payload and completion operations |
+| --- | --- |
+| `Pipe(src=p, dst=p')` (point) | `noc_async_write` + `noc_semaphore_inc` |
+| `Pipe(src=p, dst=slice(...))` (rectangular multicast) | `noc_async_write_multicast` + `noc_semaphore_inc_multicast` |
+| Loopback multicast (`src` in destination range) | `noc_async_write_multicast_loopback_src` + remote `inc_multicast` + local `noc_semaphore_inc` |
 
 When several pipes target the same receiver and share its dataflow
 buffer, the receiver-side slot allocation is handled by `PipeGraph` (in
 `lib/Dialect/TTL/Transforms/PipeGraph.h`). It follows receiver post
 order so each pipe gets the DFB slot reserved by its receive post, and
-requires multicast receivers to reserve the same slot for a given pipe
+requires multicast receivers to reserve the same destination L1 address
 because TT-Metal NoC multicast carries one destination address.
-`verifyReceiverDFBBlockCounts` then requires
-`block_count >= max_slot_idx + 1` per receiver. This
-makes the receiver's L1 allocation grow linearly with the number of pipes and
-eventually exceed the available L1 budget.
+The compiler checks that each reservation fits within the DFB. Storage grows
+with simultaneously live reservations; completed reservations can release
+space for later transfers.
 
 ### Multicast handshake protocol
 
@@ -74,22 +65,105 @@ receiver:  ++recv_counter[0]
            consume tile
 ```
 
-`inc_multicast` adds to the remote semaphore, so `N` senders each
-calling `inc(+1)` once per round produce a monotonically increasing
-arrival count at every receiver. The receiver maintains a local
-expectation in `recv_counter[0]` (one entry per `(receiver, PipeNet)`
-pair) and waits with `experimental::semaphore_wait_min` until the
-remote semaphore reaches at least that count. Each sender writes its
-data to a distinct slot in the receiver's CB (slot assignment from
-`PipeGraph`), so the data writes themselves also do not collide.
+Each transfer has its own completion counter at each receiver. Repeated sends
+increment that counter, and each receive waits for its corresponding sequence
+number. Distinct senders sharing a receiver update distinct counters, so one
+sender cannot satisfy another sender's wait. Their simultaneously live
+payloads occupy distinct reserved DFB storage.
 
-Loopback (`src` in `dst` range) skips the increment on the source
-core itself: the sender's `if_src` callback has already deposited the
-tile in the local CB, so the loopback receiver advances its counter
-expectation without waiting on the remote semaphore. The compiler
-emits `noc_async_write_multicast_loopback_src` for the data write to
-keep the multicast topology uniform across all receivers including
-the source core.
+For loopback multicast, the payload write includes the source core as a
+receiver. The multicast atomic updates remote receivers, and a separate local
+atomic increments the source core's completion counter. The local receiver
+uses the same completion wait as other receivers.
+
+### One-shot posted point-to-point protocol
+
+A same-device point-to-point transfer to another core can replace the payload
+barrier and completion atomic when planning proves all of the following:
+
+- The transfer uses receiver-post synchronization, has one remote receiver,
+  and uses a fixed computed receiver DFB address.
+- The completion counter receives exactly one update over its complete
+  lifetime. Repeated transfers and counters shared by a wait-any completion
+  group therefore retain cumulative atomics.
+- The payload fits the target's one-packet limit and does not require
+  page-addressed writes.
+- The send signals completion itself rather than deferring the signal to a
+  later credit update. Capacity synchronization, fabric, multicast, loopback,
+  and receiver-published addressing retain their existing protocols.
+
+A posted write does not request a remote acknowledgement. The receiver instead
+relies on the payload and completion writes arriving in order. The sender uses
+the following sequence when write-state setup can move before the wait:
+
+```text
+configure the destination NoC node, transfer size, and posted response mode
+wait for receiver readiness and reset the readiness counter
+issue the payload write with its source and destination L1 addresses
+store completion value 1 with a posted inline word write
+flush posted writes before source reuse
+```
+
+`noc_async_write_one_packet_set_state<true>` configures the destination core,
+byte count, and posted mode without sending data.
+`noc_async_write_one_packet_with_state<true>` then supplies the two L1 addresses
+and starts the transfer. This separates command setup from issuing the write,
+so setup can execute before waiting for receiver readiness.
+
+TT-Metal uses `NOC_UNICAST_WRITE_VC` for both the stateful payload write and
+the inline completion write unless a caller requests a custom virtual channel
+([NoC API defaults](https://github.com/tenstorrent/tt-metal/blob/ea042c4ad6237678103cd7cbceb346e060f0f9a3/tt_metal/hw/inc/api/dataflow/noc.h#L420-L453),
+[inline write selection](https://github.com/tenstorrent/tt-metal/blob/ea042c4ad6237678103cd7cbceb346e060f0f9a3/tt_metal/hw/inc/api/dataflow/noc.h#L543-L578)).
+This lowering does not request a custom virtual channel. The Wormhole NoC
+ordering contract states that packets with the same route and virtual channel
+do not reorder or interleave
+([NoC ordering](https://github.com/tenstorrent/tt-isa-documentation/blob/5287a62727350bcef35f7b411d1b8a706172ec4c/WormholeB0/NoC/Ordering.md#L9-L16)).
+Blackhole programs a static virtual channel for the stateful write and emulates
+an L1 inline write with a normal asynchronous write after flushing prior posted
+writes
+([stateful write setup](https://github.com/tenstorrent/tt-metal/blob/ea042c4ad6237678103cd7cbceb346e060f0f9a3/tt_metal/hw/inc/internal/tt-1xx/blackhole/noc_nonblocking_api.h#L1451-L1459),
+[L1 inline write](https://github.com/tenstorrent/tt-metal/blob/ea042c4ad6237678103cd7cbceb346e060f0f9a3/tt_metal/hw/inc/internal/tt-1xx/blackhole/noc_nonblocking_api.h#L963-L1030)).
+The receiver therefore observes the payload before completion on both targets.
+The final flush waits for posted writes to leave the sender; it does not add a
+remote acknowledgement. The receiver keeps the same completion wait and
+observes no protocol semantic change.
+
+TTKernel cleanup may move one-packet state configuration before the blocking
+receiver-readiness wait. It does so only when the destination coordinates,
+size, and NoC selection can be computed before the wait without side effects,
+and intervening operations do not overwrite or use that command configuration.
+Otherwise the payload uses an ordinary posted `noc_async_write`. A send selected
+from a PipeNet endpoint table uses this protocol only when every possible
+selected transfer meets the conditions above.
+
+The shared record-cleanup pipeline reapplies these patterns with
+`ttkernel-cleanup` after static record-loop expansion and endpoint
+simplification, with or without core specialization.
+Initial TTL lowering cannot configure a constant destination while that
+destination still depends on an unresolved record index.
+
+The same cleanup shares copy initialization across statically nonempty
+copy/pack loops. It moves `copy_tile_init(source)` before the loop only when
+the source DFB is defined outside the loop and every body operation preserves
+the unpack/math configuration. Copies from another DFB, other initialization,
+unknown calls, nested control flow, and a possibly empty loop prevent this
+transformation. Queue synchronization and packing remain in the loop. This
+avoids reinitializing copying for every incoming tile during L1 accumulation.
+
+Write-state verification and cleanup share `NocCommandEffectsAnalysis` to
+classify command changes and dependencies, including effects inside called
+functions. Unknown and recursive callees conservatively use and overwrite
+state. Cleanup must preserve existing dependent uses when moving a setup;
+verification instead checks that no overwrite separates a setup from its
+issue, including an overwrite carried into the next loop iteration.
+
+A setup in one `scf.if` may cover an issue in another only when the issue's
+enclosing conditions include every setup condition and select the same
+branches. For other enclosing regions, the issue must remain in the setup's
+region. This conservatively rejects escaping conditional or loop-local setups
+without assuming that an unknown region executes. Proven-distinct constant
+NoC selectors distinguish set-state operations; other command changes remain
+conservative when their NoC selection is not analyzed.
 
 ### Grouped PipeTransport lowering
 

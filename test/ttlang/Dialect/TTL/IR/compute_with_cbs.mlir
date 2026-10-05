@@ -177,3 +177,37 @@ func.func @compute_with_nested_matmul_subtile(
   } -> tensor<1x1x!ttcore.tile<1x32, bf16>>
   func.return %result : tensor<1x1x!ttcore.tile<1x32, bf16>>
 }
+
+// -----
+
+// A zero-rank iteration domain executes once over unit-extent outputs.
+// CHECK-LABEL: func.func @compute_zero_rank_iteration
+// CHECK:       ttl.compute ins() outs(%{{.*}} : tensor<1x1x!ttcore.tile<32x32, f32>>)
+// CHECK-SAME:  indexing_maps = [#map{{[0-9]*}}]
+// CHECK-SAME:  iterator_types = []
+func.func @compute_zero_rank_iteration(
+    %output_dfb: !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>)
+    -> tensor<1x1x!ttcore.tile<32x32, f32>> {
+  %c0 = arith.constant 0 : index
+  %init = tensor.empty() : tensor<1x1x!ttcore.tile<32x32, f32>>
+  %attached_init = ttl.attach_cb %init, %output_dfb
+      : (tensor<1x1x!ttcore.tile<32x32, f32>>,
+         !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>)
+        -> tensor<1x1x!ttcore.tile<32x32, f32>>
+  %output = ttl.cb_reserve %output_dfb
+      : <[1, 1], !ttcore.tile<32x32, f32>, 1>
+        -> tensor<1x1x!ttcore.tile<32x32, f32>>
+  %result = ttl.compute
+      ins()
+      outs(%attached_init : tensor<1x1x!ttcore.tile<32x32, f32>>)
+      {indexing_maps = [affine_map<() -> (0, 0)>], iterator_types = []} {
+  ^bb0(%output_tile: !ttcore.tile<32x32, f32>):
+    %filled = ttl.tile_fill 0.000000e+00 into dst[%c0]
+        : !ttcore.tile<32x32, f32>
+    ttl.tile_store %filled, %output[%c0, %c0] from dst[%c0]
+        : !ttcore.tile<32x32, f32>,
+          tensor<1x1x!ttcore.tile<32x32, f32>>
+    ttl.yield
+  } -> tensor<1x1x!ttcore.tile<32x32, f32>>
+  func.return %result : tensor<1x1x!ttcore.tile<32x32, f32>>
+}

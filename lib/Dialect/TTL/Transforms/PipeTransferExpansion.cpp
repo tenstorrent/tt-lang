@@ -20,6 +20,38 @@
 #include <optional>
 
 namespace mlir::tt::ttl {
+
+FailureOr<PipeTransferContract>
+getPipeTransferContractForRecords(PipeNetRecordsAttr records) {
+  FailureOr<PipeRecordAttr> firstRecord = getFirstNodePipeRecord(records);
+  if (failed(firstRecord)) {
+    return failure();
+  }
+  return getPipeTransferContract(*firstRecord);
+}
+
+FailureOr<PipeTransferContract>
+getPipeTransferContractForPipeValue(ValueOriginAnalysis &analysis, Value pipe) {
+  return analysis.getOrigins(pipe).uniqueMapped<PipeTransferContract>(
+      [](Value origin) -> FailureOr<PipeTransferContract> {
+        if (auto createPipe = origin.getDefiningOp<CreatePipeOp>()) {
+          return getPipeTransferContract(createPipe);
+        }
+        if (auto selectedSrc = origin.getDefiningOp<SelectPipeSrcOp>()) {
+          return getPipeTransferContractForRecords(selectedSrc.getRecords());
+        }
+        if (auto selectedDst = origin.getDefiningOp<SelectPipeDstOp>()) {
+          return getPipeTransferContractForRecords(selectedDst.getRecords());
+        }
+        if (isa<BlockArgument>(origin) && isa<PipeType>(origin.getType())) {
+          return cast<PipeType>(origin.getType()).hasMultipleReceivers()
+                     ? PipeTransferContract::Collective
+                     : PipeTransferContract::PointToPoint;
+        }
+        return failure();
+      });
+}
+
 namespace {
 
 enum class PipeTransferExpansionMode {
@@ -31,35 +63,6 @@ enum class PipeTransferExpansionMode {
 static PipeTransferKind getPipeTransferKind(PipeTransferContract contract) {
   return isCollectiveTransfer(contract) ? PipeTransferKind::Collective
                                         : PipeTransferKind::PointToPoint;
-}
-
-/// Return the contract shared by every possible value of a pipe operand.
-///
-/// Create and selected-pipe operations preserve an explicit collective
-/// contract. A block argument has no defining pipe op, so its type supplies
-/// the contract.
-static FailureOr<PipeTransferContract>
-getPipeTransferContractForPipeValue(ValueOriginAnalysis &analysis, Value pipe) {
-  return analysis.getOrigins(pipe).uniqueMapped<PipeTransferContract>(
-      [](Value origin) -> FailureOr<PipeTransferContract> {
-        if (auto createPipe = origin.getDefiningOp<CreatePipeOp>()) {
-          return getPipeTransferContract(createPipe);
-        }
-        if (auto selectedSrc = origin.getDefiningOp<SelectPipeSrcOp>()) {
-          return getPipeTransferContract(
-              selectedSrc.getRecords().getPipes().front());
-        }
-        if (auto selectedDst = origin.getDefiningOp<SelectPipeDstOp>()) {
-          return getPipeTransferContract(
-              selectedDst.getRecords().getPipes().front());
-        }
-        if (isa<BlockArgument>(origin) && isa<PipeType>(origin.getType())) {
-          return cast<PipeType>(origin.getType()).hasMultipleReceivers()
-                     ? PipeTransferContract::Collective
-                     : PipeTransferContract::PointToPoint;
-        }
-        return failure();
-      });
 }
 
 /// Create one scalar transfer reference for `pipe`.
@@ -179,10 +182,10 @@ collectDeferredStaticPipeKeys(ModuleOp module, ValueOriginAnalysis &analysis) {
       result = failure();
       return;
     }
-    for (PipeRecordAttr record : maybeRecords->records.getPipes()) {
+    forEachNodePipeRecord(maybeRecords->records, [&](PipeRecordAttr record) {
       deferredStaticPipeKeys.insert(
           getPipeKey(record, maybeRecords->records.getPipeNetId()));
-    }
+    });
   });
   if (failed(result)) {
     return failure();
@@ -443,7 +446,7 @@ applyPipeTransferExpansionPlan(ModuleOp module,
     auto postOp = PipeTransferPostOp::create(
         builder, copyOp.getLoc(),
         PipeTokenType::get(builder.getContext(), *expansion.pipeNetId),
-        transfer, copyOp.getDst());
+        transfer, copyOp.getDst(), copyOp.getByteCountAttr());
     auto handleCast = UnrealizedConversionCastOp::create(
         builder, copyOp.getLoc(), copyOp.getResult().getType(),
         ValueRange{postOp.getToken()});
@@ -457,9 +460,9 @@ applyPipeTransferExpansionPlan(ModuleOp module,
     Value transfer = getOrCreatePipeTransfer(
         builder, copyOp.getLoc(), copyOp.getDst(), expansion.contract,
         expansion.deviceTransfer, transferByDirectCreatePipe);
-    auto sendOp = PipeTransferSendOp::create(builder, copyOp.getLoc(),
-                                             copyOp.getResult().getType(),
-                                             transfer, copyOp.getSrc());
+    auto sendOp = PipeTransferSendOp::create(
+        builder, copyOp.getLoc(), copyOp.getResult().getType(), transfer,
+        copyOp.getSrc(), copyOp.getByteCountAttr());
     copyOp.getResult().replaceAllUsesWith(sendOp.getXf());
     copyOp->erase();
   }

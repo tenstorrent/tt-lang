@@ -24,6 +24,7 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Interfaces/ControlFlowInterfaces.h"
 #include "ttlang/Analysis/ExecutionCountAnalysis.h"
+#include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/DenseMap.h"
@@ -40,9 +41,6 @@
 #include <utility>
 
 namespace mlir::tt::ttl {
-
-/// Module attribute containing the two-dimensional launch grid extent.
-inline constexpr llvm::StringLiteral kLaunchGridAttrName = "ttl.launch_grid";
 
 /// Return the positive X/Y extents of the enclosing module launch grid.
 FailureOr<std::pair<int64_t, int64_t>> getLaunchGrid(Operation *op);
@@ -274,6 +272,13 @@ getExactExecutionCountAtLaunchLocation(Operation *op,
 /// Return true when `op` executes zero times on every launch node.
 bool hasExactEmptyLaunchDomain(Operation *op,
                                const LaunchNodeDomainState &state);
+
+/// Refine an unknown launch domain when execution counts are exact on every
+/// launch node. Return `domain` unchanged if any count is unknown.
+LaunchNodeDomain
+refineLaunchNodeDomainFromExecutionCounts(Operation *op,
+                                          const LaunchNodeDomain &domain,
+                                          const LaunchNodeDomainState &state);
 
 /// Prove that two operations with unknown exact counts have equivalent
 /// control flow at their launch nodes.

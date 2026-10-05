@@ -51,6 +51,7 @@ from ..kernel import (
     _selector_sort_key,
 )
 from ..scalar import ScalarType
+from ..template_argument import UInt32TemplateArgument
 from ..ttl_utils import get_thread_type_string
 from .auto_profile import (
     get_line_mapper,
@@ -442,24 +443,86 @@ class TTLGenericCompiler(TTCompilerBase):
             self._device_ref_attr(device_range.hi),
         )
 
-    def _device_transfer_attr(self, domain, edge):
+    def _transfer_edge_attr(self, edge):
         from ..domains import DeviceRange
 
         source = self._device_ref_attr(edge.source)
         if isinstance(edge.destination, DeviceRange):
-            edge_attr = ttl.TransferEdgeAttr.get(
+            return ttl.TransferEdgeAttr.get(
                 self.ctx,
                 source,
                 destination_range=self._device_range_attr(edge.destination),
             )
-        else:
-            edge_attr = ttl.TransferEdgeAttr.get(
-                self.ctx,
-                source,
-                destination=self._device_ref_attr(edge.destination),
+        return ttl.TransferEdgeAttr.get(
+            self.ctx,
+            source,
+            destination=self._device_ref_attr(edge.destination),
+        )
+
+    def _transfer_graph_attr(self, graph):
+        from ..domains import (
+            AllToAllTransfer,
+            AxisNeighborTransfer,
+            GatherTransfer,
+            ScatterTransfer,
+            StencilTransfer,
+        )
+
+        component_name = None
+        properties = {}
+        if graph.is_explicit:
+            graph_kind = ttl.ir.TransferGraphKind.Explicit
+            properties["edges"] = ArrayAttr.get(
+                [self._transfer_edge_attr(edge) for edge in graph.transfer_edges],
+                context=self.ctx,
             )
-        return ttl.DeviceTransferAttr.get(
-            self.ctx, self._device_domain_attr(domain), edge_attr
+        else:
+            structured = graph.structured
+            assert structured is not None
+            component_name = structured.component_name
+            if isinstance(structured, AxisNeighborTransfer):
+                graph_kind = ttl.ir.TransferGraphKind.AxisNeighbor
+                properties.update(
+                    axis=IntegerAttr.get(
+                        IntegerType.get_signless(64, self.ctx), structured.axis
+                    ),
+                    offset=IntegerAttr.get(
+                        IntegerType.get_signless(64, self.ctx), structured.offset
+                    ),
+                    wrap=BoolAttr.get(structured.wrap, context=self.ctx),
+                )
+            elif isinstance(structured, StencilTransfer):
+                graph_kind = ttl.ir.TransferGraphKind.Stencil
+                properties.update(
+                    offsets=ArrayAttr.get(
+                        [
+                            DenseI64ArrayAttr.get(offset, context=self.ctx)
+                            for offset in structured.offsets
+                        ],
+                        context=self.ctx,
+                    ),
+                    wrap=BoolAttr.get(structured.wrap, context=self.ctx),
+                )
+            elif isinstance(structured, GatherTransfer):
+                graph_kind = ttl.ir.TransferGraphKind.Gather
+                properties["root"] = self._device_ref_attr(structured.root)
+            elif isinstance(structured, ScatterTransfer):
+                graph_kind = ttl.ir.TransferGraphKind.Scatter
+                properties["source"] = self._device_ref_attr(structured.source)
+            elif isinstance(structured, AllToAllTransfer):
+                graph_kind = ttl.ir.TransferGraphKind.AllToAll
+            else:
+                raise TypeError(
+                    "unsupported structured transfer type "
+                    f"{type(structured).__name__}"
+                )
+
+        return ttl.TransferGraphAttr.get(
+            self.ctx,
+            self._device_domain_attr(graph.domain),
+            graph_kind,
+            component_name=component_name,
+            properties=DictAttr.get(properties, context=self.ctx),
         )
 
     def _pipe_record_attr(
@@ -482,24 +545,45 @@ class TTLGenericCompiler(TTCompilerBase):
             device_transfer=device_transfer,
         )
 
-    def _graph_pipe_record_attrs(self, pipenet):
-        records = []
+    def _graph_pipe_mapping_attrs(self, pipenet):
         grid_cols, grid_rows = self.context.grid
-        for edge in pipenet._graph_edges:
-            device_transfer = self._device_transfer_attr(pipenet.graph.domain, edge)
-            for node_y in range(grid_rows):
-                for node_x in range(grid_cols):
-                    node = (node_x, node_y)
-                    records.append(
-                        self._pipe_record_attr(
-                            node,
-                            node,
-                            node,
-                            False,
-                            device_transfer=device_transfer,
+        if pipenet._uses_matching_node_coordinates:
+            assert pipenet.graph is not None
+            mapping_pipes = tuple(
+                ((node_x, node_y), (node_x, node_y), (node_x, node_y), False)
+                for node_y in range(grid_rows)
+                for node_x in range(grid_cols)
+            )
+            graph_mappings = ((pipenet.graph, mapping_pipes),)
+        else:
+            graph_mappings = tuple(
+                (
+                    relation_graph,
+                    tuple(
+                        (
+                            pipe.src,
+                            pipe.dst_start,
+                            pipe.dst_end,
+                            pipe.is_collective,
                         )
-                    )
-        return records
+                        for pipe in relation_pipes
+                    ),
+                )
+                for relation_graph, relation_pipes in pipenet._device_relations
+            )
+        mappings = []
+        for graph, mapping_pipes in graph_mappings:
+            mappings.append(
+                ttl.PipeMappingAttr.get(
+                    self.ctx,
+                    self._transfer_graph_attr(graph),
+                    [
+                        self._pipe_record_attr(src, dst_start, dst_end, is_collective)
+                        for src, dst_start, dst_end, is_collective in mapping_pipes
+                    ],
+                )
+            )
+        return ArrayAttr.get(mappings, context=self.ctx)
 
     def _get_pipe_net_records_attr(self, pipenet):
         cached = self._pipe_net_records_attrs.get(id(pipenet))
@@ -507,7 +591,8 @@ class TTLGenericCompiler(TTCompilerBase):
             return cached
 
         if pipenet.is_graph:
-            pipe_records = self._graph_pipe_record_attrs(pipenet)
+            pipe_records = []
+            mappings = self._graph_pipe_mapping_attrs(pipenet)
         else:
             pipe_records = [
                 self._pipe_record_attr(
@@ -518,11 +603,13 @@ class TTLGenericCompiler(TTCompilerBase):
                 )
                 for pipe in pipenet.pipes
             ]
+            mappings = None
         records = ttl.PipeNetRecordsAttr.get(
             self.ctx,
             pipenet.pipe_net_id,
             pipe_net_name=self._resolve_pipe_net_name(pipenet),
             pipes=pipe_records,
+            mappings=mappings,
         )
         self._pipe_net_records_attrs[id(pipenet)] = records
         return records
@@ -777,9 +864,8 @@ class TTLGenericCompiler(TTCompilerBase):
                 if self._is_pipenet_callback_call(node):
                     return self._handle_pipenet_callback(node)
 
-                # Check for PipeNet.is_src/is_dst/is_active predicate calls
-                if self._is_pipenet_predicate_call(node):
-                    return self._handle_pipenet_predicate(node)
+                if self._is_pipenet_query_call(node):
+                    return self._handle_pipenet_query(node)
 
                 if self._is_device_domain_predicate_call(node):
                     return self._handle_device_domain_predicate(node)
@@ -1129,16 +1215,18 @@ class TTLGenericCompiler(TTCompilerBase):
 
         return isinstance(val, PipeNet)
 
-    _PIPENET_PREDICATE_OPS = {
+    _PIPENET_QUERY_OPS = {
         "is_src": ttl.is_src,
         "is_dst": ttl.is_dst,
         "is_active": ttl.is_active,
+        "destination_count": ttl.pipenet_destination_count,
     }
 
-    def _is_pipenet_predicate_call(self, node):
+    def _is_pipenet_query_call(self, node):
+        """Return whether node calls a supported query on a bound PipeNet."""
         if not isinstance(node.func, ast.Attribute):
             return False
-        if node.func.attr not in self._PIPENET_PREDICATE_OPS:
+        if node.func.attr not in self._PIPENET_QUERY_OPS:
             return False
         if not isinstance(node.func.value, ast.Name):
             return False
@@ -1149,7 +1237,8 @@ class TTLGenericCompiler(TTCompilerBase):
 
         return isinstance(tbl[node.func.value.id], PipeNet)
 
-    def _handle_pipenet_predicate(self, node):
+    def _handle_pipenet_query(self, node):
+        """Lower a zero-argument PipeNet query with its static record table."""
         from ..pipe import PipeNet
 
         method = node.func.attr
@@ -1158,14 +1247,13 @@ class TTLGenericCompiler(TTCompilerBase):
         assert isinstance(pipenet, PipeNet)
         if node.args or node.keywords:
             self._raise_error(node, f"PipeNet.{method}() takes no arguments")
-        return self._PIPENET_PREDICATE_OPS[method](
-            pipe_net_id=IntegerAttr.get(
+        arguments = {
+            "pipe_net_id": IntegerAttr.get(
                 IntegerType.get_signless(64, self.ctx), pipenet.pipe_net_id
-            ),
-            records=(
-                self._get_pipe_net_records_attr(pipenet) if pipenet.is_graph else None
-            ),
-        )
+            )
+        }
+        arguments["records"] = self._get_pipe_net_records_attr(pipenet)
+        return self._PIPENET_QUERY_OPS[method](**arguments)
 
     def _device_domain_call_receiver(self, node):
         if not isinstance(node.func, ast.Attribute):
@@ -1447,6 +1535,8 @@ class TTLGenericCompiler(TTCompilerBase):
     _NAMESPACE_OVERRIDES = {
         "broadcast": "ttl.block",
         "fill": "ttl.block",
+        "squeeze": "ttl.block",
+        "unsqueeze": "ttl.block",
     }
 
     def _resolve_ttl_function(self, node, func_args, kwargs):
@@ -1802,6 +1892,8 @@ class TTLGenericCompiler(TTCompilerBase):
             "block_count": cb.block_count,
             "dfb_id": cb._cb_index,
         }
+        if cb.address_scope is not None:
+            bind_attributes["address_scope"] = cb.address_scope.value
         if tensor_backing is not None:
             bind_attributes["tensor_backing"] = tensor_backing
         if cb.allocation_group is not None:
@@ -2409,6 +2501,7 @@ class TTLGenericCompiler(TTCompilerBase):
         - ``ttl.dfb_descriptor(dfb)`` -- typed allocation descriptor
         - ``ttl.get_dfb_id(dfb)`` -- compatibility integer index
         - ``int`` literals / module-level ints -- signed 32-bit payload
+        - ``ttl.uint32(value)`` -- unsigned 32-bit payload
         - ``bool`` literals / module-level bools -- boolean payload
         - ``float`` literals / module-level floats -- binary32 bit payload
         """
@@ -2476,6 +2569,12 @@ class TTLGenericCompiler(TTCompilerBase):
             return _dfb_reference(arg_kind.DFBIndex)
         if isinstance(node, ast.Call) and self._is_ttl_api_call(node, "dfb_descriptor"):
             return _dfb_reference(arg_kind.DFBDescriptor)
+        if isinstance(node, ast.Call) and self._is_ttl_api_call(node, "uint32"):
+            if len(node.args) != 1 or node.keywords:
+                self._raise_error(node, "ttl.uint32() requires exactly 1 argument")
+            return _unsigned_integer(
+                self._resolve_static_int(node.args[0], "ttl.uint32() argument")
+            )
 
         if isinstance(node, ast.Constant):
             # bool is a subclass of int; check explicitly first.
@@ -2501,6 +2600,8 @@ class TTLGenericCompiler(TTCompilerBase):
 
         if isinstance(node, ast.Name) and node.id in self.captures:
             val = self.captures[node.id]
+            if isinstance(val, UInt32TemplateArgument):
+                return _unsigned_integer(val.value)
             if type(val) is bool:
                 return _boolean(val)
             if type(val) is int:
@@ -2513,6 +2614,8 @@ class TTLGenericCompiler(TTCompilerBase):
 
         if isinstance(node, ast.Name) and node.id in self.fn_globals:
             val = self.fn_globals[node.id]
+            if isinstance(val, UInt32TemplateArgument):
+                return _unsigned_integer(val.value)
             if type(val) is bool:
                 return _boolean(val)
             if type(val) is int:
@@ -2768,7 +2871,10 @@ class TTLGenericCompiler(TTCompilerBase):
             for participant in sorted(boundary.participants, key=_selector_sort_key)
         ]
         boundary_attr = ttl.ir.DFBReconfigurationAttr.get(
-            self.ctx, boundary.ordinal, participant_attrs
+            self.ctx,
+            boundary.ordinal,
+            participant_attrs,
+            boundary.discard_dfb_state,
         )
         return ttl.dfb_reconfiguration(boundary_attr)
 
@@ -2867,12 +2973,33 @@ class TTLGenericCompiler(TTCompilerBase):
 
         keyword_values = {keyword.arg: keyword.value for keyword in node.keywords}
         if reset_all:
-            if keyword_values:
+            if not set(keyword_values).issubset({"preserve"}):
                 self._raise_error(
                     node,
-                    "ttl.reset_all_dfbs() does not accept keyword arguments",
+                    "ttl.reset_all_dfbs() accepts only the preserve keyword argument",
                 )
-            return ttl.reset_all_dfbs(reset=reset_attr)
+            preserve_node = keyword_values.get("preserve")
+            if preserve_node is None:
+                preserved_dfbs = []
+            elif not isinstance(preserve_node, ast.List):
+                self._raise_error(
+                    preserve_node,
+                    "ttl.reset_all_dfbs() preserve must be a list",
+                )
+            else:
+                preserved_dfbs = [
+                    self._resolve_dfb_value(element, "preserve", api_name)
+                    for element in preserve_node.elts
+                ]
+            if any(
+                dfb in preserved_dfbs[:dfb_index]
+                for dfb_index, dfb in enumerate(preserved_dfbs)
+            ):
+                self._raise_error(
+                    preserve_node,
+                    "ttl.reset_all_dfbs() preserve DFBs must be distinct",
+                )
+            return ttl.reset_all_dfbs(reset=reset_attr, preserved_dfbs=preserved_dfbs)
 
         if set(keyword_values) != {"dfbs"}:
             self._raise_error(
@@ -3192,7 +3319,33 @@ class TTLGenericCompiler(TTCompilerBase):
                     ta_node, "ttl.call_extern_func() template_args must be a list"
                 )
             for elt in ta_node.elts:
-                resolved_template_args.append(self._resolve_template_arg_value(elt))
+                if not isinstance(elt, ast.Starred):
+                    resolved_template_args.append(self._resolve_template_arg_value(elt))
+                    continue
+                expanded_nodes = None
+                if isinstance(elt.value, (ast.List, ast.Tuple)):
+                    expanded_nodes = elt.value.elts
+                elif isinstance(elt.value, ast.Name):
+                    sequence = None
+                    for namespace in (self.captures, self.fn_globals):
+                        if elt.value.id in namespace:
+                            sequence = namespace[elt.value.id]
+                            break
+                    if isinstance(sequence, (list, tuple)):
+                        expanded_nodes = [
+                            ast.copy_location(ast.Constant(value=value), elt)
+                            for value in sequence
+                        ]
+                if expanded_nodes is None:
+                    self._raise_error(
+                        elt,
+                        "ttl.call_extern_func() starred template arguments must "
+                        "reference a captured or module-level list or tuple",
+                    )
+                for value_node in expanded_nodes:
+                    resolved_template_args.append(
+                        self._resolve_template_arg_value(value_node)
+                    )
 
         func_args = []
         func_arg_nodes = []

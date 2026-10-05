@@ -95,6 +95,8 @@ jobs:
         with:
           key: Linux-ttlang-hw-${{ inputs.hardware }}
           max-size: 200M
+          save: ${{ github.ref == 'refs/heads/main' }}
+          evict-old-files: job
 
       - name: Build tt-lang
         run: .github/scripts/run-hardware-test-phase.sh build

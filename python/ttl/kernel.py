@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import dis
 import hashlib
 import inspect
 from dataclasses import dataclass, field
@@ -33,6 +34,7 @@ from .dfb_allocation_group import (
 )
 from .dialects._ttl_enum_gen import LogicalKernelKind as _TableGenLogicalKernelKind
 from .scalar import ScalarType
+from .template_argument import UInt32TemplateArgument
 
 _PIPE_SOURCE_KERNEL_ROLE: Final[str] = "pipe_source"
 _DFB_RELEASE_METHODS: Final = frozenset(("push", "pop"))
@@ -298,6 +300,8 @@ def _encode_identity_literal(value) -> Optional[bytes]:
         return b"none"
     if isinstance(value, bool):
         return b"bool:true" if value else b"bool:false"
+    if isinstance(value, UInt32TemplateArgument):
+        return f"uint32:{value.value}".encode("ascii")
     if isinstance(value, int):
         return f"int:{value}".encode("ascii")
     if isinstance(value, float):
@@ -307,6 +311,8 @@ def _encode_identity_literal(value) -> Optional[bytes]:
         return f"str:{len(encoded)}:".encode("ascii") + encoded
     if isinstance(value, ScalarType):
         return f"scalar:{value.name}".encode("ascii")
+    if isinstance(value, KernelKind):
+        return f"kernel-kind:{value.value}".encode("utf-8")
     if isinstance(value, (tuple, list)):
         elements = []
         for element in value:
@@ -316,6 +322,11 @@ def _encode_identity_literal(value) -> Optional[bytes]:
             elements.append(f"{len(encoded)}:".encode("ascii") + encoded)
         kind = b"tuple" if isinstance(value, tuple) else b"list"
         return kind + b":" + b"".join(elements)
+    semantic_identity = getattr(value, "_operation_identity_capture", None)
+    if callable(semantic_identity):
+        encoded = _encode_identity_literal(semantic_identity())
+        if encoded is not None:
+            return b"semantic:" + encoded
     return None
 
 
@@ -325,17 +336,27 @@ def _encode_identity_capture(
     encoded = _encode_identity_literal(value)
     if encoded is not None:
         return encoded
+    if isinstance(value, KernelKind):
+        return f"kernel-kind:{value.value}".encode("utf-8")
+    if isinstance(value, tuple):
+        elements = []
+        for index, element in enumerate(value):
+            encoded_element = _encode_identity_capture(
+                f"{name}[{index}]", element, active_functions
+            )
+            elements.append(
+                f"{len(encoded_element)}:".encode("ascii") + encoded_element
+            )
+        return b"capture-tuple:" + b"".join(elements)
     if isinstance(value, Kernel):
+        if value._implicit_role is not None:
+            return (
+                f"kernel-implicit:{value.kind.value}:{value._implicit_role}"
+            ).encode("utf-8")
         return f"kernel-kind:{value.kind.value}".encode("utf-8")
     if is_ttnn_global_semaphore(value):
         address = get_ttnn_global_semaphore_address(value)
         return f"global-semaphore:{address}".encode("ascii")
-
-    semantic_identity = getattr(value, "_operation_identity_capture", None)
-    if callable(semantic_identity):
-        encoded = _encode_identity_literal(semantic_identity())
-        if encoded is not None:
-            return b"semantic:" + encoded
 
     if inspect.ismodule(value):
         return f"module:{value.__name__}".encode("utf-8")
@@ -354,15 +375,29 @@ def _encode_identity_capture(
     )
 
 
+_GLOBAL_LOAD_OPNAMES = frozenset({"LOAD_GLOBAL", "LOAD_NAME"})
+_CLOSURE_LOAD_OPNAMES = frozenset(
+    {"LOAD_DEREF", "LOAD_CLASSDEREF", "LOAD_FROM_DICT_OR_DEREF"}
+)
+
+
 def _referenced_operation_values(function: Callable) -> dict[str, object]:
     """Return outer-scope values referenced by an operation or nested code."""
 
+    # co_names also holds attribute names, and nested code objects dereference
+    # the operation's own locals, so only global loads and loads of the
+    # operation's free variables name outer-scope values.
+    closure_names = set(function.__code__.co_freevars)
     referenced_names = set()
     code_objects = [function.__code__]
     while code_objects:
         code = code_objects.pop()
-        referenced_names.update(code.co_names)
-        referenced_names.update(code.co_freevars)
+        for instruction in dis.get_instructions(code):
+            if instruction.opname in _GLOBAL_LOAD_OPNAMES or (
+                instruction.opname in _CLOSURE_LOAD_OPNAMES
+                and instruction.argval in closure_names
+            ):
+                referenced_names.add(instruction.argval)
         code_objects.extend(
             constant for constant in code.co_consts if inspect.iscode(constant)
         )
@@ -405,7 +440,7 @@ def _operation_identity_impl(function: Callable, active_functions: set[int]) -> 
         identity_captures.update(
             (name, value)
             for name, value in referenced_values.items()
-            if isinstance(value, Kernel)
+            if isinstance(value, (Kernel, KernelKind))
             or callable(getattr(value, "_operation_identity_capture", None))
         )
         bound_conditions = _bind_dispatch_conditions(
@@ -480,6 +515,9 @@ def _operation_identity_impl(function: Callable, active_functions: set[int]) -> 
                 ordinal = reset_ordinals.setdefault(reset_identity, len(reset_ordinals))
                 participant_tokens = []
                 for participant in value.participants:
+                    if isinstance(participant, KernelKind):
+                        participant_tokens.append(f"kind:{participant.name}")
+                        continue
                     if participant._implicit_role is not None:
                         participant_tokens.append(
                             "role:"
@@ -530,6 +568,7 @@ def _operation_identity_impl(function: Callable, active_functions: set[int]) -> 
                     participant_tokens.append(f"kernel:{participant_name}")
                 encoded = (
                     f"dfb-reconfiguration:{ordinal}:"
+                    f"discard_dfb_state={int(value.discard_dfb_state)}:"
                     + ",".join(sorted(participant_tokens))
                 ).encode("utf-8")
             else:
@@ -559,6 +598,11 @@ def _bind_kernel_declarations(
     logical_kernels: Mapping[str, Kernel], operation_identity: str
 ) -> None:
     """Bind uniquely named declarations during operation registration."""
+    logical_kernels = {
+        name: kernel
+        for name, kernel in logical_kernels.items()
+        if _selector_implicit_role(kernel) is None
+    }
     source_names = {}
     for name, kernel in logical_kernels.items():
         previous_name = source_names.get(id(kernel))

@@ -113,10 +113,10 @@ def TTL_DFBReconfigurationAttr
     Identifies one synchronized update to worker-local DFB descriptors and the
     complete set of logical kernels that participate on each active worker.
     Each reconfiguration call may execute at most once per dispatch and launch
-    node, or once in every iteration of nested sequential loops with
-    compile-time-known trip counts. Repeated execution requires at least two
-    reconfiguration calls. Corresponding calls use equivalent loop nests and
-    appear in the same order in every participant. Every declaration in one
+    node, or once in every iteration of one sequential loop with a constant
+    trip count. Repeated execution requires at least two reconfiguration calls.
+    Corresponding calls use equivalent loops and appear in the same order in
+    every participant. Every declaration in one
     module uses the same participant set.
     At each call, the runtime waits for prior DFB-interface work to complete,
     installs the next descriptors, and then allows following DFB-interface work
@@ -125,10 +125,12 @@ def TTL_DFBReconfigurationAttr
     This attribute identifies where synchronization and compiler-generated
     descriptor installation occur; it does not contain descriptor values.
     Source programs retain logical DFB identities across reconfiguration calls;
-    physical indices and descriptor configurations are compiler-owned. A DFB
-    with live payload or incomplete protocol state cannot cross a
-    reconfiguration call unless its physical index, storage, and complete
-    interface configuration remain unchanged.
+    physical indices and configurations are compiler-owned. Reconfiguration
+    normally preserves a DFB's index, storage, and interface state while it has
+    unread data or an incomplete protocol. Setting `discardDfbState` allows the
+    lifecycle to end when its final access precedes the corresponding
+    `ttl.dfb_reconfiguration` operation. If the index is reused, runtime resets
+    its interface before the next DFB access.
 
     The ordinal is module-local and has no runtime meaning. Equal attributes
     reference the same descriptor update. Distinct ordinals identify distinct
@@ -138,15 +140,17 @@ def TTL_DFBReconfigurationAttr
   }];
   let parameters = (ins
     "int64_t":$ordinal,
-    ArrayRefParameter<"::mlir::tt::ttl::LogicalKernelAttr">:$participants
+    ArrayRefParameter<"::mlir::tt::ttl::LogicalKernelAttr">:$participants,
+    DefaultValuedParameter<"bool", "false">:$discardDfbState
   );
-  let assemblyFormat = "`<` $ordinal `,` `participants` `[` $participants `]` `>`";
+  let assemblyFormat = "`<` $ordinal `,` `participants` `[` $participants `]` (`,` `discard_dfb_state` `=` $discardDfbState^)? `>`";
   let genVerifyDecl = 1;
   let extraClassDeclaration = [{
     static DFBReconfigurationAttr getCheckedInstance(
         ::mlir::Location location, ::mlir::MLIRContext *context,
         int64_t ordinal,
-        ::llvm::ArrayRef<LogicalKernelAttr> participants);
+        ::llvm::ArrayRef<LogicalKernelAttr> participants,
+        bool discardDfbState = false);
   }];
 }
 
@@ -291,6 +295,41 @@ def TTL_DeviceTransferAttr : TTL_Attr<"DeviceTransfer", "device_transfer"> {
   let parameters = (ins
     "DeviceDomainAttr":$domain,
     "TransferEdgeAttr":$edge
+  );
+  let assemblyFormat = "`<` struct(params) `>`";
+  let genVerifyDecl = 1;
+}
+
+def TTL_TransferGraphAttr : TTL_Attr<"TransferGraph", "transfer_graph"> {
+  let summary = "Logical-device transfer relation";
+  let description = [{
+    Defines a logical transfer relation without binding it to launch-node
+    endpoints. `kind` selects the relation semantics. For every kind except
+    `explicit`, `componentName` identifies the domain component whose
+    coordinates change. `properties` contains only parameters specific to
+    that relation:
+
+    - `explicit`: `edges` as an array of `#ttl.transfer_edge` attributes, each
+      with one destination device;
+    - `axis_neighbor`: `axis`, positive `offset`, and `wrap`;
+    - `stencil`: `offsets` and `wrap`;
+    - `gather`: component-local `root`;
+    - `scatter`: component-local `source`;
+    - `all_to_all`: no additional properties.
+
+    Explicit graphs preserve edge-array order. The other kinds use row-major
+    device order. Stencils order edges by source device and then by the
+    declared offset list; all-to-all orders each source before its
+    destinations. PipeNet callbacks observe this order.
+
+    Domain extents are fixed for one compiled operation instance. Programs may
+    instantiate the same relation kind with different domain extents.
+  }];
+  let parameters = (ins
+    "DeviceDomainAttr":$domain,
+    "TransferGraphKind":$kind,
+    OptionalParameter<"StringAttr">:$componentName,
+    "DictionaryAttr":$properties
   );
   let assemblyFormat = "`<` struct(params) `>`";
   let genVerifyDecl = 1;
@@ -475,27 +514,46 @@ def TTL_PipeRecordAttr : TTL_Attr<"PipeRecord", "pipe_record"> {
   let genVerifyDecl = 1;
 }
 
-def TTL_PipeNetRecordsAttr : TTL_Attr<"PipeNetRecords", "pipenet_records"> {
-  let summary = "Identifies a PipeNet and contains its static pipe records";
+def TTL_PipeMappingAttr : TTL_Attr<"PipeMapping", "pipe_mapping"> {
+  let summary = "Device graph with node-level Pipes";
   let description = [{
-    Identifies a PipeNet by id and contains the ordered list of
-    `#ttl.pipe_record` attributes that make up the net. PipeNet foreach ops use
-    this attribute to represent callback iteration without creating one
-    source-level operation per record.
+    Associates one logical-device graph with an ordered list of node-level
+    Pipes. Every graph edge is combined with every Pipe in the list. Storing
+    the graph and Pipe list separately avoids one attribute per combination.
+  }];
+  let parameters = (ins
+    "TransferGraphAttr":$graph,
+    ArrayRefParameter<"::mlir::tt::ttl::PipeRecordAttr">:$pipes
+  );
+  let assemblyFormat = "`<` `graph` `=` $graph `,` `pipes` `[` $pipes `]` `>`";
+  let genVerifyDecl = 1;
+}
 
-    `pipes` is in user PipeNet construction order. A launch node that matches
-    multiple records executes them in this order. Duplicate records are
-    distinct entries and execute as separate callback invocations.
+def TTL_PipeNetRecordsAttr : TTL_Attr<"PipeNetRecords", "pipenet_records"> {
+  let summary = "Identifies a PipeNet and contains its pipe relation";
+  let description = [{
+    Identifies a PipeNet by id. A local PipeNet uses `pipes` as its ordered
+    list of `#ttl.pipe_record` attributes. A graph PipeNet uses `mappings` as
+    an ordered list of `#ttl.pipe_mapping` attributes. Exactly one
+    representation is nonempty.
+
+    PipeNet foreach operations use this attribute to represent callback
+    iteration without cloning a source-level callback body. Local records are
+    ordered by Pipe construction. Graph records are ordered by mapping, graph
+    edge, then node Pipe. A launch node that matches multiple records executes
+    them in this order.
   }];
 
   let parameters = (ins
     "int64_t":$pipeNetId,
     OptionalParameter<"::mlir::StringAttr">:$pipeNetName,
-    ArrayRefParameter<"::mlir::tt::ttl::PipeRecordAttr">:$pipes
+    OptionalArrayRefParameter<"::mlir::tt::ttl::PipeRecordAttr">:$pipes,
+    OptionalArrayRefParameter<"::mlir::tt::ttl::PipeMappingAttr">:$mappings
   );
 
   let assemblyFormat = "`<` `net` $pipeNetId (`name` $pipeNetName^)? "
-                       "`pipes` `[` $pipes `]` `>`";
+                       "(`pipes` `[` $pipes^ `]`)? "
+                       "(`mappings` $mappings^)? `>`";
   let genVerifyDecl = 1;
 }
 

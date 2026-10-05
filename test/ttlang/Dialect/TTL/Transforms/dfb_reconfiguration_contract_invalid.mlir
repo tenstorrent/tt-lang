@@ -56,7 +56,7 @@ module attributes {ttl.launch_grid = [2, 1], ttl.target_arch = #ttcore.arch<blac
   } {
     ttl.pipenet_foreach_dst attributes {records = #records} {
     ^bb0(%pipe: !ttl.selected_pipe_dst):
-      // expected-error @below {{repeated DFB reconfiguration with exact count 2 must execute once in every iteration of nested sequential loops with compile-time-known trip counts}}
+      // expected-error @below {{repeated DFB reconfiguration with exact count 2 must execute once in every iteration of a sequential loop with a constant trip count}}
       ttl.dfb_reconfiguration #boundary
       ttl.yield
     }
@@ -105,7 +105,7 @@ module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blac
     %upper = arith.constant 3 : index
     %step = arith.constant 1 : index
     scf.for %iteration = %lower to %upper step %step {
-      // expected-error @below {{DFB reconfiguration participants must use the same nested loop trip-count sequence}}
+      // expected-error @below {{DFB reconfiguration participants must use the same loop trip-count sequence}}
       ttl.dfb_reconfiguration #boundary_a
       ttl.dfb_reconfiguration #boundary_b
     }
@@ -143,7 +143,7 @@ module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blac
     ttl.logical_kernel = #compute
   } {
     ttl.dfb_reconfiguration #boundary_a
-    // expected-error @below {{all DFB reconfiguration boundaries must declare the same participant set}}
+    // expected-error @below {{all DFB reconfiguration declarations must use the same participant set}}
     ttl.dfb_reconfiguration #boundary_b
     return
   }
@@ -215,7 +215,7 @@ module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blac
     %lower = arith.constant 0 : index
     %step = arith.constant 1 : index
     scf.for %iteration = %lower to %upper step %step {
-      // expected-error @below {{DFB reconfiguration must execute at most once per dispatch and launch node or once per iteration of nested sequential loops with compile-time-known trip counts}}
+      // expected-error @below {{DFB reconfiguration must execute a compile-time-known number of times on each launch node; it may depend on the launch node but not on runtime values}}
       ttl.dfb_reconfiguration #boundary
     }
     return
@@ -303,6 +303,7 @@ module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blac
         header = "condition.hpp"} : () -> i64
     %active = arith.cmpi ne, %condition, %zero : i64
     scf.if %active {
+      // expected-error @below {{DFB reconfiguration must execute a compile-time-known number of times on each launch node; it may depend on the launch node but not on runtime values}}
       ttl.dfb_reconfiguration #boundary
     }
     return
@@ -319,7 +320,6 @@ module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blac
         header = "condition.hpp"} : () -> i64
     %active = arith.cmpi ne, %condition, %zero : i64
     scf.if %active {
-      // expected-error @below {{DFB reconfiguration participants execute under different structured conditions}}
       ttl.dfb_reconfiguration #boundary
     }
     return
@@ -393,7 +393,6 @@ module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blac
     ttl.kernel_thread = #ttkernel.thread<compute>,
     ttl.logical_kernel = #compute
   } {
-    // expected-error @below {{DFB reconfiguration participants have inconsistent dynamic instance counts}}
     ttl.dfb_reconfiguration #boundary
     return
   }
@@ -409,6 +408,7 @@ module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blac
         header = "condition.hpp"} : () -> i64
     %active = arith.cmpi ne, %condition, %zero : i64
     scf.if %active {
+      // expected-error @below {{DFB reconfiguration must execute a compile-time-known number of times on each launch node; it may depend on the launch node but not on runtime values}}
       ttl.dfb_reconfiguration #boundary
     }
     return
@@ -454,7 +454,7 @@ module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blac
     ttl.logical_kernel = #reader,
     ttl.noc_index = 0 : i32
   } {
-    // expected-error @below {{DFB reconfiguration participants execute boundaries in different orders}}
+    // expected-error @below {{DFB reconfiguration participants execute operations in different orders}}
     ttl.dfb_reconfiguration #boundary_b
     ttl.dfb_reconfiguration #boundary_a
     return
@@ -488,7 +488,7 @@ module attributes {ttl.launch_grid = [2, 1], ttl.target_arch = #ttcore.arch<blac
     %zero = arith.constant 0 : index
     %first_node = arith.cmpi eq, %node_x, %zero : index
     scf.if %first_node {
-      // expected-error @below {{DFB reconfiguration boundaries execute in different orders across launch nodes}}
+      // expected-error @below {{DFB reconfiguration operations execute in different orders across launch nodes}}
       ttl.dfb_reconfiguration #boundary_a
       ttl.dfb_reconfiguration #boundary_b
     } else {

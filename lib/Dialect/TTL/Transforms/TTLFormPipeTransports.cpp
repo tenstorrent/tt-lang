@@ -299,8 +299,15 @@ static FailureOr<PipeTransportLoopCandidate> buildLoopCandidate(
       return failure();
     }
     auto send = cast<PipeTransferSendOp>(transfer->sendOp);
+    Value sourceDFB = isa<CircularBufferType>(send.getSrc().getType())
+                          ? send.getSrc()
+                          : getAttachedCB(send.getSrc());
+    if (!sourceDFB || sourceDFB != send.getSrc()) {
+      reason = "grouped scratch storage requires a complete source DFB block";
+      return failure();
+    }
     FailureOr<PipeTransportDFBUse *> source =
-        getOrAddDFBUse(candidate, send.getSrc(), PipeTransportDFBRole::Source,
+        getOrAddDFBUse(candidate, sourceDFB, PipeTransportDFBRole::Source,
                        transfer->id, reason);
     if (failed(source)) {
       return failure();
@@ -373,7 +380,13 @@ getTransportScratchBytes(const PipeTransportLoopCandidate &candidate,
   uint64_t totalBytes = 0;
   for (const PipeTransferNode *transfer : candidate.transfers) {
     auto sendOp = cast<PipeTransferSendOp>(transfer->sendOp);
-    auto sourceType = cast<CircularBufferType>(sendOp.getSrc().getType());
+    Value sourceDFB = isa<CircularBufferType>(sendOp.getSrc().getType())
+                          ? sendOp.getSrc()
+                          : getAttachedCB(sendOp.getSrc());
+    if (!sourceDFB) {
+      return std::nullopt;
+    }
+    auto sourceType = cast<CircularBufferType>(sourceDFB.getType());
     std::string failureReason;
     FailureOr<uint64_t> sourceBlockBytes = getDFBAllocationSizeBytes(
         CircularBufferType::get(sourceType.getContext(), sourceType.getShape(),
@@ -412,33 +425,73 @@ struct ConservativePipeResources {
   int64_t globalSemaphoreCount = 0;
 };
 
-template <typename ForeachOp>
-static LogicalResult
-addCallbackResourceUpperBound(ForeachOp foreachOp,
-                              ConservativePipeResources &resources) {
+static FailureOr<uint64_t>
+getDestinationEndpointCount(ArrayRef<PipeRecordAttr> nodePipes) {
   uint64_t endpointCount = 0;
-  for (PipeRecordAttr record : foreachOp.getRecords().getPipes()) {
+  for (PipeRecordAttr nodePipe : nodePipes) {
     std::optional<int64_t> width = llvm::checkedAdd(
-        llvm::checkedSub(record.getDstEndX(), record.getDstStartX())
+        llvm::checkedSub(nodePipe.getDstEndX(), nodePipe.getDstStartX())
             .value_or(-1),
         int64_t{1});
     std::optional<int64_t> height = llvm::checkedAdd(
-        llvm::checkedSub(record.getDstEndY(), record.getDstStartY())
+        llvm::checkedSub(nodePipe.getDstEndY(), nodePipe.getDstStartY())
             .value_or(-1),
         int64_t{1});
     if (!width || !height || *width <= 0 || *height <= 0) {
       return failure();
     }
-    std::optional<uint64_t> recordEndpoints = llvm::checkedMulUnsigned(
+    std::optional<uint64_t> nodePipeEndpoints = llvm::checkedMulUnsigned(
         static_cast<uint64_t>(*width), static_cast<uint64_t>(*height));
-    std::optional<uint64_t> updatedEndpoints =
-        recordEndpoints
-            ? llvm::checkedAddUnsigned(endpointCount, *recordEndpoints)
+    std::optional<uint64_t> updatedEndpointCount =
+        nodePipeEndpoints
+            ? llvm::checkedAddUnsigned(endpointCount, *nodePipeEndpoints)
             : std::nullopt;
-    if (!updatedEndpoints) {
+    if (!updatedEndpointCount) {
       return failure();
     }
-    endpointCount = *updatedEndpoints;
+    endpointCount = *updatedEndpointCount;
+  }
+  return endpointCount;
+}
+
+// Count concrete destination endpoints without constructing each combination
+// of a graph edge and node pipe.
+static FailureOr<uint64_t>
+getCallbackDestinationEndpointCount(PipeNetRecordsAttr records) {
+  if (records.getMappings().empty()) {
+    return getDestinationEndpointCount(records.getPipes());
+  }
+
+  uint64_t endpointCount = 0;
+  for (PipeMappingAttr mapping : records.getMappings()) {
+    FailureOr<uint64_t> nodePipeEndpointCount =
+        getDestinationEndpointCount(mapping.getPipes());
+    FailureOr<uint64_t> edgeCount =
+        createTransferGraph(mapping.getGraph())->getEdgeCount();
+    std::optional<uint64_t> mappingEndpointCount =
+        succeeded(nodePipeEndpointCount) && succeeded(edgeCount)
+            ? llvm::checkedMulUnsigned(*nodePipeEndpointCount, *edgeCount)
+            : std::nullopt;
+    std::optional<uint64_t> updatedEndpointCount =
+        mappingEndpointCount
+            ? llvm::checkedAddUnsigned(endpointCount, *mappingEndpointCount)
+            : std::nullopt;
+    if (!updatedEndpointCount) {
+      return failure();
+    }
+    endpointCount = *updatedEndpointCount;
+  }
+  return endpointCount;
+}
+
+template <typename ForeachOp>
+static LogicalResult
+addCallbackResourceUpperBound(ForeachOp foreachOp,
+                              ConservativePipeResources &resources) {
+  FailureOr<uint64_t> endpointCount =
+      getCallbackDestinationEndpointCount(foreachOp.getRecords());
+  if (failed(endpointCount)) {
+    return failure();
   }
 
   uint64_t protocolOperationCount = 0;
@@ -456,7 +509,7 @@ addCallbackResourceUpperBound(ForeachOp foreachOp,
     return failure();
   }
   std::optional<uint64_t> resourceUnits =
-      llvm::checkedMulUnsigned(endpointCount, protocolOperationCount);
+      llvm::checkedMulUnsigned(*endpointCount, protocolOperationCount);
   std::optional<uint64_t> scratchBytes =
       resourceUnits ? llvm::checkedMulUnsigned(
                           *resourceUnits,

@@ -26,6 +26,7 @@
 #include "mlir/Target/Cpp/CppEmitter.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringRef.h"
@@ -38,6 +39,8 @@
 #include <functional>
 #include <optional>
 #include <string>
+#include <type_traits>
+#include <utility>
 
 using namespace mlir;
 using namespace tt;
@@ -280,6 +283,10 @@ static StringRef getL1PtrOpaqueTypeName(unsigned elementWidth) {
   default:
     llvm_unreachable("unsupported L1AddrPtr element width");
   }
+}
+
+static std::string getVolatileL1PtrOpaqueTypeName(unsigned elementWidth) {
+  return ("volatile " + getL1PtrOpaqueTypeName(elementWidth)).str();
 }
 
 static FailureOr<int64_t> extractNocIndex(Attribute value) {
@@ -533,7 +540,7 @@ public:
         [ctx](mlir::tt::ttkernel::RoutingPlaneConnectionManagerType type)
             -> Type {
           return emitc::OpaqueType::get(
-              ctx, "tt::tt_fabric::RoutingPlaneConnectionManager");
+              ctx, "experimental::RoutingPlaneConnectionManager");
         });
     addConversion(
         [ctx](IndexType type) -> Type { return emitc::SizeTType::get(ctx); });
@@ -666,15 +673,30 @@ public:
   matchAndRewrite(ttkernel::LoadFromL1Op op,
                   ttkernel::LoadFromL1Op::Adaptor adaptor,
                   ConversionPatternRewriter &rewriter) const final {
-    auto pointerType =
-        mlir::cast<emitc::PointerType>(adaptor.getL1Ptr().getType());
-    auto subscriptOp = rewriter.create<emitc::SubscriptOp>(
-        op->getLoc(),
-        emitc::LValueType::get(op.getContext(), pointerType.getPointee()),
-        adaptor.getL1Ptr(), adaptor.getOffset());
+    Location loc = op->getLoc();
+    const unsigned elementWidth =
+        mlir::cast<ttkernel::L1AddrPtrType>(op.getL1Ptr().getType())
+            .getElementWidth();
+    const std::string elementTypeName =
+        getVolatileL1PtrOpaqueTypeName(elementWidth);
+    auto elementType = emitc::OpaqueType::get(op.getContext(), elementTypeName);
 
-    auto loaded = rewriter.create<emitc::LoadOp>(
-        op->getLoc(), pointerType.getPointee(), subscriptOp);
+    // TODO: `TTKernelToCpp` adds no baseline API header for
+    // `ThreadType::Ethernet`, so an Ethernet kernel would emit this call
+    // undeclared; no TT-Lang pipeline emits Ethernet kernels today. Add the
+    // header requirement together with Ethernet kernel support.
+    emitc::CallOpaqueOp::create(rewriter, loc, TypeRange{},
+                                "invalidate_l1_cache", ValueRange{});
+    auto volatilePointer = emitc::CallOpaqueOp::create(
+        rewriter, loc, TypeRange{emitc::PointerType::get(elementType)},
+        "reinterpret_cast<" + elementTypeName + "*>",
+        ValueRange{adaptor.getL1Ptr()});
+    auto subscriptOp = emitc::SubscriptOp::create(
+        rewriter, loc, emitc::LValueType::get(op.getContext(), elementType),
+        volatilePointer.getResult(0), adaptor.getOffset());
+
+    auto loaded =
+        emitc::LoadOp::create(rewriter, loc, elementType, subscriptOp);
     rewriter.replaceOpWithNewOp<emitc::CastOp>(
         op, getTypeConverter()->convertType(op.getValue().getType()), loaded);
     return success();
@@ -835,8 +857,32 @@ public:
 } // namespace
 
 namespace {
-template <typename SourceOp, typename Adaptor = typename SourceOp::Adaptor>
+// A missing or false `posted` attribute on `op` means non-posted writes.
+template <typename SourceOp>
+static bool usesPostedWriteMode(SourceOp op) {
+  auto posted = op.getPosted();
+  return posted && *posted;
+}
+
+enum class PostedTemplateArgument { None, Boolean };
+
+// Detect the generated accessor even when the optional attribute is absent in
+// IR.
+template <typename SourceOp>
+using PostedAttributeResult = decltype(std::declval<SourceOp>().getPosted());
+
+template <typename SourceOp, typename Adaptor = typename SourceOp::Adaptor,
+          PostedTemplateArgument postedArgument = PostedTemplateArgument::None>
 class TTKernelToEmitCOpaqueRewriter : public OpConversionPattern<SourceOp> {
+  // Registration must specify the C++ argument convention whenever the source
+  // op defines `posted`; adding the attribute cannot silently drop its
+  // semantics.
+  static_assert(
+      llvm::is_detected<PostedAttributeResult, SourceOp>::value ==
+          (postedArgument == PostedTemplateArgument::Boolean),
+      "Register operations with posted using an explicit response-mode "
+      "rewriter or PostedTemplateArgument::Boolean");
+
 public:
   TTKernelToEmitCOpaqueRewriter(TTKernelToEmitCTypeConverter &typeConverter,
                                 MLIRContext *ctx, std::string opName = "")
@@ -921,24 +967,13 @@ public:
       return ArrayAttr::get(op.getContext(), template_args);
     } else if constexpr (std::is_same_v<SourceOp, ttkernel::ReduceUninitOp>) {
       return ArrayAttr();
-    } else if constexpr (std::is_same_v<SourceOp,
-                                        ttkernel::NocSemaphoreIncOp> ||
-                         std::is_same_v<SourceOp,
-                                        ttkernel::NocSemaphoreIncMulticastOp>) {
-      // The metal C signature defaults `posted` to false, so emit a template
-      // arg only when the producer explicitly opts into posted semantics.
-      auto posted = op.getPosted();
-      if (!posted || !*posted) {
+    } else if constexpr (postedArgument == PostedTemplateArgument::Boolean) {
+      // The low-level APIs default to non-posted writes.
+      if (!usesPostedWriteMode(op)) {
         return ArrayAttr();
       }
       SmallVector<Attribute, 1> template_args;
       template_args.push_back(emitc::OpaqueAttr::get(op.getContext(), "true"));
-      return ArrayAttr::get(op.getContext(), template_args);
-    } else if constexpr (std::is_same_v<SourceOp,
-                                        ttkernel::NocInlineDwWriteOp>) {
-      SmallVector<Attribute, 1> template_args;
-      template_args.push_back(
-          emitc::OpaqueAttr::get(op.getContext(), "InlineWriteDst::L1"));
       return ArrayAttr::get(op.getContext(), template_args);
     } else if constexpr (std::is_same_v<SourceOp, ttkernel::SFPUReduceInitOp>) {
       // sfpu_reduce_init<PoolType, DataFormat>()
@@ -1213,6 +1248,13 @@ public:
 private:
   std::string opName;
 };
+
+// Register low-level APIs whose first template parameter is the posted boolean,
+// defaulting to false. NocOptions-based APIs use their dedicated rewriters.
+template <typename SourceOp>
+using TTKernelToEmitCPostedOpaqueRewriter =
+    TTKernelToEmitCOpaqueRewriter<SourceOp, typename SourceOp::Adaptor,
+                                  PostedTemplateArgument::Boolean>;
 } // namespace
 
 namespace {
@@ -1285,7 +1327,8 @@ getOrCreateConstantTableGlobal(ConversionPatternRewriter &rewriter,
   OpBuilder::InsertionGuard guard(rewriter);
   rewriter.setInsertionPointToStart(module.getBody());
   return emitc::GlobalOp::create(rewriter, anchor->getLoc(), symbolName,
-                                 arrayType, initializer,
+                                 /*symVisibility=*/nullptr, arrayType,
+                                 initializer,
                                  /*externSpecifier=*/false,
                                  /*staticSpecifier=*/true,
                                  /*constSpecifier=*/true);
@@ -1690,6 +1733,40 @@ private:
   std::reference_wrapper<TTKernelToEmitCConversionState> state;
 };
 
+class TTKernelToEmitCNocWritesFlushedRewriter
+    : public OpConversionPattern<ttkernel::NocAsyncWritesFlushedOp> {
+public:
+  TTKernelToEmitCNocWritesFlushedRewriter(
+      TTKernelToEmitCTypeConverter &typeConverter, MLIRContext *ctx,
+      TTKernelToEmitCConversionState &state)
+      : OpConversionPattern<ttkernel::NocAsyncWritesFlushedOp>(typeConverter,
+                                                               ctx),
+        state(state) {}
+
+  LogicalResult
+  matchAndRewrite(ttkernel::NocAsyncWritesFlushedOp op,
+                  ttkernel::NocAsyncWritesFlushedOp::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const final {
+    SmallVector<Value, 1> operands;
+    FailureOr<std::string> nocName = ensureNocDeclaration(
+        op.getOperation(), rewriter, state, operands, adaptor.getNoc());
+    if (failed(nocName)) {
+      return failure();
+    }
+    std::string templateArgument =
+        usesPostedWriteMode(op) ? "<NocOptions::POSTED>" : "";
+    std::string callStr =
+        *nocName + ".async_writes_flushed" + templateArgument + "();";
+
+    emitc::VerbatimOp::create(rewriter, op.getLoc(), callStr, operands);
+    rewriter.eraseOp(op);
+    return success();
+  }
+
+private:
+  std::reference_wrapper<TTKernelToEmitCConversionState> state;
+};
+
 template <typename SourceOp>
 class TTKernelToEmitCNocFullBarrierRewriter
     : public OpConversionPattern<SourceOp> {
@@ -1802,8 +1879,11 @@ public:
                 ", CoreLocalMem<uint32_t>({}), {}, " + endpoint.args +
                 ", {{});";
     } else {
-      callStr = *nocName + ".async_write(CoreLocalMem<uint32_t>({}), " +
-                endpoint.endpointName + ", {}, {{} , " + endpoint.args + ");";
+      std::string templateArgument =
+          usesPostedWriteMode(op) ? "<NocOptions::POSTED>" : "";
+      callStr = *nocName + ".async_write" + templateArgument +
+                "(CoreLocalMem<uint32_t>({}), " + endpoint.endpointName +
+                ", {}, {{} , " + endpoint.args + ");";
     }
 
     rewriter.create<emitc::VerbatimOp>(op.getLoc(), callStr, operands);
@@ -1955,10 +2035,13 @@ public:
     SmallVector<Value, 5> operands{
         adaptor.getVal(), adaptor.getDstNocX(), adaptor.getDstNocY(),
         adaptor.getDstAddress(), adaptor.getByteEnable()};
-    std::string callStr =
-        *nocName + ".inline_dw_write<NocOptions::INLINE_L1>(" + endpoint +
-        ", {}, {{.noc_x = {}, .noc_y = {}, "
-        ".addr = static_cast<uint32_t>({})}, {});";
+    std::string options = usesPostedWriteMode(op)
+                              ? "NocOptions::INLINE_L1 | NocOptions::POSTED"
+                              : "NocOptions::INLINE_L1";
+    std::string callStr = *nocName + ".inline_dw_write<" + options + ">(" +
+                          endpoint +
+                          ", {}, {{.noc_x = {}, .noc_y = {}, "
+                          ".addr = static_cast<uint32_t>({})}, {});";
 
     rewriter.create<emitc::VerbatimOp>(op.getLoc(), callStr, operands);
     rewriter.eraseOp(op);
@@ -2598,22 +2681,14 @@ public:
                   ConversionPatternRewriter &rewriter) const final {
     std::string routeIdName =
         getResultVariableName(op.getRouteId(), state, "fabric_route_id_");
-    std::string runtimeArgIndexName = routeIdName + "_runtime_arg_index";
-    std::string code = "size_t " + runtimeArgIndexName + " = {};\n" +
-                       "uint32_t " + routeIdName + " = 0;\n" +
+    std::string code = "uint32_t " + routeIdName + " = 0;\n" +
                        "if ({} != 0) {{\n"
-                       "  open_connections({}, {}, " +
-                       runtimeArgIndexName +
-                       ");\n"
-                       "  PacketHeaderPool::reset();\n"
                        "  " +
-                       routeIdName +
-                       " = PacketHeaderPool::allocate_header_n({});\n" + "}";
+                       routeIdName + " = {}.open({}, {});\n" + "}";
     emitc::VerbatimOp::create(
         rewriter, op.getLoc(), rewriter.getStringAttr(code),
-        ValueRange{adaptor.getRuntimeArgBase(), adaptor.getConnectionCount(),
-                   adaptor.getManager(), adaptor.getConnectionCount(),
-                   adaptor.getConnectionCount()});
+        ValueRange{adaptor.getConnectionCount(), adaptor.getManager(),
+                   adaptor.getConnectionCount(), adaptor.getRuntimeArgBase()});
     rewriter.replaceOp(
         op, emitc::LiteralOp::create(
                 rewriter, op.getLoc(),
@@ -2638,6 +2713,40 @@ public:
                   ConversionPatternRewriter &rewriter) const final {
     rewriter.replaceOpWithNewOp<emitc::CallOpaqueOp>(
         op, TypeRange(), "experimental::routing_plane_atomic_inc", nullptr,
+        nullptr, adaptor.getOperands());
+    return success();
+  }
+};
+
+class TTKernelRoutingPlaneWriteOpRewriter
+    : public OpConversionPattern<ttkernel::RoutingPlaneWriteOp> {
+  using Op = ttkernel::RoutingPlaneWriteOp;
+
+public:
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(Op op, Op::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const final {
+    rewriter.replaceOpWithNewOp<emitc::CallOpaqueOp>(
+        op, TypeRange(), "experimental::routing_plane_write", nullptr, nullptr,
+        adaptor.getOperands());
+    return success();
+  }
+};
+
+class TTKernelRoutingPlaneScatterWriteOpRewriter
+    : public OpConversionPattern<ttkernel::RoutingPlaneScatterWriteOp> {
+  using Op = ttkernel::RoutingPlaneScatterWriteOp;
+
+public:
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(Op op, Op::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const final {
+    rewriter.replaceOpWithNewOp<emitc::CallOpaqueOp>(
+        op, TypeRange(), "experimental::routing_plane_scatter_write", nullptr,
         nullptr, adaptor.getOperands());
     return success();
   }
@@ -2672,8 +2781,9 @@ public:
                   ConversionPatternRewriter &rewriter) const final {
     emitc::VerbatimOp::create(
         rewriter, op.getLoc(),
-        rewriter.getStringAttr("if ({} != 0) {{\n  close_connections({});\n}"),
-        ValueRange{adaptor.getConnectionCount(), adaptor.getManager()});
+        rewriter.getStringAttr("if ({} != 0) {{\n  {}.close({});\n}"),
+        ValueRange{adaptor.getConnectionCount(), adaptor.getManager(),
+                   adaptor.getConnectionCount()});
     rewriter.eraseOp(op);
     return success();
   }
@@ -2795,6 +2905,29 @@ public:
     rewriter.replaceOpWithNewOp<arith::DivSIOp>(op, op.getResult().getType(),
                                                 op.getOperands());
 
+    return success();
+  }
+};
+
+template <typename SourceOp, typename EmitCOp>
+class ArithIndexUnsignedBinaryRewriter : public OpConversionPattern<SourceOp> {
+public:
+  using OpConversionPattern<SourceOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(SourceOp op, typename SourceOp::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const final {
+    if (!isa<IndexType>(op.getResult().getType())) {
+      return failure();
+    }
+    Type resultType =
+        this->getTypeConverter()->convertType(op.getResult().getType());
+    if (!resultType) {
+      return failure();
+    }
+    ValueRange operands = adaptor.getOperands();
+    rewriter.replaceOpWithNewOp<EmitCOp>(op, resultType, operands[0],
+                                         operands[1]);
     return success();
   }
 };
@@ -3155,12 +3288,13 @@ public:
         TTKernelToEmitCOpaqueRewriter<ttkernel::NocSemaphoreSetOp>,
         TTKernelToEmitCOpaqueRewriter<ttkernel::SemaphoreReachedOp>,
         TTKernelToEmitCOpaqueRewriter<ttkernel::SemaphoreWaitMinOp>,
-        TTKernelToEmitCOpaqueRewriter<ttkernel::NocSemaphoreIncOp>,
+        TTKernelToEmitCPostedOpaqueRewriter<ttkernel::NocSemaphoreIncOp>,
         TTKernelToEmitCOpaqueRewriter<ttkernel::SemaphoreWaitOp>,
         TTKernelToEmitCOpaqueRewriter<ttkernel::NocSemaphoreSetMulticastOp>,
         TTKernelToEmitCOpaqueRewriter<
             ttkernel::NocSemaphoreSetMulticastLoopbackOp>,
-        TTKernelToEmitCOpaqueRewriter<ttkernel::NocSemaphoreIncMulticastOp>,
+        TTKernelToEmitCPostedOpaqueRewriter<
+            ttkernel::NocSemaphoreIncMulticastOp>,
         TTKernelToEmitCOpaqueRewriter<ttkernel::UnpackStallOnPackOp>,
         TTKernelToEmitCOpaqueRewriter<ttkernel::TileRegsAcquireOp>,
         TTKernelToEmitCOpaqueRewriter<ttkernel::TileRegsCommitOp>,
@@ -3395,9 +3529,9 @@ public:
         TTKernelToEmitCOpaqueRewriter<ttkernel::ClampScalarTileOp>,
         TTKernelToEmitCOpaqueRewriter<ttkernel::ClampScalarTileInt32Op>,
 
-        TTKernelToEmitCOpaqueRewriter<
+        TTKernelToEmitCPostedOpaqueRewriter<
             ttkernel::NocAsyncWriteOnePacketSetStateOp>,
-        TTKernelToEmitCOpaqueRewriter<
+        TTKernelToEmitCPostedOpaqueRewriter<
             ttkernel::NocAsyncWriteOnePacketWithStateOp>,
         TTKernelToEmitCOpaqueRewriter<ttkernel::GetNocMulticastAddrOp>,
         TTKernelToEmitCOpaqueRewriter<ttkernel::ConvertLogicalXToTranslatedOp>,
@@ -3443,6 +3577,7 @@ public:
     patterns
         .add<TTKernelToEmitCGetNocAddrRewriter,
              TTKernelToEmitCNocAtomicBarrierRewriter,
+             TTKernelToEmitCNocWritesFlushedRewriter,
              TTKernelToEmitCNocAsyncTileRewriter<ttkernel::NocAsyncReadTileOp>,
              TTKernelToEmitCNocAsyncTileRewriter<ttkernel::NocAsyncWriteTileOp>,
              TTKernelToEmitCNocAsyncReadOnePacketSetStateRewriter,
@@ -3498,6 +3633,8 @@ public:
                  TTKernelOpenRoutingPlaneConnectionsOpRewriter>(typeConverter,
                                                                 context, state);
     patterns.add<TTKernelRoutingPlaneAtomicIncOpRewriter,
+                 TTKernelRoutingPlaneWriteOpRewriter,
+                 TTKernelRoutingPlaneScatterWriteOpRewriter,
                  TTKernelRoutingPlaneFusedWriteAtomicIncOpRewriter,
                  TTKernelCloseRoutingPlaneConnectionsOpRewriter>(typeConverter,
                                                                  context);
@@ -3512,12 +3649,14 @@ public:
         TTKernelClassMethodRewriter<ttkernel::TensorAccessorIsLocalShardOp>>(
         typeConverter, context, state);
 
-    patterns
-        .add<ArithFloorDivRewriter, ArithBitcastRewriter, ArithMaxUIRewriter,
-             ArithMinUIRewriter, ArithMaxSIRewriter, ArithMinSIRewriter,
-             ArithBoolBinaryRewriter<arith::AndIOp, emitc::LogicalAndOp>,
-             ArithBoolBinaryRewriter<arith::OrIOp, emitc::LogicalOrOp>>(
-            typeConverter, context);
+    patterns.add<ArithFloorDivRewriter,
+                 ArithIndexUnsignedBinaryRewriter<arith::DivUIOp, emitc::DivOp>,
+                 ArithIndexUnsignedBinaryRewriter<arith::RemUIOp, emitc::RemOp>,
+                 ArithBitcastRewriter, ArithMaxUIRewriter, ArithMinUIRewriter,
+                 ArithMaxSIRewriter, ArithMinSIRewriter,
+                 ArithBoolBinaryRewriter<arith::AndIOp, emitc::LogicalAndOp>,
+                 ArithBoolBinaryRewriter<arith::OrIOp, emitc::LogicalOrOp>>(
+        typeConverter, context);
 
     return FrozenRewritePatternSet(std::move(patterns));
   }

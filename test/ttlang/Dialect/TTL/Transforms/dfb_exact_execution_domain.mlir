@@ -49,6 +49,50 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
 
 // -----
 
+// A coordinate-dependent loop with zero executions has an empty access domain.
+// Its DFB may reuse an active compatible DFB because they share no launch node.
+
+// REUSE-LABEL: func.func @exact_zero_at_known_node
+// REUSE: %[[INACTIVE:.*]] = ttl.bind_cb{cb_index = 0, block_count = 2} {dfb_id = 32 : index}
+// REUSE-NEXT: %[[ACTIVE:.*]] = ttl.bind_cb{cb_index = 0, block_count = 2} {dfb_id = 33 : index}
+
+// REPORT: DFB logical_id=32 bounded=0 compiler_created=0
+// REPORT-SAME: access_completion_proven=0
+// REPORT-SAME: domain={}
+// REPORT: DFB logical_id=33 bounded=1 compiler_created=0
+// REPORT: DFB assignment: logical DFB 32 -> physical index 0 storage index 0 (unbounded)
+// REPORT-NEXT: DFB assignment: logical DFB 33 -> physical index 0 storage index 0 (bounded)
+
+module attributes {ttl.launch_grid = array<i64: 1, 1>} {
+  func.func @exact_zero_at_known_node()
+      attributes {ttl.kernel_thread = #ttkernel.thread<compute>,
+                  ttl.base_cta_index = 2 : i32, ttl.crta_indices = []} {
+    %inactive = ttl.bind_cb {cb_index = 0, block_count = 2}
+        {dfb_id = 32 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %active = ttl.bind_cb {cb_index = 1, block_count = 2}
+        {dfb_id = 33 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %zero = arith.constant 0 : index
+    %step = arith.constant 1 : index
+    %core_x = ttl.core_x : index
+    scf.for %inactive_iteration = %zero to %core_x step %step {
+      ttl.opaque_call "inactive" (%inactive) {header = "access.hpp"}
+          : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> ()
+    }
+    ttl.opaque_call "active" dfb_dependencies(
+        %active : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>)
+        dfb_effects [#ttl.dfb_protocol_effect<reserve, 0, 1>,
+                     #ttl.dfb_protocol_effect<push, 0, 1>,
+                     #ttl.dfb_protocol_effect<wait, 0, 1>,
+                     #ttl.dfb_protocol_effect<pop, 0, 1>]
+        () {header = "access.hpp"} : () -> ()
+    return
+  }
+}
+
+// -----
+
 // Zero executions on only part of the launch grid do not establish an empty
 // domain. Both unknown DFBs remain distinct.
 
@@ -357,6 +401,54 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
 
 // -----
 
+// A PipeNet-derived loop count narrows a previously full access domain to the
+// nodes with at least one destination record.
+
+// REUSE-LABEL: func.func @pipenet_count_loop
+// REUSE: %[[COUNTED:.*]] = ttl.bind_cb{cb_index = 0, block_count = 2}
+// REUSE-SAME: {dfb_id = 25 : index}
+
+// REPORT: DFB logical_id=25 bounded=0 compiler_created=0
+// REPORT-SAME: domain={(2,0), (3,0)}
+// REPORT: access 0 effect=reserve tiles=1 sequence=0 domain={(2,0), (3,0)}
+
+#count_records = #ttl.pipenet_records<net 0 name "gather" pipes [
+  <srcX = 0, srcY = 0, dstStartX = 3, dstStartY = 0,
+   dstEndX = 3, dstEndY = 0>,
+  <srcX = 1, srcY = 0, dstStartX = 3, dstStartY = 0,
+   dstEndX = 3, dstEndY = 0>,
+  <srcX = 0, srcY = 0, dstStartX = 2, dstStartY = 0,
+   dstEndX = 2, dstEndY = 0>
+]>
+
+module attributes {ttl.launch_grid = array<i64: 4, 1>} {
+  func.func @pipenet_count_loop()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
+                  ttl.noc_index = 0 : i32} {
+    %counted = ttl.bind_cb {cb_index = 0, block_count = 2}
+        {dfb_id = 25 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<1x16, bf16>, 2>
+    %count = ttl.pipenet_destination_count {
+        pipe_net_id = 0 : i64, records = #count_records} : index
+    %zero = arith.constant 0 : index
+    %one = arith.constant 1 : index
+    scf.for %iteration = %zero to %count step %one {
+      ttl.opaque_call "counted_access"
+          dfb_dependencies(
+            %counted : !ttl.cb<[1, 1], !ttcore.tile<1x16, bf16>, 2>)
+          dfb_effects [
+            #ttl.dfb_protocol_effect<reserve, 0, 1>,
+            #ttl.dfb_protocol_effect<push, 0, 1>,
+            #ttl.dfb_protocol_effect<wait, 0, 1>,
+            #ttl.dfb_protocol_effect<pop, 0, 1>]
+          () {header = "counted_access.hpp"} : () -> ()
+    }
+    return
+  }
+}
+
+// -----
+
 // A generic external storage access receives the same exact-domain refinement
 // before it is conservatively attached to every user-managed DFB.
 
@@ -479,6 +571,97 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
     scf.if %inactive_condition {
       ttl.opaque_call "inactive_access" (%inactive_dfb)
           {header = "inactive_access.hpp"}
+          : (!ttl.cb<[1, 1], !ttcore.tile<1x16, bf16>, 2>) -> ()
+    }
+    return
+  }
+}
+
+// -----
+
+// Logical negation preserves complementary per-node access domains.
+
+// REUSE-LABEL: func.func @logical_not_domains
+// REUSE: %[[FIRST:.*]] = ttl.bind_cb{cb_index = 0, block_count = 2} {dfb_id = 40 : index}
+// REUSE-NEXT: %[[SECOND:.*]] = ttl.bind_cb{cb_index = 0, block_count = 2} {dfb_id = 41 : index}
+
+// REPORT: DFB logical_id=40 bounded=0 compiler_created=0
+// REPORT-SAME: domain={(0,0)}
+// REPORT: DFB logical_id=41 bounded=0 compiler_created=0
+// REPORT-SAME: domain={(1,0)}
+// REPORT-NOT: DFB conflict lhs=40 rhs=41
+
+module attributes {ttl.launch_grid = array<i64: 2, 1>} {
+  func.func @logical_not_domains()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
+                  ttl.noc_index = 0 : i32} {
+    %first_dfb = ttl.bind_cb {cb_index = 0, block_count = 2}
+        {dfb_id = 40 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<1x16, bf16>, 2>
+    %second_dfb = ttl.bind_cb {cb_index = 1, block_count = 2}
+        {dfb_id = 41 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<1x16, bf16>, 2>
+    %core_x = ttl.core_x : index
+    %zero = arith.constant 0 : index
+    %first_node = arith.cmpi eq, %core_x, %zero : index
+    %second_node = "emitc.logical_not"(%first_node) : (i1) -> i1
+    scf.if %first_node {
+      ttl.opaque_call "first_access" (%first_dfb)
+          {header = "access.hpp"}
+          : (!ttl.cb<[1, 1], !ttcore.tile<1x16, bf16>, 2>) -> ()
+    }
+    scf.if %second_node {
+      ttl.opaque_call "second_access" (%second_dfb)
+          {header = "access.hpp"}
+          : (!ttl.cb<[1, 1], !ttcore.tile<1x16, bf16>, 2>) -> ()
+    }
+    return
+  }
+}
+
+// -----
+
+// An exact scf.if result retains the domain of its selected yielded value.
+
+// REUSE-LABEL: func.func @exact_if_result_domains
+// REUSE: %[[FIRST:.*]] = ttl.bind_cb{cb_index = 0, block_count = 2} {dfb_id = 50 : index}
+// REUSE-NEXT: %[[SECOND:.*]] = ttl.bind_cb{cb_index = 0, block_count = 2} {dfb_id = 51 : index}
+
+// REPORT: DFB logical_id=50 bounded=0 compiler_created=0
+// REPORT-SAME: domain={(0,0)}
+// REPORT: DFB logical_id=51 bounded=0 compiler_created=0
+// REPORT-SAME: domain={(1,0)}
+// REPORT-NOT: DFB conflict lhs=50 rhs=51
+
+module attributes {ttl.launch_grid = array<i64: 2, 1>} {
+  func.func @exact_if_result_domains()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
+                  ttl.noc_index = 0 : i32} {
+    %first_dfb = ttl.bind_cb {cb_index = 0, block_count = 2}
+        {dfb_id = 50 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<1x16, bf16>, 2>
+    %second_dfb = ttl.bind_cb {cb_index = 1, block_count = 2}
+        {dfb_id = 51 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<1x16, bf16>, 2>
+    %core_x = ttl.core_x : index
+    %zero = arith.constant 0 : index
+    %is_first_node = arith.cmpi eq, %core_x, %zero : index
+    %selected = scf.if %is_first_node -> (i1) {
+      %true = arith.constant true
+      scf.yield %true : i1
+    } else {
+      %false = arith.constant false
+      scf.yield %false : i1
+    }
+    %not_selected = "emitc.logical_not"(%selected) : (i1) -> i1
+    scf.if %selected {
+      ttl.opaque_call "first_access" (%first_dfb)
+          {header = "access.hpp"}
+          : (!ttl.cb<[1, 1], !ttcore.tile<1x16, bf16>, 2>) -> ()
+    }
+    scf.if %not_selected {
+      ttl.opaque_call "second_access" (%second_dfb)
+          {header = "access.hpp"}
           : (!ttl.cb<[1, 1], !ttcore.tile<1x16, bf16>, 2>) -> ()
     }
     return

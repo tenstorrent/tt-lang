@@ -132,13 +132,10 @@ def add_multitile_kernel(lhs, rhs, out):
 # CHECK-CPP: [[CB2]].reserve_back(
 # CHECK-CPP: init_sfpu(get_compile_time_arg_val(0), get_compile_time_arg_val(2));
 
-# Nested loops for 2x2 tile grid
+# Hoist the invariant row offset outside the inner loop of the 2x2 tile grid.
 # CHECK-CPP: for (size_t [[I:i[0-9]+]] = {{.*}}; [[I]] < [[BOUND]]; [[I]] += {{.*}}) {
-# CHECK-CPP: for (size_t [[J:j[0-9]+]] = {{.*}}; [[J]] < [[BOUND]]; [[J]] += {{.*}}) {
-
-# Linearized index calculation: i * 2 + j
-# CHECK-CPP: size_t [[COLS:v[0-9]+]] = 2;
-# CHECK-CPP: size_t [[ROW_OFF:v[0-9]+]] = [[I]] * [[COLS]];
+# CHECK-CPP-NEXT: size_t [[ROW_OFF:v[0-9]+]] = [[I]] * [[BOUND]];
+# CHECK-CPP-NEXT: for (size_t [[J:j[0-9]+]] = {{.*}}; [[J]] < [[BOUND]]; [[J]] += {{.*}}) {
 # CHECK-CPP: size_t [[LIN_IDX:v[0-9]+]] = [[ROW_OFF]] + [[J]];
 
 # Copy tiles using linearized index (at first use: CB0 then CB1)

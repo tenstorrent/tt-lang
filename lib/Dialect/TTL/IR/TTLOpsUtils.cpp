@@ -12,6 +12,75 @@
 
 namespace mlir::tt::ttl {
 
+Value getDFBConversionCastSource(Operation *operation) {
+  auto cast = dyn_cast_or_null<UnrealizedConversionCastOp>(operation);
+  if (!cast || cast.getInputs().size() != 1 || cast.getOutputs().size() != 1) {
+    return {};
+  }
+  Value source = cast.getInputs().front();
+  Type sourceType = source.getType();
+  Type resultType = cast.getResult(0).getType();
+  if (sourceType == resultType) {
+    return source;
+  }
+
+  // CB lowering materializes bridges between TTL values and TTKernel CB
+  // handles. Keep only casts that cross that target-lowering boundary; a
+  // user-authored TTL CB/tensor cast must not establish storage identity.
+  // Tensor-to-tensor reinterpretations are likewise never DFB shape views.
+  auto getElementType = [](Type type) -> Type {
+    if (auto cb = dyn_cast<CircularBufferType>(type)) {
+      return cb.getElementType();
+    }
+    if (auto cb = dyn_cast<ttkernel::CBType>(type)) {
+      return cb.getElementType();
+    }
+    if (auto tensor = dyn_cast<RankedTensorType>(type)) {
+      return tensor.getElementType();
+    }
+    return {};
+  };
+  bool sourceIsTargetCB = isa<ttkernel::CBType>(sourceType);
+  bool resultIsTargetCB = isa<ttkernel::CBType>(resultType);
+  bool crossesTargetBoundary = sourceIsTargetCB != resultIsTargetCB;
+  Type sourceElementType = getElementType(sourceType);
+  if (crossesTargetBoundary && sourceElementType &&
+      sourceElementType == getElementType(resultType)) {
+    return source;
+  }
+  return {};
+}
+
+Value getSingletonDimensionShapeViewSource(Operation *operation) {
+  Value source;
+  if (auto expand = dyn_cast_or_null<tensor::ExpandShapeOp>(operation)) {
+    source = expand.getSrc();
+  } else if (auto collapse =
+                 dyn_cast_or_null<tensor::CollapseShapeOp>(operation)) {
+    source = collapse.getSrc();
+  } else {
+    return {};
+  }
+
+  auto sourceType = dyn_cast<RankedTensorType>(source.getType());
+  auto resultType =
+      dyn_cast<RankedTensorType>(operation->getResult(0).getType());
+  if (!sourceType || !resultType || !sourceType.hasStaticShape() ||
+      !resultType.hasStaticShape() ||
+      sourceType.getElementType() != resultType.getElementType() ||
+      sourceType.getEncoding() != resultType.getEncoding()) {
+    return {};
+  }
+
+  auto isNotSingleton = [](int64_t extent) { return extent != 1; };
+  if (!llvm::equal(
+          llvm::make_filter_range(sourceType.getShape(), isNotSingleton),
+          llvm::make_filter_range(resultType.getShape(), isNotSingleton))) {
+    return {};
+  }
+  return source;
+}
+
 std::optional<ReadyReceiveSelection> getReadyReceiveSelection(Value predicate) {
   auto compare = predicate.getDefiningOp<arith::CmpIOp>();
   if (!compare || (compare.getPredicate() != arith::CmpIPredicate::eq &&
@@ -46,7 +115,7 @@ std::optional<ReadyReceiveSelection> getReadyReceiveSelection(Value predicate) {
   if (static_cast<std::size_t>(*selectedIndex) >= candidateCount) {
     return std::nullopt;
   }
-  return ReadyReceiveSelection{waitAny, *selectedIndex,
+  return ReadyReceiveSelection{waitAny, *selectedIndex, candidateCount,
                                compare.getPredicate() ==
                                    arith::CmpIPredicate::eq};
 }
@@ -60,13 +129,17 @@ bool isInReadyReceiveSelectionRegion(
     if (ifOp) {
       std::optional<ReadyReceiveSelection> selection =
           getReadyReceiveSelection(ifOp.getCondition());
-      bool inSelectedRegion =
-          selection && ((selection->selectedWhenTrue &&
-                         block->getParent() == &ifOp.getThenRegion()) ||
-                        (!selection->selectedWhenTrue &&
-                         block->getParent() == &ifOp.getElseRegion()));
-      if (inSelectedRegion && selection->candidateIndex == candidateIndex &&
-          selection->waitAny == waitAny &&
+      bool inThenRegion = block->getParent() == &ifOp.getThenRegion();
+      bool selectsComparedCandidate =
+          selection && inThenRegion == selection->selectedWhenTrue;
+      bool selectsComplementCandidate =
+          selection && selection->candidateCount == 2 &&
+          inThenRegion != selection->selectedWhenTrue;
+      bool selectsCandidate = (selectsComparedCandidate &&
+                               selection->candidateIndex == candidateIndex) ||
+                              (selectsComplementCandidate &&
+                               selection->candidateIndex != candidateIndex);
+      if (selectsCandidate && selection->waitAny == waitAny &&
           isOrderedBefore(waitAny, ifOp.getOperation())) {
         return true;
       }
@@ -177,6 +250,40 @@ FailureOr<uint64_t> getDFBPageSizeBytes(CircularBufferType type) {
     return failure();
   }
   return bitWidth / 8;
+}
+
+FailureOr<uint64_t> getDFBTransferCapacityBytes(Value endpoint) {
+  auto dfbType = dyn_cast<CircularBufferType>(endpoint.getType());
+  uint64_t pageCount;
+  if (dfbType) {
+    FailureOr<uint64_t> pagesPerBlock = getDFBPagesPerBlock(dfbType);
+    if (failed(pagesPerBlock)) {
+      return failure();
+    }
+    pageCount = *pagesPerBlock;
+  } else {
+    auto viewType = dyn_cast<RankedTensorType>(endpoint.getType());
+    Value dfb = getAttachedCB(endpoint);
+    if (!viewType || !viewType.hasStaticShape() || !dfb ||
+        viewType.getNumElements() < 0) {
+      return failure();
+    }
+    dfbType = dyn_cast<CircularBufferType>(dfb.getType());
+    pageCount = static_cast<uint64_t>(viewType.getNumElements());
+  }
+  if (!dfbType) {
+    return failure();
+  }
+  FailureOr<uint64_t> pageSizeBytes = getDFBPageSizeBytes(dfbType);
+  if (failed(pageSizeBytes)) {
+    return failure();
+  }
+  std::optional<uint64_t> capacityBytes =
+      llvm::checkedMulUnsigned(pageCount, *pageSizeBytes);
+  if (!capacityBytes) {
+    return failure();
+  }
+  return *capacityBytes;
 }
 
 LogicalResult verifyDFBOperandIdentities(

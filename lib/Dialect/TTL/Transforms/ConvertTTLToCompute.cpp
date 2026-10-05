@@ -171,6 +171,75 @@ static Value buildInitTensor(OpBuilder &b, Location loc, RankedTensorType type,
                                  dynDims);
 }
 
+// Append `creation`'s planned output maps in output-DFB order, including
+// constant zero maps for single-tile outputs rather than inferring maps from
+// their sizes.
+static void appendOutputIndexingMaps(const ComputeOpCreationPlan &creation,
+                                     SmallVectorImpl<Attribute> &indexingMaps) {
+  for (const ComputeOutputPlan &outputPlan : creation.outputPlans) {
+    indexingMaps.push_back(AffineMapAttr::get(outputPlan.indexingMap));
+  }
+}
+
+// Create an empty tensor of `outputType` attached to `outputDFB`. Dynamic sizes
+// come from `dynamicDimensionExemplar`; without it, `outputType` must be
+// static.
+static Value buildComputeOutput(PatternRewriter &rewriter, Location loc,
+                                RankedTensorType outputType, Value outputDFB,
+                                std::optional<Value> dynamicDimensionExemplar) {
+  Value init =
+      dynamicDimensionExemplar
+          ? buildInitTensor(rewriter, loc, outputType,
+                            *dynamicDimensionExemplar)
+          : tensor::EmptyOp::create(rewriter, loc, outputType.getShape(),
+                                    outputType.getElementType());
+  return AttachCBOp::create(rewriter, loc, outputType, init, outputDFB);
+}
+
+// Append tensors and result types using `creation`'s planned representations
+// and `outputs`' resolved DFBs, whose orders must match.
+static void buildComputeOutputs(PatternRewriter &rewriter, Location loc,
+                                const ComputeOpCreationPlan &creation,
+                                const OutputPublicationPlan &outputs,
+                                std::optional<Value> dynamicDimensionExemplar,
+                                SmallVectorImpl<Value> &attachedOutputs,
+                                SmallVectorImpl<Type> &resultTypes) {
+  assert(creation.outputPlans.size() == outputs.dfbs.size() &&
+         "each resolved output requires an output plan");
+  for (auto [outputPlan, outputDFB] :
+       llvm::zip_equal(creation.outputPlans, outputs.dfbs)) {
+    attachedOutputs.push_back(
+        buildComputeOutput(rewriter, loc, outputPlan.tensorType, outputDFB,
+                           dynamicDimensionExemplar));
+    resultTypes.push_back(outputPlan.tensorType);
+  }
+}
+
+// Append one tile argument to `body` for each planned output in `creation`;
+// the argument type uses the destination's tile dimensions, not the source's.
+static void addOutputBlockArguments(Block *body, Location loc,
+                                    const ComputeOpCreationPlan &creation) {
+  for (const ComputeOutputPlan &outputPlan : creation.outputPlans) {
+    body->addArgument(outputPlan.tensorType.getElementType(), loc);
+  }
+}
+
+// Replace `source` with `computeResult` when their types match. Otherwise erase
+// `source`, whose stores must already be removed and whose result must be
+// unused.
+static void replaceComputeSource(PatternRewriter &rewriter, Operation *source,
+                                 Value computeResult) {
+  assert(source->getNumResults() == 1 &&
+         "compute creation requires one source result");
+  if (source->getResult(0).getType() == computeResult.getType()) {
+    rewriter.replaceOp(source, computeResult);
+    return;
+  }
+  assert(source->getResult(0).use_empty() &&
+         "type-changing output publication requires no surviving source use");
+  rewriter.eraseOp(source);
+}
+
 /// Selects the insertion position proven by output-publication planning.
 static void insertAtCreationAnchor(PatternRewriter &rewriter,
                                    const OutputPublicationPlan &outputs) {
@@ -193,8 +262,9 @@ static void emitTileStore(PatternRewriter &rewriter, Location loc,
   SmallVector<Value> indices =
       applyIndexingMap(rewriter, loc, outputMap, iterIndices);
 
-  TileStoreOp tileStore = createTileOpWithPlaceholderDstIndex<TileStoreOp>(
-      rewriter, loc, tileResult, store.getView(), indices);
+  TileStoreOp tileStore = createTileStoreWithPlaceholderDstIndex(
+      rewriter, loc, tileResult, store.getView(), indices,
+      store.getRowPrefixAttr());
   const WaitedDFBMutationPlan *waitedMutation = nullptr;
   for (const WaitedDFBMutationPlan &mutation : creation.waitedMutations) {
     if (mutation.store != store) {
@@ -414,7 +484,6 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
   assert(creation.recipe == ComputeOpCreationRecipe::Fused &&
          "fused builder requires a fused creation recipe");
   const FusionTraceResult &trace = creation.trace;
-  RankedTensorType type = creation.resultType;
 
   // Verify every recorded dependency before creating IR. This prevents plan
   // invalidation by an earlier rewrite from leaving a partially built compute.
@@ -453,10 +522,7 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
   for (AffineMap inputMap : creation.iteration.inputMaps) {
     maps.push_back(AffineMapAttr::get(inputMap));
   }
-  for (size_t outputIndex = 0; outputIndex < outputs.dfbs.size();
-       ++outputIndex) {
-    maps.push_back(AffineMapAttr::get(creation.iteration.outputMap));
-  }
+  appendOutputIndexingMaps(creation, maps);
   SmallVector<Attribute> iteratorTypes =
       buildIteratorTypeAttributes(rewriter, creation.iteration.iteratorTypes);
 
@@ -468,17 +534,11 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
   // chains with no root inputs, use tensor.empty directly (static shapes).
   SmallVector<Value> allInitAttached;
   SmallVector<Type> resultTypes;
-  for (Value outputDFB : outputs.dfbs) {
-    Value init = creation.inputs.empty()
-                     ? tensor::EmptyOp::create(rewriter, loc, type.getShape(),
-                                               type.getElementType())
-                           .getResult()
-                     : buildInitTensor(rewriter, loc, type, creation.inputs[0]);
-    Value initAttached =
-        AttachCBOp::create(rewriter, loc, init.getType(), init, outputDFB);
-    allInitAttached.push_back(initAttached);
-    resultTypes.push_back(type);
-  }
+  buildComputeOutputs(rewriter, loc, creation, outputs,
+                      creation.inputs.empty()
+                          ? std::nullopt
+                          : std::optional<Value>(creation.inputs[0]),
+                      allInitAttached, resultTypes);
 
   // Create ttl.compute op
   auto computeOp = ComputeOp::create(
@@ -492,9 +552,7 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
   for (ttcore::TileType inputTileType : creation.inputTileTypes) {
     body->addArgument(inputTileType, loc);
   }
-  for (size_t i = 0; i < outputs.dfbs.size(); ++i) {
-    body->addArgument(creation.resultTileType, loc);
-  }
+  addOutputBlockArguments(body, loc, creation);
 
   rewriter.setInsertionPointToStart(body);
 
@@ -584,7 +642,7 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
   replaceOutputPushesBeforeCompute(rewriter, computeOp, outputs,
                                    replacedPushes);
   eraseAbsorbedOutputOps(rewriter, outputs, computeOp, replacedPushes);
-  rewriter.replaceOp(sinkOp, computeOp.getResult(0));
+  replaceComputeSource(rewriter, sinkOp, computeOp.getResult(0));
 
   // Erase the fused ops in reverse topological order (sink to roots).
   // This ensures each op's users are erased before the op itself.
@@ -625,26 +683,19 @@ buildRowNormalizationCompute(Operation *sinkOp, PatternRewriter &rewriter,
         sinkOp, "row-normalization expression changed after planning");
   }
   Location loc = sinkOp->getLoc();
-  RankedTensorType outputType = creation.resultType;
   SmallVector<Attribute> maps;
   for (AffineMap inputMap : creation.iteration.inputMaps) {
     maps.push_back(AffineMapAttr::get(inputMap));
   }
-  maps.append(outputs.dfbs.size(),
-              AffineMapAttr::get(creation.iteration.outputMap));
+  appendOutputIndexingMaps(creation, maps);
   SmallVector<Attribute> iteratorTypes =
       buildIteratorTypeAttributes(rewriter, creation.iteration.iteratorTypes);
 
   insertAtCreationAnchor(rewriter, outputs);
   SmallVector<Value> outputViews;
   SmallVector<Type> resultTypes;
-  for (Value outputDFB : outputs.dfbs) {
-    Value init =
-        buildInitTensor(rewriter, loc, outputType, creation.inputs.front());
-    outputViews.push_back(
-        AttachCBOp::create(rewriter, loc, init.getType(), init, outputDFB));
-    resultTypes.push_back(outputType);
-  }
+  buildComputeOutputs(rewriter, loc, creation, outputs, creation.inputs.front(),
+                      outputViews, resultTypes);
 
   auto computeOp = ComputeOp::create(
       rewriter, loc, TypeRange(resultTypes), ValueRange(creation.inputs),
@@ -654,10 +705,7 @@ buildRowNormalizationCompute(Operation *sinkOp, PatternRewriter &rewriter,
   for (ttcore::TileType inputTileType : creation.inputTileTypes) {
     body->addArgument(inputTileType, loc);
   }
-  Type outputTileType = creation.resultTileType;
-  SmallVector<Type> outputTileTypes(outputs.dfbs.size(), outputTileType);
-  SmallVector<Location> outputLocations(outputs.dfbs.size(), loc);
-  body->addArguments(outputTileTypes, outputLocations);
+  addOutputBlockArguments(body, loc, creation);
 
   rewriter.setInsertionPointToStart(body);
   Value inputTile = body->getArgument(0);
@@ -666,8 +714,9 @@ buildRowNormalizationCompute(Operation *sinkOp, PatternRewriter &rewriter,
   Value outputTile = body->getArgument(creation.inputs.size());
   Value result =
       createTileOpWithPlaceholderDstIndex<TileRowNormalizationBlockOp>(
-          rewriter, loc, outputTileType, inputTile, gammaTile, outputTile,
-          schedule.scale, schedule.epsilon, rewriter.getBoolAttr(hasGamma),
+          rewriter, loc, creation.resultTileType, inputTile, gammaTile,
+          outputTile, schedule.scale, schedule.epsilon,
+          rewriter.getBoolAttr(hasGamma),
           rewriter.getI64IntegerAttr(schedule.numTiles));
 
   for (StoreOp store : outputs.stores) {
@@ -679,7 +728,7 @@ buildRowNormalizationCompute(Operation *sinkOp, PatternRewriter &rewriter,
   replaceOutputPushesBeforeCompute(rewriter, computeOp, outputs,
                                    replacedPushes);
   eraseAbsorbedOutputOps(rewriter, outputs, computeOp, replacedPushes);
-  rewriter.replaceOp(sinkOp, computeOp.getResult(0));
+  replaceComputeSource(rewriter, sinkOp, computeOp.getResult(0));
   for (Operation *operation : llvm::reverse(creation.trace.opsInOrder)) {
     if (operation != sinkOp && operation->use_empty()) {
       rewriter.eraseOp(operation);
@@ -718,16 +767,12 @@ static LogicalResult buildComputeFromInputs(
 
   Location loc = op->getLoc();
   ValueRange inputs(creation->inputs);
-  RankedTensorType outputType = creation->resultType;
 
   SmallVector<Attribute> maps;
   for (AffineMap inputMap : creation->iteration.inputMaps) {
     maps.push_back(AffineMapAttr::get(inputMap));
   }
-  for (size_t outputIndex = 0; outputIndex < outputs.dfbs.size();
-       ++outputIndex) {
-    maps.push_back(AffineMapAttr::get(creation->iteration.outputMap));
-  }
+  appendOutputIndexingMaps(*creation, maps);
   SmallVector<Attribute> iteratorTypes =
       buildIteratorTypeAttributes(rewriter, creation->iteration.iteratorTypes);
 
@@ -735,18 +780,10 @@ static LogicalResult buildComputeFromInputs(
 
   SmallVector<Value> allInitAttached;
   SmallVector<Type> resultTypes;
-  for (Value outputDFB : outputs.dfbs) {
-    Value init =
-        inputs.empty()
-            ? tensor::EmptyOp::create(rewriter, loc, outputType.getShape(),
-                                      outputType.getElementType())
-                  .getResult()
-            : buildInitTensor(rewriter, loc, outputType, inputs[0]);
-    Value initAttached =
-        AttachCBOp::create(rewriter, loc, init.getType(), init, outputDFB);
-    allInitAttached.push_back(initAttached);
-    resultTypes.push_back(outputType);
-  }
+  buildComputeOutputs(rewriter, loc, *creation, outputs,
+                      inputs.empty() ? std::nullopt
+                                     : std::optional<Value>(inputs.front()),
+                      allInitAttached, resultTypes);
 
   auto computeOp = ComputeOp::create(rewriter, loc, TypeRange(resultTypes),
                                      inputs, ValueRange(allInitAttached),
@@ -757,9 +794,7 @@ static LogicalResult buildComputeFromInputs(
   for (ttcore::TileType inputTileType : creation->inputTileTypes) {
     body->addArgument(inputTileType, loc);
   }
-  for (size_t i = 0; i < outputs.dfbs.size(); ++i) {
-    body->addArgument(creation->resultTileType, loc);
-  }
+  addOutputBlockArguments(body, loc, *creation);
 
   rewriter.setInsertionPointToStart(body);
   ComputeInstrumentationEmitter instrumentationEmitter(
@@ -780,7 +815,7 @@ static LogicalResult buildComputeFromInputs(
   replaceOutputPushesBeforeCompute(rewriter, computeOp, outputs,
                                    replacedPushes);
   eraseAbsorbedOutputOps(rewriter, outputs, computeOp, replacedPushes);
-  rewriter.replaceOp(op, computeOp.getResult(0));
+  replaceComputeSource(rewriter, op, computeOp.getResult(0));
   for (const ComputeInstrumentationPlacement &placement :
        creation->instrumentation) {
     rewriter.eraseOp(placement.operation);
@@ -1149,7 +1184,7 @@ struct LowerStoreToCompute : OpRewritePattern<StoreOp> {
           op, "store operands changed after ComputeOp creation analysis");
     }
     Value input = plan.input;
-    RankedTensorType inputType = plan.tensorType;
+    RankedTensorType outputType = plan.computeOutputTensorType;
 
     Location loc = op.getLoc();
     SmallVector<Attribute> maps = {
@@ -1158,26 +1193,26 @@ struct LowerStoreToCompute : OpRewritePattern<StoreOp> {
     SmallVector<Attribute> iteratorTypes =
         buildIteratorTypeAttributes(rewriter, plan.iteration.iteratorTypes);
 
-    Value init = buildInitTensor(rewriter, loc, inputType, input);
-    Value initAttached =
-        AttachCBOp::create(rewriter, loc, init.getType(), init, plan.outputDFB);
+    Value initAttached = buildComputeOutput(rewriter, loc, outputType,
+                                            plan.outputDFB, plan.outputView);
 
     auto computeOp = ComputeOp::create(
-        rewriter, loc, TypeRange{inputType}, ValueRange{input},
+        rewriter, loc, TypeRange{outputType}, ValueRange{input},
         ValueRange{initAttached}, rewriter.getArrayAttr(maps),
         rewriter.getArrayAttr(iteratorTypes));
 
     Block *body = rewriter.createBlock(&computeOp.getBody());
-    body->addArgument(plan.tileType, loc);
-    body->addArgument(plan.tileType, loc);
+    body->addArgument(plan.inputTileType, loc);
+    body->addArgument(plan.outputTileType, loc);
 
     rewriter.setInsertionPointToEnd(body);
     SmallVector<Value> iterIndices =
         getOrCreateIterIndices(rewriter, computeOp);
     SmallVector<Value> storeIndices =
         applyIndexingMap(rewriter, loc, plan.iteration.outputMap, iterIndices);
-    createTileOpWithPlaceholderDstIndex<TileStoreOp>(
-        rewriter, loc, body->getArgument(0), plan.outputView, storeIndices);
+    createTileStoreWithPlaceholderDstIndex(rewriter, loc, body->getArgument(0),
+                                           plan.outputView, storeIndices,
+                                           op.getRowPrefixAttr());
     YieldOp::create(rewriter, loc);
 
     for (AttachCBOp association : plan.outputAssociations) {

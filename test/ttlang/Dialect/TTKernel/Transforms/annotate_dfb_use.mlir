@@ -9,10 +9,15 @@
 // CHECK-NEXT: func.func @helper() attributes {ttl.base_cta_index = 3 : i32} {
 
 // CHECK-LABEL: func.func @calls_helper()
-// CHECK-SAME: ttl.used_dfb_indices = array<i32: 1, 2>
+// CHECK-SAME: ttl.used_dfb_indices = array<i32: 0, 1, 2>
 
 // CHECK-LABEL: func.func @calls_unknown()
-// CHECK-SAME: ttl.used_dfb_indices = array<i32: 0, 1>
+// CHECK-SAME: ttl.used_dfb_indices = array<i32: 0, 1, 2>
+
+// The DFB reconfiguration caller-argument count is read at the compile-time
+// argument index just past the DFB indices, so it is not a DFB use.
+// CHECK-LABEL: func.func @compiler_defined_argument()
+// CHECK-SAME: ttl.used_dfb_indices = array<i32>
 
 // CHECK-LABEL: func.func @recursive()
 // CHECK-SAME: ttl.used_dfb_indices = array<i32: 0>
@@ -23,7 +28,7 @@
 // CHECK-LABEL: func.func @cycle_b()
 // CHECK-SAME: ttl.used_dfb_indices = array<i32: 0, 1>
 
-module {
+module attributes {ttl.dfb_allocations = [{}, {}, {}]} {
   func.func private @unknown()
 
   func.func @helper() attributes {ttl.base_cta_index = 3 : i32} {
@@ -34,6 +39,7 @@ module {
     %effective_pages = arith.addi %scalar_dfb_id, %pages : i32
     ttkernel.cb_wait_front(%dfb, %effective_pages)
         : (!ttkernel.cb<3, !ttcore.tile<32x32, bf16>>, i32) -> ()
+    ttkernel.opaque_call "inspect"() {dfb_resource_indices = array<i32: 0>, header = "inspect.hpp"} : () -> ()
     return
   }
 
@@ -45,9 +51,16 @@ module {
   }
 
   func.func @calls_unknown() attributes {
-      ttl.base_cta_index = 2 : i32,
+      ttl.base_cta_index = 5 : i32,
       ttkernel.thread = #ttkernel.thread<noc>} {
     func.call @unknown() : () -> ()
+    return
+  }
+
+  func.func @compiler_defined_argument() attributes {
+      ttl.base_cta_index = 4 : i32,
+      ttkernel.thread = #ttkernel.thread<noc>} {
+    %compiler_defined = ttkernel.get_compile_time_arg_val(3) : () -> i32
     return
   }
 

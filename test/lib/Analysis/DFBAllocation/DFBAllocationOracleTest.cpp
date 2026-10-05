@@ -123,6 +123,7 @@ static bool verifyTargetDFBIndexCapacities() {
     mlir::tt::ttcore::DeviceOp::create(
         builder, deviceModule->getLoc(),
         mlir::tt::ttcore::getDefaultDeviceName(),
+        /*symVisibility=*/nullptr,
         mlir::tt::ttcore::DeviceAttr::get(&context, systemDesc));
     mlir::FailureOr<mlir::tt::TargetDFBIndexCapacity> deviceCapacity =
         mlir::tt::resolveTargetDFBIndexCapacity(*deviceModule, failureReason);
@@ -514,6 +515,13 @@ static bool verifyWeightedColoringAcrossComponents() {
       minimumLimited.status !=
           ExactInterferenceGraphWeightStatus::SearchLimitReached) {
     llvm::errs() << "weighted coloring witness mismatch\n";
+    return false;
+  }
+  // An inconclusive minimum-weight search still returns a valid coloring.
+  if (!verifyColoring(graph, minimumLimited.colors,
+                      minimumLimited.colorCount) ||
+      minimumLimited.colorCount == 0) {
+    llvm::errs() << "search-limited weighted coloring is not valid\n";
     return false;
   }
   return true;

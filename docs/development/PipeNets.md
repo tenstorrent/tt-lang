@@ -5,8 +5,8 @@ scheduling, simulator behavior, and test coverage in tt-lang. Both the
 compiler and the simulator consume the same operation-level PipeNet
 collection described in [Operation PipeNets](#operation-pipenets).
 
-A node is one execution coordinate in the launched device grid. A
-dataflow buffer (DFB) is the user-visible payload buffer used by
+A node is a Tensix unit identified by one coordinate in the operation's launch
+grid. A dataflow buffer (DFB) is the user-visible payload buffer used by
 producer, consumer, and pipe transfer code. A pipe-coupled operation is
 an operation whose legality depends on a PipeNet role, such as a
 pipe-typed `ttl.copy` or a DFB wait whose producer is PipeNet-routed.
@@ -15,72 +15,241 @@ writes and semaphore increments.
 
 ## Overview
 
-`ttl.PipeNet` describes a logical communication pattern between nodes. A
-pipe carries data from a source coordinate (`src`) to either a single
-destination (point-to-point) or a contiguous coordinate range
-(collective). When the launch grid is larger than the union of all pipe
-sources and destinations, the extra nodes have no role in the
-communication. If the user fails to guard pipe-coupled work from those
-nodes, the kernel reads out-of-bounds tensor regions and corrupts the
-pipe synchronization protocol; this failure mode is the one the
-verifier guards against (see issue #541).
+`ttl.PipeNet` describes communication between Tensix nodes. A `Pipe` carries
+data from one source node to one destination node (point-to-point) or to a
+range of destination nodes (collective). The current collective syntax accepts
+one axis-aligned, unit-stride node range because it lowers directly to TT-Metal
+NoC multicast.
+
+For multi-device operations, a `DeviceSelection` identifies source or
+destination devices, `at_node(x, y)` selects one Tensix node on every selected
+device, and `Pipe` connects the resulting endpoints. [Device selections and
+Pipe endpoints](DeviceSelections.md) defines the indexing and endpoint API.
+`PipeNet` contains the Pipe declarations and invokes source and destination
+callbacks for their transfers. A local `Pipe` omits device selections and
+connects nodes on one device.
 
 The launch grid is the grid that `@ttl.operation(grid=...)` schedules
-onto. The work extent is the per-axis bounding box of every pipe
-coordinate in the user's PipeNets. The launch grid and work extent are
-separate: the launch may cover more nodes than the communication uses.
-The `grid=` argument selects the launch:
+onto. The work extent is the per-axis bounding box of every Pipe coordinate.
+The launch grid and work extent are separate: the launch may cover more nodes
+than the communication uses. The `grid=` argument selects the launch:
 
 - `grid="full"` launches on the device compute grid.
 - `grid="auto"` is currently an alias for `"full"`.
 - An explicit tuple is used verbatim.
 
 A PipeNet's active nodes are the union of its source and destination
-coordinates. This is the node set tested by `net.is_active()`. Whenever
-the launch is wider than those active nodes, the user must guard
-pipe-coupled regions with `net.is_src()`, `net.is_dst()`,
-`net.is_active()`, or coordinate predicates that express the same role
-tests. The verifier rejects any pipe-coupled operation reachable from a
-node outside its declared role. The diagnostic names the offending
-operation, an example offending coordinate, the contributing PipeNet or
-PipeNets, and a suggested guard.
+coordinates. This is the set tested by `net.is_active()`. Whenever the launch
+grid includes other nodes, the program must guard pipe-coupled regions with
+`net.is_src()`, `net.is_dst()`, `net.is_active()`, or equivalent coordinate
+conditions. Otherwise an unrelated node could execute a transfer, access the
+wrong tensor region, or modify synchronization state. The verifier rejects
+such operations and reports an offending coordinate and a suitable guard.
 
 The compiler verifies user-written guards: each pipe-coupled operation
 must be reachable only from the nodes permitted by its role
-(`ttl.copy(buffer, pipe)` only from `pipe.src`;
-`ttl.copy(pipe, buffer)` only from `pipe.dst`; `cb_wait` reachable
-only within the static producer domain for that DFB index). The
-verifier reads the IR and emits diagnostics; it does not rewrite the
-program.
+(`ttl.copy(buffer, pipe)` only from `pipe.src`; `ttl.copy(pipe, buffer)` only
+from `pipe.dst`; and a DFB wait only from a node that may execute the DFB
+producer). The verifier reads the IR and reports invalid programs; it does not
+insert guards.
+
+### Graph PipeNet endpoints
+
+A local PipeNet specifies launch-node endpoints directly:
+
+```python
+net = ttl.PipeNet(
+    pipes=[ttl.Pipe(src=(1, 0), dst=(0, 0))],
+)
+```
+
+A graph PipeNet separates the directed logical-device relation from the
+source and destination Tensix-node relation. This avoids repeating the same
+device relation when it applies to every launch node or to several node
+`Pipe` declarations.
+
+`TransferGraph.edges(...)` is the explicit graph form. It stores each directed
+logical-device pair in declaration order. Use it for sparse or irregular
+connectivity that no structured constructor represents, or when the declared
+edge order is part of the program's transfer order. Its storage is O(E) for E
+edges. For regular domain-wide relations, the structured constructors below
+store only their parameters and derive the edges during lowering, avoiding an
+explicit edge list whose size grows with the domain.
+
+The graph-only form applies every logical-device edge to every launch node.
+For example, this explicit graph transfers from device 0 to device 1:
+
+```python
+devices = ttl.DeviceDomain((2,))
+graph = ttl.TransferGraph.edges(devices, edges=[(0, 1)])
+net = ttl.PipeNet(graph=graph)
+```
+
+In an operation with a `(2, 2)` launch grid, it describes these four
+transfers:
+
+```text
+device 0, node (0, 0) -> device 1, node (0, 0)
+device 0, node (1, 0) -> device 1, node (1, 0)
+device 0, node (0, 1) -> device 1, node (0, 1)
+device 0, node (1, 1) -> device 1, node (1, 1)
+```
+
+Supplying `pipes=[ttl.Pipe(src=(1, 0), dst=(0, 0))]` instead describes one
+transfer from node `(1, 0)` on device 0 to node `(0, 0)` on device 1.
+
+The structured graph constructors describe common relations by parameters:
+
+| Constructor | Device transfers | Order |
+| --- | --- | --- |
+| `axis_neighbor(...)` | Each device sends to the device at one offset along an axis. `wrap=True` connects the ends. | Source devices in row-major order. |
+| `stencil(...)` | Each device sends to the declared coordinate offsets. Out-of-domain destinations are omitted unless `wrap=True`. | Source devices in row-major order, then offsets in declaration order. |
+| `gather(..., root=...)` | Every non-root device sends to the selected root within each fixed combination of the other component coordinates. | Source devices in row-major order. |
+| `scatter(..., source=...)` | The selected source sends to every other device within each fixed combination of the other component coordinates. | Destination devices in row-major order. |
+| `all_to_all(...)` | Every device sends to every other device within each fixed combination of the other component coordinates. | Sources in row-major order, then destinations in row-major order. |
+
+These five constructors omit self-transfers. `component=` selects the
+`DeviceDomain` component whose coordinates change; coordinates in other
+components remain fixed.
+
+Each `TransferGraph` edge currently requires one destination device. This
+restriction applies to device-level multicast; node-level `Pipe` destination
+ranges remain supported for NoC multicast within one device. TT-Metal provides
+[fabric multicast packets](https://github.com/tenstorrent/tt-metal/blob/v0.79.0-dev20260917/tt_metal/fabric/hw/inc/mesh/api.h#L1124-L1158),
+but tt-lang does not yet lower a `DeviceRange` graph destination into TT-Metal
+multicast route metadata and receiver protocol state. Such a destination is
+therefore rejected at construction.
+
+When the source and destination node coordinates differ, `graph` and
+`pipes` declare both endpoint relations explicitly:
+
+```python
+net = ttl.PipeNet(
+    graph=graph,
+    pipes=[ttl.Pipe(src=(1, 0), dst=(0, 0))],
+)
+```
+
+Every graph edge is combined with every listed node Pipe. For example, two
+device edges and three node Pipes describe six transfers. Each transfer has
+the following endpoints:
+
+```text
+(source device, source node) -> (destination device, destination node)
+```
+
+A `Pipe` may instead specify both device and node coordinates directly:
+
+```python
+devices = ttl.DeviceDomain((8, 4))
+net = ttl.PipeNet(
+    [
+        ttl.Pipe(
+            src=devices[0, 0].at_node(1, 0),
+            dst=devices[0, 1].at_node(0, 0),
+        ),
+        ttl.Pipe(
+            src=devices[7, 3].at_node(2, 0),
+            dst=devices[6, 3].at_node(3, 0),
+        ),
+    ]
+)
+```
+
+This form avoids a separate `TransferGraph` when each Pipe has its own device
+endpoints. `Pipe.pairwise(...)` connects corresponding members of two
+rectangular device selections. `Pipe.all_to_all(...)` connects every selected
+source device to every selected destination device.
+
+If either constructor produces both same-device and remote transfers, it
+places the same-device transfers first because NoC and fabric use different
+synchronization protocols. Within each set, pairwise transfers follow the
+positions in their source and destination views. All-to-all transfers process
+sources in source-selection order and, for each source, destinations in
+destination-selection order. A `DeviceView` follows its axis ranges, with the
+last axis varying fastest. A `DeviceSet` is normalized to the parent domain's
+row-major order: components and axes are flattened in declaration order, with
+the last axis varying fastest. A `PipeNet` preserves `Pipe` declaration order;
+it does not regroup transfers from different Pipes by transport.
+
+The declaration determines logical transfer connectivity. `if_src` and
+`if_dst` iterate the declared transfers. `is_src`, `is_dst`, `is_active`, and
+equivalent coordinate conditions restrict execution to declared endpoint
+roles; guards do not add connectivity or describe physical fabric routes.
+
+TTL IR stores each device graph once beside its associated list of node Pipes.
+It does not create a separate IR record for every combination of device edge
+and node Pipe. Lowering processes these entries in declaration order. Within
+one entry, it processes device edges in the graph's documented order, then node
+Pipes in list order.
+
+For an explicit graph, the compiler stores the declared edges and compares
+their source or destination indices with the current logical device. Generated
+IR therefore scales with the declared edge count rather than the complete
+domain. Graphs built with the five constructors above store their parameters.
+Every transfer receives a stable integer used to select its address and
+synchronization resources. Core specialization removes node-coordinate table
+columns whose value is constant on that core.
+
+The logical transfer relation is compile-time information, but one Python
+function can construct a collective for several device counts. The function
+accepts domain extents and constructs the corresponding `DeviceDomain` and
+`TransferGraph`.
+Each compiled operation instance has fixed logical domain extents. Runtime
+binding determines physical device placement and fabric routes; the graph does
+not encode them.
 
 ## PipeNet callbacks and generated code
 
-A PipeNet record is one `ttl.Pipe` declaration: one source coordinate and one
-point-to-point destination or collective destination range. The Python
-frontend represents `net.if_src(callback)` and `net.if_dst(callback)` with one
-`ttl.pipenet_foreach_src` or `ttl.pipenet_foreach_dst` region. The region owns
-the ordered record list and contains one copy of the callback body. At runtime,
-each launch node executes that body once for every record in which the node has
-the requested source or destination role. Multiple matching records execute in
-PipeNet construction order.
+A local PipeNet record is one `ttl.Pipe` declaration. A graph PipeNet record is
+one device edge combined with one node Pipe. The Python frontend represents
+`net.if_src(callback)` and `net.if_dst(callback)` with one
+`ttl.pipenet_foreach_src` or `ttl.pipenet_foreach_dst` region containing one
+copy of the callback body. At runtime, a node executes that body once for each
+record in which its node coordinate and logical device have the requested
+source or destination role.
 
-TTKernel conversion uses two representations:
+`net.destination_count()` returns the number of records that select the current
+node as a destination. It counts repeated local Pipe records separately rather
+than counting distinct sources or destination coordinates. Graph PipeNet
+construction rejects duplicate combinations of device edge and node Pipe. The
+result therefore equals the number of `net.if_dst(callback)` executions on
+that node and can be used as a receive-loop bound. It does not perform
+synchronization. Local PipeNets lower the count to one node-indexed constant
+table lookup; graph PipeNets also match each record's logical destination
+device.
 
-- For one to four records, conversion emits one static pipe and one coordinate
-  condition per record. This avoids loop and table-lookup overhead for small
-  PipeNets.
-- For five or more records, conversion emits one loop over immutable coordinate
-  and resource tables. `ttl.select_pipe_src` or `ttl.select_pipe_dst`
-  represents the current record inside the loop. This table-driven form emits
-  one callback and transfer protocol body; only the immutable table contents
-  grow with the number of records.
+TTKernel conversion uses three representations:
+
+- For a local PipeNet with one to four records, conversion emits one static
+  pipe and one coordinate condition per record. This avoids loop and
+  table-lookup overhead for small local PipeNets.
+- Other materialized record lists use participant-indexed or complete immutable
+  coordinate and resource tables. `ttl.select_pipe_src` or
+  `ttl.select_pipe_dst` represents the current record inside one loop. This
+  table-driven form emits one callback and transfer protocol body; only the
+  immutable table contents grow with the number of records.
+- For each graph mapping, conversion emits one loop over the incident
+  edge/node-Pipe combinations for the current logical device. When every
+  launch node maps to the same coordinate, the loop contains only incident
+  edges and derives the node Pipe from the current launch coordinate. The five
+  standard graph constructors calculate endpoints from their parameters.
+  Explicit graphs select incident edges by comparing the current device index
+  with each declared endpoint.
 
 The immutable tables become bit-packed C++ template arguments stored outside
-the kernel stack. Pipe graph analysis still creates one transfer node per
-record. A selected-pipe type identifies whether iteration selected the record
-by its source or destination coordinates; copy operand position determines
-whether that record is used for a send or receive. Launch-domain verification
-proves that the selected callback executes on the required endpoint.
+the kernel stack. Inside a callback loop, `ttl.select_pipe_src` or
+`ttl.select_pipe_dst` represents the current transfer and the endpoint role
+that selected it. Copying from a DFB to that value sends data; copying from that
+value to a DFB receives data. Launch-domain verification proves that the
+callback executes on the required endpoint.
+
+PipeGraph enumerates transfers while proving protocol schedules. It retains
+one compiler-only transfer node for each combination of device edge and node
+Pipe because address sequences, lifetimes, and resource requirements may
+differ for each transfer. The compiler discards this analysis state before
+code emission; it does not appear in generated source, program descriptors, or
+device constants.
 
 Resource planning stores each record's address-table entry and synchronization
 indices in record order, and the loop index selects the corresponding values.
@@ -110,11 +279,14 @@ synchronization mechanism.
 `RA/CC` is unsupported because CC permits a send without a current
 receiver post, so the sender must compute the destination address.
 
-All three modes use the same payload write and receiver-completion
-signal. A sender-ready increment means that the receiver has reserved
-destination storage; it does not mean that the payload write is
-complete. The sender signals payload completion separately after its
-NoC write barrier.
+All three modes preserve the same receiver-visible ordering: the receiver
+observes completion only after the payload write is visible in its L1 memory.
+A sender-ready increment means that the receiver has reserved destination
+storage; it does not mean that the payload write is complete. Repeated, shared,
+collective, receiver-authored, and capacity-credit transfers signal completion
+with a payload barrier followed by
+an atomic increment. An eligible one-shot `CA/RP` point-to-point transfer to a
+remote core may instead use ordered posted payload and completion writes.
 
 | Protocol event or property | `RA/RP` | `CA/RP` | `CA/CC` |
 | --- | --- | --- | --- |
@@ -123,11 +295,13 @@ NoC write barrier.
 | Receiver increments the sender-ready counter | After the published address is visible | After reserving the block | No |
 | Condition for the sender's payload write | Every required receiver has posted | Every required receiver has posted | The receiver has available DFB capacity |
 | Sender obtains the destination address | Reads the published address-table entry | Computes `DFB base + slot * block stride + static offset` | Computes the same address |
+| Sender signals receiver completion | Payload barrier followed by an atomic increment | Ordered posted store for an eligible one-shot point-to-point transfer to a remote core; otherwise barrier and atomic increment | Payload barrier followed by an atomic increment |
 | Receiver action after popping a block | No capacity update | No capacity update | Increments the sender's capacity counter |
 | Sender/receiver synchronization | Per-transfer receiver-post rendezvous | Per-transfer receiver-post rendezvous | Sender may use the next computed slot when a capacity credit is available |
 | Multicast | Supported when receiver runtime addresses are proven equal | Supported with proven equal receiver runtime addresses | Not currently supported; uses `CA/RP` instead |
 
-The practical difference is address publication, not send admission.
+The difference between `RA/RP` and `CA/RP` is how the sender obtains the
+destination address, while both wait for the receiver to reserve storage.
 `CA/RP` does not permit the sender to run before the receiver post. It
 removes the receiver's address write and the sender's address-table read
 when the compiler can prove that its computed address is the address of
@@ -156,6 +330,9 @@ is unavailable when any of the following applies:
   corresponding receive post and wait family.
 - The receiver sequence is fully dynamic, or the graph cannot prove a modular
   recurrence that current computed-address lowering can materialize.
+- The receiver DFB shares storage, has multiple reconfiguration
+  configurations, or uses tensor-backed segments that do not all share the
+  same tensor index and byte offset.
 - The receiver DFB does not contain tiles, the sender operations do not
   belong to one sender function, or the address arithmetic does not fit
   the supported 32-bit representation.
@@ -168,11 +345,11 @@ reservation sequence whose advance exceeds `block_count` in both address modes.
 Multicast is not itself a restriction. A collective transfer whose receiver
 endpoints form one address-sequence equivalence class uses `CA/RP` when the
 sender can materialize that sequence. `RA/RP` remains available when computed
-addressing is disabled or another computed-address predicate fails. It does not
-make an invalid receiver reservation sequence valid. Both modes
-require the same graph proof because TT-Metal NoC multicast has one destination
-SRAM address operand. A collective transfer is rejected unless every receiver
-address is proven equal for every occurrence.
+addressing is disabled or a computed-address eligibility condition is not
+satisfied. It does not make an invalid receiver reservation sequence valid.
+Both modes require the same graph proof because TT-Metal NoC multicast has one
+destination SRAM address operand. A collective transfer is rejected unless
+every receiver address is proven equal for every occurrence.
 
 Pipe transfers have the following operational semantics:
 
@@ -685,6 +862,10 @@ the backing L1 allocation can change between invocations. Keeping the base
 out of compile-time arguments lets the program cache reuse the kernel binary
 without retaining an address from an earlier allocation.
 
+For tensor-backed storage, the host binds the common runtime argument from the
+tensor only when every finalized segment uses the same tensor index and byte
+offset.
+
 For ordinary point-to-point transfers, `%initial_slot` is usually 0. For
 gather or allgather-style receivers, `PipeGraph` derives it from the complete
 producer reservation schedule for the physical receiver DFB. Producer
@@ -743,9 +924,11 @@ release cannot race with a sender update.
    `ttkernel.experimental.semaphore_wait_min`. The sender never writes
    `%capacity_counter` before computing `%dst_addr` and issuing the payload
    NoC write.
-3. The sender still signals receiver completion after the payload write
-   barrier, using the transfer node's receiver-completion counter. All three
-   modes use the same completion mechanism.
+3. The sender signals receiver completion after the payload write barrier,
+   using the transfer node's receiver-completion counter. `CA/CC` retains the
+   cumulative atomic mechanism. The separate one-shot optimization applies
+   only to `CA/RP`; see the
+   [posted-write protocol](PipeOptimizations.md#one-shot-posted-point-to-point-protocol).
 4. The receiver executes its normal receive wait, push, wait-front, and
    pop sequence.
 5. Lowering emits `ttkernel.noc_semaphore_inc` to the source-node
@@ -855,12 +1038,11 @@ uniform across the participating nodes. Changes controlled by values that may
 differ between nodes produce `FullyDynamic`.
 
 The execution point includes both the logical device, when a device domain is
-present, and the launch node within that device. A device predicate emitted for
-a graph PipeNet callback is evaluated against that logical device before the
-schedule is classified. It is not `FullyDynamic` merely because one generic
-kernel module is instantiated on several devices. A condition remains fully
-dynamic only when it cannot be resolved after both device and launch-node
-coordinates are fixed.
+present, and the launch node within that device. Schedule classification
+evaluates a graph PipeNet callback's logical-device comparison first. One
+generic kernel module instantiated on several devices is therefore not
+`FullyDynamic`. A condition remains fully dynamic only when it cannot be
+resolved after both device and launch-node coordinates are fixed.
 
 Execution-count specialization shares one immutable baseline dataflow solution
 per function or selected-record loop. Each logical-device-qualified execution
@@ -975,8 +1157,8 @@ proven equal across participating nodes. Equal execution counts do not create
 an order between different functions, branch regions, or loop nests. Such
 schedules are `FullyDynamic`.
 Scopes known to execute only at the receiver, such as a matching
-`ttl.if_dst`, `ttl.pipenet_scope`, or logical-device predicate, do not add an
-unresolved runtime condition.
+`ttl.if_dst`, `ttl.pipenet_scope`, or resolved `ttl.is_device` condition, do
+not add an unresolved runtime condition.
 
 The analysis is:
 
@@ -1086,9 +1268,9 @@ If `A` is `KnownCount(1)`, every endpoint address is compared only at `i = 0`,
 so the collective is legal. If a statically known loop makes `A`
 `KnownCount(N)` for `N > 1`, or an unknown-count periodic loop makes it
 `PeriodicUnknownCount`, the sequences differ at `i = 1`, so the graph produces
-two address classes and rejects the multicast. A uniform-repeat-stride
-predicate would reject all cases; pointwise equivalence accepts exactly the
-legal one.
+two address classes and rejects the multicast. Requiring one repeat stride for
+all receivers would reject every case; pointwise equivalence accepts exactly
+the legal one.
 
 #### CA/CC capacity proof
 
@@ -1302,7 +1484,8 @@ only the storage class changes. The compiler records the final local and global 
 Receiver completion is cumulative across repeated executions of a transfer
 node: sends increment its shared counter, and waits consume it with
 monotonically increasing `wait_min` thresholds instead of resetting it per
-execution. Each receive post increments a kernel-local sequence for its
+execution. An eligible one-shot point-to-point send may instead set its counter
+directly to 1. Each receive post increments a kernel-local sequence for its
 completion counter and returns that sequence in the transfer token. The wait
 uses the token directly, so storing or reordering tokens does not associate a
 wait with a later post. Transfers that share a physical receiver never share a
@@ -1388,8 +1571,8 @@ transfer contract and optional logical-device transfer proven across every
 possible pipe origin. The receive copy becomes a receive post plus a
 receive-completion wait. The send copy becomes a pipe-transfer send. The public
 send handle preserves the TTL ordering contract for sender-side code, but the
-pipe-transfer send itself owns the payload-write barrier and
-receiver-completion signal.
+pipe-transfer send itself ensures payload-before-completion ordering and makes
+the source storage safe to reuse.
 
 ```mlir
 %transfer = ttl.pipe_transfer.create %pipe {
@@ -1430,12 +1613,14 @@ This example uses three synchronization values:
 | Name | Storage | Initial value | Updated by | Read by |
 | --- | --- | --- | --- | --- |
 | Sender-ready counter | Source-node semaphore at `%ready_sem_index`. If local semaphore ids are exhausted, this is a GlobalSemaphore-backed SRAM address passed as a common runtime argument. | 0 | Each receiver post increments it by 1 after publishing the destination DFB address. The sender resets it to 0 after waiting for all expected posts. | Sender send waits for it to equal `%expected_receivers`. |
-| Receiver-completion counter | Destination-node local semaphore or GlobalSemaphore-backed SRAM address, assigned to one transfer node at this receiver. | 0 | Each dynamic execution of that transfer's send increments it by 1 after the payload write barrier. | The matching receiver wait uses `semaphore_wait_min` with the sequence stored in its transfer token. |
+| Receiver-completion counter | Destination-node local semaphore or GlobalSemaphore-backed SRAM address, assigned to one transfer node at this receiver. | 0 | Each send increments it after the payload write barrier. | The matching receiver wait uses `semaphore_wait_min` with the sequence stored in its transfer token. |
 | Receiver post-sequence counter | Kernel-local `memref<1xi32>` for a static completion counter. A table-driven receiver uses one `memref<Nxi32>`, where `N` is the number of distinct completion counters referenced by the records. | 0 at function entry | Each matching `ttl.pipe_transfer.post` increments the element for its completion counter. | The post returns the new value in its transfer token; the corresponding wait uses that token as its completion threshold. |
 
-The sender-ready counter is a reusable pre-send synchronization counter. The
-receiver-completion counter is cumulative across executions of its transfer
-node for the whole kernel execution and is not reset by pipe lowering.
+The sender-ready counter is a reusable pre-send synchronization counter.
+Repeated receiver completion is cumulative across executions of its transfer
+node for the whole kernel execution and is not reset by pipe lowering. The
+`RA/RP` example below uses an atomic increment even for a single send; the
+posted-write optimization requires computed receiver addresses.
 
 ```mlir
 // Receiver node (1, 0).
@@ -1492,13 +1677,14 @@ ttkernel.noc_semaphore_inc(%completion_noc_addr, %one, %noc)
 ```
 
 `ttl.wait` on a handle produced by `ttl.pipe_transfer.send` lowers to no
-operation. This is correct for every pipe send because the sender waits
-for the payload NoC write before it increments the receiver-completion
-counter. Any receiver that observes the completion counter has therefore
-also observed the payload-write ordering point. A later send-handle wait
-cannot make receiver data more available. This rule applies only to pipe
-send handles; non-pipe async writes still lower `ttl.wait` to the
-appropriate NoC barrier.
+operation because `ttl.pipe_transfer.send` emits the complete selected
+send-side protocol. The cumulative protocol waits for the payload write before
+issuing its completion atomic. The one-shot protocol issues posted payload and
+completion writes in NoC order, then flushes those writes from the sender
+before source reuse. In both cases the receiver observes completion only after
+the payload write is visible in its L1 memory. A later send-handle wait adds no
+synchronization. This rule applies only to pipe send handles; non-pipe async
+writes still lower `ttl.wait` to the appropriate NoC barrier.
 
 For collective transfers, the same structure is used with aggregate
 ready counting: each receiver increments the same sender-ready counter,
@@ -1562,9 +1748,11 @@ reservation.
 ### Completion counters
 
 Each transfer node has independent logical completion state at every
-destination node. Its sender increments that state once per payload arrival.
-The receiver keeps a local expected count for repeated executions of the same
-transfer and blocks until the corresponding semaphore reaches that count.
+destination node. Its sender updates that state after each payload arrival.
+Repeated transfers use atomic increments; a proven one-shot transfer may store
+its only expected value directly. The receiver keeps a local expected count
+for repeated executions of the same transfer and blocks until the
+corresponding semaphore reaches that count.
 Consequences:
 
 - A receiver in `N` pipes' destination ranges observes `N` distinct transfer
@@ -1572,7 +1760,7 @@ Consequences:
 - The user's `if_dst` callback runs once per pipe whose destination includes
   the current node; each callback waits for its corresponding transfer.
 - `N` senders targeting one receiver do not coordinate with each other. They
-  increment distinct completion counters, so one sender cannot satisfy
+  signal distinct completion counters, so one sender cannot satisfy
   another sender's receive wait.
 
 TT-Metal primitive details for `noc_semaphore_inc_multicast`,
@@ -1593,9 +1781,8 @@ collective. The proof tracks four points in the lowered IR:
    recorded in the source node's SRAM address table.
 2. No inter-sender wait. In `RP`, each sender waits only for its own
    receivers to post. In `CC`, each sender waits only for its own capacity
-   counter. The sender then performs its NoC write and increments the
-   receiver completion counter. No sender reads a counter signaled by
-   another sender.
+   counter. The sender then performs its NoC write and signals the receiver
+   completion counter. No sender reads a counter signaled by another sender.
 3. Receiver completion counters identify transfer nodes at each physical
    receiver. Transfers that share a receiver have distinct allocations;
    transfers with disjoint receiver sets may reuse one allocation.
@@ -1708,6 +1895,7 @@ at the construction source location.
     -> ttl-finalize-dfb-indices
     -> ttl-annotate-cb-associations
     -> ttl-verify-dfb-spsc                       (read-only analysis)
+    -> ttl-verify-dfb-lifecycle                  (read-only analysis)
     -> ttl-erase-pipenet-scopes                  (transform)
     -> ttl-validate-cb-budget                    (read-only analysis)
     -> convert-ttl-to-ttkernel
@@ -1716,9 +1904,9 @@ at the construction source location.
 ```
 
 `ttl-insert-cb-sync` first makes every DFB lifecycle operation explicit.
-`ttl-verify-pipenet-guards` then uses each DFB's unique provisional index to
-compare producer and consumer domains. This occurs before final DFB index reuse
-so independent logical DFBs are not grouped by a shared physical index.
+`ttl-verify-pipenet-guards` then uses each DFB's logical identity to compare
+producer and consumer domains. This occurs before final DFB index reuse, so
+independent logical DFBs are not grouped by a shared physical index.
 `ttl-verify-pipenet-schedule` follows it so invalid launch domains are diagnosed
 before schedule construction. Both verifiers inspect the high-level pipe
 schedule before later transformations modify it, and diagnostics therefore use
@@ -1750,15 +1938,16 @@ may execute there.
 - `setToEntryState`: the entry block of every kernel function starts
   at the full launch grid (`ttl.launch_grid` module attribute).
 - `visitOperation`: identity for most ops; pipe-typed `ttl.copy`
-  operations check their `before` domain against the pipe role, and
-  `ttl.cb_push` / `ttl.cb_wait` operations are recorded for the later
-  DFB producer-domain check.
+  operations check their `before` domain against the pipe role. Direct
+  `ttl.cb_wait` operations and `push` effects from `DFBAccessOpInterface`
+  operations, including external calls, are recorded for the later DFB
+  producer-domain check.
 - `visitRegionBranchControlFlowTransfer`: when entering a region of
   `scf.if`, `affine.if`, `ttl.if_src`, `ttl.if_dst`, or
-  `ttl.pipenet_scope`, the lattice at the region entry is set to
-  `current` intersected with `predicate-domain`. The framework's
-  `RegionBranchOpInterface` machinery handles join points after the
-  op (the post-op lattice is the union of region exits and skip).
+  `ttl.pipenet_scope`, the lattice at the region entry is set to `current`
+  intersected with the coordinates where the condition is true. The
+  framework's `RegionBranchOpInterface` machinery handles join points after
+  the op (the post-op lattice is the union of region exits and skip).
 
 The TTL custom region ops use a `ttl.yield` implicit terminator
 (`SingleBlockImplicitTerminator<"YieldOp">`) so the framework can
@@ -1781,17 +1970,16 @@ the role required by the op:
 | --- | --- |
 | `ttl.copy(buffer, pipe)` | `pipe.src` (single coord) |
 | `ttl.copy(pipe, buffer)` | `pipe.dst` (receiver set) |
-| `ttl.if_src %pipe` body | `pipe.src` (op carries the predicate intrinsically) |
-| `ttl.if_dst %pipe` body | `pipe.dst` (op carries the predicate intrinsically) |
-| `cb_wait` on pipe-coupled DFB | union of producer domains across all `cb_push` to the same DFB index |
+| `ttl.if_src %pipe` body | `pipe.src` (the operation executes its body only at the source coordinate) |
+| `ttl.if_dst %pipe` body | `pipe.dst` (the operation executes its body only in the destination range) |
+| `cb_wait` on pipe-coupled DFB | union of domains for direct and external `push` effects on the same logical DFB |
 
 DFB wait checking is module-global: producer domains accumulate by
-provisional DFB index across every `cb_push` the analysis visits, then a
-post-pass walks recorded `cb_wait` uses and checks each against the union. The
-frontend and compiler-created DFBs have unique provisional indices before
-physical allocation. A `cb_wait` in one kernel function is therefore checked
-against `cb_push` domains for the same logical DFB in other kernel functions,
-without combining independent DFBs that later reuse one physical index.
+logical DFB identity across every direct or externally declared `push` effect
+the analysis visits, then a post-pass checks recorded `cb_wait` uses against
+the union. A `cb_wait` in one kernel function is therefore checked against
+producer domains for the same logical DFB in other kernel functions, without
+combining independent DFBs that later reuse one physical index.
 
 `ttl-verify-pipenet-schedule` reuses the launch-node domains but constructs a
 separate event graph. Its correspondence rules are directional:
@@ -1819,14 +2007,15 @@ its events from the schedule.
 
 Cross-device correspondence includes the logical-device transfer in the pipe
 identity. Send counts are evaluated at the transfer's source device; receiver
-post and wait counts are evaluated at its destination device. Device predicates
-that are mutually exclusive in the generic kernel can therefore prove matching
-endpoint counts. Local pipes use the existing launch-node-only queries.
+post and wait counts are evaluated at its destination device. Mutually
+exclusive `ttl.is_device` conditions in the generic kernel can therefore prove
+matching endpoint counts. Local pipes use the existing launch-node-only
+queries.
 
 ### Pipe transfer and receiver-address graph
 
-`PipeGraph` is the source of truth for pipe topology, transfer definitions,
-receiver DFB ownership, and receiver address sequences. Its
+`PipeGraph` is the source of truth for logical pipe connectivity, transfer
+definitions, receiver DFB ownership, and receiver address sequences. Its
 relationships are:
 
 ```text
@@ -1907,14 +2096,32 @@ receiver-authored publication. Collective verification cannot accept an
 unknown or multi-class receiver address partition and reports a user-facing
 error before any lowering mutation.
 
-## Predicate recognition
+## PipeNet role queries
 
-Three predicate ops - `ttl.is_src`, `ttl.is_dst`, `ttl.is_active`
-(the union of source and destination roles) - let user code carry
-per-PipeNet guards that the verifier recognizes structurally. Frontend
-methods `net.is_src()`, `net.is_dst()`, `net.is_active()` lower to
-these ops; coordinate comparisons over `ttl.node(dims=2)` against
-integer constants also work and are evaluated per coord.
+`ttl.is_src` returns whether the current node is the source of at least one
+pipe in a PipeNet. `ttl.is_dst` returns whether the current node is in at least
+one destination range. `ttl.is_active` returns the union of those results.
+Frontend calls to `net.is_src()`, `net.is_dst()`, and `net.is_active()` create
+these operations. An `scf.if` condition may also compare coordinates from
+`ttl.node(dims=2)` with integer constants; launch-node analysis evaluates those
+comparisons for every coordinate.
+
+For a local PipeNet, each role-query operation includes a `records` attribute
+containing the PipeNet's static transfer records. Lowering computes the number
+of matching source or destination records for every launch coordinate, indexes
+that table with the current logical X and Y coordinates, and compares the count
+with zero. For a graph PipeNet spanning logical devices, lowering evaluates the
+static records and requires both the launch-node coordinates and logical device
+to match the selected source or destination endpoint.
+
+The Python frontend now adds `records` to every `ttl.is_src`, `ttl.is_dst`, and
+`ttl.is_active` operation. The attribute remains optional for compatibility
+with older generated or serialized TTL modules, whose role-query operations
+identify the PipeNet only by `pipe_net_id`. For that form, lowering collects
+the pipes declared by `ttl.create_pipe`, `ttl.pipenet_foreach_src`, and
+`ttl.pipenet_foreach_dst` with the same PipeNet id, removes duplicate endpoint
+relations, and emits source or destination coordinate comparisons for each
+remaining pipe.
 
 `visitRegionBranchControlFlowTransfer` narrows the lattice on entry to
 each region according to the parent op:
@@ -1927,13 +2134,14 @@ each region according to the parent op:
 | `ttl.if_src %pipe` body | intersect with `pipe.src` |
 | `ttl.if_dst %pipe` body | intersect with `pipe.dst` |
 | `ttl.pipenet_scope` body | unchanged after checking current domain is contained in declared role union |
-| `scf.for`/`scf.while`/`affine.for`/`scf.execute_region`/`linalg.generic`/multi-block via `cf.cond_br` | unchanged (no predication, framework default) |
+| `scf.for` body | intersect with nodes whose statically evaluated trip count is nonzero; unchanged when any candidate node cannot be evaluated |
+| `scf.while`/`affine.for`/`scf.execute_region`/`linalg.generic`/multi-block via `cf.cond_br` | unchanged (no predication, framework default) |
 
-For `scf.if`, the condition's domain is determined structurally:
+For `scf.if`, the condition's launch-node domain is determined structurally:
 
-- `PipeNetPredicateOpInterface` (i.e. `ttl.is_src` / `ttl.is_dst` /
-  `ttl.is_active`) -> that PipeNet's role domain via the interface
-  methods `getReferencedPipeNetId` / `getReferencedRole`.
+- A result from `ttl.is_src`, `ttl.is_dst`, or `ttl.is_active` uses the source,
+  destination, or combined role domain identified by the operation's
+  `pipe_net_id` and optional `records` attributes.
 - `arith.andi` / `arith.ori` decompose: each operand contributes its
   own domain (intersection or union). A coord-independent operand
   (loop iv, runtime flag) acts as identity instead of making the branch
@@ -1996,8 +2204,8 @@ note: suggested guard: `net_0.is_src()`
 | pipe schedule contains a wait-for cycle | Same-thread ordering creates a wait-for cycle not matched by a more specific diagnostic. | reorder same-thread sends and receives so all required receive posts happen before dependent sends |
 | collective pipe receiver payload layouts are incompatible | Collective endpoints use incompatible DFB element types, block sizes, reserve spans, or destination subviews. | use compatible receiver payload layouts, or use separate point-to-point transfers |
 | collective pipe receiver address sequences are not proven equal | The graph cannot prove one pointwise destination-address class over all occurrences of a collective transfer. | use receiver schedules that produce the same address for every occurrence, or use separate point-to-point transfers |
-| this `cb_wait` reads from a dataflow buffer that no other thread fills | A `cb_wait` references a DFB index that no `cb_push` anywhere in the module writes to. | check that another `@ttl.compute()` or `@ttl.datamovement()` thread reserves and pushes the same buffer |
-| this `cb_wait` runs on launched nodes where no thread pushes data to the buffer (would deadlock) | A `cb_wait` is reachable from nodes outside the union of `cb_push` producer domains for the same DFB index. | guard the wait with the same `if net.is_active(): ...` predicate the producer uses |
+| this `cb_wait` reads from a dataflow buffer that no other thread fills | A `cb_wait` references a logical DFB with no direct or externally declared `push` effect anywhere in the module. | check that another `@ttl.compute()` or `@ttl.datamovement()` thread reserves and pushes the same buffer |
+| this `cb_wait` runs on launched nodes where no thread pushes data to the buffer (would deadlock) | A `cb_wait` is reachable from nodes outside the union of direct and externally declared `push` producer domains for the same logical DFB. | guard the wait with the same `if net.is_active(): ...` role condition the producer uses |
 | could not statically analyze the PipeNet guard around this op | A surrounding condition uses runtime values or arithmetic the verifier can't enumerate per coordinate (e.g. multiplying a node coordinate by a runtime value). | rewrite using `net.is_src()` / `net.is_dst()` / `net.is_active()`, or compare `ttl.node(dims=2)` coordinates against integer constants |
 
 Internal-invariant diagnostics also exist (`references unknown PipeNet
@@ -2008,8 +2216,8 @@ user code.
 ## `ttl.pipenet_scope`
 
 `ttl.pipenet_scope` is one of the IR additions this feature introduces
-(alongside the `ttl.is_src` / `ttl.is_dst` / `ttl.is_active` predicate
-ops described in [Predicate recognition](#predicate-recognition)). It
+(alongside the `ttl.is_src` / `ttl.is_dst` / `ttl.is_active` role-query
+operations described in [PipeNet role queries](#pipenet-role-queries)). It
 exists only after frontend emission and before the verifier inlines and
 erases it. During that interval, the verifier can recognize user code
 that performs PipeNet role traffic without re-deriving the role
@@ -2017,14 +2225,14 @@ declarations from each pipe-coupled op individually. The op never
 reaches TTL -> TTKernel lowering.
 
 The frontend emits this region op around DFB-context blocks
-(`with cb.reserve()`) whose body contains pipe role work. It carries
-two parallel attributes: `ttl.pipe_net_ids` (`DenseI64ArrayAttr`) and
+(`with cb.reserve()`) whose body contains pipe role work. It has two parallel
+attributes: `ttl.pipe_net_ids` (`DenseI64ArrayAttr`) and
 `ttl.pipe_net_roles` (`DenseI64ArrayAttr`, one entry per id; 0 =
-Source, 1 = Destination - `Active` is a *predicate* via
+Source, 1 = Destination - `Active` is a runtime condition via
 `ttl.is_active` and is not valid as a scope role). The verifier checks
 that the scope's effective execution domain is a subset of the union
 of declared role domains, then walks its body with the same incoming
-domain because the scope has no runtime predicate. After verification
+domain because the scope adds no runtime condition. After verification
 the verifier inlines and erases the scope so downstream lowering sees a
 `pipenet_scope`-free IR.
 
@@ -2056,18 +2264,17 @@ A `ttl.copy(buffer, %pipe_a)` reachable from a node that is in
 diagnostic that names `net_a`, not the active nodes of some other
 PipeNet.
 
-Two mechanisms together carry per-PipeNet correctness in user code
+Two mechanisms enforce per-PipeNet correctness in user code
 when an operation defines multiple PipeNets over different node groups:
 
-1. `ttl.if_src %pipe { ... }` and `ttl.if_dst %pipe { ... }` carry
-   their own per-node predicate: the inner block executes only when
-   the current node matches that pipe's source or is in its
-   destination range. Per-pipe data movement is therefore correctly
-   conditional without any per-PipeNet wrapper.
+1. `ttl.if_src %pipe { ... }` executes only at the pipe's source, and
+   `ttl.if_dst %pipe { ... }` executes only in its destination range.
+   Per-pipe data movement is therefore conditional without a per-PipeNet
+   wrapper.
 
 2. Non-pipe work (dataflow-buffer reserves, compute, address
-   arithmetic) is guarded by the user with explicit role-based
-   predicates: `if net.is_src()`, `if net.is_dst()`,
+   arithmetic) is guarded by explicit role queries:
+   `if net.is_src()`, `if net.is_dst()`,
    `if net.is_active()`, or coordinate comparisons over
    `ttl.node(dims=2)` against integer constants.
 
@@ -2106,8 +2313,8 @@ that the two diverge:
 | Send/post and send/wait correspondence | yes (`ttl-verify-pipenet-schedule`) | runtime only |
 | Same-thread PipeNet wait-for cycles | yes (`ttl-verify-pipenet-schedule`) | runtime only |
 | `ttl.pipenet_scope` domain is a subset of declared role union | yes | no |
-| `cb_wait` covered by `cb_push` producer domain | yes (static) | runtime only (deadlock detector in `greenlet_scheduler.py`) |
-| Unanalyzable coord-dependent predicate diagnosed | yes | no |
+| `cb_wait` covered by direct or externally declared `push` producer domain | yes (static) | runtime only (deadlock detector in `greenlet_scheduler.py`) |
+| Unanalyzable coordinate-dependent condition diagnosed | yes | no |
 | Missing/malformed `ttl.launch_grid`, unknown PipeNet ids | yes | n/a (no IR) |
 
 Consequently a guard bug that the compiler rejects with a precise
@@ -2121,7 +2328,7 @@ and `"full"` as the device compute grid. The compiled kernel launches on
 the resolved launch grid. The simulator filters execution to the union
 of all PipeNet source and destination nodes when PipeNets are present;
 that filter is not a per-operation role check, so user guards
-(`net.is_active()` or coordinate predicates) remain part of the compiler
+(`net.is_active()` or coordinate comparisons) remain part of the compiler
 contract.
 
 ## Example: 2D collective matmul
@@ -2158,7 +2365,7 @@ Pipe sources contribute `{(0, 0), (0, 1), (0, 2), (0, 3), (0, 0), (1, 0),
 (2, 0)}` and destinations contribute the rectangles `[0,3) x {row}` for
 each row plus `{col} x [0,4)` for each col. `a_net.is_active()` covers
 exactly `[0, 3) x [0, 4)`, twelve nodes; the remaining 8x7 - 12 = 44
-launched nodes evaluate the predicate to `false` and skip the
+launched nodes evaluate the role query to `false` and skip the
 pipe-coupled work.
 
 ## Test coverage
@@ -2231,7 +2438,7 @@ compile-time properties not runtime-observable.
 | 47 | Verifier names per-PipeNet role in cross-net diagnostics  |     |     |  X  |
 | 48 | `CreatePipeOp::verify` rejects `dstStart > dstEnd` (x)    |     |     |  X  |
 | 49 | `CreatePipeOp::verify` rejects `dstStart > dstEnd` (y)    |     |     |  X  |
-| 50 | Verifier rejects unanalyzable predicates with location note |   |     |  X  |
+| 50 | Verifier rejects unanalyzable coordinate conditions with location note |   |     |  X  |
 | 50a| Verifier rejects missing `ttl.launch_grid` module attribute |   |     |  X  |
 | 50b| Pipeline lit confirms `pipenet_scope` is gone post-verifier |   |     |  X  |
 | 51 | OperationPipeNets.work_extent: empty / point-to-point / collective |     |  X  |     |
@@ -2278,6 +2485,12 @@ compile-time properties not runtime-observable.
 | 90 | Sixteen overlapping completion resources move sender-ready counters to GlobalSemaphore storage | | | X |
 | 91 | A seventeenth overlapping completion counter uses GlobalSemaphore storage | | | X |
 | 92 | A capacity counter uses GlobalSemaphore storage when completion and readiness consume all local semaphore ids | | | X |
+| 93 | Device-domain slicing, point/set unions, ordering, and invalid selections | | X | |
+| 94 | Structured relations preserve product components and match dynamic incident-edge arithmetic | | X | X |
+| 95 | Transfer-graph and graph-PipeNet attributes reject malformed domains, relations, mappings, and launch grids | | | X |
+| 96 | Factorized callbacks lower every graph kind for source and destination roles without cloning callback bodies | | | X |
+| 97 | Device-selected all-to-all covers mixed local/fabric transfers for BF16/FP32 and DRAM/L1 | X | | |
+| 98 | Cross-device graph transfers cover distinct launch-node endpoints for BF16/FP32 and DRAM/L1 | X | | |
 
 (1) Device-only due to a simulator divergence outside PipeNet
 verification: the simulator's block-state machine accepts
@@ -2399,19 +2612,168 @@ Cross-device PipeNets use explicit logical device domains and device-transfer
 edges. `PipeKey` continues to describe the node-level relation within a device;
 it does not encode physical topology. `PipeReceiverDFBKey` and every schedule
 query are additionally qualified by logical receiver device. The host runtime
-resolves logical device edges to physical fabric routes.
+concatenates domain-component coordinates in declaration order, uses that tuple
+unchanged as the TTNN mesh coordinate, and asks the active TT-Metal control
+plane to resolve the physical fabric route. See
+[Pipes on Fabric](PipesOnFabric.md) for the complete mapping and lowering
+contract.
 
 The shared graph and proof must preserve these fabric invariants:
 
-* logical-device predicates are evaluated as part of the execution coordinate;
+* logical-device comparisons are evaluated as part of the execution coordinate;
 * corresponding send and receiver-post declarations identify the same logical
   device transfer;
 * fabric transfers require a proven computed receiver address;
-* fabric senders do not wait for receiver-post readiness, so a receiver pop does
-  not make the assigned slot available to another fabric transfer in the same
-  invocation;
+* fabric receiver posts publish readiness with a reverse-route atomic increment,
+  and senders wait for the corresponding cumulative ready count before writing,
+  unless every transfer occurrence has a statically disjoint DRAM region;
+* receiver pops do not return capacity for reuse by another fabric transfer in
+  the same invocation;
 * fabric completion uses remotely addressable synchronization storage;
 * `CC` capacity counters are not selected for fabric transfers.
+
+### Computed DRAM tensor destinations
+
+A fabric pipe receive may store its payload in a receiver-coordinate-resolved
+region of an interleaved DRAM tensor rather than a receiver DFB. `CLA/RP` and
+`CDA/RP` refine `CA/RP` by identifying L1 and DRAM destinations. `CDA/NR`
+omits receiver rendezvous when the destination cannot be reused during the
+invocation. Routing-plane flow control does not make reused storage safe.
+
+| Protocol | Destination address | Send condition | Transport |
+| --- | --- | --- | --- |
+| `RA/RP` | Receiver publishes its reserved L1 DFB address. | Every required receiver has posted. | NoC |
+| `CA/RP` | Sender computes the reserved L1 DFB address. | Every required receiver has posted. | NoC |
+| `CA/CC` | Sender computes the L1 DFB slot address. | The receiver has available DFB capacity. | NoC |
+| `CLA/RP` | Sender computes an L1 DFB slot address. | Every required receiver has posted. | Fabric |
+| `CDA/RP` | Sender computes a DRAM tensor-region address. | Every required receiver has posted. | Fabric |
+| `CDA/NR` | Sender computes a DRAM tensor-region address. | No receiver readiness condition; the destination is disjoint for the invocation. | Fabric |
+
+| Protocol event or property | `RA/RP` | `CA/RP` | `CA/CC` | `CLA/RP` | `CDA/RP` | `CDA/NR` |
+| --- | --- | --- | --- | --- | --- | --- |
+| Receiver reserves a destination DFB block | Yes | Yes | Yes | Yes | No | No |
+| Receiver publishes the destination address | Yes | No | No | No | No | No |
+| Sender waits for a receiver post | Yes | Yes | No | Yes | Yes | No |
+| Sender waits for reusable destination capacity | Through the receiver post | Through the receiver post | Yes | Through the receiver post | Through the receiver post | Not applicable |
+| Sender computes the destination address | No | Yes | Yes | Yes | Yes | Yes |
+| Destination storage | L1 DFB | L1 DFB | L1 DFB | L1 DFB | DRAM tensor region | DRAM tensor region |
+| Payload admission | Receiver post | Receiver post | Capacity counter | Receiver post and fabric flow control | Receiver post and fabric flow control | Disjoint destination and fabric flow control |
+| Receiver-visible completion | Completion notification after the payload is visible | Completion notification after the payload is visible | Completion counter after the payload is visible | Remote completion counter after the payload is visible | Remote completion counter after the payload is visible | Remote completion counter after the payload is visible |
+| Consumer returns capacity | No | No | Yes | No | No | No |
+| Storage reuse within one invocation | Receiver selects the reserved slot | Receiver selects the reserved slot | Sender reuses a slot after receiving a credit | A pop does not make an assigned slot available to another fabric transfer | Allowed after the completed payload has been read before the next post | Prohibited |
+
+The protocols have the following equivalent pseudocode. `complete` becomes
+observable only after the payload write is visible at the receiver.
+
+`RA/RP`:
+
+```text
+receiver: slot = reserve_dfb()
+receiver: publish_address(slot); post_to_sender()
+sender:   wait_for_post(); address = read_published_address()
+sender:   write_payload(address); complete()
+receiver: wait_for_completion(); consume(slot); pop_dfb()
+```
+
+`CA/RP`:
+
+```text
+receiver: slot = reserve_dfb(); post_to_sender()
+sender:   wait_for_post(); address = compute_dfb_slot_address()
+sender:   write_payload(address); complete()
+receiver: wait_for_completion(); consume(slot); pop_dfb()
+```
+
+`CA/CC`:
+
+```text
+sender:   wait_for_capacity_credit()
+sender:   address = compute_dfb_slot_address()
+sender:   write_payload(address); complete()
+receiver: slot = reserve_dfb(); wait_for_completion()
+receiver: consume(slot); pop_dfb(); return_capacity_credit()
+```
+
+Fabric `CLA/RP`:
+
+```text
+receiver: slot = reserve_assigned_dfb_block(); post_to_sender()
+sender:   wait_for_post()
+sender:   address = compute_l1_dfb_slot_address()
+sender:   fabric_write_payload(address); complete_remotely()
+receiver: wait_for_completion()
+receiver: consume(slot); pop_dfb()
+```
+
+Fabric `CDA/RP`:
+
+```text
+receiver: post_to_sender()
+sender:   wait_for_post()
+sender:   addresses = compute_dram_tensor_page_addresses()
+sender:   fabric_scatter_write_pages(addresses); complete_remotely()
+receiver: wait_for_completion(); read_region_into_local_dfb(); wait_for_read()
+receiver: compute(); pop_local_dfb(); repeat_or_finish()
+```
+
+Fabric `CDA/NR`:
+
+```text
+sender:   addresses = compute_disjoint_dram_tensor_page_addresses()
+sender:   fabric_scatter_write_pages(addresses); complete_remotely()
+receiver: wait_for_completion(); read_region_into_local_dfb(); wait_for_read()
+receiver: compute(); pop_local_dfb(); repeat_or_finish()
+```
+
+For `CDA/RP`, the sender computes each remote DRAM page address from the
+destination tensor metadata and tile coordinates resolved for each receiver
+node. Consecutive source pages are grouped into fabric scatter writes of up to
+four pages, subject to the active fabric packet-size limit. A multi-page
+transfer performs one ordered remote completion increment after all scatter
+writes. Payload packets and the completion increment use the same routing-plane
+connection, whose command order prevents completion from preceding a payload
+write. A one-page transfer uses one fused payload write and completion
+increment. The receiver waits for completion before reading the region. A
+region may be reused when the same sequential control context completes that
+read before posting the next transfer; otherwise transfers require disjoint
+regions. Each selected PipeNet record with varying destination coordinates uses
+independent sender-local occurrence state.
+
+For `CDA/NR`, the compiler omits the readiness counter and reverse fabric
+manager only when a point-to-point transfer writes statically disjoint DRAM
+regions throughout the invocation. The receiver declaration still creates the
+completion tokens consumed by `wait`.
+
+`ttl-verify-pipenet-schedule` and pipe lowering select `CDA/NR` with one
+shared rule: the same tensor-region occurrence enumeration, the same overlap
+test against other receive destinations of the tensor on the receiver device,
+and the same point-to-point, single-receiver condition. The schedule verifier
+models a `CDA/NR` send as not waiting for its receiver post, so no
+post-to-send wait-for edge exists for it. The post and send still pair
+one-to-one. Lowering selects one protocol per send operation, so a send
+operation that also sends on a transfer requiring readiness keeps its
+post-to-send edges. A destination that the verifier cannot enumerate, for
+example one reached through a helper call, is treated as overlapping every
+destination on its device, which keeps the readiness edges.
+
+This mechanism must remain within the existing proof sequence. Planning must
+prove:
+
+1. every transfer maps to an in-bounds destination tensor region resolved at
+   each receiver node;
+2. different transfers on the same device do not write overlapping regions;
+3. every destination has a positive statically proven transfer count, and a
+   repeated region is read completely before its next receiver post;
+4. the completion increment follows payload visibility;
+5. each consumer read follows the corresponding completion observation; and
+6. the destination tensor, completion storage, route, and fabric-manager
+   ownership remain live for the transfer interval.
+
+An opaque external call that declares only DFB effects and fabric-manager
+ownership does not establish these properties. It can measure hardware
+feasibility, but a production implementation must represent tensor-region
+transfers declaratively so `PipeGraph`, transport planning, resource planning,
+and schedule verification can validate them before lowering.
 
 ## Future work
 

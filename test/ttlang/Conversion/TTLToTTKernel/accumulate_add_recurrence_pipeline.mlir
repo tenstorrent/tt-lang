@@ -38,8 +38,10 @@
 // L1: ttkernel.cb_reserve_back(%[[OUT_CB]], %[[C1_I32]])
 // L1: ttkernel.pack_tile({{.*}}, %[[OUT_CB]]
 // L1: ttkernel.pack_reconfig_l1_acc(%[[C1_I32]])
+// L1-NEXT: ttkernel.copy_tile_init(%[[DELTA_CB]])
 // L1-NEXT: scf.for
 // L1: ttkernel.cb_wait_front(%[[DELTA_CB]], %[[C1_I32]])
+// L1-NOT: ttkernel.copy_tile_init
 // L1: ttkernel.pack_tile({{.*}}, %[[OUT_CB]]
 // L1: } {ttl.l1_acc_initial = 1 : i32, ttl.l1_acc_loop, ttl.l1_acc_scope_id = 0 : i64}
 // L1-NEXT: ttkernel.cb_push_back(%[[OUT_CB]], %[[C1_I32]])

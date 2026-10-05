@@ -19,6 +19,64 @@ func.func @if_src_lowering() attributes { "ttl.kernel_thread" = #ttkernel.thread
 
 // -----
 
+// A pipe send from a DFB subview adds the tile offset to the source pointer.
+// CHECK-LABEL: func.func @pipe_send_block_subview
+// CHECK: %[[SOURCE_BASE:.*]] = ttkernel.get_read_ptr
+// CHECK: %[[SOURCE_BASE_INDEX:.*]] = arith.index_cast %[[SOURCE_BASE]]
+// CHECK: %[[SOURCE_ADDRESS_INDEX:.*]] = arith.addi %[[SOURCE_BASE_INDEX]], %c4096
+// CHECK: %[[SOURCE_ADDRESS:.*]] = arith.index_cast %[[SOURCE_ADDRESS_INDEX]]
+// CHECK: ttkernel.noc_async_write_one_packet_with_state(%[[SOURCE_ADDRESS]],
+// CHECK-NOT: ttl.pipe_transfer
+// CHECK-NOT: unrealized_conversion_cast
+module attributes {ttl.launch_grid = array<i64: 2, 1>} {
+  func.func @pipe_send_block_subview()
+      attributes {"ttl.kernel_thread" = #ttkernel.thread<noc>} {
+    %source_dfb = ttl.bind_cb {cb_index = 0, block_count = 1}
+        {dfb_id = 0 : index}
+        : !ttl.cb<[1, 2], !ttcore.tile<32x32, f32>, 1>
+    %destination_dfb = ttl.bind_cb {cb_index = 1, block_count = 1}
+        {dfb_id = 1 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
+    %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+    %transfer = ttl.pipe_transfer.create %pipe
+        {kind = #ttl.pipe_transfer_kind<point_to_point>}
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+        -> !ttl.pipe_transfer
+    ttl.if_dst %pipe : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
+      %destination = ttl.cb_reserve %destination_dfb
+          : <[1, 1], !ttcore.tile<32x32, f32>, 1>
+          -> tensor<1x1x!ttcore.tile<32x32, f32>>
+      %post = ttl.pipe_transfer.post %transfer, %destination
+          : (!ttl.pipe_transfer, tensor<1x1x!ttcore.tile<32x32, f32>>)
+          -> !ttl.pipe_token<net 0>
+      ttl.pipe_transfer.wait %post : !ttl.pipe_token<net 0>
+      ttl.cb_push %destination_dfb
+          : <[1, 1], !ttcore.tile<32x32, f32>, 1>
+    }
+    ttl.if_src %pipe : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
+      %waited = ttl.cb_wait %source_dfb
+          : <[1, 2], !ttcore.tile<32x32, f32>, 1>
+          -> tensor<1x2x!ttcore.tile<32x32, f32>>
+      %block = ttl.attach_cb %waited, %source_dfb
+          : (tensor<1x2x!ttcore.tile<32x32, f32>>,
+             !ttl.cb<[1, 2], !ttcore.tile<32x32, f32>, 1>)
+          -> tensor<1x2x!ttcore.tile<32x32, f32>>
+      %view = tensor.extract_slice %block[0, 1] [1, 1] [1, 1]
+          : tensor<1x2x!ttcore.tile<32x32, f32>>
+          to tensor<1x1x!ttcore.tile<32x32, f32>>
+      %send = ttl.pipe_transfer.send %transfer, %view
+          : (!ttl.pipe_transfer, tensor<1x1x!ttcore.tile<32x32, f32>>)
+          -> !ttl.transfer_handle<write>
+      ttl.wait %send : !ttl.transfer_handle<write>
+      ttl.cb_pop %source_dfb : <[1, 2], !ttcore.tile<32x32, f32>, 1>
+    }
+    func.return
+  }
+}
+
+// -----
+
 // CHECK-LABEL: func.func @if_dst_lowering
 // CHECK: ttkernel.my_logical_x_
 // CHECK: ttkernel.my_logical_y_
@@ -97,7 +155,8 @@ func.func @different_noc_write_barriers_survive() attributes { "ttl.kernel_threa
 
 // -----
 
-// CB -> Pipe copy (unicast): lowers to noc_async_write + semaphore inc
+// A prior push does not make a later reserved source readable. The unicast
+// send uses the current write pointer and signals completion.
 // CHECK-LABEL: func.func @copy_cb_to_pipe
 // CHECK: %[[NOC:.*]] = arith.constant 0 : i8
 // CHECK: %[[SRC_DFB:.*]] = ttkernel.get_compile_time_arg_val(0)
@@ -106,6 +165,7 @@ func.func @different_noc_write_barriers_survive() attributes { "ttl.kernel_threa
 // CHECK: ttkernel.experimental.semaphore_wait(%[[ADDR_READY_PTR]]
 // CHECK: ttkernel.noc_semaphore_set(%[[ADDR_READY_PTR]]
 // CHECK: %[[SRC_ADDR:.*]] = ttkernel.get_write_ptr(%[[SRC_DFB]])
+// CHECK-NOT: ttkernel.get_read_ptr(%[[SRC_DFB]])
 // CHECK: %[[DST_X:.*]] = ttkernel.experimental.convert_logical_x_to_translated
 // CHECK: %[[DST_Y:.*]] = ttkernel.experimental.convert_logical_y_to_translated
 // CHECK: %[[SCRATCH:.*]] = ttkernel.get_common_arg_val
@@ -123,6 +183,9 @@ func.func @different_noc_write_barriers_survive() attributes { "ttl.kernel_threa
 func.func @copy_cb_to_pipe() attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
   %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
   %p = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0 : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+  %first = ttl.cb_reserve %cb : <[1, 1], !ttcore.tile<32x32, f32>, 2> -> tensor<1x1x!ttcore.tile<32x32, f32>>
+  ttl.cb_push %cb : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+  %second = ttl.cb_reserve %cb : <[1, 1], !ttcore.tile<32x32, f32>, 2> -> tensor<1x1x!ttcore.tile<32x32, f32>>
   %xf = ttl.copy %cb, %p : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>, !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>) -> !ttl.transfer_handle<write>
   ttl.wait %xf : !ttl.transfer_handle<write>
   func.return
@@ -278,9 +341,12 @@ func.func @zero_trip_receive_wait_sender()
 // CHECK: ttkernel.noc_semaphore_inc
 // CHECK: ttkernel.experimental.semaphore_wait_min
 // CHECK: %[[DST_ADDR:.*]] = ttkernel.get_common_arg_val
+// CHECK: ttkernel.noc_async_write_one_packet_set_state({{.*}}) posted true
 // CHECK: ttkernel.experimental.semaphore_wait
 // CHECK: ttkernel.noc_semaphore_set
-// CHECK: ttkernel.noc_async_write {{.*}}, core{{.*}}, %[[DST_ADDR]]
+// CHECK: ttkernel.noc_async_write_one_packet_with_state({{.*}}, %[[DST_ADDR]], {{.*}}) posted true
+// CHECK-NEXT: ttkernel.noc_inline_dw_write({{.*}}) posted true
+// CHECK-NEXT: ttkernel.noc_async_writes_flushed({{.*}}) posted true
 // CHECK-NOT: arith.remui
 // CHECK-NOT: arith.muli
 // CHECK-NOT: ttl.pipe_transfer
@@ -453,7 +519,9 @@ module attributes {ttl.launch_grid = array<i64: 3, 1>} {
 // CHECK-NOT: ttkernel.load_from_l1
 // CHECK: %[[BASE:.*]] = ttkernel.get_common_arg_val
 // CHECK: %[[DST_ADDR:.*]] = arith.addi %[[BASE]], %[[STATIC_OFFSET]]
-// CHECK: ttkernel.noc_async_write {{.*}}, core{{.*}}, %[[DST_ADDR]]
+// CHECK: ttkernel.noc_async_write_one_packet_with_state({{.*}}, %[[DST_ADDR]], {{.*}}) posted true
+// CHECK-NEXT: ttkernel.noc_inline_dw_write({{.*}}) posted true
+// CHECK-NEXT: ttkernel.noc_async_writes_flushed({{.*}}) posted true
 // CHECK-NOT: arith.remui
 // CHECK-NOT: arith.muli
 module attributes {ttl.launch_grid = array<i64: 2, 1>} {
@@ -493,11 +561,15 @@ func.func @static_subview_pipe_transfer_computed_address() attributes { "ttl.ker
 // CHECK: ttkernel.noc_semaphore_inc
 // CHECK: %[[BASE0:.*]] = ttkernel.get_common_arg_val
 // CHECK: ttkernel.experimental.semaphore_wait
-// CHECK: ttkernel.noc_async_write {{.*}}, core{{.*}}, %[[BASE0]]
+// CHECK: ttkernel.noc_async_write_one_packet_with_state({{.*}}, %[[BASE0]], {{.*}}) posted true
+// CHECK: ttkernel.noc_inline_dw_write({{.*}}) posted true
+// CHECK-NEXT: ttkernel.noc_async_writes_flushed({{.*}}) posted true
 // CHECK: %[[BASE1:.*]] = ttkernel.get_common_arg_val
 // CHECK: %[[DST_ADDR1:.*]] = arith.addi %[[BASE1]], %[[SLOT1_OFFSET]]
 // CHECK: ttkernel.experimental.semaphore_wait
-// CHECK: ttkernel.noc_async_write {{.*}}, core{{.*}}, %[[DST_ADDR1]]
+// CHECK: ttkernel.noc_async_write_one_packet_with_state({{.*}}, %[[DST_ADDR1]], {{.*}}) posted true
+// CHECK: ttkernel.noc_inline_dw_write({{.*}}) posted true
+// CHECK-NEXT: ttkernel.noc_async_writes_flushed({{.*}}) posted true
 // CHECK-NOT: arith.remui
 // CHECK-NOT: arith.muli
 // CHECK-NOT: ttkernel.load_from_l1
@@ -680,10 +752,17 @@ func.func @two_multicast_edges_one_dfb_compute_addresses() attributes { "ttl.ker
 // CHECK-LABEL: func.func @independent_receivers_same_dfb_compute_addresses
 // CHECK-SAME: ttl.pipe_computed_address_dfb_indices = array<i32: 2>
 // CHECK: ttkernel.get_common_arg_val
+// CHECK: ttkernel.experimental.semaphore_wait
+// CHECK: ttkernel.noc_async_write_one_packet_with_state
+// CHECK-NEXT: ttkernel.noc_inline_dw_write({{.*}}) posted true
+// CHECK-NEXT: ttkernel.noc_async_writes_flushed({{.*}}) posted true
 // CHECK: ttkernel.get_common_arg_val
+// CHECK: ttkernel.experimental.semaphore_wait
+// CHECK: ttkernel.noc_async_write_one_packet_with_state
+// CHECK-NEXT: ttkernel.noc_inline_dw_write({{.*}}) posted true
+// CHECK-NEXT: ttkernel.noc_async_writes_flushed({{.*}}) posted true
 // CHECK-NOT: arith.remui
 // CHECK-NOT: arith.muli
-// CHECK-NOT: ttkernel.noc_inline_dw_write
 // CHECK-NOT: ttkernel.load_from_l1
 module attributes {ttl.launch_grid = array<i64: 4, 1>} {
 func.func @independent_receivers_same_dfb_compute_addresses() attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
@@ -779,14 +858,17 @@ func.func @explicit_pipe_transfer_receive_only_sender() attributes { "ttl.kernel
 // CHECK: %[[P0_READY_PTR:.*]] = ttkernel.reinterpret_cast{{.*}}(%[[P0_SEND_READY]])
 // CHECK: ttkernel.get_common_arg_val
 // CHECK: ttkernel.experimental.semaphore_wait(%[[P0_READY_PTR]]
-// CHECK: ttkernel.noc_async_write
+// CHECK: ttkernel.noc_async_write_one_packet_with_state
+// CHECK-NEXT: ttkernel.noc_inline_dw_write({{.*}}) posted true
+// CHECK-NEXT: ttkernel.noc_async_writes_flushed({{.*}}) posted true
 // Second send waits on p1 ready sem and computes the destination address.
 // CHECK: %[[P1_SEND_READY:.*]] = ttkernel.get_semaphore(%[[P1_READY_IDX]])
 // CHECK: %[[P1_READY_PTR:.*]] = ttkernel.reinterpret_cast{{.*}}(%[[P1_SEND_READY]])
 // CHECK: ttkernel.get_common_arg_val
 // CHECK: ttkernel.experimental.semaphore_wait(%[[P1_READY_PTR]]
-// CHECK: ttkernel.noc_async_write
-// CHECK-NOT: ttkernel.noc_inline_dw_write
+// CHECK: ttkernel.noc_async_write_one_packet_with_state
+// CHECK-NEXT: ttkernel.noc_inline_dw_write({{.*}}) posted true
+// CHECK-NEXT: ttkernel.noc_async_writes_flushed({{.*}}) posted true
 // CHECK-NOT: ttkernel.load_from_l1
 module attributes {ttl.launch_grid = array<i64: 3, 1>} {
 func.func @same_source_two_pipes_use_distinct_sync_state() attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
@@ -839,7 +921,7 @@ func.func @same_source_two_pipes_use_distinct_sync_state() attributes { "ttl.ker
 // Third post increments p2 ready sem.
 // CHECK: ttkernel.get_semaphore(%[[P2_READY_IDX]])
 // CHECK: ttkernel.noc_semaphore_inc
-// CHECK-NOT: ttkernel.noc_inline_dw_write
+// CHECK-COUNT-3: ttkernel.noc_inline_dw_write({{.*}}) posted true
 // CHECK-NOT: ttkernel.load_from_l1
 module attributes {ttl.launch_grid = array<i64: 4, 1>} {
 func.func @same_source_three_pipes_use_distinct_sync_state() attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
@@ -899,11 +981,16 @@ func.func @same_source_three_pipes_use_distinct_sync_state() attributes { "ttl.k
 // CHECK: ttkernel.noc_semaphore_inc
 // CHECK: ttkernel.get_semaphore(%[[P0_READY_IDX]])
 // CHECK: ttkernel.experimental.semaphore_wait
+// CHECK: ttkernel.noc_async_write_one_packet_with_state
+// CHECK-NEXT: ttkernel.noc_inline_dw_write({{.*}}) posted true
+// CHECK-NEXT: ttkernel.noc_async_writes_flushed({{.*}}) posted true
 // CHECK: ttkernel.get_semaphore(%[[P1_READY_IDX]])
 // CHECK: ttkernel.noc_semaphore_inc
 // CHECK: ttkernel.get_semaphore(%[[P1_READY_IDX]])
 // CHECK: ttkernel.experimental.semaphore_wait
-// CHECK-NOT: ttkernel.noc_inline_dw_write
+// CHECK: ttkernel.noc_async_write_one_packet_with_state
+// CHECK-NEXT: ttkernel.noc_inline_dw_write({{.*}}) posted true
+// CHECK-NEXT: ttkernel.noc_async_writes_flushed({{.*}}) posted true
 // CHECK-NOT: ttkernel.load_from_l1
 // CHECK: return
 module attributes {ttl.launch_grid = array<i64: 3, 1>} {
@@ -949,19 +1036,20 @@ func.func @same_source_sequential_transfers_use_distinct_sync_state() attributes
 // CHECK-LABEL: func.func @same_pipe_key_nonoverlapping_transfers_reuse_storage
 // CHECK-SAME: ttl.pipe_computed_address_dfb_indices = array<i32: 1>
 // CHECK: %[[READY_IDX:.*]] = arith.constant 2 : index
-// CHECK-NOT: ttkernel.noc_inline_dw_write
 // CHECK: ttkernel.get_semaphore(%[[READY_IDX]])
 // CHECK: ttkernel.noc_semaphore_inc
 // CHECK: ttkernel.get_semaphore(%[[READY_IDX]])
 // CHECK: ttkernel.experimental.semaphore_wait
-// CHECK: ttkernel.noc_async_write
-// CHECK-NOT: ttkernel.noc_inline_dw_write
+// CHECK: ttkernel.noc_async_write_one_packet_with_state({{.*}}) posted true
+// CHECK: ttkernel.noc_inline_dw_write({{.*}}) posted true
+// CHECK-NEXT: ttkernel.noc_async_writes_flushed({{.*}}) posted true
 // CHECK: ttkernel.get_semaphore(%[[READY_IDX]])
 // CHECK: ttkernel.noc_semaphore_inc
 // CHECK: ttkernel.get_semaphore(%[[READY_IDX]])
 // CHECK: ttkernel.experimental.semaphore_wait
-// CHECK: ttkernel.noc_async_write
-// CHECK-NOT: ttkernel.noc_inline_dw_write
+// CHECK: ttkernel.noc_async_write_one_packet_with_state({{.*}}) posted true
+// CHECK: ttkernel.noc_inline_dw_write({{.*}}) posted true
+// CHECK-NEXT: ttkernel.noc_async_writes_flushed({{.*}}) posted true
 // CHECK: return
 func.func @same_pipe_key_nonoverlapping_transfers_reuse_storage() attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
   %src_cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
@@ -1108,9 +1196,14 @@ func.func @same_source_control_flow_send_interval_uses_distinct_sync_state() att
 // CHECK: ttkernel.noc_semaphore_inc
 // CHECK: ttkernel.get_semaphore(%[[READY_IDX]])
 // CHECK: ttkernel.experimental.semaphore_wait
+// CHECK: ttkernel.noc_async_write_one_packet_with_state
+// CHECK-NEXT: ttkernel.noc_inline_dw_write({{.*}}) posted true
+// CHECK-NEXT: ttkernel.noc_async_writes_flushed({{.*}}) posted true
 // CHECK: ttkernel.get_semaphore(%[[READY_IDX]])
 // CHECK: ttkernel.experimental.semaphore_wait
-// CHECK-NOT: ttkernel.noc_inline_dw_write
+// CHECK: ttkernel.noc_async_write_one_packet_with_state
+// CHECK-NEXT: ttkernel.noc_inline_dw_write({{.*}}) posted true
+// CHECK-NEXT: ttkernel.noc_async_writes_flushed({{.*}}) posted true
 // CHECK-NOT: ttkernel.load_from_l1
 // CHECK: return
 module attributes {ttl.launch_grid = array<i64: 3, 1>} {
@@ -1222,11 +1315,13 @@ func.func @sparse_pipe_net_id_uses_compact_resources() attributes { "ttl.kernel_
 // CHECK: %[[READY_SEND:.*]] = ttkernel.get_semaphore(%[[READY_IDX]])
 // CHECK: %[[READY_PTR:.*]] = ttkernel.reinterpret_cast{{.*}}(%[[READY_SEND]])
 // CHECK: %[[DST_ADDR:.*]] = ttkernel.get_common_arg_val
+// CHECK: ttkernel.noc_async_write_one_packet_set_state({{.*}}) posted true
 // CHECK: ttkernel.experimental.semaphore_wait(%[[READY_PTR]]
-// CHECK: ttkernel.noc_async_write {{.*}}, core{{.*}}, %[[DST_ADDR]]
+// CHECK: ttkernel.noc_async_write_one_packet_with_state({{.*}}, %[[DST_ADDR]], {{.*}}) posted true
+// CHECK-NEXT: ttkernel.noc_inline_dw_write({{.*}}) posted true
+// CHECK-NEXT: ttkernel.noc_async_writes_flushed({{.*}}) posted true
 // CHECK-NOT: arith.remui
 // CHECK-NOT: arith.muli
-// CHECK-NOT: ttkernel.noc_inline_dw_write
 // CHECK-NOT: ttkernel.load_from_l1
 module attributes {ttl.launch_grid = array<i64: 2, 1>} {
 func.func @high_pipe_net_id_uses_local_ready_counter() attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
@@ -1256,6 +1351,7 @@ func.func @high_pipe_net_id_uses_local_ready_counter() attributes { "ttl.kernel_
 // CHECK-NOT: ttl.pipe_global_semaphore_count
 // CHECK-SAME: ttl.pipe_sync_semaphore_count = 2 : i64
 // CHECK-LABEL: func.func @interleaved_pipenets_reuse_local_resources
+// CHECK-DAG: %[[DONE_IDX:.*]] = arith.constant 0 : index
 // CHECK-DAG: %[[READY_IDX:.*]] = arith.constant 1 : index
 // CHECK: %[[READY_POST:.*]] = ttkernel.get_semaphore(%[[READY_IDX]])
 // CHECK: ttkernel.get_noc_addr({{.*}}, {{.*}}, %[[READY_POST]], {{.*}})
@@ -1265,11 +1361,15 @@ func.func @high_pipe_net_id_uses_local_ready_counter() attributes { "ttl.kernel_
 // CHECK: ttkernel.noc_semaphore_inc
 // CHECK: %[[READY_SEND:.*]] = ttkernel.get_semaphore(%[[READY_IDX]])
 // CHECK: %[[READY_PTR:.*]] = ttkernel.reinterpret_cast{{.*}}(%[[READY_SEND]])
-// CHECK: %[[DONE_SEM:.*]] = ttkernel.get_semaphore(%{{.*}})
-// CHECK: ttkernel.get_noc_addr({{.*}}, {{.*}}, %[[DONE_SEM]], {{.*}})
+// CHECK: %[[DONE_SEM:.*]] = ttkernel.get_semaphore(%[[DONE_IDX]])
 // CHECK: ttkernel.experimental.semaphore_wait(%[[READY_PTR]]
-// CHECK: ttkernel.noc_semaphore_inc
-// CHECK-NOT: ttkernel.noc_inline_dw_write
+// CHECK: ttkernel.noc_async_write_one_packet_with_state
+// CHECK-NEXT: ttkernel.noc_inline_dw_write({{.*}}, %[[DONE_SEM]], {{.*}}) posted true
+// CHECK-NEXT: ttkernel.noc_async_writes_flushed({{.*}}) posted true
+// CHECK: %[[SECOND_DONE_SEM:.*]] = ttkernel.get_semaphore(%[[DONE_IDX]])
+// CHECK: ttkernel.noc_async_write_one_packet_with_state
+// CHECK-NEXT: ttkernel.noc_inline_dw_write({{.*}}, %[[SECOND_DONE_SEM]], {{.*}}) posted true
+// CHECK-NEXT: ttkernel.noc_async_writes_flushed({{.*}}) posted true
 // CHECK-NOT: ttkernel.load_from_l1
 module attributes {ttl.launch_grid = array<i64: 3, 1>} {
 func.func @interleaved_pipenets_reuse_local_resources() attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {

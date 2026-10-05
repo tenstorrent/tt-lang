@@ -63,6 +63,12 @@ struct TTLToTTKernelPipelineOptions
       *this, "strict-f32-acc",
       llvm::cl::desc("Error if accumulation output exceeds f32 DST capacity."),
       llvm::cl::init(false)};
+  Option<bool> autoSyncUserDFBs{
+      *this, "auto-sync-user-dfbs",
+      llvm::cl::desc("Infer releases and coalesce acquires for user-managed "
+                     "DFBs. When disabled, the program supplies their queue "
+                     "operations; compiler-created DFBs remain automatic."),
+      llvm::cl::init(true)};
   Option<bool> compilerDFBs{
       *this, "compiler-dfbs",
       llvm::cl::desc("Insert compiler-allocated intermediate DFBs when "
@@ -86,6 +92,12 @@ struct TTLToTTKernelPipelineOptions
       llvm::cl::desc("Allocate all compiler-managed PipeNet synchronization "
                      "counters in GlobalSemaphore storage."),
       llvm::cl::init(false)};
+  Option<bool> fabricMux{
+      *this, "fabric-mux",
+      llvm::cl::desc("Allow compiler-proven single-execution fabric clients "
+                     "to share a forwarding link through a program-local "
+                     "mux."),
+      llvm::cl::init(true)};
   Option<int64_t> pipeBatchTiles{
       *this, "pipe-batch-tiles",
       llvm::cl::desc("Limit logical transfers per PipeTransport group. "
@@ -114,8 +126,9 @@ struct TTLToTTKernelPipelineOptions
   Option<bool> specializeCores{
       *this, "specialize-cores",
       llvm::cl::desc(
-          "Clone TTKernel functions that branch on a core coordinate once "
-          "per launch coordinate (ttkernel-specialize-cores)."),
+          "Clone TTKernel functions whose control flow depends on a core "
+          "coordinate once per launch coordinate "
+          "(ttkernel-specialize-cores)."),
       llvm::cl::init(false)};
 };
 
@@ -123,12 +136,14 @@ void createTTLToTTKernelPipeline(mlir::OpPassManager &pm,
                                  const TTLToTTKernelPipelineOptions &options);
 
 /// Add DFB synchronization insertion and acquire coalescing passes.
-void buildTTLAutoSyncPipeline(mlir::OpPassManager &pm);
+void buildTTLAutoSyncPipeline(mlir::OpPassManager &pm,
+                              bool syncUserDFBs = true);
 
 /// Add the ordered PipeNet launch-domain and synchronization verifiers.
 void buildTTLVerifyPipeNetPipeline(mlir::OpPassManager &pm);
 
-/// Clone kernels per launch coordinate, fold unused branches, and record
+/// Clone kernels per launch coordinate, apply shared record cleanup and runtime
+/// argument finalization, specialize DFB reconfiguration calls, then record
 /// surviving DFB compile-time argument indices.
 void buildTTKernelSpecializationPipeline(mlir::OpPassManager &pm);
 

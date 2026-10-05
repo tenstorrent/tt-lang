@@ -20,11 +20,13 @@ def test_ttl_ttcore_and_ttkernel_same_context():
         tile = ttcore.ir.TileType.get(ctx, 32, 32, 2)
         memref = ttlang_ir.MemRefType.get([2], tile)
         cb_type = ttkernel.ir.CBType.get(ctx, memref)
+        cast_cb_type = ttkernel.ir.CBType.cast(cb_type)
         thread_attr = ttkernel.ir.ThreadTypeAttr.get(ctx, "compute")
         sl = ttl_dialect.SliceAttr.get(ctx, 0, 8, 2)
 
         assert str(tile) == "!ttcore.tile<32x32, bf16>"
         assert str(cb_type) == "!ttkernel.cb<2, !ttcore.tile<32x32, bf16>>"
+        assert isinstance(cast_cb_type, ttkernel.ir.CBType)
         assert str(thread_attr) == "#ttkernel.thread<compute>"
         assert str(sl) == "#ttl.slice<start = 0, stop = 8, step = 2>"
         assert hasattr(ttlang_passes, "get_ttkernel_names")

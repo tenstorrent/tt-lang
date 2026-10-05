@@ -6,16 +6,62 @@
 // CHECK:      entry = {(0,0), (0,1), (1,0), (1,1)}
 // CHECK-NEXT: x_zero = {(0,0), (0,1)}
 // CHECK-NEXT: x_nonzero = {(1,0), (1,1)}
+// CHECK-NEXT: not_x_zero = {(1,0), (1,1)}
+// CHECK-NEXT: nested_scf_if_result = {(0,0), (0,1)}
+// CHECK-NEXT: large_integer_expression = {(0,0), (0,1)}
+// CHECK-NEXT: scf_if_result = {(0,0), (0,1)}
 // CHECK-NEXT: joined = {(0,0), (0,1), (1,0), (1,1)}
 // CHECK-NEXT: empty = {}
 // CHECK-NEXT: bounded_unknown = <unknown> within {(0,0), (0,1)}
 // CHECK-NEXT: full_bound_unknown = <unknown> within {(0,0), (0,1), (1,0), (1,1)}
 // CHECK-NEXT: undeclared_pipe = <unknown> within {(0,0), (0,1), (1,0), (1,1)}
+// CHECK-NEXT: constant_false_else = {(0,0), (0,1), (1,0), (1,1)}
+// CHECK-NEXT: constant_true_then = {(0,0), (0,1), (1,0), (1,1)}
+// CHECK-NEXT: false_or_coordinate_then = {(0,0), (0,1)}
+// CHECK-NEXT: false_or_coordinate_else = {(1,0), (1,1)}
+// CHECK-NEXT: true_and_coordinate_then = {(0,0), (0,1)}
+// CHECK-NEXT: true_and_coordinate_else = {(1,0), (1,1)}
+// CHECK-NEXT: coordinate_and_false_else = {(0,0), (0,1), (1,0), (1,1)}
+// CHECK-NEXT: coordinate_or_true_then = {(0,0), (0,1), (1,0), (1,1)}
+// CHECK-NEXT: runtime_or_false_then = {(0,0), (0,1), (1,0), (1,1)}
+// CHECK-NEXT: runtime_or_false_else = {(0,0), (0,1), (1,0), (1,1)}
+// CHECK-NEXT: destination_count_loop = {(1,0)}
+// CHECK-NEXT: graph_destination_count_loop = {(0,0), (0,1), (1,0), (1,1)}
 // CHECK-NEXT: kernel_argument_condition = equivalent
 // CHECK-NEXT: helper_argument_condition = not-equivalent
 // CHECK-NOT:  =
 
-module attributes {ttl.launch_grid = [2 : i64, 2 : i64]} {
+#destination_records = #ttl.pipenet_records<
+    net 0 name "destination_count" pipes [
+  <srcX = 0, srcY = 0, dstStartX = 1, dstStartY = 0,
+   dstEndX = 1, dstEndY = 0>
+]>
+
+#device_domain = #ttl.device_domain<
+    components = <name = "device", extent = [2]>>
+#graph_destination_records = #ttl.pipenet_records<
+    net 1 name "graph_destination_count" pipes [
+  #ttl.pipe_record<
+      srcX = 0, srcY = 0, dstStartX = 1, dstStartY = 0,
+      dstEndX = 1, dstEndY = 0,
+      deviceTransfer = <
+        domain = #device_domain,
+        edge = <source = <coordinates = [0]>,
+                destination = <coordinates = [1]>>>>
+]>
+
+#closed_form_records = #ttl.pipenet_records<net 2 mappings
+  <graph = <domain = <components = <name = "device", extent = [3]>>,
+    kind = all_to_all, componentName = "device", properties = {}>,
+   pipes[<srcX = 0, srcY = 0, dstStartX = 0, dstStartY = 0,
+          dstEndX = 0, dstEndY = 0>,
+         <srcX = 1, srcY = 0, dstStartX = 1, dstStartY = 0,
+          dstEndX = 1, dstEndY = 0>]>>
+
+module attributes {
+  ttl.launch_grid = [2 : i64, 2 : i64],
+  test.closed_form_records = #closed_form_records
+} {
   func.func @domains(%runtime: index)
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     "test.observe"() {test.label = "entry"} : () -> ()
@@ -27,6 +73,92 @@ module attributes {ttl.launch_grid = [2 : i64, 2 : i64]} {
       "test.observe"() {test.label = "x_zero"} : () -> ()
     } else {
       "test.observe"() {test.label = "x_nonzero"} : () -> ()
+    }
+    %not_x_zero = emitc.logical_not %is_x_zero : i1
+    scf.if %not_x_zero {
+      "test.observe"() {test.label = "not_x_zero"} : () -> ()
+    }
+
+    %c2_selected = arith.constant 2 : index
+    %first_pair:2 = scf.if %is_x_zero -> (index, index) {
+      scf.yield %c2_selected, %c0 : index, index
+    } else {
+      scf.yield %core_x, %core_y : index, index
+    }
+    %first_pair_selected = arith.cmpi eq, %first_pair#0, %c2_selected : index
+    %second_pair:2 = scf.if %first_pair_selected -> (index, index) {
+      scf.yield %first_pair#1, %first_pair#0 : index, index
+    } else {
+      scf.yield %c0, %c0 : index, index
+    }
+    %nested_pair_selected = arith.cmpi eq, %second_pair#1, %c2_selected : index
+    scf.if %nested_pair_selected {
+      "test.observe"() {test.label = "nested_scf_if_result"} : () -> ()
+    }
+
+    // This long expression forces evaluator cache growth and verifies that
+    // replacement folding remains exact across reallocation.
+    %x_outside_grid = arith.cmpi eq, %core_x, %c2_selected : index
+    %selected_value0 = arith.select %x_outside_grid, %c0, %core_x : index
+    %selected_value1 = arith.select %x_outside_grid, %c0, %selected_value0 : index
+    %selected_value2 = arith.select %x_outside_grid, %c0, %selected_value1 : index
+    %selected_value3 = arith.select %x_outside_grid, %c0, %selected_value2 : index
+    %selected_value4 = arith.select %x_outside_grid, %c0, %selected_value3 : index
+    %selected_value5 = arith.select %x_outside_grid, %c0, %selected_value4 : index
+    %selected_value6 = arith.select %x_outside_grid, %c0, %selected_value5 : index
+    %selected_value7 = arith.select %x_outside_grid, %c0, %selected_value6 : index
+    %selected_value8 = arith.select %x_outside_grid, %c0, %selected_value7 : index
+    %selected_value9 = arith.select %x_outside_grid, %c0, %selected_value8 : index
+    %selected_value10 = arith.select %x_outside_grid, %c0, %selected_value9 : index
+    %selected_value11 = arith.select %x_outside_grid, %c0, %selected_value10 : index
+    %selected_value12 = arith.select %x_outside_grid, %c0, %selected_value11 : index
+    %selected_value13 = arith.select %x_outside_grid, %c0, %selected_value12 : index
+    %selected_value14 = arith.select %x_outside_grid, %c0, %selected_value13 : index
+    %selected_value15 = arith.select %x_outside_grid, %c0, %selected_value14 : index
+    %selected_value16 = arith.select %x_outside_grid, %c0, %selected_value15 : index
+    %selected_value17 = arith.select %x_outside_grid, %c0, %selected_value16 : index
+    %selected_value18 = arith.select %x_outside_grid, %c0, %selected_value17 : index
+    %selected_value19 = arith.select %x_outside_grid, %c0, %selected_value18 : index
+    %selected_value20 = arith.select %x_outside_grid, %c0, %selected_value19 : index
+    %selected_value21 = arith.select %x_outside_grid, %c0, %selected_value20 : index
+    %selected_value22 = arith.select %x_outside_grid, %c0, %selected_value21 : index
+    %selected_value23 = arith.select %x_outside_grid, %c0, %selected_value22 : index
+    %selected_value24 = arith.select %x_outside_grid, %c0, %selected_value23 : index
+    %selected_value25 = arith.select %x_outside_grid, %c0, %selected_value24 : index
+    %selected_value26 = arith.select %x_outside_grid, %c0, %selected_value25 : index
+    %selected_value27 = arith.select %x_outside_grid, %c0, %selected_value26 : index
+    %selected_value28 = arith.select %x_outside_grid, %c0, %selected_value27 : index
+    %selected_value29 = arith.select %x_outside_grid, %c0, %selected_value28 : index
+    %selected_value30 = arith.select %x_outside_grid, %c0, %selected_value29 : index
+    %selected_value31 = arith.select %x_outside_grid, %c0, %selected_value30 : index
+    %selected_value32 = arith.select %x_outside_grid, %c0, %selected_value31 : index
+    %selected_value33 = arith.select %x_outside_grid, %c0, %selected_value32 : index
+    %selected_value34 = arith.select %x_outside_grid, %c0, %selected_value33 : index
+    %selected_value35 = arith.select %x_outside_grid, %c0, %selected_value34 : index
+    %selected_value36 = arith.select %x_outside_grid, %c0, %selected_value35 : index
+    %selected_value37 = arith.select %x_outside_grid, %c0, %selected_value36 : index
+    %selected_value38 = arith.select %x_outside_grid, %c0, %selected_value37 : index
+    %selected_value39 = arith.select %x_outside_grid, %c0, %selected_value38 : index
+    %selected_value40 = arith.select %x_outside_grid, %c0, %selected_value39 : index
+    %selected_value41 = arith.select %x_outside_grid, %c0, %selected_value40 : index
+    %selected_value42 = arith.select %x_outside_grid, %c0, %selected_value41 : index
+    %selected_value43 = arith.select %x_outside_grid, %c0, %selected_value42 : index
+    %large_expression_is_zero = arith.cmpi eq, %selected_value43, %c0 : index
+    scf.if %large_expression_is_zero {
+      "test.observe"() {test.label = "large_integer_expression"} : () -> ()
+    }
+
+    // Coordinate expressions emitted by the frontend use scf.if results.
+    // Evaluate the selected yield before interpreting the outer predicate.
+    %c1_selected = arith.constant 1 : index
+    %selected_x = scf.if %is_x_zero -> (index) {
+      scf.yield %c1_selected : index
+    } else {
+      scf.yield %c0 : index
+    }
+    %selected_first_column = arith.cmpi eq, %selected_x, %c1_selected : index
+    scf.if %selected_first_column {
+      "test.observe"() {test.label = "scf_if_result"} : () -> ()
     }
     "test.observe"() {test.label = "joined"} : () -> ()
 
@@ -54,6 +186,67 @@ module attributes {ttl.launch_grid = [2 : i64, 2 : i64]} {
     %undeclared = ttl.is_src {pipe_net_id = 7 : i64}
     scf.if %undeclared {
       "test.observe"() {test.label = "undeclared_pipe"} : () -> ()
+    }
+
+    %false = arith.constant false
+    %true = arith.constant true
+    scf.if %false {
+    } else {
+      "test.observe"() {test.label = "constant_false_else"} : () -> ()
+    }
+    scf.if %true {
+      "test.observe"() {test.label = "constant_true_then"} : () -> ()
+    } else {
+    }
+
+    // Composed node-membership guards retain their constant initializer until
+    // after launch-domain verification.
+    %false_or_coordinate = arith.ori %false, %is_x_zero : i1
+    scf.if %false_or_coordinate {
+      "test.observe"() {test.label = "false_or_coordinate_then"} : () -> ()
+    } else {
+      "test.observe"() {test.label = "false_or_coordinate_else"} : () -> ()
+    }
+    %true_and_coordinate = arith.andi %true, %is_x_zero : i1
+    scf.if %true_and_coordinate {
+      "test.observe"() {test.label = "true_and_coordinate_then"} : () -> ()
+    } else {
+      "test.observe"() {test.label = "true_and_coordinate_else"} : () -> ()
+    }
+    %coordinate_and_false = arith.andi %is_x_zero, %false : i1
+    scf.if %coordinate_and_false {
+    } else {
+      "test.observe"() {test.label = "coordinate_and_false_else"} : () -> ()
+    }
+    %coordinate_or_true = arith.ori %is_x_zero, %true : i1
+    scf.if %coordinate_or_true {
+      "test.observe"() {test.label = "coordinate_or_true_then"} : () -> ()
+    } else {
+    }
+
+    // A runtime predicate can still select either branch on any launch node.
+    %runtime_condition = arith.cmpi eq, %runtime, %c0 : index
+    %runtime_or_false = arith.ori %runtime_condition, %false : i1
+    scf.if %runtime_or_false {
+      "test.observe"() {test.label = "runtime_or_false_then"} : () -> ()
+    } else {
+      "test.observe"() {test.label = "runtime_or_false_else"} : () -> ()
+    }
+
+    // A local count removes nodes with no matching destination record.
+    %destination_count = ttl.pipenet_destination_count {
+        pipe_net_id = 0 : i64, records = #destination_records} : index
+    %c1 = arith.constant 1 : index
+    scf.for %iteration = %c0 to %destination_count step %c1 {
+      "test.observe"() {test.label = "destination_count_loop"} : () -> ()
+    }
+
+    // Device identity is unavailable to this node-only analysis. Retaining the
+    // incoming domain prevents an unproven device match from removing nodes.
+    %graph_destination_count = ttl.pipenet_destination_count {
+        pipe_net_id = 1 : i64, records = #graph_destination_records} : index
+    scf.for %iteration = %c0 to %graph_destination_count step %c1 {
+      "test.observe"() {test.label = "graph_destination_count_loop"} : () -> ()
     }
     func.return
   }
