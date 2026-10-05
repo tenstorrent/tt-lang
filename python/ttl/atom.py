@@ -235,6 +235,7 @@ class _AtomSpec:
     source_file: str
     line_offset: int
     dispatcher_ast: Optional[ast.FunctionDef]
+    dispatch_targets: Dict[str, Any]
     fn_ast: ast.FunctionDef  # post-inline
     params: List[_ParamInfo]
     dfb_param_names: List[str]
@@ -254,6 +255,78 @@ def _has_explicit_kernels(fn: Callable) -> bool:
     if function_definition is None:
         return True
     return defines_kernels_by_spelling(function_definition)
+
+
+class _DispatchTargetCollector(ast.NodeVisitor):
+    """Collect standalone operation calls retained by a dispatcher."""
+
+    def __init__(self, scope: Dict[str, Any], dispatcher_name: str):
+        self.scope = scope
+        self.dispatcher_name = dispatcher_name
+        self.targets: Dict[str, Any] = {}
+
+    def _callee(self, call: ast.Call):
+        if not isinstance(call.func, ast.Name):
+            return None
+        return self.scope.get(call.func.id)
+
+    def _operation_kind(self, call: ast.Call) -> Optional[str]:
+        return getattr(self._callee(call), "_ttl_operation_kind", None)
+
+    def visit_Expr(self, node: ast.Expr):
+        if not isinstance(node.value, ast.Call):
+            return self.generic_visit(node)
+        call = node.value
+        kind = self._operation_kind(call)
+        if kind is None:
+            return self.generic_visit(node)
+        callee = self._callee(call)
+        reference = ast.unparse(call.func)
+        if kind == "dispatcher":
+            raise ValueError(
+                f"@ttl.operation: dispatcher {self.dispatcher_name!r} cannot "
+                f"reference dispatcher target {reference!r}"
+            )
+        if kind == "multi_kernel":
+            raise ValueError(
+                f"@ttl.operation: dispatcher {self.dispatcher_name!r} cannot "
+                f"reference multi-kernel target {reference!r}"
+            )
+        if kind != "unified" or not hasattr(callee, "_spec"):
+            raise ValueError(
+                f"@ttl.operation: dispatcher target {reference!r} is not a "
+                "unified operation"
+            )
+        if getattr(callee, "_grid", None) is None:
+            raise ValueError(
+                f"@ttl.operation: dispatcher target {reference!r} must declare "
+                "a grid so it can compile independently"
+            )
+        identity = callee._spec.operation_identity
+        self.targets.setdefault(identity, callee)
+        for argument in (*call.args, *(keyword.value for keyword in call.keywords)):
+            self.visit(argument)
+
+    def visit_Call(self, node: ast.Call):
+        kind = self._operation_kind(node)
+        if kind is not None:
+            reference = ast.unparse(node.func)
+            raise ValueError(
+                f"@ttl.operation: dispatcher target call {reference!r} in "
+                f"{self.dispatcher_name!r} must be a standalone statement"
+            )
+        self.generic_visit(node)
+
+
+def _collect_dispatch_targets(
+    fn_def: ast.FunctionDef,
+    scope: Dict[str, Any],
+    dispatcher_name: str,
+) -> Dict[str, Any]:
+    collector = _DispatchTargetCollector(scope, dispatcher_name)
+    for statement in fn_def.body:
+        collector.visit(statement)
+    return collector.targets
 
 
 def _classify_params(fn: Callable) -> List[_ParamInfo]:
@@ -314,6 +387,11 @@ def _build_atom_spec(
     dispatcher_ast = copy.deepcopy(fn_def) if dispatcher else None
     if dispatcher_ast is not None:
         specialize_static_boolean_branches(dispatcher_ast, captured_values)
+    dispatch_targets = (
+        _collect_dispatch_targets(dispatcher_ast, scope, name)
+        if dispatcher_ast is not None
+        else {}
+    )
 
     # Inline statement-level calls to other unified operations, then keep
     # the post-inline AST + source.
@@ -506,6 +584,7 @@ def _build_atom_spec(
         source_file=source_file,
         line_offset=line_offset,
         dispatcher_ast=dispatcher_ast,
+        dispatch_targets=dispatch_targets,
         fn_ast=fn_def,
         params=params,
         dfb_param_names=[p.name for p in params if p.kind == "dfb"],
@@ -999,10 +1078,20 @@ class Atom:
     def dispatcher_ast(self) -> Optional[ast.FunctionDef]:
         return copy.deepcopy(self._spec.dispatcher_ast)
 
+    @property
+    def dispatch_targets(self) -> Mapping[str, "Atom"]:
+        """Targets declared by this dispatcher, keyed by stable identity."""
+        return types.MappingProxyType(dict(self._spec.dispatch_targets))
+
     def _operation_identity_capture(self) -> tuple[str, str]:
         return ("operation", self._spec.operation_identity)
 
     def __call__(self, *args, **kwargs):
+        if self._dispatcher:
+            raise ValueError(
+                f"@ttl.operation dispatcher {self.name!r} is control-only and "
+                "cannot be compiled through the ordinary operation path"
+            )
         if self._grid is None:
             raise ValueError(
                 f"@ttl.operation {self.name!r} has no grid and is expand-only; "

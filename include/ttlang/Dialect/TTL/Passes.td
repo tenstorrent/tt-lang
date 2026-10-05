@@ -3,6 +3,28 @@
 
 include "mlir/Pass/PassBase.td"
 
+def TTLResolveStaticDispatch
+    : Pass<"ttl-resolve-static-dispatch", "::mlir::ModuleOp"> {
+  let summary = "Validate and mark a linear static dispatcher";
+  let description = [{
+    Validates each `func.func` carrying `ttl.dispatcher` after ordinary
+    constant propagation and canonicalization have removed statically selected
+    control flow. A resolved dispatcher contains only top-level
+    `ttl.dispatch.invoke` operations followed by `func.return`.
+
+    The pass marks the same function with `ttl.dispatch.resolved`. It does not
+    create a manifest or copy invocation information into module attributes;
+    the ordered invoke operations in the dispatcher remain the source of truth
+    for the reload adapter.
+
+    Control flow that remains after static simplification is rejected. Static
+    loop enumeration is intentionally deferred beyond the first straight-line
+    MVP.
+  }];
+
+  let dependentDialects = [];
+}
+
 def TTLInsertCBSync
     : Pass<"ttl-insert-cb-sync", "::mlir::func::FuncOp"> {
   let summary = "Insert missing cb_push/cb_pop for unmatched cb_reserve/cb_wait";
