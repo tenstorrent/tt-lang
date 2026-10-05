@@ -10,6 +10,7 @@ add_mlir_dialect_library(TTLangTTKernelTransforms
   TTKernelSpecializeDFBReconfiguration.cpp
   TTKernelSpecializeCores.cpp
   TTKernelUnrollStaticPipeNetRecordLoops.cpp
+  TTKernelVerifyHardwareConfig.cpp
 
   DEPENDS
   TTLangTTLTransformsIncGen

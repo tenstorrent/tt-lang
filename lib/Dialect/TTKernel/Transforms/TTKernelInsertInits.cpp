@@ -13,26 +13,32 @@
 //      Scans each tile_regs_acquire -> tile_regs_release region to determine
 //      the compute category (FPU binary vs SFPU/copy/bcast) and derives
 //      input/output CBs from compute and pack ops.
-//   2. Per-op inits: emitted in linear block order whenever the op type
-//      changes (unary SFPU, binary SFPU, minmax, FPU binary). The init
-//      key is (init op TypeID, operand values). An init is inserted only
-//      when the key changes. Tracking resets at sync boundaries.
+//   2. Per-op inits: placed at the consumer. A uniform scf region with no
+//      DST sync takes one init immediately before the region. Mixed
+//      consumers keep an init immediately before each consumer, inside the
+//      region. DST synchronization preserves the configuration.
+//      reduce_uninit is placed on the transition out of a definite reduce
+//      configuration.
 //
 // TODO(#329): Emit init_short variants for cheaper re-inits on type switches.
 //
 //===----------------------------------------------------------------------===//
 
+#include "ttlang/Analysis/ConfigFlow.h"
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/TTL/Passes.h"
 
 #include "ttlang/Dialect/TTKernel/IR/TTKernel.h"
+#include "ttlang/Dialect/TTKernel/IR/TTKernelConfigEffects.h"
 #include "ttlang/Dialect/TTKernel/IR/TTKernelOps.h"
 #include "ttlang/Dialect/TTKernel/IR/TTKernelTraits.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Builders.h"
+#include "llvm/ADT/DenseSet.h"
+#include "llvm/ADT/TypeSwitch.h"
 
 #define DEBUG_TYPE "ttkernel-insert-inits"
 
@@ -70,244 +76,118 @@ static Value resolveOutputCB(Operation *computeOp, StringRef attrName) {
   return result;
 }
 
-/// Information about how to create an init op for a given compute op.
-struct InitOpInfo {
-  std::function<void(OpBuilder &, Location, Operation *)> createInit;
-};
-
-/// Build a static map from TTKernel compute op TypeID to init creation info.
-/// Uses the same x-macro table as ConvertTTLTileOpsToTTKernel.
-static llvm::DenseMap<mlir::TypeID, InitOpInfo> buildComputeToInitMap() {
-  llvm::DenseMap<mlir::TypeID, InitOpInfo> map;
-
-#define TTL_UNARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)              \
-  map[mlir::TypeID::get<ttk::TTK_COMPUTE>()] = {                               \
-      [](OpBuilder &b, Location l, Operation *) {                              \
-        ttk::TTK_INIT::create(b, l);                                           \
-      }};
-#include "ttlang/Dialect/TTL/TTLElementwiseOps.def"
-
-  map[mlir::TypeID::get<ttk::AddIntTileOp>()] = {
-      [](OpBuilder &builder, Location location, Operation *) {
-        ttk::AddIntTileInitOp::create(builder, location);
-      }};
-  map[mlir::TypeID::get<ttk::SubIntTileOp>()] = {
-      [](OpBuilder &builder, Location location, Operation *) {
-        ttk::SubIntTileInitOp::create(builder, location);
-      }};
-  map[mlir::TypeID::get<ttk::MulIntTileOp>()] = {
-      [](OpBuilder &builder, Location location, Operation *computeOp) {
-        auto multiply = cast<ttk::MulIntTileOp>(computeOp);
-        ttk::MulIntTileInitOp::create(builder, location,
-                                      multiply.getDtypeAttr());
-      }};
-
-#define TTL_BINARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)             \
-  map[mlir::TypeID::get<ttk::TTK_COMPUTE>()] = {                               \
-      [](OpBuilder &b, Location l, Operation *) {                              \
-        ttk::TTK_INIT::create(b, l);                                           \
-      }};
-#include "ttlang/Dialect/TTL/TTLElementwiseOps.def"
-
-#define TTL_BINARY_TILE_OP_MINMAX(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)      \
-  map[mlir::TypeID::get<ttk::TTK_COMPUTE>()] = {                               \
-      [](OpBuilder &b, Location l, Operation *) {                              \
-        ttk::TTK_INIT::create(b, l);                                           \
-      }};
-#include "ttlang/Dialect/TTL/TTLElementwiseOps.def"
-
-#define TTL_FPU_BINARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)         \
-  map[mlir::TypeID::get<ttk::TTK_COMPUTE>()] = {                               \
-      [](OpBuilder &b, Location l, Operation *computeOp) {                     \
-        ttk::TTK_INIT::create(b, l, computeOp->getOperand(0),                  \
-                              computeOp->getOperand(1));                       \
-      }};
-#include "ttlang/Dialect/TTL/TTLElementwiseOps.def"
-
-  map[mlir::TypeID::get<ttk::CopyTileOp>()] = {
-      [](OpBuilder &b, Location l, Operation *computeOp) {
-        ttk::CopyTileInitOp::create(b, l, computeOp->getOperand(0));
-      }};
-
-  // Destination reuse supplies one binary operand from DST, so the init needs
-  // the dataflow buffer operand and the exact elementwise/reuse modes.
-  map[mlir::TypeID::get<ttk::BinaryDestReuseTilesOp>()] = {
-      [](OpBuilder &b, Location l, Operation *computeOp) {
-        auto binaryDestReuseOp = cast<ttk::BinaryDestReuseTilesOp>(computeOp);
-        ttk::BinaryDestReuseTilesInitOp::create(
-            b, l, binaryDestReuseOp.getInCb(),
-            binaryDestReuseOp.getEltwiseBinaryTypeAttr(),
-            binaryDestReuseOp.getReuseTypeAttr());
-      }};
-
-  map[mlir::TypeID::get<ttk::CopyDestValuesOp>()] = {
-      [](OpBuilder &b, Location l, Operation *) {
-        ttk::CopyDestValuesInitOp::create(b, l);
-      }};
-
-  map[mlir::TypeID::get<ttk::MatmulBlockOp>()] = {[](OpBuilder &b, Location l,
-                                                     Operation *computeOp) {
-    auto matmul = cast<ttk::MatmulBlockOp>(computeOp);
-    ttk::MatmulBlockInitShortOp::create(
-        b, l, matmul.getIn0CbId(), matmul.getIn1CbId(), matmul.getTranspose(),
-        matmul.getCtDim(), matmul.getRtDim(), matmul.getKtDim());
-  }};
-
-  map[mlir::TypeID::get<ttk::UnaryBcastTileOp>()] = {
-      [](OpBuilder &b, Location l, Operation *computeOp) {
-        auto bcastOp = cast<ttk::UnaryBcastTileOp>(computeOp);
-        Value outputCB =
-            resolveOutputCB(computeOp, kBcastOutputCBIndexAttrName);
-        assert(outputCB && "output CB required for unary_bcast_init");
-        ttk::UnaryBcastInitOp::create(b, l, bcastOp.getInCb(), outputCB,
-                                      bcastOp.getBcastTypeAttr());
-      }};
-
-  map[mlir::TypeID::get<ttk::ReduceTileOp>()] = {[](OpBuilder &b, Location l,
-                                                    Operation *computeOp) {
-    auto reduceOp = cast<ttk::ReduceTileOp>(computeOp);
-    Value outputCB = resolveOutputCB(computeOp, kReduceOutputCBIndexAttrName);
-    assert(outputCB && "output CB required for reduce_init");
-    ttk::ReduceInitOp::create(b, l, reduceOp.getInCb(), reduceOp.getScalingCb(),
-                              outputCB, reduceOp.getReduceTypeAttr(),
-                              reduceOp.getReduceDimAttr());
-  }};
-
-  map[mlir::TypeID::get<ttk::FillTileOp>()] = {
-      [](OpBuilder &b, Location l, Operation *) {
-        ttk::FillTileInitOp::create(b, l);
-      }};
-
-  // TypecastTile: init takes the same in_dtype and out_dtype attributes
-  // as the compute op so the SFPU is configured for the correct
-  // source/destination data formats.
-  map[mlir::TypeID::get<ttk::TypecastTileOp>()] = {
-      [](OpBuilder &b, Location l, Operation *computeOp) {
-        auto typecastOp = cast<ttk::TypecastTileOp>(computeOp);
-        ttk::TypecastTileInitOp::create(b, l, typecastOp.getInDtypeAttr(),
-                                        typecastOp.getOutDtypeAttr());
-      }};
-
-  // ExpTile: exp_tile_init configures the SFPU per exp flags. It takes approx,
-  // scale (the fp32 scale factor template), and input_clamping read off the
-  // exp_tile op. scale_en / iterations are compute-only and not part of the
-  // init. (exp is excluded from the generic unary macro above for this reason.)
-  map[mlir::TypeID::get<ttk::ExpTileOp>()] = {
-      [](OpBuilder &b, Location l, Operation *computeOp) {
-        auto expOp = cast<ttk::ExpTileOp>(computeOp);
-        ttk::ExpTileInitOp::create(b, l, expOp.getApproxAttr(),
-                                   expOp.getScaleAttr(),
-                                   expOp.getInputClampingAttr());
-      }};
-
-  // Transpose: resolves output CB from annotated attribute.
-  map[mlir::TypeID::get<ttk::TransposeTileOp>()] = {
-      [](OpBuilder &b, Location l, Operation *computeOp) {
-        auto transposeOp = cast<ttk::TransposeTileOp>(computeOp);
-        Value outputCB =
-            resolveOutputCB(computeOp, kTransposeOutputCBIndexAttrName);
-        assert(outputCB && "output CB required for transpose_wh_init");
-        ttk::TransposeInitOp::create(b, l, transposeOp.getIcb(), outputCB);
-      }};
-
-  return map;
+static void createManualInit(OpBuilder &builder, Location loc,
+                             ttk::AddTilesOp add) {
+  ttk::AddTilesInitOp::create(builder, loc, add.getOperand(0),
+                              add.getOperand(1));
 }
 
-/// Init key: consecutive ops with the same key share a single init call.
-/// The key captures everything that an init op configures in hardware:
-/// the op type (MATH pipeline selection), CB operands (UNPACK source routing),
-/// and discriminator (e.g., bcast type). When the key is unchanged, the
-/// hardware is already configured correctly and re-init can be skipped.
-struct InitKey {
-  mlir::TypeID typeId;
-  llvm::SmallVector<Value, 2> operands;
-  int64_t discriminator = 0; // for attribute differences (e.g., bcast type)
-
-  bool operator==(const InitKey &other) const {
-    return typeId == other.typeId && operands == other.operands &&
-           discriminator == other.discriminator;
-  }
-  bool operator!=(const InitKey &other) const { return !(*this == other); }
-};
-
-static InitKey computeInitKey(Operation *op) {
-  mlir::TypeID typeId = op->getName().getTypeID();
-
-  if (isa<ttk::AddTilesOp, ttk::SubTilesOp, ttk::MulTilesOp>(op)) {
-    return {typeId, {op->getOperand(0), op->getOperand(1)}};
-  }
-
-  if (isa<ttk::MatmulBlockOp>(op)) {
-    return {typeId, {op->getOperand(0), op->getOperand(1)}};
-  }
-
-  if (isa<ttk::CopyTileOp>(op)) {
-    return {typeId, {op->getOperand(0)}};
-  }
-
-  if (auto binaryDestReuseOp = dyn_cast<ttk::BinaryDestReuseTilesOp>(op)) {
-    // The destination operand is not a dataflow buffer and cannot distinguish
-    // the LLK init. The binary type and reuse mode select the kernel variant.
-    int64_t discriminator =
-        (static_cast<int64_t>(binaryDestReuseOp.getEltwiseBinaryType()) << 8) |
-        static_cast<int64_t>(binaryDestReuseOp.getReuseType());
-    return {typeId, {binaryDestReuseOp.getInCb()}, discriminator};
-  }
-
-  if (auto bcast = dyn_cast<ttk::UnaryBcastTileOp>(op)) {
-    return {
-        typeId, {bcast.getInCb()}, static_cast<int64_t>(bcast.getBcastType())};
-  }
-
-  if (auto reduce = dyn_cast<ttk::ReduceTileOp>(op)) {
-    int64_t disc = (static_cast<int64_t>(reduce.getReduceType()) << 16) |
-                   static_cast<int64_t>(reduce.getReduceDim());
-    return {typeId, {reduce.getInCb(), reduce.getScalingCb()}, disc};
-  }
-
-  if (auto transpose = dyn_cast<ttk::TransposeTileOp>(op)) {
-    return {typeId, {transpose.getIcb()}};
-  }
-
-  // For TypecastTile: key includes in_dtype and out_dtype because the init
-  // op configures the SFPU per dtype pair. Distinct dtype combinations must
-  // not share an init.
-  if (auto typecast = dyn_cast<ttk::TypecastTileOp>(op)) {
-    int64_t disc = (static_cast<int64_t>(typecast.getInDtype()) << 16) |
-                   static_cast<int64_t>(typecast.getOutDtype());
-    return {typeId, {}, disc};
-  }
-
-  if (auto multiply = dyn_cast<ttk::MulIntTileOp>(op)) {
-    return {typeId, {}, static_cast<int64_t>(multiply.getDtype())};
-  }
-
-  // For exp: distinct flag combinations configure exp_tile_init differently
-  // and must not share an init. The init depends on approx, input_clamping,
-  // and the fp32 scale template, so encode all three in the discriminator.
-  // scale_en / iterations are compute-only and do not affect the init.
-  if (auto exp = dyn_cast<ttk::ExpTileOp>(op)) {
-    uint32_t scaleBits = 0x3F800000u; // default 1.0f for exp_tile_init.
-    if (auto scaleAttr = exp.getScaleAttr()) {
-      scaleBits = static_cast<uint32_t>(scaleAttr.getInt());
-    }
-    BoolAttr approxAttr = exp.getApproxAttr();
-    bool approx = approxAttr && approxAttr.getValue();
-    int64_t inputClamping =
-        static_cast<int64_t>(ttk::InputClamping::ClampToNegative);
-    if (auto inputClampingAttr = exp.getInputClampingAttr()) {
-      inputClamping = static_cast<int64_t>(inputClampingAttr.getValue());
-    }
-    int64_t disc = (static_cast<int64_t>(scaleBits) << 8) |
-                   (static_cast<int64_t>(approx) << 1) | inputClamping;
-    return {typeId, {}, disc};
-  }
-
-  // For all other ops (SFPU unary/binary, CopyDst): key is just the TypeID.
-  return {typeId, {}};
+static void createManualInit(OpBuilder &builder, Location loc,
+                             ttk::SubTilesOp sub) {
+  ttk::SubTilesInitOp::create(builder, loc, sub.getOperand(0),
+                              sub.getOperand(1));
 }
 
-/// Check if an operation is a sync boundary that resets init tracking.
+static void createManualInit(OpBuilder &builder, Location loc,
+                             ttk::MulTilesOp mul) {
+  ttk::MulTilesInitOp::create(builder, loc, mul.getOperand(0),
+                              mul.getOperand(1));
+}
+
+static void createManualInit(OpBuilder &builder, Location loc,
+                             ttk::MulIntTileOp multiply) {
+  ttk::MulIntTileInitOp::create(builder, loc, multiply.getDtypeAttr());
+}
+
+static void createManualInit(OpBuilder &builder, Location loc,
+                             ttk::CopyTileOp copy) {
+  ttk::CopyTileInitOp::create(builder, loc, copy.getOperand(0));
+}
+
+static void createManualInit(OpBuilder &builder, Location loc,
+                             ttk::BinaryDestReuseTilesOp reuse) {
+  ttk::BinaryDestReuseTilesInitOp::create(builder, loc, reuse.getInCb(),
+                                          reuse.getEltwiseBinaryTypeAttr(),
+                                          reuse.getReuseTypeAttr());
+}
+
+static void createManualInit(OpBuilder &builder, Location loc,
+                             ttk::MatmulBlockOp matmul) {
+  ttk::MatmulBlockInitShortOp::create(builder, loc, matmul.getIn0CbId(),
+                                      matmul.getIn1CbId(),
+                                      matmul.getTranspose(), matmul.getCtDim(),
+                                      matmul.getRtDim(), matmul.getKtDim());
+}
+
+static void createManualInit(OpBuilder &builder, Location loc,
+                             ttk::ExperimentalMatmulBlockOp matmul) {
+  ttk::MatmulBlockInitShortOp::create(builder, loc, matmul.getIn0CbId(),
+                                      matmul.getIn1CbId(),
+                                      matmul.getTranspose(), matmul.getCtDim(),
+                                      matmul.getRtDim(), matmul.getKtDim());
+}
+
+static void createManualInit(OpBuilder &builder, Location loc,
+                             ttk::UnaryBcastTileOp bcast) {
+  Value outputCB = resolveOutputCB(bcast, kBcastOutputCBIndexAttrName);
+  assert(outputCB && "output CB required for unary_bcast_init");
+  ttk::UnaryBcastInitOp::create(builder, loc, bcast.getInCb(), outputCB,
+                                bcast.getBcastTypeAttr());
+}
+
+static void createManualInit(OpBuilder &builder, Location loc,
+                             ttk::ReduceTileOp reduce) {
+  Value outputCB = resolveOutputCB(reduce, kReduceOutputCBIndexAttrName);
+  assert(outputCB && "output CB required for reduce_init");
+  ttk::ReduceInitOp::create(
+      builder, loc, reduce.getInCb(), reduce.getScalingCb(), outputCB,
+      reduce.getReduceTypeAttr(), reduce.getReduceDimAttr());
+}
+
+static void createManualInit(OpBuilder &builder, Location loc,
+                             ttk::TypecastTileOp typecast) {
+  ttk::TypecastTileInitOp::create(builder, loc, typecast.getInDtypeAttr(),
+                                  typecast.getOutDtypeAttr());
+}
+
+static void createManualInit(OpBuilder &builder, Location loc,
+                             ttk::ExpTileOp exp) {
+  ttk::ExpTileInitOp::create(builder, loc, exp.getApproxAttr(),
+                             exp.getScaleAttr(), exp.getInputClampingAttr());
+}
+
+static void createManualInit(OpBuilder &builder, Location loc,
+                             ttk::TransposeTileOp transpose) {
+  Value outputCB = resolveOutputCB(transpose, kTransposeOutputCBIndexAttrName);
+  assert(outputCB && "output CB required for transpose_wh_init");
+  ttk::TransposeInitOp::create(builder, loc, transpose.getIcb(), outputCB);
+}
+
+static void createManualInit(OpBuilder &builder, Location loc,
+                             ttk::SFPUReduceTileOp reduce) {
+  ttk::SFPUReduceInitOp::create(builder, loc, reduce.getReduceTypeAttr(),
+                                reduce.getDataFormatAttr());
+}
+
+static void createPerOpInit(OpBuilder &builder, Location loc, Operation *op) {
+  TypeSwitch<Operation *>(op)
+#define MATH_INIT_AUTO(COMPUTE, INIT, COPS, IOPS, ATTRS, EXP)                  \
+  .Case<ttk::COMPUTE>([&](ttk::COMPUTE) { ttk::INIT::create(builder, loc); })
+#define MATH_INIT_MANUAL(COMPUTE, INIT, COPS, IOPS, ATTRS, EXP)                \
+  .Case<ttk::COMPUTE>(                                                         \
+      [&](ttk::COMPUTE compute) { createManualInit(builder, loc, compute); })
+#include "ttlang/Dialect/TTKernel/IR/TTKernelMathInits.def"
+      .Default([](Operation *) {
+        llvm_unreachable("compute operation has no init builder");
+      });
+}
+
+static bool isReduceInit(const ttk::MathInitDescriptor &descriptor) {
+  return descriptor.init.getValue() == ttk::ReduceInitOp::getOperationName();
+}
+
+/// DST sync. MATH configuration is preserved across it, except a sync marked
+/// as the first one after a definite reduce configuration.
 static bool isSyncBoundary(Operation *op) {
   return isa<ttk::TileRegsAcquireOp, ttk::TileRegsCommitOp, ttk::TileRegsWaitOp,
              ttk::TileRegsReleaseOp>(op);
@@ -539,6 +419,211 @@ static LogicalResult insertCommonInits(ModuleOp moduleOp) {
 }
 
 //===----------------------------------------------------------------------===//
+// Per-op init insertion
+//===----------------------------------------------------------------------===//
+
+struct PlannedInit {
+  Operation *compute = nullptr;
+  bool needsReduceUninit = false;
+};
+
+/// MathInit state used to place per-op inits. `markSyncs` makes every DST
+/// sync write unknown so the first sync after a reduce can be recorded.
+/// Otherwise only syncs in `reduceSyncs` write unknown, and a compute op
+/// virtually writes the descriptor it reads.
+struct InsertSlot {
+  using State = std::optional<ttk::MathInitDescriptor>;
+
+  bool markSyncs = false;
+  const llvm::DenseSet<Operation *> *reduceSyncs = nullptr;
+
+  static State unknown() { return std::nullopt; }
+
+  State join(const State &lhs, const State &rhs) const {
+    if (lhs && rhs && *lhs == *rhs) {
+      return lhs;
+    }
+    return std::nullopt;
+  }
+
+  std::optional<State> getWrite(Operation *op) const {
+    if (isSyncBoundary(op)) {
+      if (markSyncs || (reduceSyncs && reduceSyncs->contains(op))) {
+        return std::optional<State>(std::in_place, std::nullopt);
+      }
+      return std::nullopt;
+    }
+    ttk::MathInitEffects effects = ttk::getMathInitEffects(op);
+    if (effects.write) {
+      return std::optional<State>(std::in_place, effects.write->descriptor);
+    }
+    if (effects.read && effects.read->descriptor) {
+      return std::optional<State>(std::in_place, effects.read->descriptor);
+    }
+    return std::nullopt;
+  }
+};
+
+static bool scopeNeedsOnly(Operation *scope,
+                           const ttk::MathInitDescriptor &required) {
+  bool only = true;
+  scope->walk([&](Operation *op) {
+    ttk::MathInitEffects effects = ttk::getMathInitEffects(op);
+    if (effects.read && effects.read->descriptor &&
+        *effects.read->descriptor != required) {
+      only = false;
+    }
+    if (effects.write && (!effects.write->descriptor ||
+                          *effects.write->descriptor != required)) {
+      only = false;
+    }
+  });
+  return only;
+}
+
+static bool operandsAvailableBefore(Operation *scope,
+                                    ArrayRef<Value> operands) {
+  for (Value operand : operands) {
+    Operation *owner = nullptr;
+    if (auto arg = dyn_cast<BlockArgument>(operand)) {
+      owner = arg.getOwner()->getParentOp();
+    } else if (Operation *def = operand.getDefiningOp()) {
+      owner = def;
+    }
+    if (owner && scope->isAncestor(owner)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/// A loop or conditional whose reads all require one descriptor can take that
+/// init before the region. Mixed descriptors stay at their consumers.
+static Operation *initInsertionPoint(Operation *compute,
+                                     const ttk::MathInitDescriptor &required) {
+  // Canonicalization hoists copy_tile_init. Leaving it at the copy lets that
+  // pattern run after L1 accumulation has been inserted.
+  if (isa<ttk::CopyTileOp>(compute)) {
+    return compute;
+  }
+  Operation *point = compute;
+  while (Operation *parent = point->getParentOp()) {
+    if (!isa<scf::ForOp, scf::IfOp, scf::WhileOp>(parent)) {
+      break;
+    }
+    // Inits stay inside the DST sync region. Common inits are what move
+    // above a tile loop.
+    if (parent->walk([](Operation *op) {
+          return isSyncBoundary(op) ? WalkResult::interrupt()
+                                    : WalkResult::advance();
+        }) == WalkResult::interrupt()) {
+      break;
+    }
+    if (!operandsAvailableBefore(parent, required.operands) ||
+        !scopeNeedsOnly(parent, required)) {
+      break;
+    }
+    point = parent;
+  }
+  return point;
+}
+
+static void insertPerOpInits(func::FuncOp funcOp) {
+  InsertSlot marker;
+  marker.markSyncs = true;
+  llvm::DenseSet<Operation *> reduceSyncs;
+  ConfigFlow<InsertSlot> marking(marker);
+  marking.run(funcOp.getBody(), InsertSlot::unknown(),
+              [&](Operation *op, const InsertSlot::State &incoming) {
+                if (isSyncBoundary(op) && incoming && isReduceInit(*incoming)) {
+                  reduceSyncs.insert(op);
+                }
+              });
+
+  InsertSlot planner;
+  planner.reduceSyncs = &reduceSyncs;
+  SmallVector<PlannedInit> planned;
+  // Regions entered with a definite reduce configuration. The body header
+  // joins that with the backedge, so the consumer itself may not see it.
+  // A reduce that holds on only some paths, such as one branch of scf.if or
+  // a dynamic-trip loop, does not emit reduce_uninit.
+  llvm::DenseSet<Operation *> reduceRegions;
+  ConfigFlow<InsertSlot> planning(planner);
+  planning.run(funcOp.getBody(), InsertSlot::unknown(),
+               [&](Operation *op, const InsertSlot::State &incoming) {
+                 if (isa<scf::ForOp, scf::IfOp, scf::WhileOp>(op)) {
+                   if (incoming && isReduceInit(*incoming)) {
+                     reduceRegions.insert(op);
+                   }
+                   return;
+                 }
+                 ttk::MathInitEffects effects = ttk::getMathInitEffects(op);
+                 if (!effects.read || !effects.read->descriptor) {
+                   return;
+                 }
+                 const ttk::MathInitDescriptor &required =
+                     *effects.read->descriptor;
+                 if (incoming && *incoming == required) {
+                   return;
+                 }
+                 bool leavingReduce = incoming && isReduceInit(*incoming) &&
+                                      !isReduceInit(required);
+                 if (!leavingReduce && !isReduceInit(required)) {
+                   for (Operation *parent = op->getParentOp(); parent;
+                        parent = parent->getParentOp()) {
+                     if (!reduceRegions.erase(parent)) {
+                       continue;
+                     }
+                     leavingReduce = true;
+                     break;
+                   }
+                 }
+                 planned.push_back({op, leavingReduce});
+               });
+
+  for (Operation *sync : reduceSyncs) {
+    OpBuilder builder(sync);
+    ttk::ReduceUninitOp::create(builder, sync->getLoc());
+  }
+  // Both branches of one conditional can hoist the same init to that
+  // conditional. One init at that point covers both.
+  struct EmittedInit {
+    Operation *point = nullptr;
+    ttk::MathInitDescriptor descriptor;
+    bool emittedUninit = false;
+  };
+  SmallVector<EmittedInit, 8> emitted;
+  for (const PlannedInit &plan : planned) {
+    ttk::MathInitEffects effects = ttk::getMathInitEffects(plan.compute);
+    if (!effects.read || !effects.read->descriptor) {
+      continue;
+    }
+    const ttk::MathInitDescriptor &required = *effects.read->descriptor;
+    Operation *point = initInsertionPoint(plan.compute, required);
+    EmittedInit *existing = nullptr;
+    for (EmittedInit &done : emitted) {
+      if (done.point == point && done.descriptor == required) {
+        existing = &done;
+        break;
+      }
+    }
+    // The first consumer at a shared point is the one that leaves reduce, so
+    // a later plan for the same init never needs an uninit the first omitted.
+    if (existing) {
+      assert((!plan.needsReduceUninit || existing->emittedUninit) &&
+             "shared init disagrees on reduce_uninit");
+      continue;
+    }
+    OpBuilder builder(point);
+    if (plan.needsReduceUninit) {
+      ttk::ReduceUninitOp::create(builder, point->getLoc());
+    }
+    createPerOpInit(builder, plan.compute->getLoc(), plan.compute);
+    emitted.push_back({point, required, plan.needsReduceUninit});
+  }
+}
+
+//===----------------------------------------------------------------------===//
 // Pass implementation
 //===----------------------------------------------------------------------===//
 
@@ -547,70 +632,15 @@ struct TTKernelInsertInitsPass
 
   void runOnOperation() override {
     auto moduleOp = getOperation();
-    constexpr llvm::StringLiteral kInitInserted("ttk.init_inserted");
-
     if (failed(insertCommonInits(moduleOp))) {
       signalPassFailure();
       return;
     }
-
-    auto computeToInit = buildComputeToInitMap();
-
-    auto emitReduceUninit = [](OpBuilder &builder, Location loc,
-                               ttk::ReduceTileOp) {
-      ttk::ReduceUninitOp::create(builder, loc);
-    };
-
-    auto processOp = [&](Operation &topOp, std::optional<InitKey> &prevKey,
-                         ttk::ReduceTileOp &prevReduce) {
-      if (isSyncBoundary(&topOp)) {
-        if (prevKey &&
-            prevKey->typeId == mlir::TypeID::get<ttk::ReduceTileOp>()) {
-          OpBuilder builder(&topOp);
-          emitReduceUninit(builder, topOp.getLoc(), prevReduce);
-        }
-        prevKey = std::nullopt;
-        prevReduce = nullptr;
-        return;
-      }
-
-      topOp.walk([&](Operation *inner) {
-        auto mapIt = computeToInit.find(inner->getName().getTypeID());
-        if (mapIt == computeToInit.end()) {
-          return WalkResult::advance();
-        }
-        InitKey key = computeInitKey(inner);
-        if (!prevKey || *prevKey != key) {
-          if (prevKey &&
-              prevKey->typeId == mlir::TypeID::get<ttk::ReduceTileOp>() &&
-              key.typeId != mlir::TypeID::get<ttk::ReduceTileOp>()) {
-            OpBuilder builder(&topOp);
-            emitReduceUninit(builder, topOp.getLoc(), prevReduce);
-          }
-          OpBuilder builder(&topOp);
-          mapIt->second.createInit(builder, inner->getLoc(), inner);
-        }
-        prevKey = key;
-        prevReduce = dyn_cast<ttk::ReduceTileOp>(inner);
-        inner->setAttr(kInitInserted, UnitAttr::get(inner->getContext()));
-        return WalkResult::interrupt();
-      });
-    };
-
-    moduleOp->walk([&](ttk::TileRegsAcquireOp acquireOp) {
-      Block *block = acquireOp->getBlock();
-      std::optional<InitKey> prevKey;
-      ttk::ReduceTileOp prevReduce;
-      for (auto it = std::next(acquireOp->getIterator()); it != block->end();
-           ++it) {
-        if (isa<ttk::TileRegsReleaseOp>(&*it)) {
-          break;
-        }
-        processOp(*it, prevKey, prevReduce);
+    moduleOp->walk([&](func::FuncOp funcOp) {
+      if (!funcOp.isExternal()) {
+        insertPerOpInits(funcOp);
       }
     });
-
-    moduleOp->walk([&](Operation *op) { op->removeAttr(kInitInserted); });
   }
 };
 

@@ -6,6 +6,7 @@
 #define TTLANG_DIALECT_TTKERNEL_IR_TTKERNELOPS_H
 
 #include "ttlang/Dialect/TTCore/IR/TTCoreOpsTypes.h"
+#include "ttlang/Dialect/TTKernel/IR/TTKernelConfigEffects.h"
 #include "ttlang/Dialect/TTKernel/IR/TTKernelOpsTypes.h"
 #include "ttlang/Dialect/TTKernel/IR/TTKernelTraits.h"
 

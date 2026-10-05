@@ -1,0 +1,136 @@
+// SPDX-FileCopyrightText: (c) 2026 Tenstorrent AI ULC
+//
+// SPDX-License-Identifier: Apache-2.0
+
+//===----------------------------------------------------------------------===//
+// TTKernel per-op MATH init bindings.
+//===----------------------------------------------------------------------===//
+//
+// The single table of compute operation -> per-op init. Effects and init
+// insertion both include this file.
+//
+//   MATH_INIT_AUTO(COMPUTE, INIT, COPS, IOPS, ATTRS, EXP)
+//     INIT is created with no operands or attributes.
+//   MATH_INIT_MANUAL(COMPUTE, INIT, COPS, IOPS, ATTRS, EXP)
+//     Insertion supplies a custom builder. COPS and IOPS are the key operand
+//     indices of the compute op and the init op. ATTRS is the attribute list.
+//     EXP is 1 when omitted exp flags take the metal defaults.
+//
+// MatmulTilesOp is omitted: its transpose is an operand of mm_init_short and
+// does not exist on matmul_tiles. RandTileOp is omitted: the PRNG seed exists
+// only on rand_tile_init. ExperimentalRowNormalizationBlockOp and
+// InvokeSFPIOp are not rows; they write an unknown MATH configuration.
+//
+//===----------------------------------------------------------------------===//
+
+#ifndef MATH_INIT_AUTO
+#define MATH_INIT_AUTO(COMPUTE, INIT, COPS, IOPS, ATTRS, EXP)
+#endif
+#ifndef MATH_INIT_MANUAL
+#define MATH_INIT_MANUAL(COMPUTE, INIT, COPS, IOPS, ATTRS, EXP)
+#endif
+
+#define TTL_UNARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)              \
+  MATH_INIT_AUTO(TTK_COMPUTE, TTK_INIT, none, none, noAttrs(), 0)
+#define TTL_BINARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)             \
+  MATH_INIT_AUTO(TTK_COMPUTE, TTK_INIT, none, none, noAttrs(), 0)
+#define TTL_BINARY_TILE_OP_MINMAX(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)      \
+  MATH_INIT_AUTO(TTK_COMPUTE, TTK_INIT, none, none, noAttrs(), 0)
+#define TTL_FPU_BINARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)         \
+  MATH_INIT_MANUAL(TTK_COMPUTE, TTK_INIT, c01, i01, noAttrs(), 0)
+#include "ttlang/Dialect/TTL/TTLElementwiseOps.def"
+
+// Integer variants and ops absent from TTLElementwiseOps.def.
+MATH_INIT_AUTO(AddIntTileOp, AddIntTileInitOp, none, none, noAttrs(), 0)
+MATH_INIT_AUTO(SubIntTileOp, SubIntTileInitOp, none, none, noAttrs(), 0)
+MATH_INIT_MANUAL(MulIntTileOp, MulIntTileInitOp, none, none, dtypeAttrs(), 0)
+MATH_INIT_AUTO(GeBinaryTilesOp, GeBinaryTilesInitOp, none, none, noAttrs(), 0)
+MATH_INIT_AUTO(LeBinaryTilesOp, LeBinaryTilesInitOp, none, none, noAttrs(), 0)
+MATH_INIT_AUTO(BitwiseAndBinaryTilesOp, BinaryBitwiseTileInitOp, none, none,
+               noAttrs(), 0)
+MATH_INIT_AUTO(BitwiseOrBinaryTilesOp, BinaryBitwiseTileInitOp, none, none,
+               noAttrs(), 0)
+MATH_INIT_AUTO(BitwiseXorBinaryTilesOp, BinaryBitwiseTileInitOp, none, none,
+               noAttrs(), 0)
+MATH_INIT_AUTO(BinaryLeftShiftTileOp, BinaryShiftTileInitOp, none, none,
+               noAttrs(), 0)
+MATH_INIT_AUTO(BinaryRightShiftTileOp, BinaryShiftTileInitOp, none, none,
+               noAttrs(), 0)
+MATH_INIT_AUTO(BinaryLogicalRightShiftTileOp, BinaryShiftTileInitOp, none,
+               none, noAttrs(), 0)
+MATH_INIT_AUTO(WhereTileOp, WhereTileInitOp, none, none, noAttrs(), 0)
+MATH_INIT_AUTO(ClampScalarTileOp, ClampScalarTileInitOp, none, none, noAttrs(),
+               0)
+MATH_INIT_AUTO(ClampScalarTileInt32Op, ClampScalarTileInitOp, none, none,
+               noAttrs(), 0)
+MATH_INIT_AUTO(CopyDestValuesOp, CopyDestValuesInitOp, none, none, noAttrs(),
+               0)
+MATH_INIT_AUTO(FillTileOp, FillTileInitOp, none, none, noAttrs(), 0)
+MATH_INIT_AUTO(FillTileIntOp, FillTileInitOp, none, none, noAttrs(), 0)
+MATH_INIT_AUTO(TopkLocalSortOp, TopkTileInitOp, none, none, noAttrs(), 0)
+MATH_INIT_AUTO(TopkMergeOp, TopkTileInitOp, none, none, noAttrs(), 0)
+MATH_INIT_AUTO(TopkRebuildOp, TopkTileInitOp, none, none, noAttrs(), 0)
+MATH_INIT_AUTO(AddUnaryTileOp, BinopWithScalarTileInitOp, none, none, noAttrs(),
+               0)
+MATH_INIT_AUTO(MulUnaryTileOp, BinopWithScalarTileInitOp, none, none, noAttrs(),
+               0)
+MATH_INIT_AUTO(SubUnaryTileOp, BinopWithScalarTileInitOp, none, none, noAttrs(),
+               0)
+MATH_INIT_AUTO(AddUnaryTileInt32Op, BinopWithScalarTileInitOp, none, none,
+               noAttrs(), 0)
+MATH_INIT_AUTO(SubUnaryTileInt32Op, BinopWithScalarTileInitOp, none, none,
+               noAttrs(), 0)
+MATH_INIT_AUTO(DivUnaryTileOp, BinopWithScalarTileInitOp, none, none, noAttrs(),
+               0)
+MATH_INIT_AUTO(PowUnaryTileOp, PowerTileInitOp, none, none, noAttrs(), 0)
+MATH_INIT_AUTO(PowBinaryTilesOp, PowBinaryTilesInitOp, none, none, noAttrs(),
+               0)
+MATH_INIT_AUTO(Atan2BinaryTilesOp, Atan2BinaryTilesInitOp, none, none, noAttrs(),
+               0)
+MATH_INIT_AUTO(AbsTileI32Op, AbsTileInitOp, none, none, noAttrs(), 0)
+MATH_INIT_AUTO(NegativeTileInt32Op, NegativeTileInitOp, none, none, noAttrs(),
+               0)
+MATH_INIT_AUTO(ReluTileI32Op, ReluTileInitOp, none, none, noAttrs(), 0)
+MATH_INIT_AUTO(EqzTileOp, EqzTileInitOp, none, none, noAttrs(), 0)
+MATH_INIT_AUTO(EqzTileI32Op, EqzTileInitOp, none, none, noAttrs(), 0)
+MATH_INIT_AUTO(NezTileOp, NezTileInitOp, none, none, noAttrs(), 0)
+MATH_INIT_AUTO(NezTileI32Op, NezTileInitOp, none, none, noAttrs(), 0)
+MATH_INIT_AUTO(GtzTileOp, GtzTileInitOp, none, none, noAttrs(), 0)
+MATH_INIT_AUTO(GtzTileI32Op, GtzTileInitOp, none, none, noAttrs(), 0)
+MATH_INIT_AUTO(GezTileOp, GezTileInitOp, none, none, noAttrs(), 0)
+MATH_INIT_AUTO(GezTileI32Op, GezTileInitOp, none, none, noAttrs(), 0)
+MATH_INIT_AUTO(LtzTileOp, LtzTileInitOp, none, none, noAttrs(), 0)
+MATH_INIT_AUTO(LtzTileI32Op, LtzTileInitOp, none, none, noAttrs(), 0)
+MATH_INIT_AUTO(LezTileOp, LezTileInitOp, none, none, noAttrs(), 0)
+MATH_INIT_AUTO(LezTileI32Op, LezTileInitOp, none, none, noAttrs(), 0)
+MATH_INIT_AUTO(BitwiseNotTileOp, BitwiseNotTileInitOp, none, none, noAttrs(),
+               0)
+MATH_INIT_AUTO(LogicalNotTileOp, LogicalNotTileInitOp, none, none, noAttrs(),
+               0)
+MATH_INIT_AUTO(Log1pTileOp, Log1pTileInitOp, none, none, noAttrs(), 0)
+MATH_INIT_AUTO(SeluTileOp, SeluTileInitOp, none, none, noAttrs(), 0)
+MATH_INIT_AUTO(ErfTileOp, ErfTileInitOp, none, none, noAttrs(), 0)
+MATH_INIT_AUTO(ErfcTileOp, ErfcTileInitOp, none, none, noAttrs(), 0)
+MATH_INIT_AUTO(BinaryMaxInt32TileOp, BinaryMaxInt32TileInitOp, none, none,
+               noAttrs(), 0)
+MATH_INIT_AUTO(BinaryMinInt32TileOp, BinaryMinInt32TileInitOp, none, none,
+               noAttrs(), 0)
+
+MATH_INIT_MANUAL(CopyTileOp, CopyTileInitOp, c0, i0, noAttrs(), 0)
+MATH_INIT_MANUAL(BinaryDestReuseTilesOp, BinaryDestReuseTilesInitOp, c0, i0,
+                 reuseAttrs(), 0)
+MATH_INIT_MANUAL(MatmulBlockOp, MatmulBlockInitShortOp, cMatmul, iMatmul,
+                 noAttrs(), 0)
+MATH_INIT_MANUAL(ExperimentalMatmulBlockOp, MatmulBlockInitShortOp, cMatmul,
+                 iMatmul, noAttrs(), 0)
+MATH_INIT_MANUAL(UnaryBcastTileOp, UnaryBcastInitOp, c0, i0, bcastAttrs(), 0)
+MATH_INIT_MANUAL(ReduceTileOp, ReduceInitOp, c01, i01, reduceAttrs(), 0)
+MATH_INIT_MANUAL(TypecastTileOp, TypecastTileInitOp, none, none, typecastAttrs(),
+                 0)
+MATH_INIT_MANUAL(ExpTileOp, ExpTileInitOp, none, none, expAttrs(), 1)
+MATH_INIT_MANUAL(TransposeTileOp, TransposeInitOp, c0, i0, noAttrs(), 0)
+MATH_INIT_MANUAL(SFPUReduceTileOp, SFPUReduceInitOp, none, none,
+                 sfpuReduceAttrs(), 0)
+
+#undef MATH_INIT_AUTO
+#undef MATH_INIT_MANUAL
