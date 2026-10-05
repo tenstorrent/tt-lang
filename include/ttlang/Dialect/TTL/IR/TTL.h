@@ -92,6 +92,13 @@ constexpr llvm::StringLiteral
 /// the attribute value is a `ttkernel.thread` enum.
 constexpr llvm::StringLiteral kKernelThreadAttrName("ttl.kernel_thread");
 
+/// Func-level unit attribute identifying a static dispatch controller.
+constexpr llvm::StringLiteral kDispatcherAttrName("ttl.dispatcher");
+
+/// Func-level unit attribute identifying a fully linearized dispatcher.
+constexpr llvm::StringLiteral kDispatchResolvedAttrName(
+    "ttl.dispatch.resolved");
+
 /// Func-level target-independent logical-kernel identity.
 constexpr llvm::StringLiteral kLogicalKernelAttrName("ttl.logical_kernel");
 

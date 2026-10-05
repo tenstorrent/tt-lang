@@ -12,6 +12,7 @@
 #include "mlir/IR/AffineMap.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/DialectImplementation.h" // IWYU pragma: keep
+#include "mlir/IR/SymbolTable.h"
 #include "mlir/Interfaces/TilingInterface.h"
 #include "mlir/Support/LogicalResult.h"
 #include "ttlang/Dialect/TTCore/IR/TTCoreOpsTypes.h"
@@ -49,6 +50,51 @@
 #include "ttlang/Dialect/TTL/IR/TTLOpsTypes.cpp.inc"
 
 namespace mlir::tt::ttl {
+
+LogicalResult DispatchTargetOp::verify() {
+  FunctionType functionType = getFunctionType();
+  if (functionType.getNumResults() != 0) {
+    return emitOpError("must not declare results; target outputs are tensor "
+                       "operands owned by the caller");
+  }
+  if (getArgumentNames().size() != functionType.getNumInputs()) {
+    return emitOpError()
+           << "declares " << getArgumentNames().size()
+           << " argument names for " << functionType.getNumInputs()
+           << " inputs";
+  }
+  if (getOperationIdentity().empty()) {
+    return emitOpError("requires a non-empty operation_identity");
+  }
+  return success();
+}
+
+LogicalResult DispatchInvokeOp::verify() {
+  auto target = SymbolTable::lookupNearestSymbolFrom<DispatchTargetOp>(
+      *this, getTargetAttr());
+  if (!target) {
+    return emitOpError() << "'" << getTargetAttr().getValue()
+                         << "' does not reference a ttl.dispatch.target";
+  }
+
+  FunctionType functionType = target.getFunctionType();
+  if (getArguments().size() != functionType.getNumInputs()) {
+    return emitOpError() << "passes " << getArguments().size()
+                         << " arguments to target '" << target.getSymName()
+                         << "' with " << functionType.getNumInputs()
+                         << " inputs";
+  }
+  for (auto [index, argument] : llvm::enumerate(getArguments())) {
+    Type expectedType = functionType.getInput(index);
+    if (argument.getType() != expectedType) {
+      return emitOpError()
+             << "argument " << index << " has type " << argument.getType()
+             << ", expected " << expectedType << " for target '"
+             << target.getSymName() << "'";
+    }
+  }
+  return success();
+}
 
 namespace {
 

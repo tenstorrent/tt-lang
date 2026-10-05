@@ -18,10 +18,63 @@ include "mlir/Interfaces/IndexingMapOpInterface.td"
 include "mlir/Interfaces/TilingInterface.td"
 include "mlir/Interfaces/ViewLikeInterface.td"
 include "mlir/IR/OpBase.td"
+include "mlir/IR/SymbolInterfaces.td"
 
 //===----------------------------------------------------------------------===//
 // TTL operation definitions
 //===----------------------------------------------------------------------===//
+
+def TTL_DispatchTargetOp
+    : TTL_Op<"dispatch.target", [SymbolName, SymbolVisibility, Symbol]> {
+  let summary = "Declare an independently compiled dispatch target";
+  let description = [{
+    `ttl.dispatch.target` declares an ordinary TT-Lang operation that a static
+    dispatcher may invoke as a separately captured reload image. The target
+    has no body: `operation_identity` maps the symbol back to the frontend
+    operation object whose body is compiled through the ordinary operation
+    pipeline.
+
+    `function_type` and `argument_names` describe the semantic invocation ABI.
+    Values are passed by reference through the dispatcher function's SSA
+    operands. The operation does not define a physical cross-image CB ABI.
+  }];
+
+  let arguments = (ins
+    SymbolNameAttr:$sym_name,
+    OptionalAttr<StrAttr>:$sym_visibility,
+    TypeAttrOf<FunctionType>:$function_type,
+    StrAttr:$operation_identity,
+    StrArrayAttr:$argument_names
+  );
+
+  let assemblyFormat = [{
+    ($sym_visibility^)? $sym_name `:` $function_type attr-dict
+  }];
+
+  let hasVerifier = 1;
+}
+
+def TTL_DispatchInvokeOp
+    : TTL_Op<"dispatch.invoke", [MemoryEffects<[MemRead, MemWrite]>]> {
+  let summary = "Invoke a separately compiled dispatch target";
+  let description = [{
+    `ttl.dispatch.invoke` records one invocation in a static dispatcher's
+    structured control flow. The referenced `ttl.dispatch.target` supplies the
+    semantic argument ABI. Target operations have no SSA results because
+    TT-Lang operation outputs are caller-owned tensor operands.
+  }];
+
+  let arguments = (ins
+    FlatSymbolRefAttr:$target,
+    Variadic<AnyType>:$arguments
+  );
+
+  let assemblyFormat = [{
+    $target `(` ($arguments^ `:` type($arguments))? `)` attr-dict
+  }];
+
+  let hasVerifier = 1;
+}
 
 def TTL_BindCBOp : TTL_Op<"bind_cb", [Pure]> {
   let summary = "Bind to a hardware circular buffer slot";
