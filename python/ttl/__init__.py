@@ -121,6 +121,7 @@ else:
         TensorBlock,
     )
     from ttl.pipe import Pipe, PipeNet
+    from ttl.dispatch import ResolvedDispatcher, ResolvedInvocation, ResolvedTarget
 
     __all__ = [
         "__version__",
@@ -155,6 +156,9 @@ else:
         "ReadyReceive",
         "Pipe",
         "PipeNet",
+        "ResolvedDispatcher",
+        "ResolvedInvocation",
+        "ResolvedTarget",
         "AllToAllTransfer",
         "AxisNeighborTransfer",
         "DeviceDomain",

@@ -1109,6 +1109,12 @@ class Atom:
 
         return resolve_dispatch_ir(self, args, kwargs)
 
+    def resolve_dispatch(self, *args, **kwargs):
+        """Return a read-only view of this dispatcher's resolved control IR."""
+        from .dispatch import ResolvedDispatcher
+
+        return ResolvedDispatcher(self.resolve_dispatch_ir(*args, **kwargs))
+
     def __call__(self, *args, **kwargs):
         if self._dispatcher:
             raise ValueError(

@@ -190,6 +190,45 @@ def test_dispatcher_runs_dedicated_resolution_pipeline():
     assert first < second < third
 
 
+def test_resolved_dispatcher_exposes_backend_neutral_schedule():
+    resolved = _emitted_dispatcher.resolve_dispatch(
+        _host_tensor(), _host_tensor(), _host_tensor()
+    )
+
+    assert isinstance(resolved, ttl.ResolvedDispatcher)
+    assert resolved.name == "_emitted_dispatcher"
+    assert len(resolved.argument_types) == 3
+    assert tuple(target.symbol for target in resolved.targets) == (
+        "_dispatch_write",
+        "_dispatch_transform",
+    )
+    assert tuple(target.argument_names for target in resolved.targets) == (
+        ("source", "destination"),
+        ("source", "destination"),
+    )
+    assert tuple(invocation.target.symbol for invocation in resolved.invocations) == (
+        "_dispatch_write",
+        "_dispatch_transform",
+        "_dispatch_write",
+    )
+    assert tuple(
+        invocation.dispatcher_argument_indices for invocation in resolved.invocations
+    ) == ((0, 1), (1, 2), (2, 1))
+    assert resolved.invocations[1].argument_bindings == (
+        ("source", 1),
+        ("destination", 2),
+    )
+
+
+def test_resolved_dispatcher_rejects_unresolved_ir():
+    module = _emitted_dispatcher.emit_dispatch_ir(
+        _host_tensor(), _host_tensor(), _host_tensor()
+    )
+
+    with pytest.raises(ValueError, match="has not been resolved"):
+        ttl.ResolvedDispatcher(module)
+
+
 def test_dispatcher_emit_rejects_non_argument_target_operand():
     @ttl.operation(dispatcher=True)
     def invalid_dispatcher(source, destination):

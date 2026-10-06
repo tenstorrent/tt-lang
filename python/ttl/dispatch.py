@@ -27,6 +27,112 @@ from .ttl_api import _canonical_tensor_args, _resolve_grid
 
 
 @dataclass(frozen=True)
+class ResolvedTarget:
+    """One independently compiled target declared by resolved dispatch IR."""
+
+    symbol: str
+    operation_identity: str
+    argument_names: tuple[str, ...]
+    argument_types: tuple[object, ...]
+
+
+@dataclass(frozen=True)
+class ResolvedInvocation:
+    """One ordered target invocation and its dispatcher operand bindings."""
+
+    index: int
+    target: ResolvedTarget
+    dispatcher_argument_indices: tuple[int, ...]
+
+    @property
+    def argument_bindings(self) -> tuple[tuple[str, int], ...]:
+        return tuple(zip(self.target.argument_names, self.dispatcher_argument_indices))
+
+
+class ResolvedDispatcher:
+    """Read-only backend-neutral view over resolved dispatcher MLIR."""
+
+    def __init__(self, module: Module):
+        self._module = module
+        function = self._find_dispatcher_function()
+        if "ttl.dispatch.resolved" not in function.attributes:
+            raise ValueError(
+                f"dispatcher {function.name.value!r} has not been resolved"
+            )
+
+    @property
+    def module(self) -> Module:
+        return self._module
+
+    def _find_dispatcher_function(self):
+        functions = [
+            operation
+            for operation in self._module.body.operations
+            if isinstance(operation, func.FuncOp)
+            and "ttl.dispatcher" in operation.attributes
+        ]
+        if len(functions) != 1:
+            raise ValueError(
+                "resolved dispatch module must contain exactly one dispatcher, "
+                f"got {len(functions)}"
+            )
+        return functions[0]
+
+    @property
+    def name(self) -> str:
+        return self._find_dispatcher_function().name.value
+
+    @property
+    def argument_types(self) -> tuple[object, ...]:
+        return tuple(self._find_dispatcher_function().type.inputs)
+
+    @property
+    def targets(self) -> tuple[ResolvedTarget, ...]:
+        targets = []
+        for operation in self._module.body.operations:
+            if not isinstance(operation, ttl_dialect.DispatchTargetOp):
+                continue
+            targets.append(
+                ResolvedTarget(
+                    symbol=operation.sym_name.value,
+                    operation_identity=operation.operation_identity.value,
+                    argument_names=tuple(
+                        attribute.value for attribute in operation.argument_names
+                    ),
+                    argument_types=tuple(operation.function_type.value.inputs),
+                )
+            )
+        return tuple(targets)
+
+    @property
+    def invocations(self) -> tuple[ResolvedInvocation, ...]:
+        targets = {target.symbol: target for target in self.targets}
+        function = self._find_dispatcher_function()
+        invocations = []
+        for operation in function.entry_block.operations:
+            if not isinstance(operation, ttl_dialect.DispatchInvokeOp):
+                continue
+            symbol = operation.target.value
+            target = targets.get(symbol)
+            if target is None:
+                raise ValueError(
+                    f"dispatcher {self.name!r} invokes undeclared target {symbol!r}"
+                )
+            indices = []
+            for argument in operation.arguments:
+                if argument.owner != function.entry_block:
+                    raise ValueError(
+                        f"dispatcher {self.name!r} invocation {len(invocations)} "
+                        "does not bind a dispatcher block argument"
+                    )
+                indices.append(argument.arg_number)
+            invocations.append(
+                ResolvedInvocation(len(invocations), target, tuple(indices))
+            )
+        return tuple(invocations)
+
+
+@dataclass(frozen=True)
 class _Invocation:
     target: object
     dispatcher_argument_names: tuple[str, ...]
@@ -246,4 +352,10 @@ def resolve_dispatch_ir(dispatcher, args: tuple, kwargs: dict) -> Module:
     return module
 
 
-__all__ = ["emit_dispatch_ir", "resolve_dispatch_ir"]
+__all__ = [
+    "ResolvedDispatcher",
+    "ResolvedInvocation",
+    "ResolvedTarget",
+    "emit_dispatch_ir",
+    "resolve_dispatch_ir",
+]
