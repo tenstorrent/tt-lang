@@ -37,6 +37,7 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Builders.h"
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/TypeSwitch.h"
 
@@ -424,6 +425,7 @@ static LogicalResult insertCommonInits(ModuleOp moduleOp) {
 
 struct PlannedInit {
   Operation *compute = nullptr;
+  Operation *insertionPoint = nullptr;
   bool needsReduceUninit = false;
 };
 
@@ -464,22 +466,87 @@ struct InsertSlot {
   }
 };
 
-static bool scopeNeedsOnly(Operation *scope,
-                           const ttk::MathInitDescriptor &required) {
-  bool only = true;
-  scope->walk([&](Operation *op) {
+struct HoistingSummary {
+  bool hasSync = false;
+  bool blocksHoisting = false;
+  std::optional<ttk::MathInitDescriptor> descriptor;
+};
+
+/// Summarizes each operation subtree once. A summary is eligible for hoisting
+/// when it has no synchronization, unsupported region, unknown configuration
+/// access, or descriptor other than the one being hoisted.
+class InitHoistingAnalysis {
+public:
+  bool canHoistThrough(Operation *scope,
+                       const ttk::MathInitDescriptor &required) {
+    const HoistingSummary &summary = summarize(scope);
+    return !summary.hasSync && !summary.blocksHoisting &&
+           (!summary.descriptor || *summary.descriptor == required);
+  }
+
+private:
+  static bool isModeledRegionOperation(Operation *op) {
+    return isa<scf::ForOp, scf::IfOp, scf::WhileOp>(op);
+  }
+
+  static void addDescriptor(HoistingSummary &summary,
+                            const ttk::MathInitDescriptor &descriptor) {
+    if (summary.descriptor && *summary.descriptor != descriptor) {
+      summary.blocksHoisting = true;
+      return;
+    }
+    summary.descriptor = descriptor;
+  }
+
+  static void merge(HoistingSummary &summary, const HoistingSummary &nested) {
+    summary.hasSync |= nested.hasSync;
+    summary.blocksHoisting |= nested.blocksHoisting;
+    if (nested.descriptor) {
+      addDescriptor(summary, *nested.descriptor);
+    }
+  }
+
+  const HoistingSummary &summarize(Operation *op) {
+    auto found = summaries.find(op);
+    if (found != summaries.end()) {
+      return found->second;
+    }
+
+    HoistingSummary summary;
+    summary.hasSync = isSyncBoundary(op);
+    if (op->getNumRegions() != 0 && !isModeledRegionOperation(op)) {
+      summary.blocksHoisting = true;
+    }
+
     ttk::MathInitEffects effects = ttk::getMathInitEffects(op);
-    if (effects.read && effects.read->descriptor &&
-        *effects.read->descriptor != required) {
-      only = false;
+    if (effects.read) {
+      if (effects.read->descriptor) {
+        addDescriptor(summary, *effects.read->descriptor);
+      } else {
+        summary.blocksHoisting = true;
+      }
     }
-    if (effects.write && (!effects.write->descriptor ||
-                          *effects.write->descriptor != required)) {
-      only = false;
+    if (effects.write) {
+      if (effects.write->descriptor) {
+        addDescriptor(summary, *effects.write->descriptor);
+      } else {
+        summary.blocksHoisting = true;
+      }
     }
-  });
-  return only;
-}
+
+    for (Region &region : op->getRegions()) {
+      for (Block &block : region) {
+        for (Operation &nested : block) {
+          merge(summary, summarize(&nested));
+        }
+      }
+    }
+
+    return summaries.try_emplace(op, std::move(summary)).first->second;
+  }
+
+  llvm::DenseMap<Operation *, HoistingSummary> summaries;
+};
 
 static bool operandsAvailableBefore(Operation *scope,
                                     ArrayRef<Value> operands) {
@@ -500,7 +567,8 @@ static bool operandsAvailableBefore(Operation *scope,
 /// A loop or conditional whose reads all require one descriptor can take that
 /// init before the region. Mixed descriptors stay at their consumers.
 static Operation *initInsertionPoint(Operation *compute,
-                                     const ttk::MathInitDescriptor &required) {
+                                     const ttk::MathInitDescriptor &required,
+                                     InitHoistingAnalysis &hoisting) {
   // Canonicalization hoists copy_tile_init. Leaving it at the copy lets that
   // pattern run after L1 accumulation has been inserted.
   if (isa<ttk::CopyTileOp>(compute)) {
@@ -511,16 +579,8 @@ static Operation *initInsertionPoint(Operation *compute,
     if (!isa<scf::ForOp, scf::IfOp, scf::WhileOp>(parent)) {
       break;
     }
-    // Inits stay inside the DST sync region. Common inits are what move
-    // above a tile loop.
-    if (parent->walk([](Operation *op) {
-          return isSyncBoundary(op) ? WalkResult::interrupt()
-                                    : WalkResult::advance();
-        }) == WalkResult::interrupt()) {
-      break;
-    }
     if (!operandsAvailableBefore(parent, required.operands) ||
-        !scopeNeedsOnly(parent, required)) {
+        !hoisting.canHoistThrough(parent, required)) {
       break;
     }
     point = parent;
@@ -578,8 +638,17 @@ static void insertPerOpInits(func::FuncOp funcOp) {
                      break;
                    }
                  }
-                 planned.push_back({op, leavingReduce});
+                 planned.push_back({op, nullptr, leavingReduce});
                });
+
+  InitHoistingAnalysis hoisting;
+  for (PlannedInit &plan : planned) {
+    ttk::MathInitEffects effects = ttk::getMathInitEffects(plan.compute);
+    assert(effects.read && effects.read->descriptor &&
+           "planned compute must declare a MathInit descriptor");
+    plan.insertionPoint =
+        initInsertionPoint(plan.compute, *effects.read->descriptor, hoisting);
+  }
 
   for (Operation *sync : reduceSyncs) {
     OpBuilder builder(sync);
@@ -599,7 +668,7 @@ static void insertPerOpInits(func::FuncOp funcOp) {
       continue;
     }
     const ttk::MathInitDescriptor &required = *effects.read->descriptor;
-    Operation *point = initInsertionPoint(plan.compute, required);
+    Operation *point = plan.insertionPoint;
     EmittedInit *existing = nullptr;
     for (EmittedInit &done : emitted) {
       if (done.point == point && done.descriptor == required) {

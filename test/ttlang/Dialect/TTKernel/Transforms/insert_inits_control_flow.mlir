@@ -1,9 +1,10 @@
-// RUN: ttlang-opt %s --ttkernel-insert-inits --split-input-file | FileCheck %s
+// RUN: ttlang-opt %s --ttkernel-insert-inits --ttkernel-verify-hardware-config --split-input-file | FileCheck %s
 // Summary: Per-op MATH init placement. A uniform scf region with no DST sync
 // takes one init before the region. Mixed consumers, and any region that
-// contains a DST sync, keep the init at the consumer. copy_tile_init stays
-// at the copy. DST sync preserves a non-reduce configuration. Leaving a
-// definite reduce configuration emits reduce_uninit first.
+// contains a DST sync or unsupported nested region, keep the init at the
+// consumer. copy_tile_init stays at the copy. DST sync preserves a non-reduce
+// configuration. Leaving a definite reduce configuration emits reduce_uninit
+// first.
 
 // CHECK-LABEL: func.func @inits_inside_if
 // CHECK:       scf.if
@@ -253,6 +254,29 @@ func.func @invoke_sfpi_blocks_hoist(%cond: i1) {
     ttkernel.exp_tile(%c0) : (index) -> ()
     ttkernel.invoke_sfpi {
     }
+  }
+  func.return
+}
+
+// -----
+
+// An unsupported nested region resets ConfigFlow state, so it prevents an init
+// for a later consumer from being hoisted above the enclosing conditional.
+// CHECK-LABEL: func.func @unmodeled_region_blocks_hoist
+// CHECK:       scf.if
+// CHECK:         scf.execute_region
+// CHECK-NEXT:      ttkernel.exp_tile_init
+// CHECK-NEXT:      ttkernel.exp_tile
+// CHECK:         ttkernel.exp_tile_init
+// CHECK-NEXT:    ttkernel.exp_tile
+func.func @unmodeled_region_blocks_hoist(%cond: i1) {
+  %c0 = arith.constant 0 : index
+  scf.if %cond {
+    scf.execute_region {
+      ttkernel.exp_tile(%c0) : (index) -> ()
+      scf.yield
+    }
+    ttkernel.exp_tile(%c0) : (index) -> ()
   }
   func.return
 }

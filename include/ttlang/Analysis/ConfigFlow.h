@@ -12,6 +12,9 @@
 // three-element algebra and every region is summarized once. The analysis is
 // linear in the number of operations at any loop depth.
 //
+// See docs/development/MathHardwareConfiguration.md for the correctness
+// argument, insertion interaction, conservative behavior, and limitations.
+//
 //===----------------------------------------------------------------------===//
 
 #ifndef TTLANG_ANALYSIS_CONFIGFLOW_H
