@@ -5,6 +5,7 @@
 module {
   // expected-error @below {{declares 1 argument names for 2 inputs}}
   ttl.dispatch.target @bad_names : (i32, i32) -> () {
+    argument_contracts = [#ttl.dispatch_argument<read, ordinary>, #ttl.dispatch_argument<write, ordinary>],
     argument_names = ["only_one"],
     operation_identity = "bad-names"
   }
@@ -15,6 +16,7 @@ module {
 // Verify that invocation operands match the target's declared input types.
 module {
   ttl.dispatch.target @target : (i32) -> () {
+    argument_contracts = [#ttl.dispatch_argument<read, ordinary>],
     argument_names = ["value"],
     operation_identity = "target"
   }
@@ -42,6 +44,7 @@ module {
 module {
   // expected-error @below {{must not declare results; target outputs are tensor operands owned by the caller}}
   ttl.dispatch.target @bad_result : (i32) -> i32 {
+    argument_contracts = [#ttl.dispatch_argument<read, ordinary>],
     argument_names = ["value"],
     operation_identity = "bad-result"
   }

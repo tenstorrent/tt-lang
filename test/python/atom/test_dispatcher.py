@@ -15,6 +15,7 @@ import torch
 
 import ttl
 import ttnn
+from ttl.ir import MLIRError
 
 
 @ttl.operation(grid=(1, 1))
@@ -135,12 +136,24 @@ def test_dispatcher_option_requires_bool():
         ttl.operation(dispatcher=1)
 
 
-@ttl.operation(grid=(1, 1))
+@ttl.operation(
+    grid=(1, 1),
+    dispatch_arguments={
+        "source": ttl.DispatchArgument("read", "handoff"),
+        "destination": ttl.DispatchArgument("write", "handoff"),
+    },
+)
 def _dispatch_write(source, destination):
     pass
 
 
-@ttl.operation(grid=(1, 1))
+@ttl.operation(
+    grid=(1, 1),
+    dispatch_arguments={
+        "source": ttl.DispatchArgument("read", "handoff"),
+        "destination": ttl.DispatchArgument("write", "handoff"),
+    },
+)
 def _dispatch_transform(source, destination):
     pass
 
@@ -206,6 +219,16 @@ def test_resolved_dispatcher_exposes_backend_neutral_schedule():
         ("source", "destination"),
         ("source", "destination"),
     )
+    assert tuple(target.argument_contracts for target in resolved.targets) == (
+        (
+            ttl.DispatchArgument("read", "handoff"),
+            ttl.DispatchArgument("write", "handoff"),
+        ),
+        (
+            ttl.DispatchArgument("read", "handoff"),
+            ttl.DispatchArgument("write", "handoff"),
+        ),
+    )
     assert tuple(invocation.target.symbol for invocation in resolved.invocations) == (
         "_dispatch_write",
         "_dispatch_transform",
@@ -245,3 +268,34 @@ def test_dispatcher_emit_rejects_non_argument_target_operand():
 def test_ordinary_operation_cannot_emit_dispatch_ir():
     with pytest.raises(ValueError, match="is not a dispatcher"):
         _dispatch_write.emit_dispatch_ir(_host_tensor(), _host_tensor())
+
+
+def test_dispatch_argument_contract_validates_state_and_immutable_access():
+    with pytest.raises(ValueError, match="require a non-empty state name"):
+        ttl.DispatchArgument("read_write", "persistent_state")
+    with pytest.raises(ValueError, match="must be read-only"):
+        ttl.DispatchArgument("write", "immutable_image_state")
+
+
+def test_dispatcher_rejects_ordinary_value_live_across_images():
+    @ttl.operation(
+        grid=(1, 1),
+        dispatch_arguments={"value": ttl.DispatchArgument("write", "ordinary")},
+    )
+    def producer(value):
+        pass
+
+    @ttl.operation(
+        grid=(1, 1),
+        dispatch_arguments={"value": ttl.DispatchArgument("read", "ordinary")},
+    )
+    def consumer(value):
+        pass
+
+    @ttl.operation(dispatcher=True)
+    def invalid_dispatcher(value):
+        producer(value)
+        consumer(value)
+
+    with pytest.raises(MLIRError, match="declare handoff or persistent_state"):
+        invalid_dispatcher.resolve_dispatch(_host_tensor())

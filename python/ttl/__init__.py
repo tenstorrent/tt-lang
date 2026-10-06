@@ -122,6 +122,7 @@ else:
     )
     from ttl.pipe import Pipe, PipeNet
     from ttl.dispatch import ResolvedDispatcher, ResolvedInvocation, ResolvedTarget
+    from ttl.dispatch_contract import DispatchAccess, DispatchArgument, DispatchStorage
 
     __all__ = [
         "__version__",
@@ -159,6 +160,9 @@ else:
         "ResolvedDispatcher",
         "ResolvedInvocation",
         "ResolvedTarget",
+        "DispatchAccess",
+        "DispatchArgument",
+        "DispatchStorage",
         "AllToAllTransfer",
         "AxisNeighborTransfer",
         "DeviceDomain",

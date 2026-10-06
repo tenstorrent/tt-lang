@@ -131,6 +131,7 @@ declare_mlir_python_sources(TTLangPythonCommon.Main
     atom.py
     dataflow_buffer.py
     dispatch.py
+    dispatch_contract.py
     compiler_options.py
     condition.py
     constants.py

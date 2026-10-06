@@ -13,6 +13,31 @@ include "mlir/IR/AttrTypeBase.td"
 // TTL attribute definitions
 //===----------------------------------------------------------------------===//
 
+def TTL_DispatchArgumentAttr
+    : TTL_Attr<"DispatchArgument", "dispatch_argument"> {
+  let summary = "One dispatch target argument contract";
+  let description = [{
+    Describes how one independently compiled target accesses an argument and
+    how the argument's storage behaves across reload-image boundaries.
+    `ordinary` storage carries no cross-image lifetime guarantee. `handoff`
+    storage carries transient target output to a later target.
+    `persistent_state` survives the complete dispatcher sequence and requires
+    a semantic state name. `immutable_image_state` is read-only state restored
+    or rebound for each image.
+  }];
+  let parameters = (ins
+    "DispatchAccess":$access,
+    "DispatchStorage":$storage,
+    OptionalParameter<"StringAttr">:$state
+  );
+  let assemblyFormat = "`<` $access `,` $storage (`,` `state` `=` $state^)? `>`";
+  let genVerifyDecl = 1;
+}
+
+def TTL_DispatchArgumentArrayAttr
+    : TypedArrayAttrBase<TTL_DispatchArgumentAttr,
+                         "ordered dispatch target argument contracts">;
+
 def TTL_LogicalKernelAttr : TTL_Attr<"LogicalKernel", "logical_kernel"> {
   let summary = "Target-independent identity of one operation kernel";
   let description = [{

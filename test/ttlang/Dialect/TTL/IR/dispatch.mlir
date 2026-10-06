@@ -5,10 +5,12 @@
 
 module {
   ttl.dispatch.target @kda : (i32, i32) -> () {
+    argument_contracts = [#ttl.dispatch_argument<read, ordinary>, #ttl.dispatch_argument<write, handoff>],
     argument_names = ["input", "handoff"],
     operation_identity = "kda-operation"
   }
   ttl.dispatch.target @moe : (i32, i32) -> () {
+    argument_contracts = [#ttl.dispatch_argument<read, handoff>, #ttl.dispatch_argument<write, ordinary>],
     argument_names = ["handoff", "output"],
     operation_identity = "moe-operation"
   }
@@ -25,6 +27,7 @@ module {
 }
 
 // CHECK: ttl.dispatch.target @kda : (i32, i32) -> ()
+// CHECK-SAME: argument_contracts = [#ttl.dispatch_argument<read, ordinary>, #ttl.dispatch_argument<write, handoff>]
 // CHECK-SAME: argument_names = ["input", "handoff"]
 // CHECK-SAME: operation_identity = "kda-operation"
 // CHECK: ttl.dispatch.target @moe : (i32, i32) -> ()

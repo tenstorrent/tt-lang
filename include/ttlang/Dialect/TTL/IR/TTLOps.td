@@ -44,7 +44,8 @@ def TTL_DispatchTargetOp
     OptionalAttr<StrAttr>:$sym_visibility,
     TypeAttrOf<FunctionType>:$function_type,
     StrAttr:$operation_identity,
-    StrArrayAttr:$argument_names
+    StrArrayAttr:$argument_names,
+    TTL_DispatchArgumentArrayAttr:$argument_contracts
   );
 
   let assemblyFormat = [{
@@ -55,13 +56,19 @@ def TTL_DispatchTargetOp
 }
 
 def TTL_DispatchInvokeOp
-    : TTL_Op<"dispatch.invoke", [MemoryEffects<[MemRead, MemWrite]>]> {
+    : TTL_Op<"dispatch.invoke",
+             [DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
   let summary = "Invoke a separately compiled dispatch target";
   let description = [{
     `ttl.dispatch.invoke` records one invocation in a static dispatcher's
     structured control flow. The referenced `ttl.dispatch.target` supplies the
     semantic argument ABI. Target operations have no SSA results because
     TT-Lang operation outputs are caller-owned tensor operands.
+
+    The operation reports operand-specific read and write effects from the
+    target argument contracts. It also reports an unknown write effect so
+    canonicalization cannot remove or reorder an invocation in the resolved
+    reload schedule.
   }];
 
   let arguments = (ins

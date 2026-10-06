@@ -99,6 +99,7 @@ from .dataflow_buffer import (
     make_tensor_backed_dfb,
 )
 from .dtype_utils import is_ttnn_tensor
+from .dispatch_contract import DispatchArgument, _normalize_dispatch_arguments
 from .kernel import (
     Kernel,
     KernelKind,
@@ -236,6 +237,7 @@ class _AtomSpec:
     line_offset: int
     dispatcher_ast: Optional[ast.FunctionDef]
     dispatch_targets: Dict[str, Any]
+    dispatch_arguments: Tuple[DispatchArgument, ...]
     fn_ast: ast.FunctionDef  # post-inline
     params: List[_ParamInfo]
     dfb_param_names: List[str]
@@ -360,6 +362,7 @@ def _build_atom_spec(
     fn: Callable,
     *,
     dispatcher: bool = False,
+    dispatch_arguments=None,
     bind_fabric_manager_claims: bool = True,
 ) -> _AtomSpec:
     name = fn.__name__
@@ -391,6 +394,9 @@ def _build_atom_spec(
         _collect_dispatch_targets(dispatcher_ast, scope, name)
         if dispatcher_ast is not None
         else {}
+    )
+    normalized_dispatch_arguments = _normalize_dispatch_arguments(
+        fn, dispatch_arguments
     )
 
     # Inline statement-level calls to other unified operations, then keep
@@ -498,6 +504,16 @@ def _build_atom_spec(
     captured_logical_kernels.update(transitive_reconfiguration_kernels)
 
     operation_identity = _operation_identity(fn)
+    encoded_dispatch_arguments = ";".join(
+        f"{contract.access.value}:{contract.storage.value}:{contract.state or ''}"
+        for contract in normalized_dispatch_arguments
+    )
+    dispatch_arguments_digest = hashlib.sha256(
+        encoded_dispatch_arguments.encode("utf-8")
+    ).hexdigest()[:16]
+    operation_identity = (
+        f"{operation_identity}[dispatch_arguments={dispatch_arguments_digest}]"
+    )
     allocation_group_topology = _dfb_allocation_group_topology(allocation_groups)
     if allocation_group_topology:
         encoded_group_topology = ",".join(
@@ -585,6 +601,7 @@ def _build_atom_spec(
         line_offset=line_offset,
         dispatcher_ast=dispatcher_ast,
         dispatch_targets=dispatch_targets,
+        dispatch_arguments=normalized_dispatch_arguments,
         fn_ast=fn_def,
         params=params,
         dfb_param_names=[p.name for p in params if p.kind == "dfb"],
@@ -1144,6 +1161,7 @@ def _unified_operation(
     factory_cache: Optional[MutableMapping] = None,
     factory_cache_key: Optional[Hashable] = None,
     dispatcher: bool = False,
+    dispatch_arguments=None,
 ) -> Callable:
     """Build the unified-body form selected by ``@ttl.operation``.
 
@@ -1157,6 +1175,7 @@ def _unified_operation(
         spec = _build_atom_spec(
             f,
             dispatcher=dispatcher,
+            dispatch_arguments=dispatch_arguments,
             bind_fabric_manager_claims=grid is not None,
         )
         return Atom(
@@ -1176,6 +1195,7 @@ def _unified_operation(
                 "factory_cache": factory_cache,
                 "factory_cache_key": factory_cache_key,
                 "dispatcher": dispatcher,
+                "dispatch_arguments": dispatch_arguments,
             },
         )
 
@@ -1199,6 +1219,7 @@ def operation(
     factory_cache: Optional[MutableMapping] = None,
     factory_cache_key: Optional[Hashable] = None,
     dispatcher: bool = False,
+    dispatch_arguments=None,
 ) -> Callable:
     """Define a unified-body or explicit multi-kernel operation.
 
@@ -1214,6 +1235,11 @@ def operation(
 
     if not isinstance(dispatcher, bool):
         raise TypeError("ttl.operation() dispatcher must be a bool")
+    if dispatcher and dispatch_arguments:
+        raise ValueError(
+            "ttl.operation() dispatch_arguments describe target arguments and "
+            "cannot be set on a dispatcher"
+        )
 
     def _decorator(fn):
         validate_operation_interface(fn)
@@ -1238,6 +1264,10 @@ def operation(
         if dispatcher and (explicit_options or has_explicit_kernels):
             raise ValueError(
                 "@ttl.operation dispatcher=True requires a unified operation body"
+            )
+        if dispatch_arguments and (explicit_options or has_explicit_kernels):
+            raise ValueError(
+                "ttl.operation() dispatch_arguments require a unified operation body"
             )
         if explicit_options or has_explicit_kernels:
             prepare_call = functools.partial(_canonical_tensor_args, fn)
@@ -1277,6 +1307,7 @@ def operation(
             factory_cache=factory_cache,
             factory_cache_key=factory_cache_key,
             dispatcher=dispatcher,
+            dispatch_arguments=dispatch_arguments,
         )(fn)
 
     return _decorator

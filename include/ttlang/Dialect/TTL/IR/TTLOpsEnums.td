@@ -12,6 +12,29 @@ include "mlir/IR/EnumAttr.td"
 // TTL enum definitions
 //===----------------------------------------------------------------------===//
 
+def TTL_DispatchAccess : I32EnumAttr<
+    "DispatchAccess", "Dispatch target argument access",
+    [
+      I32EnumAttrCase<"Read", 0, "read">,
+      I32EnumAttrCase<"Write", 1, "write">,
+      I32EnumAttrCase<"ReadWrite", 2, "read_write">,
+    ]> {
+  let cppNamespace = "::mlir::tt::ttl";
+  let genSpecializedAttr = 0;
+}
+
+def TTL_DispatchStorage : I32EnumAttr<
+    "DispatchStorage", "Dispatch target argument cross-image storage",
+    [
+      I32EnumAttrCase<"Ordinary", 0, "ordinary">,
+      I32EnumAttrCase<"Handoff", 1, "handoff">,
+      I32EnumAttrCase<"PersistentState", 2, "persistent_state">,
+      I32EnumAttrCase<"ImmutableImageState", 3, "immutable_image_state">,
+    ]> {
+  let cppNamespace = "::mlir::tt::ttl";
+  let genSpecializedAttr = 0;
+}
+
 // Note: TTL uses TTKernel's ThreadType enum (#ttkernel.thread<noc>) for
 // kernel thread annotations on functions.
 

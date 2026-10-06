@@ -12,6 +12,7 @@ from dataclasses import dataclass
 
 from ttl.dialects import func, ttl as ttl_dialect
 from ttl.ir import (
+    ArrayAttr,
     Context,
     FunctionType,
     InsertionPoint,
@@ -23,6 +24,7 @@ from ttl.ir import (
 from ttl.passmanager import PassManager
 
 from ._src.ttl_ast import _build_tensor_type
+from .dispatch_contract import DispatchAccess, DispatchArgument, DispatchStorage
 from .ttl_api import _canonical_tensor_args, _resolve_grid
 
 
@@ -34,6 +36,7 @@ class ResolvedTarget:
     operation_identity: str
     argument_names: tuple[str, ...]
     argument_types: tuple[object, ...]
+    argument_contracts: tuple[DispatchArgument, ...]
 
 
 @dataclass(frozen=True)
@@ -100,6 +103,10 @@ class ResolvedDispatcher:
                         attribute.value for attribute in operation.argument_names
                     ),
                     argument_types=tuple(operation.function_type.value.inputs),
+                    argument_contracts=tuple(
+                        _dispatch_argument_from_attr(attribute)
+                        for attribute in operation.argument_contracts
+                    ),
                 )
             )
         return tuple(targets)
@@ -136,6 +143,43 @@ class ResolvedDispatcher:
 class _Invocation:
     target: object
     dispatcher_argument_names: tuple[str, ...]
+
+
+_ACCESS_TO_IR = {
+    DispatchAccess.READ: ttl_dialect.ir.DispatchAccess.Read,
+    DispatchAccess.WRITE: ttl_dialect.ir.DispatchAccess.Write,
+    DispatchAccess.READ_WRITE: ttl_dialect.ir.DispatchAccess.ReadWrite,
+}
+_ACCESS_FROM_IR = {value: key for key, value in _ACCESS_TO_IR.items()}
+_STORAGE_TO_IR = {
+    DispatchStorage.ORDINARY: ttl_dialect.ir.DispatchStorage.Ordinary,
+    DispatchStorage.HANDOFF: ttl_dialect.ir.DispatchStorage.Handoff,
+    DispatchStorage.PERSISTENT_STATE: (ttl_dialect.ir.DispatchStorage.PersistentState),
+    DispatchStorage.IMMUTABLE_IMAGE_STATE: (
+        ttl_dialect.ir.DispatchStorage.ImmutableImageState
+    ),
+}
+_STORAGE_FROM_IR = {value: key for key, value in _STORAGE_TO_IR.items()}
+
+
+def _dispatch_argument_attr(context, contract: DispatchArgument):
+    return ttl_dialect.DispatchArgumentAttr.get(
+        context,
+        _ACCESS_TO_IR[contract.access],
+        _STORAGE_TO_IR[contract.storage],
+        contract.state,
+    )
+
+
+def _dispatch_argument_from_attr(attribute) -> DispatchArgument:
+    contract = ttl_dialect.DispatchArgumentAttr.maybe_downcast(attribute)
+    if contract is None:
+        raise ValueError(f"invalid dispatch argument contract {attribute}")
+    return DispatchArgument(
+        access=_ACCESS_FROM_IR[contract.access],
+        storage=_STORAGE_FROM_IR[contract.storage],
+        state=contract.state,
+    )
 
 
 def _bind_invocation(dispatcher, call: ast.Call) -> _Invocation:
@@ -311,6 +355,12 @@ def emit_dispatch_ir(dispatcher, args: tuple, kwargs: dict) -> Module:
                     TypeAttr.get(FunctionType.get(target_types[identity], [])),
                     identity,
                     [parameter.name for parameter in target._spec.params],
+                    ArrayAttr.get(
+                        [
+                            _dispatch_argument_attr(context, contract)
+                            for contract in target._spec.dispatch_arguments
+                        ]
+                    ),
                 )
 
             dispatcher_type_list = [

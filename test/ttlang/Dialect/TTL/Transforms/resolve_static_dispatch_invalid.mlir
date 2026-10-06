@@ -5,6 +5,7 @@
 
 module {
   ttl.dispatch.target @target : (i32) -> () {
+    argument_contracts = [#ttl.dispatch_argument<read, ordinary>],
     argument_names = ["value"],
     operation_identity = "target"
   }
@@ -14,6 +15,29 @@ module {
     scf.if %condition {
       ttl.dispatch.invoke @target(%value : i32)
     }
+    func.return
+  }
+}
+
+// -----
+
+// Verify that an ordinary value cannot carry a producer result into a later
+// reload image.
+module {
+  ttl.dispatch.target @producer : (i32) -> () {
+    argument_contracts = [#ttl.dispatch_argument<write, ordinary>],
+    argument_names = ["value"],
+    operation_identity = "producer"
+  }
+  ttl.dispatch.target @consumer : (i32) -> () {
+    argument_contracts = [#ttl.dispatch_argument<read, ordinary>],
+    argument_names = ["value"],
+    operation_identity = "consumer"
+  }
+  func.func @controller(%value: i32) attributes {ttl.dispatcher} {
+    ttl.dispatch.invoke @producer(%value : i32)
+    // expected-error @below {{declare handoff or persistent_state storage}}
+    ttl.dispatch.invoke @consumer(%value : i32)
     func.return
   }
 }
@@ -33,6 +57,7 @@ module {
 // Verify that the dispatcher marker uses the frontend's unit-attribute form.
 module {
   ttl.dispatch.target @target : (i32) -> () {
+    argument_contracts = [#ttl.dispatch_argument<read, ordinary>],
     argument_names = ["value"],
     operation_identity = "target"
   }
@@ -48,6 +73,7 @@ module {
 // Verify that dispatchers use caller-owned output operands rather than returns.
 module {
   ttl.dispatch.target @target : (i32) -> () {
+    argument_contracts = [#ttl.dispatch_argument<read, ordinary>],
     argument_names = ["value"],
     operation_identity = "target"
   }

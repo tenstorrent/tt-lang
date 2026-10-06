@@ -72,6 +72,45 @@ void populateTTLModule(nb::module_ &m) {
   m.attr("LOCAL_TENSOR_INDICES_ATTR") = nb::str(
       kLocalTensorIndicesAttrName.data(), kLocalTensorIndicesAttrName.size());
 
+  nb::enum_<DispatchAccess>(m, "DispatchAccess")
+      .value("Read", DispatchAccess::Read)
+      .value("Write", DispatchAccess::Write)
+      .value("ReadWrite", DispatchAccess::ReadWrite);
+
+  nb::enum_<DispatchStorage>(m, "DispatchStorage")
+      .value("Ordinary", DispatchStorage::Ordinary)
+      .value("Handoff", DispatchStorage::Handoff)
+      .value("PersistentState", DispatchStorage::PersistentState)
+      .value("ImmutableImageState", DispatchStorage::ImmutableImageState);
+
+  tt_attribute_class<DispatchArgumentAttr>(m, "DispatchArgumentAttr")
+      .def_static(
+          "get",
+          [](MlirContext context, DispatchAccess access,
+             DispatchStorage storage, const std::optional<std::string> &state) {
+            MLIRContext *cppContext = unwrap(context);
+            StringAttr stateAttr =
+                state ? StringAttr::get(cppContext, *state) : StringAttr();
+            DispatchArgumentAttr attribute = DispatchArgumentAttr::getChecked(
+                [cppContext]() {
+                  return emitError(UnknownLoc::get(cppContext));
+                },
+                cppContext, access, storage, stateAttr);
+            if (!attribute) {
+              throw nb::value_error("invalid dispatch argument contract");
+            }
+            return wrap(attribute);
+          },
+          nb::arg("context"), nb::arg("access"), nb::arg("storage"),
+          nb::arg("state") = nb::none())
+      .def_prop_ro("access", &DispatchArgumentAttr::getAccess)
+      .def_prop_ro("storage", &DispatchArgumentAttr::getStorage)
+      .def_prop_ro("state", [](DispatchArgumentAttr attribute) {
+        StringAttr state = attribute.getState();
+        return state ? std::optional<std::string>(state.getValue().str())
+                     : std::nullopt;
+      });
+
   nb::enum_<LogicalKernelKind>(m, "LogicalKernelKind")
       .value("Compute", LogicalKernelKind::Compute)
       .value("DataMovement", LogicalKernelKind::DataMovement);

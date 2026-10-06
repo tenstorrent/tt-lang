@@ -13,6 +13,7 @@
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/DialectImplementation.h" // IWYU pragma: keep
 #include "mlir/IR/SymbolTable.h"
+#include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Interfaces/TilingInterface.h"
 #include "mlir/Support/LogicalResult.h"
 #include "ttlang/Dialect/TTCore/IR/TTCoreOpsTypes.h"
@@ -51,6 +52,26 @@
 
 namespace mlir::tt::ttl {
 
+llvm::LogicalResult DispatchArgumentAttr::verify(
+    llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
+    DispatchAccess access, DispatchStorage storage, StringAttr state) {
+  if (storage == DispatchStorage::PersistentState) {
+    if (!state || state.getValue().empty()) {
+      return emitError()
+             << "persistent_state dispatch argument requires a state name";
+    }
+  } else if (state) {
+    return emitError()
+           << "only persistent_state dispatch argument may have a state name";
+  }
+  if (storage == DispatchStorage::ImmutableImageState &&
+      access != DispatchAccess::Read) {
+    return emitError() << "immutable_image_state dispatch argument must be "
+                          "read-only";
+  }
+  return success();
+}
+
 LogicalResult DispatchTargetOp::verify() {
   FunctionType functionType = getFunctionType();
   if (functionType.getNumResults() != 0) {
@@ -58,10 +79,14 @@ LogicalResult DispatchTargetOp::verify() {
                        "operands owned by the caller");
   }
   if (getArgumentNames().size() != functionType.getNumInputs()) {
-    return emitOpError()
-           << "declares " << getArgumentNames().size()
-           << " argument names for " << functionType.getNumInputs()
-           << " inputs";
+    return emitOpError() << "declares " << getArgumentNames().size()
+                         << " argument names for "
+                         << functionType.getNumInputs() << " inputs";
+  }
+  if (getArgumentContracts().size() != functionType.getNumInputs()) {
+    return emitOpError() << "declares " << getArgumentContracts().size()
+                         << " argument contracts for "
+                         << functionType.getNumInputs() << " inputs";
   }
   if (getOperationIdentity().empty()) {
     return emitOpError("requires a non-empty operation_identity");
@@ -87,13 +112,40 @@ LogicalResult DispatchInvokeOp::verify() {
   for (auto [index, argument] : llvm::enumerate(getArguments())) {
     Type expectedType = functionType.getInput(index);
     if (argument.getType() != expectedType) {
-      return emitOpError()
-             << "argument " << index << " has type " << argument.getType()
-             << ", expected " << expectedType << " for target '"
-             << target.getSymName() << "'";
+      return emitOpError() << "argument " << index << " has type "
+                           << argument.getType() << ", expected "
+                           << expectedType << " for target '"
+                           << target.getSymName() << "'";
     }
   }
   return success();
+}
+
+void DispatchInvokeOp::getEffects(
+    SmallVectorImpl<MemoryEffects::EffectInstance> &effects) {
+  effects.emplace_back(MemoryEffects::Write::get());
+  auto target = SymbolTable::lookupNearestSymbolFrom<DispatchTargetOp>(
+      *this, getTargetAttr());
+  if (!target) {
+    effects.emplace_back(MemoryEffects::Read::get());
+    effects.emplace_back(MemoryEffects::Write::get());
+    return;
+  }
+
+  for (auto [index, contract] :
+       llvm::enumerate(target.getArgumentContracts().getValue())) {
+    OpOperand *argument = &getOperation()->getOpOperand(index);
+    DispatchAccess access = cast<DispatchArgumentAttr>(contract).getAccess();
+    if (access == DispatchAccess::Read || access == DispatchAccess::ReadWrite) {
+      effects.emplace_back(MemoryEffects::Read::get(), argument,
+                           SideEffects::DefaultResource::get());
+    }
+    if (access == DispatchAccess::Write ||
+        access == DispatchAccess::ReadWrite) {
+      effects.emplace_back(MemoryEffects::Write::get(), argument,
+                           SideEffects::DefaultResource::get());
+    }
+  }
 }
 
 namespace {
