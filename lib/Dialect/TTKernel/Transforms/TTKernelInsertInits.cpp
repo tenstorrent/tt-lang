@@ -17,8 +17,8 @@
 //      DST sync takes one init immediately before the region. Mixed
 //      consumers keep an init immediately before each consumer, inside the
 //      region. DST synchronization preserves the configuration.
-//      reduce_uninit is placed on the transition out of a definite reduce
-//      configuration.
+//      reduce_uninit is placed before a sync or non-reduce consumer reachable
+//      from any path with a reduce configuration.
 //
 // TODO(#329): Emit init_short variants for cheaper re-inits on type switches.
 //
@@ -38,7 +38,6 @@
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Builders.h"
 #include "llvm/ADT/DenseMap.h"
-#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/TypeSwitch.h"
 
 #define DEBUG_TYPE "ttkernel-insert-inits"
@@ -187,8 +186,8 @@ static bool isReduceInit(const ttk::MathInitDescriptor &descriptor) {
   return descriptor.init.getValue() == ttk::ReduceInitOp::getOperationName();
 }
 
-/// DST sync. MATH configuration is preserved across it, except a sync marked
-/// as the first one after a definite reduce configuration.
+/// DST synchronization preserves MATH configuration. Required reduce cleanup
+/// is represented by a separate `reduce_uninit` immediately before the sync.
 static bool isSyncBoundary(Operation *op) {
   return isa<ttk::TileRegsAcquireOp, ttk::TileRegsCommitOp, ttk::TileRegsWaitOp,
              ttk::TileRegsReleaseOp>(op);
@@ -426,18 +425,10 @@ static LogicalResult insertCommonInits(ModuleOp moduleOp) {
 struct PlannedInit {
   Operation *compute = nullptr;
   Operation *insertionPoint = nullptr;
-  bool needsReduceUninit = false;
 };
 
-/// MathInit state used to place per-op inits. `markSyncs` makes every DST
-/// sync write unknown so the first sync after a reduce can be recorded.
-/// Otherwise only syncs in `reduceSyncs` write unknown, and a compute op
-/// virtually writes the descriptor it reads.
 struct InsertSlot {
   using State = std::optional<ttk::MathInitDescriptor>;
-
-  bool markSyncs = false;
-  const llvm::DenseSet<Operation *> *reduceSyncs = nullptr;
 
   static State unknown() { return std::nullopt; }
 
@@ -449,22 +440,56 @@ struct InsertSlot {
   }
 
   std::optional<State> getWrite(Operation *op) const {
-    if (isSyncBoundary(op)) {
-      if (markSyncs || (reduceSyncs && reduceSyncs->contains(op))) {
-        return std::optional<State>(std::in_place, std::nullopt);
-      }
-      return std::nullopt;
-    }
     ttk::MathInitEffects effects = ttk::getMathInitEffects(op);
     if (effects.write) {
-      return std::optional<State>(std::in_place, effects.write->descriptor);
+      return effects.write->descriptor;
     }
     if (effects.read && effects.read->descriptor) {
-      return std::optional<State>(std::in_place, effects.read->descriptor);
+      return effects.read->descriptor;
     }
     return std::nullopt;
   }
 };
+
+/// Tracks whether any incoming path may hold a reduce configuration after all
+/// init placement has completed.
+struct MayReduceSlot {
+  using State = bool;
+
+  static State unknown() { return false; }
+
+  State join(State lhs, State rhs) const { return lhs || rhs; }
+
+  std::optional<State> getWrite(Operation *op) const {
+    if (isa<ttk::ReduceUninitOp>(op) || isSyncBoundary(op)) {
+      return false;
+    }
+    ttk::MathInitEffects effects = ttk::getMathInitEffects(op);
+    if (effects.write) {
+      if (!effects.write->descriptor) {
+        return std::nullopt;
+      }
+      return isReduceInit(*effects.write->descriptor);
+    }
+    if (effects.read && effects.read->descriptor &&
+        !isReduceInit(*effects.read->descriptor)) {
+      return false;
+    }
+    return std::nullopt;
+  }
+};
+
+static bool isReduceCleanupBoundary(Operation *op) {
+  if (isSyncBoundary(op)) {
+    return true;
+  }
+  ttk::MathInitEffects effects = ttk::getMathInitEffects(op);
+  if (effects.write && effects.write->descriptor) {
+    return !isReduceInit(*effects.write->descriptor);
+  }
+  return effects.read && effects.read->descriptor &&
+         !isReduceInit(*effects.read->descriptor);
+}
 
 struct HoistingSummary {
   bool hasSync = false;
@@ -588,33 +613,32 @@ static Operation *initInsertionPoint(Operation *compute,
   return point;
 }
 
-static void insertPerOpInits(func::FuncOp funcOp) {
-  InsertSlot marker;
-  marker.markSyncs = true;
-  llvm::DenseSet<Operation *> reduceSyncs;
-  ConfigFlow<InsertSlot> marking(marker);
-  marking.run(funcOp.getBody(), InsertSlot::unknown(),
-              [&](Operation *op, const InsertSlot::State &incoming) {
-                if (isSyncBoundary(op) && incoming && isReduceInit(*incoming)) {
-                  reduceSyncs.insert(op);
-                }
-              });
+static bool insertReduceUninits(func::FuncOp funcOp) {
+  MayReduceSlot slot;
+  ConfigFlow<MayReduceSlot> flow(slot);
+  SmallVector<Operation *> cleanupPoints;
+  flow.run(funcOp.getBody(), false,
+           [&](Operation *op, MayReduceSlot::State incoming) {
+             if (incoming && isReduceCleanupBoundary(op) &&
+                 !isa_and_nonnull<ttk::ReduceUninitOp>(op->getPrevNode())) {
+               cleanupPoints.push_back(op);
+             }
+           });
 
-  InsertSlot planner;
-  planner.reduceSyncs = &reduceSyncs;
+  for (Operation *point : cleanupPoints) {
+    OpBuilder builder(point);
+    ttk::ReduceUninitOp::create(builder, point->getLoc());
+  }
+  return !cleanupPoints.empty();
+}
+
+static bool insertMissingPerOpInits(func::FuncOp funcOp) {
+  InsertSlot slot;
   SmallVector<PlannedInit> planned;
-  // Regions entered with a definite reduce configuration. The body header
-  // joins that with the backedge, so the consumer itself may not see it.
-  // A reduce that holds on only some paths, such as one branch of scf.if or
-  // a dynamic-trip loop, does not emit reduce_uninit.
-  llvm::DenseSet<Operation *> reduceRegions;
-  ConfigFlow<InsertSlot> planning(planner);
-  planning.run(funcOp.getBody(), InsertSlot::unknown(),
+  ConfigFlow<InsertSlot> planning(slot);
+  planning.run(funcOp.getBody(), InsertSlot::State{},
                [&](Operation *op, const InsertSlot::State &incoming) {
                  if (isa<scf::ForOp, scf::IfOp, scf::WhileOp>(op)) {
-                   if (incoming && isReduceInit(*incoming)) {
-                     reduceRegions.insert(op);
-                   }
                    return;
                  }
                  ttk::MathInitEffects effects = ttk::getMathInitEffects(op);
@@ -626,19 +650,7 @@ static void insertPerOpInits(func::FuncOp funcOp) {
                  if (incoming && *incoming == required) {
                    return;
                  }
-                 bool leavingReduce = incoming && isReduceInit(*incoming) &&
-                                      !isReduceInit(required);
-                 if (!leavingReduce && !isReduceInit(required)) {
-                   for (Operation *parent = op->getParentOp(); parent;
-                        parent = parent->getParentOp()) {
-                     if (!reduceRegions.erase(parent)) {
-                       continue;
-                     }
-                     leavingReduce = true;
-                     break;
-                   }
-                 }
-                 planned.push_back({op, nullptr, leavingReduce});
+                 planned.push_back({op, nullptr});
                });
 
   InitHoistingAnalysis hoisting;
@@ -650,16 +662,11 @@ static void insertPerOpInits(func::FuncOp funcOp) {
         initInsertionPoint(plan.compute, *effects.read->descriptor, hoisting);
   }
 
-  for (Operation *sync : reduceSyncs) {
-    OpBuilder builder(sync);
-    ttk::ReduceUninitOp::create(builder, sync->getLoc());
-  }
   // Both branches of one conditional can hoist the same init to that
   // conditional. One init at that point covers both.
   struct EmittedInit {
     Operation *point = nullptr;
     ttk::MathInitDescriptor descriptor;
-    bool emittedUninit = false;
   };
   SmallVector<EmittedInit, 8> emitted;
   for (const PlannedInit &plan : planned) {
@@ -676,20 +683,22 @@ static void insertPerOpInits(func::FuncOp funcOp) {
         break;
       }
     }
-    // The first consumer at a shared point is the one that leaves reduce, so
-    // a later plan for the same init never needs an uninit the first omitted.
     if (existing) {
-      assert((!plan.needsReduceUninit || existing->emittedUninit) &&
-             "shared init disagrees on reduce_uninit");
       continue;
     }
     OpBuilder builder(point);
-    if (plan.needsReduceUninit) {
-      ttk::ReduceUninitOp::create(builder, point->getLoc());
-    }
     createPerOpInit(builder, plan.compute->getLoc(), plan.compute);
-    emitted.push_back({point, required, plan.needsReduceUninit});
+    emitted.push_back({point, required});
   }
+  return !emitted.empty();
+}
+
+static void insertPerOpInits(func::FuncOp funcOp) {
+  bool changed;
+  do {
+    changed = insertMissingPerOpInits(funcOp);
+    changed |= insertReduceUninits(funcOp);
+  } while (changed);
 }
 
 //===----------------------------------------------------------------------===//

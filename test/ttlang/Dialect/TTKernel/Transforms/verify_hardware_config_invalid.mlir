@@ -20,6 +20,7 @@ func.func @call_resets_configuration() {
 // An unmodeled region starts from and exits with an unknown configuration.
 func.func @unmodeled_region_resets_configuration() {
   %c0 = arith.constant 0 : index
+  // expected-note @below {{configured here}}
   ttkernel.exp_tile_init() : () -> ()
   scf.execute_region {
     // expected-error @below {{requires MATH configuration from 'ttkernel.exp_tile_init' but it is not established on every incoming path}}
@@ -81,10 +82,11 @@ func.func @row_normalization_resets_configuration() {
 
 // -----
 
-// invoke_sfpi has a non-scf region, so the analysis exits unknown without a
-// writer note. The reset effect is what init insertion consults.
+// invoke_sfpi has a non-scf region, so the exact state exits unknown while the
+// incoming writer remains available for diagnostics.
 func.func @invoke_sfpi_resets_configuration() {
   %c0 = arith.constant 0 : index
+  // expected-note @below {{configured here}}
   ttkernel.exp_tile_init() : () -> ()
   ttkernel.invoke_sfpi {
   }

@@ -96,8 +96,8 @@ struct ConfigTransfer {
 /// `scf.while`. A static trip count of 0 contributes the incoming state and
 /// does not visit the body. A trip count of 1 runs the body on the incoming
 /// state and does not join the backedge. Other operations with regions, and
-/// regions with several blocks, start their regions from and exit with the
-/// unknown state.
+/// regions with several blocks, analyze each nested block from the unknown
+/// state and join its exit with the incoming state and unknown.
 ///
 /// `Slot` provides:
 ///   - `State`, default-constructible and copyable;
@@ -123,10 +123,11 @@ public:
       return entry;
     }
     if (!region.hasOneBlock()) {
+      State exit = slot.join(entry, Slot::unknown());
       for (Block &block : region) {
-        runBlock(block, Slot::unknown(), visitor);
+        exit = slot.join(exit, runBlock(block, Slot::unknown(), visitor));
       }
-      return Slot::unknown();
+      return exit;
     }
     return runBlock(region.front(), entry, visitor);
   }
@@ -205,10 +206,11 @@ private:
       return beforeExit;
     }
     if (op->getNumRegions() != 0) {
+      State exit = slot.join(state, Slot::unknown());
       for (Region &region : op->getRegions()) {
-        run(region, Slot::unknown(), visitor);
+        exit = slot.join(exit, run(region, Slot::unknown(), visitor));
       }
-      return Slot::unknown();
+      return exit;
     }
     visitor(op, state);
     if (std::optional<State> written = slot.getWrite(op)) {
@@ -225,12 +227,21 @@ private:
     if (it != summaries.end()) {
       return it->second;
     }
-    Transfer transfer = Transfer::assign(Slot::unknown());
+    Transfer transfer;
     if (region.hasOneBlock()) {
-      transfer = Transfer();
       for (Operation &op : body(region.front())) {
         transfer = transfer.then(summarize(&op), slot);
       }
+    } else {
+      State exit = Slot::unknown();
+      for (Block &block : region) {
+        Transfer blockTransfer;
+        for (Operation &op : body(block)) {
+          blockTransfer = blockTransfer.then(summarize(&op), slot);
+        }
+        exit = slot.join(exit, blockTransfer.apply(Slot::unknown(), slot));
+      }
+      transfer = transfer.join(Transfer::assign(exit), slot);
     }
     summaries[&region] = transfer;
     return transfer;
@@ -265,7 +276,11 @@ private:
           .then(before, slot);
     }
     if (op->getNumRegions() != 0) {
-      return Transfer::assign(Slot::unknown());
+      State exit = Slot::unknown();
+      for (Region &region : op->getRegions()) {
+        exit = slot.join(exit, summarize(region).apply(Slot::unknown(), slot));
+      }
+      return Transfer().join(Transfer::assign(exit), slot);
     }
     if (std::optional<State> written = slot.getWrite(op)) {
       return Transfer::assign(*written);

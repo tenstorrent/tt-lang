@@ -1547,9 +1547,11 @@ def TTKernelInsertInits
     contain a DST sync, that init is placed immediately before the region.
     Otherwise it is placed immediately before the consumer, including
     inside the region. DST synchronization preserves the configuration.
-    `reduce_uninit` is emitted when every incoming path holds a reduce
+    `reduce_uninit` is emitted when any incoming path may hold a reduce
     configuration, before the next sync or non-reduce consumer, and that
-    transition clears it.
+    transition clears the pending reduce state. Init placement and reduce
+    cleanup repeat until neither inserts an operation, because cleanup can
+    require a new init and a new reduce init can require later cleanup.
 
     Example (consecutive same-type ops share one init):
     ```mlir

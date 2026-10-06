@@ -70,9 +70,10 @@ A dynamic-trip loop joins the incoming state with the loop exit because the
 body may not execute.
 
 The analysis treats unsupported region operations and multi-block regions
-conservatively. Their nested regions start from unknown, and the enclosing
-operation exits with unknown. Unknown is distinct from a proven descriptor and
-cannot satisfy a compute read.
+conservatively. Their nested regions start from unknown, and their exits join
+the incoming state, unknown, and all nested exits. The descriptor lattice
+therefore remains unknown, while a separate monotone provenance analysis can
+retain facts observed before or inside the unsupported region.
 
 ## Init Insertion
 
@@ -90,17 +91,28 @@ An init may move before an enclosing modeled SCF operation when:
 
 Unsupported regions block hoisting even when their nested operations all use
 the candidate descriptor. This restriction keeps insertion consistent with
-`ConfigFlow`, which discards configuration state at the region boundary.
+`ConfigFlow`, which makes the exact configuration unknown at the region
+boundary.
 
 The hoisting analysis computes one bottom-up summary for each operation
 subtree. Summary construction is linear in the number of nested operations;
 placement queries inspect cached summaries instead of rescanning complete
 regions for every consumer.
 
-DST synchronization preserves non-reduce configurations. A definite reduce
-configuration requires `reduce_uninit` before the first following sync or
-before a non-reduce consumer. A reduce configuration present on only some
-incoming paths does not justify an uninit.
+DST synchronization preserves the MATH configuration. A reduce configuration
+present on any incoming path requires `reduce_uninit` before the first following
+sync or before a non-reduce init or consumer. A separate may-reduce analysis
+runs after init placement, so its input includes the final hoisted locations.
+Its join is logical OR, and only a `reduce_init` establishes reduce provenance;
+descriptor-less operations preserve it. Unsupported regions join provenance
+from their incoming state and nested operations without creating it.
+
+The inserted `reduce_uninit` resets the exact configuration. Init placement and
+reduce cleanup repeat to a fixed point: cleanup can require a new init, and a
+new reduce init can require later cleanup. An existing `reduce_uninit`
+immediately before a boundary satisfies its cleanup obligation. A sync with no
+preceding may-reduce state receives no cleanup and continues to preserve an
+established non-reduce descriptor.
 
 ## Verification
 
