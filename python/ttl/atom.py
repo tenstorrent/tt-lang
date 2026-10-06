@@ -1036,6 +1036,7 @@ class Atom:
 
     def __init__(self, spec: _AtomSpec, decorator_options: dict):
         self._spec = spec
+        self._decorator_options = dict(decorator_options)
         self._grid = decorator_options["grid"]
         self._dispatcher = decorator_options["dispatcher"]
         self._ttl_operation_kind = "dispatcher" if self._dispatcher else "unified"
@@ -1085,6 +1086,17 @@ class Atom:
 
     def _operation_identity_capture(self) -> tuple[str, str]:
         return ("operation", self._spec.operation_identity)
+
+    def emit_dispatch_ir(self, *args, **kwargs):
+        """Emit the control IR for a static dispatcher."""
+        if not self._dispatcher:
+            raise ValueError(
+                f"@ttl.operation {self.name!r} is not a dispatcher and cannot "
+                "emit dispatch IR"
+            )
+        from .dispatch import emit_dispatch_ir
+
+        return emit_dispatch_ir(self, args, kwargs)
 
     def __call__(self, *args, **kwargs):
         if self._dispatcher:

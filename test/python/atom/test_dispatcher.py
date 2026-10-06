@@ -11,8 +11,10 @@
 import ast
 
 import pytest
+import torch
 
 import ttl
+import ttnn
 
 
 @ttl.operation(grid=(1, 1))
@@ -131,3 +133,63 @@ def test_dispatcher_cannot_be_composed_into_an_operation():
 def test_dispatcher_option_requires_bool():
     with pytest.raises(TypeError, match="dispatcher must be a bool"):
         ttl.operation(dispatcher=1)
+
+
+@ttl.operation(grid=(1, 1))
+def _dispatch_write(source, destination):
+    pass
+
+
+@ttl.operation(grid=(1, 1))
+def _dispatch_transform(source, destination):
+    pass
+
+
+@ttl.operation(dispatcher=True)
+def _emitted_dispatcher(source, intermediate, destination):
+    _dispatch_write(source, intermediate)
+    _dispatch_transform(source=intermediate, destination=destination)
+    _dispatch_write(destination, intermediate)
+
+
+def _host_tensor():
+    return ttnn.Tensor(torch.ones((1, 1, 32, 32), dtype=torch.bfloat16))
+
+
+def test_dispatcher_emits_targets_and_ordered_invocations():
+    module = _emitted_dispatcher.emit_dispatch_ir(
+        _host_tensor(), _host_tensor(), _host_tensor()
+    )
+    text = str(module)
+
+    assert text.count("ttl.dispatch.target") == 2
+    assert text.count("ttl.dispatch.invoke") == 3
+    assert "func.func @_emitted_dispatcher" in text
+    assert "ttl.dispatcher" in text
+    first = text.index("ttl.dispatch.invoke @_dispatch_write")
+    second = text.index("ttl.dispatch.invoke @_dispatch_transform")
+    third = text.index("ttl.dispatch.invoke @_dispatch_write", first + 1)
+    assert first < second < third
+    assert "ttl.dispatch.invoke @_dispatch_write(%arg0, %arg1 :" in text
+    assert "ttl.dispatch.invoke @_dispatch_transform(%arg1, %arg2 :" in text
+    assert "ttl.dispatch.invoke @_dispatch_write(%arg2, %arg1 :" in text
+    assert _dispatch_write._spec.operation_identity in text
+    assert _dispatch_transform._spec.operation_identity in text
+
+
+def test_dispatcher_emit_rejects_non_argument_target_operand():
+    @ttl.operation(dispatcher=True)
+    def invalid_dispatcher(source, destination):
+        temporary = source
+        _dispatch_write(temporary, destination)
+
+    with pytest.raises(
+        ValueError,
+        match="contains unsupported straight-line statement Assign",
+    ):
+        invalid_dispatcher.emit_dispatch_ir(_host_tensor(), _host_tensor())
+
+
+def test_ordinary_operation_cannot_emit_dispatch_ir():
+    with pytest.raises(ValueError, match="is not a dispatcher"):
+        _dispatch_write.emit_dispatch_ir(_host_tensor(), _host_tensor())
