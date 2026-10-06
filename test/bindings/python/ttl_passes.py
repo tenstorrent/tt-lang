@@ -50,6 +50,7 @@ def test_ttl_passes_registered():
         "ttl-erase-pipenet-scopes",
         "ttkernel-annotate-dfb-use",
         "ttkernel-specialize-and-annotate-dfb-use",
+        "ttl-dispatch-pipeline",
     ]
     for pass_name in module_passes:
         PassManager.parse(f"builtin.module({pass_name})", context=ctx)

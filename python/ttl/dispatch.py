@@ -20,6 +20,7 @@ from ttl.ir import (
     TypeAttr,
     UnitAttr,
 )
+from ttl.passmanager import PassManager
 
 from ._src.ttl_ast import _build_tensor_type
 from .ttl_api import _canonical_tensor_args, _resolve_grid
@@ -234,4 +235,15 @@ def emit_dispatch_ir(dispatcher, args: tuple, kwargs: dict) -> Module:
         return module
 
 
-__all__ = ["emit_dispatch_ir"]
+def resolve_dispatch_ir(dispatcher, args: tuple, kwargs: dict) -> Module:
+    """Emit dispatch IR and run the dedicated static dispatch pipeline."""
+    module = emit_dispatch_ir(dispatcher, args, kwargs)
+    pass_manager = PassManager.parse(
+        "builtin.module(ttl-dispatch-pipeline)", context=module.context
+    )
+    pass_manager.run(module.operation)
+    module.operation.verify()
+    return module
+
+
+__all__ = ["emit_dispatch_ir", "resolve_dispatch_ir"]

@@ -177,6 +177,19 @@ def test_dispatcher_emits_targets_and_ordered_invocations():
     assert _dispatch_transform._spec.operation_identity in text
 
 
+def test_dispatcher_runs_dedicated_resolution_pipeline():
+    module = _emitted_dispatcher.resolve_dispatch_ir(
+        _host_tensor(), _host_tensor(), _host_tensor()
+    )
+    text = str(module)
+
+    assert "attributes {ttl.dispatch.resolved, ttl.dispatcher}" in text
+    first = text.index("ttl.dispatch.invoke @_dispatch_write")
+    second = text.index("ttl.dispatch.invoke @_dispatch_transform")
+    third = text.index("ttl.dispatch.invoke @_dispatch_write", first + 1)
+    assert first < second < third
+
+
 def test_dispatcher_emit_rejects_non_argument_target_operand():
     @ttl.operation(dispatcher=True)
     def invalid_dispatcher(source, destination):

@@ -161,6 +161,11 @@ void createTTLToTTKernelPipeline(OpPassManager &pm,
   }
 }
 
+void buildTTLDispatchPipeline(OpPassManager &pm) {
+  pm.addPass(createCanonicalizerPass());
+  pm.addPass(createTTLResolveStaticDispatch());
+}
+
 void buildTTLVerifyPipeNetPipeline(OpPassManager &pm) {
   pm.addPass(createTTLVerifyPipeNetGuards());
   pm.addPass(createTTLVerifyPipeNetSchedule());
@@ -185,6 +190,10 @@ void buildTTKernelSpecializationPipeline(OpPassManager &pm) {
 }
 
 void registerTTLPipelines() {
+  PassPipelineRegistration<>(
+      "ttl-dispatch-pipeline",
+      "Canonicalize and resolve static dispatcher control IR.",
+      buildTTLDispatchPipeline);
   PassPipelineRegistration<TTLToTTKernelPipelineOptions>(
       "ttl-to-ttkernel-pipeline",
       "Lower TTL to TTKernel, run cleanup canonicalization/CSE, and optionally "

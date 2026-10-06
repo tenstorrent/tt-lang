@@ -1,4 +1,4 @@
-// RUN: ttlang-opt %s --canonicalize --ttl-resolve-static-dispatch | FileCheck %s
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(ttl-dispatch-pipeline)' | FileCheck %s
 
 // Verify that static dispatch keeps target declarations and resolves the
 // dispatcher function in place without creating a manifest.

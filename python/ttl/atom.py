@@ -1098,6 +1098,17 @@ class Atom:
 
         return emit_dispatch_ir(self, args, kwargs)
 
+    def resolve_dispatch_ir(self, *args, **kwargs):
+        """Emit and resolve the control IR for a static dispatcher."""
+        if not self._dispatcher:
+            raise ValueError(
+                f"@ttl.operation {self.name!r} is not a dispatcher and cannot "
+                "resolve dispatch IR"
+            )
+        from .dispatch import resolve_dispatch_ir
+
+        return resolve_dispatch_ir(self, args, kwargs)
+
     def __call__(self, *args, **kwargs):
         if self._dispatcher:
             raise ValueError(

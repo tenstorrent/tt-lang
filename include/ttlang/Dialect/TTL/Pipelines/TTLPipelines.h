@@ -135,6 +135,9 @@ struct TTLToTTKernelPipelineOptions
 void createTTLToTTKernelPipeline(mlir::OpPassManager &pm,
                                  const TTLToTTKernelPipelineOptions &options);
 
+/// Canonicalize and resolve static dispatcher control IR.
+void buildTTLDispatchPipeline(mlir::OpPassManager &pm);
+
 /// Add DFB synchronization insertion and acquire coalescing passes.
 void buildTTLAutoSyncPipeline(mlir::OpPassManager &pm,
                               bool syncUserDFBs = true);
