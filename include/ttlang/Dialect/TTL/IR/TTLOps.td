@@ -18,6 +18,7 @@ include "mlir/Interfaces/IndexingMapOpInterface.td"
 include "mlir/Interfaces/TilingInterface.td"
 include "mlir/Interfaces/ViewLikeInterface.td"
 include "mlir/IR/OpBase.td"
+include "mlir/IR/SymbolInterfaces.td"
 
 //===----------------------------------------------------------------------===//
 // TTL operation definitions
@@ -2604,6 +2605,37 @@ def TTL_TileStoreOp : TTL_ComputePrimitiveOp<"tile_store", "Passthrough",
   );
   let assemblyFormat = "$tile `,` $view `[` $indices `]` `from` `dst` `[` $dst_index `]` attr-dict `:` type($tile) `,` type($view)";
   let hasVerifier = 1;
+}
+
+//===----------------------------------------------------------------------===//
+// DFB network operations
+//===----------------------------------------------------------------------===//
+
+def TTL_DFBNetworkOp : TTL_Op<"dfb.network", [
+    IsolatedFromAbove,
+    NoRegionArguments,
+    NoTerminator,
+    SingleBlock,
+    SymbolTable,
+    SymbolName,
+    SymbolVisibility,
+    Symbol,
+    HasParent<"::mlir::ModuleOp">
+]> {
+  let summary = "A collection of DFBs forming a producer-consumer network";
+  let description = [{
+    `ttl.dfb.network` declares a named DFB network with no records.
+  }];
+  let arguments = (ins
+    SymbolNameAttr:$sym_name,
+    OptionalAttr<StrAttr>:$sym_visibility
+  );
+  let regions = (region SizedRegion<1>:$bodyRegion);
+  let assemblyFormat = [{
+    ($sym_visibility^)? $sym_name attr-dict-with-keyword $bodyRegion
+  }];
+  let builders = [OpBuilder<(ins "::llvm::StringRef":$symName)>];
+  let skipDefaultBuilders = 1;
 }
 
 #endif // TTLANG_DIALECT_TTL_IR_TTLOPS_TD

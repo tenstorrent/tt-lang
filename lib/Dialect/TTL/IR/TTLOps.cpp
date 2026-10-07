@@ -2804,6 +2804,14 @@ mlir::LogicalResult mlir::tt::ttl::TileStoreOp::verify() {
   return success();
 }
 
+void mlir::tt::ttl::DFBNetworkOp::build(OpBuilder &builder,
+                                        OperationState &state,
+                                        ::llvm::StringRef symName) {
+  state.addRegion()->emplaceBlock();
+  state.addAttribute(getSymNameAttrName(state.name),
+                     builder.getStringAttr(symName));
+}
+
 //===----------------------------------------------------------------------===//
 // DFBInputOpInterface implementations
 //===----------------------------------------------------------------------===//
