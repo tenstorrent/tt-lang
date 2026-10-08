@@ -2804,12 +2804,70 @@ mlir::LogicalResult mlir::tt::ttl::TileStoreOp::verify() {
   return success();
 }
 
+//===----------------------------------------------------------------------===//
+// DFB network ops
+//===----------------------------------------------------------------------===//
+
 void mlir::tt::ttl::DFBNetworkOp::build(OpBuilder &builder,
                                         OperationState &state,
                                         ::llvm::StringRef symName) {
   state.addRegion()->emplaceBlock();
   state.addAttribute(getSymNameAttrName(state.name),
                      builder.getStringAttr(symName));
+}
+
+// Verifies the source and outputs shared by fork and split records.
+static mlir::LogicalResult
+verifyDFBNetworkSourceAndOutputs(mlir::Operation *op, mlir::Attribute source,
+                                 llvm::ArrayRef<int64_t> outputs) {
+  if (outputs.empty()) {
+    return op->emitOpError() << "requires at least one output";
+  }
+
+  llvm::SmallDenseSet<int64_t> outputSet;
+  for (int64_t output : outputs) {
+    if (!outputSet.insert(output).second) {
+      return op->emitOpError() << "output " << output << " is duplicated";
+    }
+  }
+
+  if (auto sourceId = mlir::dyn_cast<mlir::IntegerAttr>(source)) {
+    int64_t dfbId = sourceId.getInt();
+    if (outputSet.contains(dfbId)) {
+      return op->emitOpError()
+             << "source DFB id " << dfbId << " is also an output";
+    }
+  }
+
+  return mlir::success();
+}
+
+mlir::LogicalResult mlir::tt::ttl::DFBForkOp::verify() {
+  return verifyDFBNetworkSourceAndOutputs(getOperation(), getSource(),
+                                          getOutputs());
+}
+
+mlir::LogicalResult mlir::tt::ttl::DFBSplitOp::verify() {
+  return verifyDFBNetworkSourceAndOutputs(getOperation(), getSource(),
+                                          getOutputs());
+}
+
+mlir::LogicalResult mlir::tt::ttl::DFBMergeOp::verify() {
+  ArrayAttr inputs = getInputs();
+  if (inputs.empty()) {
+    return emitOpError() << "requires at least one input";
+  }
+
+  // Attributes are uniqued, so one set catches repeated DFB ids and repeated
+  // merge symbols.
+  llvm::SmallDenseSet<Attribute> inputSet;
+  for (Attribute input : inputs) {
+    if (!inputSet.insert(input).second) {
+      return emitOpError() << "input " << input << " is duplicated";
+    }
+  }
+
+  return success();
 }
 
 //===----------------------------------------------------------------------===//

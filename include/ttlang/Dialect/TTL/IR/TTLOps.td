@@ -2645,8 +2645,18 @@ def TTL_DFBNetworkOp : TTL_Op<"dfb.network", [
   let skipDefaultBuilders = 1;
 }
 
-def TTL_DFBNetworkHandleAttr : AnyAttrOf<[IndexAttr, FlatSymbolRefAttr],
-                                         "DFB id or merged read handle">;
+def TTL_DFBNetworkHandleAttr
+    : AnyAttrOf<[ConfinedAttr<IndexAttr, [IntNonNegative]>, FlatSymbolRefAttr],
+                "non-negative DFB id or merged read handle">;
+
+// Upstream DenseArrayNonNegative names the array type unqualified, which does
+// not compile outside namespace mlir.
+def TTL_DFBNetworkOutputsAttr : ConfinedAttr<DenseI64ArrayAttr, [
+  AttrConstraint<
+    CPred<"::llvm::all_of(::llvm::cast<::mlir::DenseI64ArrayAttr>($_self)"
+          ".asArrayRef(), [](int64_t v) { return v >= 0; })">,
+    "whose value is non-negative">
+]>;
 
 def TTL_DFBForkOp : TTL_Op<"dfb.fork", [
   SymbolName,
@@ -2670,13 +2680,14 @@ def TTL_DFBForkOp : TTL_Op<"dfb.fork", [
     SymbolNameAttr:$sym_name,
     OptionalAttr<StrAttr>:$sym_visibility,
     TTL_DFBNetworkHandleAttr:$source,
-    DenseI64ArrayAttr:$outputs,
+    TTL_DFBNetworkOutputsAttr:$outputs,
     TTL_DFBNetworkForkStorageAttr:$storage
   );
   let assemblyFormat = [{
     ($sym_visibility^)? $sym_name $source `->` $outputs
     `storage` `=` $storage attr-dict
   }];
+  let hasVerifier = 1;
 }
 
 def TTL_DFBSplitOp : TTL_Op<"dfb.split", [
@@ -2701,13 +2712,14 @@ def TTL_DFBSplitOp : TTL_Op<"dfb.split", [
     SymbolNameAttr:$sym_name,
     OptionalAttr<StrAttr>:$sym_visibility,
     TTL_DFBNetworkHandleAttr:$source,
-    DenseI64ArrayAttr:$outputs,
+    TTL_DFBNetworkOutputsAttr:$outputs,
     TTL_DFBNetworkSplitPolicyAttr:$policy
   );
   let assemblyFormat = [{
     ($sym_visibility^)? $sym_name $source `->` $outputs
     `policy` `=` $policy attr-dict
   }];
+  let hasVerifier = 1;
 }
 
 def TTL_DFBMergeOp : TTL_Op<"dfb.merge", [
@@ -2731,12 +2743,13 @@ def TTL_DFBMergeOp : TTL_Op<"dfb.merge", [
     SymbolNameAttr:$sym_name,
     OptionalAttr<StrAttr>:$sym_visibility,
     TypedArrayAttrBase<TTL_DFBNetworkHandleAttr,
-                       "DFB ids or merged handles">:$inputs,
+                       "non-negative DFB ids or merged read handles">:$inputs,
     TTL_DFBNetworkMergePolicyAttr:$policy
   );
   let assemblyFormat = [{
     ($sym_visibility^)? $sym_name $inputs `policy` `=` $policy attr-dict
   }];
+  let hasVerifier = 1;
 }
 
 #endif // TTLANG_DIALECT_TTL_IR_TTLOPS_TD
