@@ -932,9 +932,7 @@ func.func @tile_accumulate_without_reduction_iterator(
 
 // -----
 
-// Test: attach_cb result type must equal the tensor operand type
-// (AttachCBOp::verify). Element types match so the element-type check passes;
-// the result shape (2x3) differs from the tensor operand shape (2x2).
+// Test: attach_cb result type must equal the tensor operand type. Element types match so the element-type check passes (354)
 func.func @attach_cb_result_type_mismatch(
     %t: tensor<2x2x!ttcore.tile<32x32, f32>>,
     %cb: !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>) {
@@ -947,9 +945,7 @@ func.func @attach_cb_result_type_mismatch(
 
 // -----
 
-// Test: indexing map dim count must equal the iterator domain size
-// (ComputeOp::verify). The iterator domain has 1 dim but the input map
-// declares 2.
+// Test: indexing map dim count must equal the iterator domain size (354)
 func.func @compute_map_wrong_dim_count(
     %a: tensor<2x2x!ttcore.tile<32x32, f32>>,
     %cba: !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>,
@@ -977,9 +973,7 @@ func.func @compute_map_wrong_dim_count(
 
 // -----
 
-// Test: indexing map result count must match the operand rank
-// (ComputeOp::verify). The input operand has rank 2 but its map produces only
-// 1 result.
+// Test: indexing map result count must match the operand rank (354)
 func.func @compute_map_wrong_result_count(
     %a: tensor<2x2x!ttcore.tile<32x32, f32>>,
     %cba: !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>,
