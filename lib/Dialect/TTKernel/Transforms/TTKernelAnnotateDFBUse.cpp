@@ -225,6 +225,13 @@ struct TTKernelAnnotateDFBUsePass
     : impl::TTKernelAnnotateDFBUseBase<TTKernelAnnotateDFBUsePass> {
   void runOnOperation() override {
     ModuleOp module = getOperation();
+    if (usesCompilerSRAM(module) &&
+        !module->getAttrOfType<ArrayAttr>(kDFBAllocationsAttrName)) {
+      module.emitOpError(
+          "compiler-sram requires finalized allocation metadata");
+      signalPassFailure();
+      return;
+    }
     llvm::DenseMap<Operation *, DFBSet> usedDFBs;
     llvm::SmallDenseSet<Operation *> conservative;
     auto allocations =

@@ -834,6 +834,11 @@ private:
   }
 };
 
+DFBPhysicalConflictModel DFBPhysicalConflictModel::buildStorage(
+    const DFBConcurrentKernelLivenessAnalysis &liveness) {
+  return DFBPhysicalConflictModelBuilder::buildStorage(liveness);
+}
+
 namespace {
 
 static bool hasAllocationGroups(ArrayRef<DFBLogicalLifecycle> logicalDFBs) {
@@ -2975,7 +2980,7 @@ DFBPhysicalAllocationPlanner::DFBPhysicalAllocationPlanner(
   plan.conflictModel = DFBPhysicalConflictModelBuilder::build(
       liveness, staticConfigurationConflicts);
   DFBPhysicalConflictModel storageConflictModel =
-      DFBPhysicalConflictModelBuilder::buildStorage(liveness);
+      DFBPhysicalConflictModel::buildStorage(liveness);
   LLVM_DEBUG({
     printDFBAllocationDebugReport(llvm::dbgs(), liveness, plan.conflictModel);
     printDFBStorageConflictDebugReport(llvm::dbgs(), storageConflictModel);
