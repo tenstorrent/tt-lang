@@ -330,16 +330,10 @@ static ::mlir::LogicalResult verifyPackUntilizeDims(Operation *op,
     return emitOpError("TransposeInitOp must be inside a kernel function");
   }
 
-  // Both input and output should have tile element types for transpose.
   auto inputCBType = getCbIn().getType();
-  auto outputCBType = getCbOut().getType();
 
   if (!mlir::isa<ttcore::TileType>(inputCBType.getElementType())) {
     return emitOpError("Input to TransposeInitOp must have tile element type");
-  }
-
-  if (!mlir::isa<ttcore::TileType>(outputCBType.getElementType())) {
-    return emitOpError("Output to TransposeInitOp must have tile element type");
   }
 
   return success();

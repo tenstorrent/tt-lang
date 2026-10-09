@@ -7,7 +7,9 @@ module attributes {ttl.target_arch = #ttcore.arch<blackhole>} {
 
 // Gamma-disabled lowering reuses the input DFB operand without reading gamma.
 // CHECK-LABEL: func.func @row_normalization_no_gamma
-// CHECK:       ttkernel.init_sfpu(%[[NO_GAMMA_INPUT:[a-zA-Z0-9_]+]], %[[NO_GAMMA_OUTPUT:[a-zA-Z0-9_]+]])
+// CHECK:       ttkernel.reconfig_data_format(%[[NO_GAMMA_INPUT:[a-zA-Z0-9_]+]], %[[NO_GAMMA_INPUT:[a-zA-Z0-9_]+]])
+// CHECK:       ttkernel.pack_reconfig_data_format(%[[NO_GAMMA_OUTPUT:[a-zA-Z0-9_]+]])
+// CHECK-NEXT: ttkernel.copy_tile_init(
 // CHECK-NEXT:  ttkernel.tile_regs_acquire
 // CHECK-NEXT:  ttkernel.experimental_row_normalization_block(%[[NO_GAMMA_INPUT]], %[[NO_GAMMA_INPUT]], %[[NO_GAMMA_OUTPUT]]) num_tiles = 3
 // CHECK-SAME:  has_gamma = false dtype = <bf16>
