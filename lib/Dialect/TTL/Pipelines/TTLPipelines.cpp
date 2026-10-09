@@ -35,6 +35,7 @@ static void buildTTKernelRecordCleanupPipeline(OpPassManager &pm) {
 
 void createTTLToTTKernelPipeline(OpPassManager &pm,
                                  const TTLToTTKernelPipelineOptions &options) {
+  pm.addPass(createTTLRejectDFBNetworks());
   {
     TTLFormAccumulationScopesOptions formOptions;
     formOptions.strategy = options.accumulationStrategy;
