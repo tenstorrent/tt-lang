@@ -76,22 +76,22 @@ EOF
     refute_output --partial 'junk.txt'
 }
 
-@test "s3_child_anchors HTML-escapes names containing '&'" {
+@test "s3_child_anchors percent-encodes the href and HTML-escapes the text of names containing '&'" {
     make_aws_mock "2026-07-04 00:00:00       1234 a&b.whl
 "
     run s3_child_anchors tenstorrent-pypi tt-lang/ttmetal
-    assert_line '<a href="https://pypi.eng.aws.tenstorrent.com/tt-lang/ttmetal/a&amp;b.whl">a&amp;b.whl</a><br>'
+    assert_line '<a href="https://pypi.eng.aws.tenstorrent.com/tt-lang/ttmetal/a%26b.whl">a&amp;b.whl</a><br>'
     refute_output --partial 'a&b.whl'
     refute_output --partial '#sha256='
 }
 
-@test "s3_child_anchors keeps a literal '+' in a light wheel name (not percent-encoded)" {
+@test "s3_child_anchors percent-encodes '+' in a light wheel href (S3 decodes a literal '+' as a space)" {
     make_aws_mock "2026-07-04 00:00:00       1234 tt_lang-1.0.0+light-cp312-cp312-manylinux_2_34_x86_64.whl
 "
     run s3_child_anchors tenstorrent-pypi tt-lang/ttmetal
     assert_success
-    assert_line '<a href="https://pypi.eng.aws.tenstorrent.com/tt-lang/ttmetal/tt_lang-1.0.0+light-cp312-cp312-manylinux_2_34_x86_64.whl">tt_lang-1.0.0+light-cp312-cp312-manylinux_2_34_x86_64.whl</a><br>'
-    refute_output --partial "%2B"
+    assert_line '<a href="https://pypi.eng.aws.tenstorrent.com/tt-lang/ttmetal/tt_lang-1.0.0%2Blight-cp312-cp312-manylinux_2_34_x86_64.whl">tt_lang-1.0.0+light-cp312-cp312-manylinux_2_34_x86_64.whl</a><br>'
+    refute_output --partial 'href="https://pypi.eng.aws.tenstorrent.com/tt-lang/ttmetal/tt_lang-1.0.0+light'
 }
 
 @test "s3_child_anchors directories-only skips root wheel objects" {
@@ -288,7 +288,7 @@ EOF
 
     digest="$(sha256sum "$dist_dir/tt_lang_light-1.0.0-py3-none-any.whl" | awk '{print $1}')"
     assert_line "<a href=\"https://pypi.eng.aws.tenstorrent.com/tt-lang/ttmetal/13adda8/tt_lang_light-1.0.0-py3-none-any.whl#sha256=$digest\">tt_lang_light-1.0.0-py3-none-any.whl</a><br>"
-    assert_line --regexp '^<a href="https://pypi\.eng\.aws\.tenstorrent\.com/tt-lang/ttmetal/13adda8/tt_lang-1\.0\.0\+light-cp312-cp312-manylinux_2_34_x86_64\.whl#sha256=[0-9a-f]{64}">tt_lang-1\.0\.0\+light-cp312-cp312-manylinux_2_34_x86_64\.whl</a><br>$'
+    assert_line --regexp '^<a href="https://pypi\.eng\.aws\.tenstorrent\.com/tt-lang/ttmetal/13adda8/tt_lang-1\.0\.0%2Blight-cp312-cp312-manylinux_2_34_x86_64\.whl#sha256=[0-9a-f]{64}">tt_lang-1\.0\.0\+light-cp312-cp312-manylinux_2_34_x86_64\.whl</a><br>$'
 
     # No-slash alias resolution: absolute href is pip-resolvable without the
     # trailing slash on the base URL.
@@ -313,12 +313,12 @@ EOF
     refute_output --partial '<title>AT&T'
 }
 
-@test "s3_child_anchors HTML-escapes a name containing '\"'" {
+@test "s3_child_anchors percent-encodes the href and HTML-escapes the text of a name containing '\"'" {
     make_aws_mock '2026-07-04 00:00:00       1234 weird"name.whl
 '
     run s3_child_anchors tenstorrent-pypi tt-lang/ttmetal
     assert_success
-    assert_line '<a href="https://pypi.eng.aws.tenstorrent.com/tt-lang/ttmetal/weird&quot;name.whl">weird&quot;name.whl</a><br>'
+    assert_line '<a href="https://pypi.eng.aws.tenstorrent.com/tt-lang/ttmetal/weird%22name.whl">weird&quot;name.whl</a><br>'
 }
 
 @test "s3_month_view_anchors lists only the requested month's top-level wheels, with absolute hrefs" {
@@ -363,7 +363,7 @@ EOF
     run s3_release_view_anchors tenstorrent-pypi
     assert_success
     assert_line '<a href="https://pypi.eng.aws.tenstorrent.com/tt-lang/tt_lang-1.0.0-py3-none-any.whl">tt_lang-1.0.0-py3-none-any.whl</a><br>'
-    assert_line '<a href="https://pypi.eng.aws.tenstorrent.com/tt-lang/tt_lang-1.0.0+light-cp312-cp312-manylinux_2_34_x86_64.whl">tt_lang-1.0.0+light-cp312-cp312-manylinux_2_34_x86_64.whl</a><br>'
+    assert_line '<a href="https://pypi.eng.aws.tenstorrent.com/tt-lang/tt_lang-1.0.0%2Blight-cp312-cp312-manylinux_2_34_x86_64.whl">tt_lang-1.0.0+light-cp312-cp312-manylinux_2_34_x86_64.whl</a><br>'
     assert_line '<a href="https://pypi.eng.aws.tenstorrent.com/tt-lang/tt_lang_light-1.0.0-py3-none-any.whl">tt_lang_light-1.0.0-py3-none-any.whl</a><br>'
     refute_output --partial "dev20260704"
     refute_output --partial "2026-07/"
