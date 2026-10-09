@@ -7,13 +7,15 @@ import json
 import subprocess
 from pathlib import Path
 
+import pytest
+
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 STACK_TOOL = REPO_ROOT / "scripts" / "tt-lang-emule-stack.py"
 STACK_MANIFEST = REPO_ROOT / "config" / "tt-lang-emule-stack.json"
 
 
-def run_stack(*arguments, manifest=STACK_MANIFEST):
+def run_stack(*arguments, manifest=STACK_MANIFEST, input_text=None):
     return subprocess.run(
         [
             "python3",
@@ -25,7 +27,195 @@ def run_stack(*arguments, manifest=STACK_MANIFEST):
         check=False,
         capture_output=True,
         text=True,
+        input=input_text,
     )
+
+
+@pytest.fixture
+def image_inspection():
+    stack = json.loads(STACK_MANIFEST.read_text(encoding="utf-8"))
+    return [
+        {
+            "Id": "sha256:" + "a" * 64,
+            "Config": {
+                "Labels": {
+                    "org.opencontainers.image.source": stack["compiler"]["repository"],
+                    "io.tenstorrent.tt-lang.compiler.commit": stack["compiler"][
+                        "base_commit"
+                    ],
+                    "io.tenstorrent.tt-lang.emule.commit": stack["emulator"]["commit"],
+                    "io.tenstorrent.tt-lang.metal.repository": stack["metal"][
+                        "repository"
+                    ],
+                    "io.tenstorrent.tt-lang.metal.commit": stack["metal"]["commit"],
+                    "io.tenstorrent.tt-lang.runtime.base-image": stack["runtime"][
+                        "base_image"
+                    ],
+                    "io.tenstorrent.tt-lang.runtime.manifest-sha256": hashlib.sha256(
+                        STACK_MANIFEST.read_bytes()
+                    ).hexdigest(),
+                    "io.tenstorrent.tt-lang.runtime.platform": "linux/amd64",
+                    "io.tenstorrent.tt-lang.target.name": stack["target"]["name"],
+                    "io.tenstorrent.tt-lang.target.cluster-descriptor": stack["target"][
+                        "cluster_descriptor"
+                    ],
+                    "io.tenstorrent.tt-lang.target.mesh-device": stack["target"][
+                        "mesh_device"
+                    ],
+                }
+            },
+        }
+    ]
+
+
+@pytest.mark.parametrize("image_id", ["sha256:" + "a" * 64, "a" * 64])
+def test_image_validation_emits_the_immutable_image_id(image_inspection, image_id):
+    image_inspection[0]["Id"] = image_id
+    result = run_stack("validate-image", input_text=json.dumps(image_inspection))
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == image_inspection[0]["Id"]
+
+
+@pytest.mark.parametrize("missing", [False, True])
+@pytest.mark.parametrize(
+    "label",
+    [
+        "org.opencontainers.image.source",
+        "io.tenstorrent.tt-lang.compiler.commit",
+        "io.tenstorrent.tt-lang.emule.commit",
+        "io.tenstorrent.tt-lang.metal.repository",
+        "io.tenstorrent.tt-lang.metal.commit",
+        "io.tenstorrent.tt-lang.runtime.base-image",
+        "io.tenstorrent.tt-lang.runtime.manifest-sha256",
+        "io.tenstorrent.tt-lang.runtime.platform",
+        "io.tenstorrent.tt-lang.target.name",
+        "io.tenstorrent.tt-lang.target.cluster-descriptor",
+        "io.tenstorrent.tt-lang.target.mesh-device",
+    ],
+)
+def test_image_validation_rejects_missing_or_mismatched_labels(
+    image_inspection, label, missing
+):
+    labels = image_inspection[0]["Config"]["Labels"]
+    if missing:
+        del labels[label]
+    else:
+        labels[label] = "different"
+
+    result = run_stack("validate-image", input_text=json.dumps(image_inspection))
+
+    assert result.returncode == 1
+    assert "image provenance mismatch" in result.stderr
+    assert label in result.stderr
+    assert result.stdout == ""
+
+
+@pytest.mark.parametrize(
+    "inspection",
+    [
+        None,
+        {},
+        [],
+        [{}, {}],
+        [None],
+        [{}],
+        [{"Config": {}}],
+        [{"Config": {"Labels": []}}],
+    ],
+)
+def test_image_validation_rejects_malformed_inspection(inspection):
+    result = run_stack("validate-image", input_text=json.dumps(inspection))
+
+    assert result.returncode == 1
+    assert "tt-lang-emule-stack:" in result.stderr
+    assert "Traceback" not in result.stderr
+    assert result.stdout == ""
+
+
+def test_image_validation_rejects_invalid_json():
+    result = run_stack("validate-image", input_text="not image inspection JSON")
+
+    assert result.returncode == 1
+    assert "cannot read image inspection" in result.stderr
+    assert result.stdout == ""
+
+
+@pytest.mark.parametrize(
+    "image_id", [None, "", "runtime:latest", "a" * 12, "sha256:abc"]
+)
+def test_image_validation_rejects_an_unusable_image_id(image_inspection, image_id):
+    image_inspection[0]["Id"] = image_id
+
+    result = run_stack("validate-image", input_text=json.dumps(image_inspection))
+
+    assert result.returncode == 1
+    assert "image.Id" in result.stderr
+    assert result.stdout == ""
+
+
+@pytest.mark.parametrize(
+    "option,label,value",
+    [
+        ("--emulator-commit", "io.tenstorrent.tt-lang.emule.commit", "b" * 40),
+        ("--metal-commit", "io.tenstorrent.tt-lang.metal.commit", "c" * 40),
+        (
+            "--metal-repository",
+            "io.tenstorrent.tt-lang.metal.repository",
+            "https://github.com/tenstorrent/experimental-metal.git",
+        ),
+        (
+            "--base-image",
+            "io.tenstorrent.tt-lang.runtime.base-image",
+            "candidate@sha256:" + "d" * 64,
+        ),
+        ("--platform", "io.tenstorrent.tt-lang.runtime.platform", "linux/amd64/v2"),
+    ],
+)
+def test_image_validation_checks_resolved_runtime_overrides(
+    image_inspection, option, label, value
+):
+    result = run_stack(
+        "validate-image", option, value, input_text=json.dumps(image_inspection)
+    )
+    assert result.returncode == 1
+    assert label in result.stderr
+
+    image_inspection[0]["Config"]["Labels"][label] = value
+    result = run_stack(
+        "validate-image", option, value, input_text=json.dumps(image_inspection)
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == image_inspection[0]["Id"]
+
+
+def test_image_validation_checks_the_selected_manifest(image_inspection, tmp_path):
+    candidate = json.loads(STACK_MANIFEST.read_text(encoding="utf-8"))
+    candidate["compiler"]["base_commit"] = "e" * 40
+    candidate_path = tmp_path / "candidate.json"
+    candidate_path.write_text(json.dumps(candidate), encoding="utf-8")
+
+    result = run_stack(
+        "validate-image",
+        manifest=candidate_path,
+        input_text=json.dumps(image_inspection),
+    )
+    assert result.returncode == 1
+    assert "compiler.commit" in result.stderr
+    assert "manifest-sha256" in result.stderr
+
+    labels = image_inspection[0]["Config"]["Labels"]
+    labels["io.tenstorrent.tt-lang.compiler.commit"] = "e" * 40
+    labels["io.tenstorrent.tt-lang.runtime.manifest-sha256"] = hashlib.sha256(
+        candidate_path.read_bytes()
+    ).hexdigest()
+    result = run_stack(
+        "validate-image",
+        manifest=candidate_path,
+        input_text=json.dumps(image_inspection),
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == image_inspection[0]["Id"]
 
 
 def write_emulator_stack(tmp_path):
