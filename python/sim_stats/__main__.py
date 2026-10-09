@@ -23,47 +23,12 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import json
 import sys
 from collections import defaultdict
 from pathlib import Path
-from typing import Any, Dict, Iterator
+from typing import Dict
 
-
-def _node_from_kernel(kernel: str | None) -> str:
-    """Extract the node identifier from a kernel name like 'node3-read'."""
-    if kernel and "-" in kernel:
-        return kernel.split("-", 1)[0]
-    return kernel or "unknown"
-
-
-def _node_sort_key(node: str) -> int:
-    """Sort nodes numerically: node0 < node1 < ... < node10."""
-    try:
-        return int(node.removeprefix("node"))
-    except ValueError:
-        return 0
-
-
-# ---------------------------------------------------------------------------
-# Parsing
-# ---------------------------------------------------------------------------
-
-
-def _iter_events(path: Path) -> Iterator[dict[str, Any]]:
-    """Yield parsed JSON objects from a JSON Lines file, skipping blank lines."""
-    with path.open(encoding="utf-8") as f:
-        for lineno, line in enumerate(f, 1):
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                yield json.loads(line)
-            except json.JSONDecodeError as exc:
-                print(
-                    f"Warning: skipping malformed line {lineno}: {exc}",
-                    file=sys.stderr,
-                )
+from .utils import iter_events, node_from_kernel, node_sort_key
 
 
 # ---------------------------------------------------------------------------
@@ -105,7 +70,7 @@ def _accumulate(
     dfb_stats: _DfbStats = defaultdict(_new_dfb)
     dfb_per_node: _DfbPerNodeStats = defaultdict(lambda: defaultdict(_new_dfb))
 
-    for ev in _iter_events(path):
+    for ev in iter_events(path):
         event = ev.get("event")
 
         match event:
@@ -146,7 +111,7 @@ def _accumulate(
             case "dfb_reserve_end":
                 dfb = ev.get("dfb")
                 tiles = ev.get("tiles", 0)
-                node = _node_from_kernel(ev.get("kernel"))
+                node = node_from_kernel(ev.get("kernel"))
                 if dfb:
                     dfb_stats[dfb]["reserves"] += 1
                     dfb_stats[dfb]["tiles_reserved"] += tiles
@@ -156,7 +121,7 @@ def _accumulate(
             case "dfb_wait_end":
                 dfb = ev.get("dfb")
                 tiles = ev.get("tiles", 0)
-                node = _node_from_kernel(ev.get("kernel"))
+                node = node_from_kernel(ev.get("kernel"))
                 if dfb:
                     dfb_stats[dfb]["waits"] += 1
                     dfb_stats[dfb]["tiles_waited"] += tiles
@@ -316,7 +281,7 @@ def _print_dfb_stats(
     for dfb_name in sorted(dfb_stats):
         nodes = dfb_per_node.get(dfb_name, {})
         first = True
-        for node in sorted(nodes, key=_node_sort_key):
+        for node in sorted(nodes, key=node_sort_key):
             s = nodes[node]
             label = dfb_name if first else ""
             print(_dfb_row(label, node, s))

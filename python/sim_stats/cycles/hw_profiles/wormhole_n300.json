@@ -1,0 +1,12 @@
+{
+  "name": "wormhole_n300",
+  "compute_rate": [["matmul", "", 0.015625], ["matmul", "fp32", 0.0146]],
+  "compute_rate_default": 0.03125,
+  "noc_bw": {"local_l1": 25.3, "remote_l1": 25.3, "dram": 25.3},
+  "noc_latency": {"local_l1": 293.0, "remote_l1": 293.0, "dram": 293.0},
+  "clock_ghz": 1.0,
+  "bytes_per_tile": 2048.0,
+  "dm_engines": 2,
+  "memory_aggregate_gbps": 288.0,
+  "tensix_cores": 64
+}
