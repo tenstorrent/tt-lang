@@ -14,6 +14,7 @@ on:
       - "config/tt-lang-emule-*.json"
       - "scripts/*tt-lang-emule*"
       - "test/packaging/test_ttlang_emule_*"
+      - "requirements*.txt"
 
 permissions:
   contents: read

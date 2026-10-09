@@ -25,13 +25,18 @@ make_runner_fixture() {
     mkdir -p "$root/.github/containers" "$root/config" \
         "$root/examples" "$root/scripts" "$root/lib" "$root/cmake/modules"
     cp "$SOURCE_REPO_ROOT/.github/containers/Dockerfile.emule" \
-        "$root/.github/containers/Dockerfile.emule"
+        "$SOURCE_REPO_ROOT/.github/containers/package-emule-runtime.sh" \
+        "$SOURCE_REPO_ROOT/.github/containers/trim-emule-venv.sh" \
+        "$root/.github/containers/"
     cp "$SOURCE_REPO_ROOT/scripts/tt-lang-emule-entrypoint.sh" \
         "$SOURCE_REPO_ROOT/scripts/tt-lang-emule-container.sh" \
         "$SOURCE_REPO_ROOT/scripts/tt-lang-emule-stack.py" \
         "$SOURCE_REPO_ROOT/scripts/shell-tt-lang-emule.sh" \
         "$SOURCE_REPO_ROOT/scripts/install-tt-lang-emule.sh" "$root/scripts/"
     cp "$SOURCE_REPO_ROOT/cmake/modules/TTLangUtils.cmake" "$root/cmake/modules/"
+    cp "$SOURCE_REPO_ROOT/requirements.txt" \
+        "$SOURCE_REPO_ROOT/requirements-runtime.txt" \
+        "$SOURCE_REPO_ROOT/requirements-test.txt" "$root/"
     touch "$root/examples/program.py"
     touch "$root/examples/eltwise_add.py"
     touch "$root/examples/compiler_only_external_call.py"
@@ -123,6 +128,14 @@ case "${1:-}" in
             [ ! -e "$source_context/.git" ] || exit 98
             [ ! -e "$source_context/untracked-secret" ] || exit 99
             [ -f "$stack_context/tt-lang-emule-stack.json" ] || exit 96
+            context="${!#}"
+            for requirement in requirements.txt requirements-runtime.txt requirements-test.txt; do
+                cmp -s "$stack_context/$requirement" "$context/../../$requirement" || exit 91
+            done
+            [ -f "$context/package-emule-runtime.sh" ] || exit 95
+            [ -f "$context/trim-emule-venv.sh" ] || exit 94
+            [ ! -e "$context/third-party" ] || exit 93
+            [ ! -e "$context/.git" ] || exit 92
         fi
         exit 0
         ;;
@@ -226,11 +239,16 @@ make_entrypoint_fixture() {
     make_mock_entrypoint_commands "$mock_bin"
     mkdir -p "$build_dir/env" "$(dirname "$llvm_revision_header")"
     touch "$build_dir/env/activate" "$cluster" "$program"
+    image_requirements="$BATS_TEST_TMPDIR/image-requirements"
+    mkdir -p "$image_requirements"
+    cp "$TTLANG_REPO_ROOT"/requirements*.txt "$image_requirements/"
+    export TTLANG_EMULE_SOURCE_DIR="$TTLANG_REPO_ROOT"
     printf '%s\n' "$source_fingerprint" > \
         "$build_dir/.ttlang-emule-source-fingerprint"
     printf '#define LLVM_REVISION "%s"\n' "$expected_llvm_sha" > "$llvm_revision_header"
     printf '%s\n' "$((6 * 1024 * 1024 * 1024))" > "$memory_max_file"
-    sed "s|/opt/ttlang-toolchain|$BATS_TEST_TMPDIR/toolchain|g" \
+    sed -e "s|/opt/ttlang-toolchain|$BATS_TEST_TMPDIR/toolchain|g" \
+        -e "s|/opt/tt-emule-runtime/requirements|$image_requirements|g" \
         "$ENTRYPOINT" > "$test_entrypoint"
 }
 
@@ -495,6 +513,83 @@ EOF
     run -1 grep -F -- 'COPY tt-lang-emule-entrypoint.sh' "$DOCKERFILE"
 }
 
+@test "runtime packaging edits change the image and installed compiler identities" {
+    local first_image
+    local first_fingerprint
+    local recipe_input
+    for recipe_input in package-emule-runtime.sh trim-emule-venv.sh; do
+        : > "$MOCK_DOCKER_LOG"
+        TTLANG_EMULE_DOCKER="$MOCK_DOCKER" run -0 "$RUNNER" \
+            "$TTLANG_REPO_ROOT/examples/program.py"
+        first_image="$(awk '/^tt-lang-emule:/{print; exit}' "$MOCK_DOCKER_LOG")"
+        first_fingerprint="$(grep '^TTLANG_EMULE_SOURCE_FINGERPRINT=' "$MOCK_DOCKER_LOG")"
+        [ -n "$first_image" ]
+        [ -n "$first_fingerprint" ]
+
+        printf '\n# changed packaging input\n' >> \
+            "$TTLANG_REPO_ROOT/.github/containers/$recipe_input"
+        : > "$MOCK_DOCKER_LOG"
+        TTLANG_EMULE_DOCKER="$MOCK_DOCKER" run -0 "$RUNNER" \
+            "$TTLANG_REPO_ROOT/examples/program.py"
+
+        refute_log_line "$first_image"
+        refute_log_line "$first_fingerprint"
+    done
+}
+
+@test "each Python requirements file changes the image identity" {
+    local requirement first_image
+    for requirement in requirements.txt requirements-runtime.txt requirements-test.txt; do
+        : > "$MOCK_DOCKER_LOG"
+        TTLANG_EMULE_DOCKER="$MOCK_DOCKER" run -0 "$RUNNER" \
+            "$TTLANG_REPO_ROOT/examples/program.py"
+        first_image="$(awk '/^tt-lang-emule:/{print; exit}' "$MOCK_DOCKER_LOG")"
+        [ -n "$first_image" ]
+        printf '\n# changed dependency input\n' >> "$TTLANG_REPO_ROOT/$requirement"
+        : > "$MOCK_DOCKER_LOG"
+        TTLANG_EMULE_DOCKER="$MOCK_DOCKER" run -0 "$RUNNER" \
+            "$TTLANG_REPO_ROOT/examples/program.py"
+        refute_log_line "$first_image"
+    done
+}
+
+@test "entrypoint rejects missing or changed image requirements before any work" {
+    make_entrypoint_fixture
+    local requirement mode state install shell
+    local arguments
+    for requirement in requirements.txt requirements-runtime.txt requirements-test.txt; do
+        for mode in install run shell; do
+            install=0 shell=0
+            arguments=()
+            case "$mode" in
+                install) install=1 ;;
+                shell) shell=1 ;;
+                run) arguments=("$program") ;;
+            esac
+            for state in missing changed; do
+                if [ "$state" = missing ]; then
+                    rm "$image_requirements/$requirement"
+                else
+                    printf 'different requirement\n' > "$image_requirements/$requirement"
+                fi
+                run -1 env PATH="$mock_bin:$PATH" \
+                    TT_METAL_MOCK_CLUSTER_DESC_PATH="$cluster" \
+                    TTLANG_EMULE_EXPECTED_LLVM_SHA="$expected_llvm_sha" \
+                    TTLANG_EMULE_SOURCE_FINGERPRINT="$source_fingerprint" \
+                    TTLANG_EMULE_COMPILER_SHA=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
+                    TTLANG_EMULE_BUILD_DIR="$build_dir" \
+                    TTLANG_EMULE_INSTALL="$install" \
+                    TTLANG_EMULE_SHELL="$shell" \
+                    /bin/bash "$test_entrypoint" "${arguments[@]}"
+                assert_output --partial "image Python requirements do not match"
+                [ ! -e "$MOCK_ENTRYPOINT_LOG" ]
+                [ "$(cat "$build_dir/.ttlang-emule-source-fingerprint")" = "$source_fingerprint" ]
+            done
+            cp "$TTLANG_REPO_ROOT/$requirement" "$image_requirements/$requirement"
+        done
+    done
+}
+
 @test "shallow checkout accepts its pinned HEAD but rejects an unavailable baseline" {
     local source_root="$BATS_TEST_TMPDIR/source"
     local shallow_root="$BATS_TEST_TMPDIR/shallow"
@@ -625,7 +720,8 @@ PY
         refute_log_contains "TT_EMULE_SOURCE_URL="
         refute_log_contains "source-token"
         refute_log_contains "example.invalid/private.git"
-        assert_log_line "${TTLANG_REPO_ROOT}/scripts"
+        assert_log_line "$TTLANG_REPO_ROOT/.github/containers"
+        refute_log_line "$TTLANG_REPO_ROOT"
         assert_log_line "run"
         if [ "$source_mode" = rebuild ]; then
             refute_log_line "image"
@@ -945,6 +1041,10 @@ PY
     run -0 grep -F -x -- \
         "cmake=-DTTLANG_EXTERNAL_TT_METAL_DIR=/opt/tt-emule-runtime/tt-metal" \
         "$MOCK_ENTRYPOINT_LOG"
+    run -0 grep -F -x -- \
+        "cmake=-DTTLANG_INSTALL_DEV_REQUIREMENTS=OFF" "$MOCK_ENTRYPOINT_LOG"
+    run -0 grep -F -x -- \
+        "cmake=-DTTLANG_INSTALL_RUNTIME_REQUIREMENTS=OFF" "$MOCK_ENTRYPOINT_LOG"
     run -0 grep -F -x -- "$source_fingerprint" \
         "$build_dir/.ttlang-emule-source-fingerprint"
 }
