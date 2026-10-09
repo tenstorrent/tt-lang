@@ -8,15 +8,30 @@
 // format routing, and per-op inits (exp_tile_init, add_tiles_init, etc.) that
 // configure the MATH pipeline.
 //
-// Two phases:
+// Three phases:
 //   1. Common inits: one per sync region, hoisted above enclosing loops.
 //      Scans each tile_regs_acquire -> tile_regs_release region to determine
 //      the compute category (FPU binary vs SFPU/copy/bcast) and derives
-//      input/output CBs from compute and pack ops.
-//   2. Per-op inits: emitted in linear block order whenever the op type
-//      changes (unary SFPU, binary SFPU, minmax, FPU binary). The init
-//      key is (init op TypeID, operand values). An init is inserted only
-//      when the key changes. Tracking resets at sync boundaries.
+//      input/output CBs from compute and pack ops. This programs the SrcA
+//      data format once.
+//   2. Per-op inits: emitted when the init key changes. The key is the init
+//      op type plus the operands it programs. Tracking follows scf.for,
+//      scf.if, and scf.while, and resets at sync boundaries. The init is
+//      placed immediately before the compute op. A loop whose every
+//      iteration computes with one key and loop-invariant operands gets
+//      that init once, before the loop. A SrcA write invalidates the key, so
+//      every compute after one has its own init for phase 3 to check.
+//   3. SrcA format reconfiguration: copy_tile_init does not change the
+//      unpack data format, and the short inits assert that it already
+//      matches. A copy, add, sub, mul, dest-reuse, reduce, or matmul short
+//      init whose required SrcA element type differs gets
+//      reconfig_data_format_srca immediately before it. The format persists
+//      across sync regions, so the dataflow runs over the whole function and
+//      reads the inits placed by phases 1 and 2. Loop backedges and branch
+//      joins merge the programmed operand per edge.
+//
+// Phases 2 and 3 summarize each region once (see Transfer), so their cost is
+// linear in the number of operations at any loop nesting depth.
 //
 // TODO(#329): Emit init_short variants for cheaper re-inits on type switches.
 //
@@ -33,6 +48,8 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Builders.h"
+#include "mlir/IR/Matchers.h"
+#include "llvm/ADT/SmallVector.h"
 
 #define DEBUG_TYPE "ttkernel-insert-inits"
 
@@ -125,6 +142,12 @@ static llvm::DenseMap<mlir::TypeID, InitOpInfo> buildComputeToInitMap() {
 #include "ttlang/Dialect/TTL/TTLElementwiseOps.def"
 
   map[mlir::TypeID::get<ttk::CopyTileOp>()] = {
+      [](OpBuilder &b, Location l, Operation *computeOp) {
+        ttk::CopyTileInitOp::create(b, l, computeOp->getOperand(0));
+      }};
+
+  // copy_block_matmul_partials uses the same unpack-A init as copy_tile.
+  map[mlir::TypeID::get<ttk::CopyBlockMatmulPartialsOp>()] = {
       [](OpBuilder &b, Location l, Operation *computeOp) {
         ttk::CopyTileInitOp::create(b, l, computeOp->getOperand(0));
       }};
@@ -222,13 +245,34 @@ struct InitKey {
   mlir::TypeID typeId;
   llvm::SmallVector<Value, 2> operands;
   int64_t discriminator = 0; // for attribute differences (e.g., bcast type)
+  // Non-CB init operands. Constants compare by value because lowering
+  // materializes one constant per op and this pass runs before CSE.
+  llvm::SmallVector<OpFoldResult, 4> parameters = {};
 
   bool operator==(const InitKey &other) const {
     return typeId == other.typeId && operands == other.operands &&
-           discriminator == other.discriminator;
+           discriminator == other.discriminator &&
+           parameters == other.parameters;
   }
   bool operator!=(const InitKey &other) const { return !(*this == other); }
 };
+
+// mm_block_init_short forwards these to the unpack and math inits.
+static llvm::SmallVector<Value, 4> initParameterValues(Operation *op) {
+  if (auto matmul = dyn_cast<ttk::MatmulBlockOp>(op)) {
+    return {matmul.getTranspose(), matmul.getCtDim(), matmul.getRtDim(),
+            matmul.getKtDim()};
+  }
+  return {};
+}
+
+static OpFoldResult initParameter(Value value) {
+  Attribute constant;
+  if (matchPattern(value, m_Constant(&constant))) {
+    return constant;
+  }
+  return value;
+}
 
 static InitKey computeInitKey(Operation *op) {
   mlir::TypeID typeId = op->getName().getTypeID();
@@ -237,11 +281,15 @@ static InitKey computeInitKey(Operation *op) {
     return {typeId, {op->getOperand(0), op->getOperand(1)}};
   }
 
-  if (isa<ttk::MatmulBlockOp>(op)) {
-    return {typeId, {op->getOperand(0), op->getOperand(1)}};
+  if (auto matmul = dyn_cast<ttk::MatmulBlockOp>(op)) {
+    InitKey key{typeId, {matmul.getIn0CbId(), matmul.getIn1CbId()}};
+    for (Value parameter : initParameterValues(op)) {
+      key.parameters.push_back(initParameter(parameter));
+    }
+    return key;
   }
 
-  if (isa<ttk::CopyTileOp>(op)) {
+  if (isa<ttk::CopyTileOp, ttk::CopyBlockMatmulPartialsOp>(op)) {
     return {typeId, {op->getOperand(0)}};
   }
 
@@ -468,6 +516,28 @@ static Operation *hoistAboveCompilerLoops(Operation *op) {
   return insertBefore;
 }
 
+// mm_block_init_short is used when this matmul loop shares a pack CB with the
+// preceding annotated loop. The short init does not program the unpack format.
+static bool matmulCommonInitIsShort(Operation *insertBefore) {
+  auto forOp = dyn_cast<scf::ForOp>(insertBefore);
+  if (!forOp) {
+    return false;
+  }
+  if (!forOp->hasAttr(kL1AccLoopAttrName) &&
+      !forOp->hasAttr(kReductionLoopAttrName)) {
+    return false;
+  }
+  for (Operation *prev = forOp->getPrevNode(); prev;
+       prev = prev->getPrevNode()) {
+    if (auto prevFor = dyn_cast<scf::ForOp>(prev)) {
+      return (prevFor->hasAttr(kL1AccLoopAttrName) ||
+              prevFor->hasAttr(kReductionLoopAttrName)) &&
+             sharePackCB(prevFor, forOp);
+    }
+  }
+  return false;
+}
+
 /// Insert common init ops (init_sfpu or binary_op_init_common) before each
 /// sync region. These configure UNPACK + PACK data format routing.
 static LogicalResult insertCommonInits(ModuleOp moduleOp) {
@@ -501,25 +571,8 @@ static LogicalResult insertCommonInits(ModuleOp moduleOp) {
     // Use init_short when sharing an output CB with a preceding sibling
     // annotated loop: the full init reconfigures PACK and clobbers packer
     // state (including L1 acc on Wormhole).
-    bool useInitShort = false;
-    if (analysis.hasMatmul) {
-      if (auto forOp = dyn_cast<scf::ForOp>(insertBefore)) {
-        if (forOp->hasAttr(kL1AccLoopAttrName) ||
-            forOp->hasAttr(kReductionLoopAttrName)) {
-          for (Operation *prev = forOp->getPrevNode(); prev;
-               prev = prev->getPrevNode()) {
-            if (auto prevFor = dyn_cast<scf::ForOp>(prev)) {
-              if ((prevFor->hasAttr(kL1AccLoopAttrName) ||
-                   prevFor->hasAttr(kReductionLoopAttrName)) &&
-                  sharePackCB(prevFor, forOp)) {
-                useInitShort = true;
-              }
-              break;
-            }
-          }
-        }
-      }
-    }
+    bool useInitShort =
+        analysis.hasMatmul && matmulCommonInitIsShort(insertBefore);
 
     if (analysis.hasMatmul && in0CB && in1CB && useInitShort) {
       ttk::MatmulBlockInitShortOp::create(
@@ -539,6 +592,583 @@ static LogicalResult insertCommonInits(ModuleOp moduleOp) {
 }
 
 //===----------------------------------------------------------------------===//
+// Region transfer summaries
+//===----------------------------------------------------------------------===//
+
+static bool alwaysEntersBody(scf::ForOp forOp) {
+  std::optional<llvm::APInt> tripCount = forOp.getStaticTripCount();
+  return tripCount && !tripCount->isZero();
+}
+
+/// Transfer function of a region in a forward analysis where every operation
+/// either keeps the state or replaces it with a constant. These functions are
+/// closed under sequencing and join, so each one is the identity, `s -> c`, or
+/// `s -> join(s, c)`, and the loop fixed point `x = join(s, f(x))` is
+/// `join(s, f(s))`. Summarizing each region once and then visiting each
+/// operation once keeps an analysis linear in the number of operations at any
+/// loop depth. `joinStates` must be associative, commutative, and idempotent.
+template <typename State>
+struct Transfer {
+  enum class Kind { Identity, Assign, Join };
+
+  Kind kind = Kind::Identity;
+  State value{};
+
+  static Transfer assign(State state) {
+    return {Kind::Assign, std::move(state)};
+  }
+
+  State apply(const State &state) const {
+    switch (kind) {
+    case Kind::Identity:
+      return state;
+    case Kind::Assign:
+      return value;
+    case Kind::Join:
+      return joinStates(state, value);
+    }
+    llvm_unreachable("unknown transfer kind");
+  }
+
+  /// Returns the transfer that runs this one and then `next`.
+  Transfer then(const Transfer &next) const {
+    if (next.kind == Kind::Identity) {
+      return *this;
+    }
+    if (next.kind == Kind::Assign || kind == Kind::Identity) {
+      return next;
+    }
+    return {kind, joinStates(value, next.value)};
+  }
+
+  /// Returns the pointwise join, the transfer of a control-flow merge.
+  Transfer join(const Transfer &other) const {
+    if (other.kind == Kind::Identity) {
+      return kind == Kind::Identity ? *this : Transfer{Kind::Join, value};
+    }
+    if (kind == Kind::Identity) {
+      return {Kind::Join, other.value};
+    }
+    Kind joined = kind == Kind::Assign && other.kind == Kind::Assign
+                      ? Kind::Assign
+                      : Kind::Join;
+    return {joined, joinStates(value, other.value)};
+  }
+};
+
+/// Transfer from the entry of a loop to the entry of its body.
+template <typename State>
+static Transfer<State> loopEntryTransfer(const Transfer<State> &body) {
+  return Transfer<State>().join(body);
+}
+
+template <typename State>
+static Transfer<State> forTransfer(const Transfer<State> &body,
+                                   bool entersBody) {
+  Transfer<State> exit = loopEntryTransfer(body).then(body);
+  return entersBody ? exit : Transfer<State>().join(exit);
+}
+
+// The before region runs on every exit, including the failing condition.
+template <typename State>
+static Transfer<State> whileTransfer(const Transfer<State> &before,
+                                     const Transfer<State> &after) {
+  return loopEntryTransfer(before.then(after)).then(before);
+}
+
+//===----------------------------------------------------------------------===//
+// SrcA data-format reconfiguration
+//===----------------------------------------------------------------------===//
+
+static Type unpackElementType(Value cb) {
+  return cast<ttk::CBType>(cb.getType()).getElementType();
+}
+
+// Full configures replace the programmed SrcA operand. Full matmul init uses
+// SrcOrder::Reverse, so SrcA is in1. mm_block_init_short, copy_tile_init,
+// binary_dest_reuse_tiles_init, add/sub/mul_tiles_init, and reduce_init do
+// not write the format. The tiles inits assert the unpacker format already
+// matches. reduce_init expects a preceding reconfig and does not write it.
+static Value srcAProgrammedBy(Operation *op) {
+  if (auto init = dyn_cast<ttk::TransposeInitOp>(op)) {
+    return init.getCbIn();
+  }
+  if (auto init = dyn_cast<ttk::UnaryBcastInitOp>(op)) {
+    return init.getInCb();
+  }
+  if (auto init = dyn_cast<ttk::BinaryOpInitCommonOp>(op)) {
+    return init.getIn0Cb();
+  }
+  if (auto init = dyn_cast<ttk::InitSFPUOp>(op)) {
+    return init.getIcb();
+  }
+  if (auto init = dyn_cast<ttk::MatmulInitOp>(op)) {
+    return init.getIn1Cb();
+  }
+  if (auto init = dyn_cast<ttk::MatmulBlockInitOp>(op)) {
+    return init.getIn1Cb();
+  }
+  if (auto init = dyn_cast<ttk::ComputeKernelHWStartupOp>(op)) {
+    return init.getIcb0();
+  }
+  if (auto reconfig = dyn_cast<ttk::ReconfigDataFormatSrcaOp>(op)) {
+    return reconfig.getSrcaNew();
+  }
+  return Value();
+}
+
+// Short inits assert that unpacker A already has this operand's format, so
+// they are the SrcA consumers. Phase 2 places a compute op's init before it
+// or before its loop with no SrcA write in between.
+// add/sub/mul take it from in0. Dest reuse unpacks its one CB through SrcA.
+// Row sum and row average swap the scaler into SrcA. Other reduces use the
+// data CB. Matmul's short init keeps SrcA on in1.
+static Value srcARequiredBy(Operation *op) {
+  if (auto init = dyn_cast<ttk::CopyTileInitOp>(op)) {
+    return init.getCb0();
+  }
+  if (auto init = dyn_cast<ttk::AddTilesInitOp>(op)) {
+    return init.getIn0Cb();
+  }
+  if (auto init = dyn_cast<ttk::SubTilesInitOp>(op)) {
+    return init.getIn0Cb();
+  }
+  if (auto init = dyn_cast<ttk::MulTilesInitOp>(op)) {
+    return init.getIn0Cb();
+  }
+  if (auto init = dyn_cast<ttk::BinaryDestReuseTilesInitOp>(op)) {
+    return init.getInCb();
+  }
+  if (auto init = dyn_cast<ttk::ReduceInitOp>(op)) {
+    bool scalerIsSrcA = init.getReduceDim() == ttk::ReduceDim::Row &&
+                        init.getReduceType() != ttk::ReduceType::Max;
+    return scalerIsSrcA ? init.getScalingCb() : init.getInCb();
+  }
+  if (auto init = dyn_cast<ttk::MatmulBlockInitShortOp>(op)) {
+    return init.getIn1Cb();
+  }
+  return Value();
+}
+
+// A null CB means the programmed SrcA operand is not unique. The one-operand
+// reconfig always applies; a guessed old operand can skip a required one.
+struct SrcAState {
+  Value cb;
+};
+
+static SrcAState joinStates(SrcAState lhs, SrcAState rhs) {
+  if (lhs.cb && rhs.cb &&
+      unpackElementType(lhs.cb) == unpackElementType(rhs.cb)) {
+    return lhs;
+  }
+  return {};
+}
+
+using SrcATransfer = Transfer<SrcAState>;
+
+struct SrcAReconfig {
+  Operation *init;
+  Value oldCB;
+  Value newCB;
+};
+
+/// Plans reconfig_data_format_srca before every short init whose required
+/// SrcA element type differs from the programmed one.
+class SrcAReconfigPlanner {
+public:
+  SrcAState plan(Region &region, SrcAState entry);
+  ArrayRef<SrcAReconfig> getReconfigs() const { return reconfigs; }
+
+private:
+  SrcATransfer summarize(Region &region);
+  SrcATransfer summarize(Operation *op);
+  SrcAState plan(Operation *op, SrcAState state);
+
+  llvm::DenseMap<Region *, SrcATransfer> summaries;
+  llvm::SmallVector<SrcAReconfig> reconfigs;
+};
+
+SrcATransfer SrcAReconfigPlanner::summarize(Region &region) {
+  if (region.empty()) {
+    return {};
+  }
+  auto it = summaries.find(&region);
+  if (it != summaries.end()) {
+    return it->second;
+  }
+  SrcATransfer transfer = SrcATransfer::assign({});
+  if (region.hasOneBlock()) {
+    transfer = {};
+    for (Operation &op : region.front().without_terminator()) {
+      transfer = transfer.then(summarize(&op));
+    }
+  }
+  summaries[&region] = transfer;
+  return transfer;
+}
+
+SrcATransfer SrcAReconfigPlanner::summarize(Operation *op) {
+  if (auto forOp = dyn_cast<scf::ForOp>(op)) {
+    return forTransfer(summarize(forOp.getRegion()), alwaysEntersBody(forOp));
+  }
+  if (auto ifOp = dyn_cast<scf::IfOp>(op)) {
+    return summarize(ifOp.getThenRegion())
+        .join(summarize(ifOp.getElseRegion()));
+  }
+  if (auto whileOp = dyn_cast<scf::WhileOp>(op)) {
+    return whileTransfer(summarize(whileOp.getBefore()),
+                         summarize(whileOp.getAfter()));
+  }
+  if (op->getNumRegions() != 0) {
+    return SrcATransfer::assign({});
+  }
+  if (Value cb = srcARequiredBy(op)) {
+    return SrcATransfer::assign({cb});
+  }
+  if (Value cb = srcAProgrammedBy(op)) {
+    return SrcATransfer::assign({cb});
+  }
+  return {};
+}
+
+SrcAState SrcAReconfigPlanner::plan(Region &region, SrcAState entry) {
+  if (region.empty()) {
+    return entry;
+  }
+  if (!region.hasOneBlock()) {
+    region.walk([&](Operation *op) {
+      if (Value cb = srcARequiredBy(op)) {
+        reconfigs.push_back({op, Value(), cb});
+      }
+    });
+    return {};
+  }
+  SrcAState state = entry;
+  for (Operation &op : region.front().without_terminator()) {
+    state = plan(&op, state);
+  }
+  return state;
+}
+
+SrcAState SrcAReconfigPlanner::plan(Operation *op, SrcAState state) {
+  if (auto forOp = dyn_cast<scf::ForOp>(op)) {
+    Region &body = forOp.getRegion();
+    SrcAState exit =
+        plan(body, loopEntryTransfer(summarize(body)).apply(state));
+    return alwaysEntersBody(forOp) ? exit : joinStates(state, exit);
+  }
+  if (auto ifOp = dyn_cast<scf::IfOp>(op)) {
+    SrcAState thenExit = plan(ifOp.getThenRegion(), state);
+    return joinStates(thenExit, plan(ifOp.getElseRegion(), state));
+  }
+  if (auto whileOp = dyn_cast<scf::WhileOp>(op)) {
+    SrcATransfer iteration =
+        summarize(whileOp.getBefore()).then(summarize(whileOp.getAfter()));
+    SrcAState beforeExit =
+        plan(whileOp.getBefore(), loopEntryTransfer(iteration).apply(state));
+    plan(whileOp.getAfter(), beforeExit);
+    return beforeExit;
+  }
+  if (op->getNumRegions() != 0) {
+    for (Region &region : op->getRegions()) {
+      plan(region, {});
+    }
+    return {};
+  }
+  if (Value cb = srcARequiredBy(op)) {
+    if (!state.cb || unpackElementType(state.cb) != unpackElementType(cb)) {
+      reconfigs.push_back({op, state.cb, cb});
+    }
+    return {cb};
+  }
+  if (Value cb = srcAProgrammedBy(op)) {
+    return {cb};
+  }
+  return state;
+}
+
+/// Insert reconfig_data_format_srca before a short init whose required SrcA
+/// element type differs from the programmed operand.
+/// The SrcA format persists across sync regions, and a common init hoisted
+/// above a compiler loop runs once for every region in that loop, so the
+/// analysis covers the whole function and reads the inits present in the IR.
+static void insertSrcAReconfigs(ModuleOp moduleOp) {
+  moduleOp->walk([&](func::FuncOp funcOp) {
+    SrcAReconfigPlanner planner;
+    planner.plan(funcOp.getBody(), {});
+
+    OpBuilder builder(funcOp.getContext());
+    for (const SrcAReconfig &reconfig : planner.getReconfigs()) {
+      builder.setInsertionPoint(reconfig.init);
+      ttk::ReconfigDataFormatSrcaOp::create(builder, reconfig.init->getLoc(),
+                                            reconfig.oldCB, reconfig.newCB);
+    }
+  });
+}
+
+//===----------------------------------------------------------------------===//
+// Per-op init insertion
+//===----------------------------------------------------------------------===//
+
+using ComputeInitMap = llvm::DenseMap<mlir::TypeID, InitOpInfo>;
+
+// A null key means the programmed init is not unique. The next compute must
+// be initialized again; reusing either predecessor can skip a required init.
+// mayReduce stays set when any incoming path can still have the packer edge
+// mask from reduce_init. Merging keys must not drop that fact.
+struct InitState {
+  std::optional<InitKey> key;
+  bool mayReduce = false;
+};
+
+static InitState joinStates(const InitState &lhs, const InitState &rhs) {
+  InitState result;
+  result.mayReduce = lhs.mayReduce || rhs.mayReduce;
+  if (lhs.key && rhs.key && *lhs.key == *rhs.key) {
+    result.key = lhs.key;
+  }
+  return result;
+}
+
+using InitTransfer = Transfer<InitState>;
+
+static InitState stateAfter(Operation *compute) {
+  InitKey key = computeInitKey(compute);
+  bool isReduce = key.typeId == mlir::TypeID::get<ttk::ReduceTileOp>();
+  return {key, isReduce};
+}
+
+static bool initValuesDefinedOutside(scf::ForOp forOp, Operation *compute) {
+  InitKey key = computeInitKey(compute);
+  for (Value operand : key.operands) {
+    if (!forOp.isDefinedOutsideOfLoop(operand)) {
+      return false;
+    }
+  }
+  // The hoisted init consumes the original SSA values, not the folded key.
+  for (Value parameter : initParameterValues(compute)) {
+    if (!forOp.isDefinedOutsideOfLoop(parameter)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+struct InitSummary {
+  InitTransfer transfer;
+  /// First compute in the region, or null when it has none.
+  Operation *representative = nullptr;
+  /// Every compute shares the representative's key and no operation discards
+  /// the programmed init.
+  bool uniform = true;
+
+  static InitSummary discarding() {
+    return {InitTransfer::assign({}), nullptr, false};
+  }
+
+  // Joining with the unknown state forgets the key and keeps mayReduce.
+  static InitSummary forgettingKey() {
+    return {{InitTransfer::Kind::Join, {}}, nullptr, false};
+  }
+
+  void absorbUniformity(const InitSummary &other) {
+    uniform = uniform && other.uniform;
+    if (!other.representative) {
+      return;
+    }
+    if (!representative) {
+      representative = other.representative;
+      return;
+    }
+    if (computeInitKey(representative) !=
+        computeInitKey(other.representative)) {
+      uniform = false;
+    }
+  }
+};
+
+/// Inserts per-op inits and reduce_uninit.
+class InitInserter {
+public:
+  explicit InitInserter(const ComputeInitMap &inits) : inits(inits) {}
+
+  InitState insert(Block::iterator begin, Block::iterator end, InitState state);
+
+private:
+  bool isCompute(Operation *op) const {
+    return inits.contains(op->getName().getTypeID());
+  }
+  InitSummary summarize(Region &region);
+  InitSummary summarize(Operation *op);
+  Operation *hoistedCompute(scf::ForOp forOp);
+  InitState initialize(Operation *compute, InitState state,
+                       Operation *insertBefore);
+  InitState insert(Region &region, InitState entry);
+  InitState insert(Operation *op, InitState state);
+
+  const ComputeInitMap &inits;
+  llvm::DenseMap<Region *, InitSummary> summaries;
+};
+
+InitSummary InitInserter::summarize(Region &region) {
+  if (region.empty()) {
+    return {};
+  }
+  auto it = summaries.find(&region);
+  if (it != summaries.end()) {
+    return it->second;
+  }
+  InitSummary summary = InitSummary::discarding();
+  if (region.hasOneBlock()) {
+    summary = {};
+    for (Operation &op : region.front().without_terminator()) {
+      InitSummary next = summarize(&op);
+      summary.transfer = summary.transfer.then(next.transfer);
+      summary.absorbUniformity(next);
+    }
+  }
+  summaries[&region] = summary;
+  return summary;
+}
+
+InitSummary InitInserter::summarize(Operation *op) {
+  if (isSyncBoundary(op)) {
+    return InitSummary::discarding();
+  }
+  if (auto forOp = dyn_cast<scf::ForOp>(op)) {
+    InitSummary summary = summarize(forOp.getRegion());
+    if (Operation *compute = hoistedCompute(forOp)) {
+      summary.transfer = InitTransfer::assign(stateAfter(compute));
+    } else {
+      summary.transfer = forTransfer(summary.transfer, alwaysEntersBody(forOp));
+    }
+    return summary;
+  }
+  if (auto ifOp = dyn_cast<scf::IfOp>(op)) {
+    InitSummary summary = summarize(ifOp.getThenRegion());
+    InitSummary other = summarize(ifOp.getElseRegion());
+    summary.transfer = summary.transfer.join(other.transfer);
+    summary.absorbUniformity(other);
+    return summary;
+  }
+  if (auto whileOp = dyn_cast<scf::WhileOp>(op)) {
+    InitSummary summary = summarize(whileOp.getBefore());
+    InitSummary after = summarize(whileOp.getAfter());
+    summary.transfer = whileTransfer(summary.transfer, after.transfer);
+    summary.absorbUniformity(after);
+    return summary;
+  }
+  if (op->getNumRegions() != 0) {
+    return InitSummary::discarding();
+  }
+  if (srcAProgrammedBy(op)) {
+    return InitSummary::forgettingKey();
+  }
+  if (!isCompute(op)) {
+    return {};
+  }
+  return {InitTransfer::assign(stateAfter(op)), op, true};
+}
+
+// A loop whose every iteration computes with one key and loop-invariant init
+// operands gets that init once, before the loop. The init runs whether or not
+// the body does, and the SrcA phase places any required reconfig before it.
+Operation *InitInserter::hoistedCompute(scf::ForOp forOp) {
+  InitSummary body = summarize(forOp.getRegion());
+  bool everyIteration = body.transfer.kind == InitTransfer::Kind::Assign;
+  if (!body.uniform || !body.representative || !everyIteration ||
+      !initValuesDefinedOutside(forOp, body.representative)) {
+    return nullptr;
+  }
+  return body.representative;
+}
+
+InitState InitInserter::initialize(Operation *compute, InitState state,
+                                   Operation *insertBefore) {
+  InitState next = stateAfter(compute);
+  OpBuilder builder(insertBefore);
+  if (state.mayReduce && !next.mayReduce) {
+    ttk::ReduceUninitOp::create(builder, insertBefore->getLoc());
+  }
+  if (!state.key || *state.key != *next.key) {
+    inits.find(compute->getName().getTypeID())
+        ->second.createInit(builder, compute->getLoc(), compute);
+  }
+  return next;
+}
+
+InitState InitInserter::insert(Block::iterator begin, Block::iterator end,
+                               InitState state) {
+  for (Operation &op : llvm::make_range(begin, end)) {
+    state = insert(&op, state);
+  }
+  return state;
+}
+
+InitState InitInserter::insert(Region &region, InitState entry) {
+  if (region.empty()) {
+    return entry;
+  }
+  if (!region.hasOneBlock()) {
+    region.walk([&](Operation *op) {
+      if (isCompute(op)) {
+        initialize(op, {}, op);
+      }
+    });
+    return {};
+  }
+  Block &block = region.front();
+  return insert(block.begin(), block.end(), entry);
+}
+
+InitState InitInserter::insert(Operation *op, InitState state) {
+  if (isSyncBoundary(op)) {
+    if (state.mayReduce) {
+      OpBuilder builder(op);
+      ttk::ReduceUninitOp::create(builder, op->getLoc());
+    }
+    return {};
+  }
+  if (auto forOp = dyn_cast<scf::ForOp>(op)) {
+    Region &body = forOp.getRegion();
+    if (Operation *compute = hoistedCompute(forOp)) {
+      InitState programmed = initialize(compute, state, forOp);
+      insert(body, programmed);
+      return programmed;
+    }
+    InitState exit =
+        insert(body, loopEntryTransfer(summarize(body).transfer).apply(state));
+    return alwaysEntersBody(forOp) ? exit : joinStates(state, exit);
+  }
+  if (auto ifOp = dyn_cast<scf::IfOp>(op)) {
+    InitState thenExit = insert(ifOp.getThenRegion(), state);
+    return joinStates(thenExit, insert(ifOp.getElseRegion(), state));
+  }
+  if (auto whileOp = dyn_cast<scf::WhileOp>(op)) {
+    InitTransfer before = summarize(whileOp.getBefore()).transfer;
+    InitTransfer after = summarize(whileOp.getAfter()).transfer;
+    InitState beforeExit =
+        insert(whileOp.getBefore(),
+               loopEntryTransfer(before.then(after)).apply(state));
+    insert(whileOp.getAfter(), beforeExit);
+    return beforeExit;
+  }
+  if (op->getNumRegions() != 0) {
+    for (Region &region : op->getRegions()) {
+      insert(region, {});
+    }
+    return {};
+  }
+  if (srcAProgrammedBy(op)) {
+    return InitSummary::forgettingKey().transfer.apply(state);
+  }
+  if (!isCompute(op)) {
+    return state;
+  }
+  return initialize(op, state, op);
+}
+
+//===----------------------------------------------------------------------===//
 // Pass implementation
 //===----------------------------------------------------------------------===//
 
@@ -547,7 +1177,6 @@ struct TTKernelInsertInitsPass
 
   void runOnOperation() override {
     auto moduleOp = getOperation();
-    constexpr llvm::StringLiteral kInitInserted("ttk.init_inserted");
 
     if (failed(insertCommonInits(moduleOp))) {
       signalPassFailure();
@@ -555,62 +1184,22 @@ struct TTKernelInsertInitsPass
     }
 
     auto computeToInit = buildComputeToInitMap();
-
-    auto emitReduceUninit = [](OpBuilder &builder, Location loc,
-                               ttk::ReduceTileOp) {
-      ttk::ReduceUninitOp::create(builder, loc);
-    };
-
-    auto processOp = [&](Operation &topOp, std::optional<InitKey> &prevKey,
-                         ttk::ReduceTileOp &prevReduce) {
-      if (isSyncBoundary(&topOp)) {
-        if (prevKey &&
-            prevKey->typeId == mlir::TypeID::get<ttk::ReduceTileOp>()) {
-          OpBuilder builder(&topOp);
-          emitReduceUninit(builder, topOp.getLoc(), prevReduce);
-        }
-        prevKey = std::nullopt;
-        prevReduce = nullptr;
-        return;
-      }
-
-      topOp.walk([&](Operation *inner) {
-        auto mapIt = computeToInit.find(inner->getName().getTypeID());
-        if (mapIt == computeToInit.end()) {
-          return WalkResult::advance();
-        }
-        InitKey key = computeInitKey(inner);
-        if (!prevKey || *prevKey != key) {
-          if (prevKey &&
-              prevKey->typeId == mlir::TypeID::get<ttk::ReduceTileOp>() &&
-              key.typeId != mlir::TypeID::get<ttk::ReduceTileOp>()) {
-            OpBuilder builder(&topOp);
-            emitReduceUninit(builder, topOp.getLoc(), prevReduce);
-          }
-          OpBuilder builder(&topOp);
-          mapIt->second.createInit(builder, inner->getLoc(), inner);
-        }
-        prevKey = key;
-        prevReduce = dyn_cast<ttk::ReduceTileOp>(inner);
-        inner->setAttr(kInitInserted, UnitAttr::get(inner->getContext()));
-        return WalkResult::interrupt();
-      });
-    };
+    InitInserter inserter(computeToInit);
 
     moduleOp->walk([&](ttk::TileRegsAcquireOp acquireOp) {
       Block *block = acquireOp->getBlock();
-      std::optional<InitKey> prevKey;
-      ttk::ReduceTileOp prevReduce;
-      for (auto it = std::next(acquireOp->getIterator()); it != block->end();
-           ++it) {
+      Block::iterator begin = std::next(acquireOp->getIterator());
+      Block::iterator end = block->end();
+      for (Block::iterator it = begin; it != block->end(); ++it) {
         if (isa<ttk::TileRegsReleaseOp>(&*it)) {
+          end = it;
           break;
         }
-        processOp(*it, prevKey, prevReduce);
       }
+      inserter.insert(begin, end, {});
     });
 
-    moduleOp->walk([&](Operation *op) { op->removeAttr(kInitInserted); });
+    insertSrcAReconfigs(moduleOp);
   }
 };
 
