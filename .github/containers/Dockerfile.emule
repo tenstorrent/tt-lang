@@ -5,7 +5,7 @@
 # tt-emule JITs Linux/x86-64 shared objects, so this image intentionally uses
 # the amd64 TT-Lang IRD toolchain on every host, including Apple Silicon.
 ARG BASE_IMAGE
-FROM ${BASE_IMAGE}
+FROM ${BASE_IMAGE} AS build
 
 SHELL ["/bin/bash", "-c"]
 
@@ -101,7 +101,7 @@ RUN cmake -S "$TT_METAL_SOURCE_DIR" -B "$TT_METAL_BUILD_DIR" -G Ninja \
     && TT_METAL_HOME="$TT_METAL_SOURCE_DIR" \
        TT_METAL_RUNTIME_ROOT="$TT_METAL_SOURCE_DIR" \
        TT_METAL_CACHE="$TT_METAL_BUILD_DIR/tt-metal-cache" \
-       cmake --build "$TT_METAL_BUILD_DIR" --target ttnn ttnncpp \
+       cmake --build "$TT_METAL_BUILD_DIR" --target ttnn ttnncpp --parallel 2 \
     && TT_METAL_HOME="$TT_METAL_SOURCE_DIR" \
        TT_METAL_RUNTIME_ROOT="$TT_METAL_SOURCE_DIR" \
        TT_METAL_CACHE="$TT_METAL_BUILD_DIR/tt-metal-cache" \
@@ -122,7 +122,97 @@ RUN cmake -S "$TT_METAL_SOURCE_DIR" -B "$TT_METAL_BUILD_DIR" -G Ninja \
        PYTHONPATH="$TT_METAL_SOURCE_DIR/ttnn:$TT_METAL_SOURCE_DIR/tools" \
        /opt/ttlang-toolchain/venv/bin/python -c 'import ttnn'
 
-RUN mkdir -p /ttlang-build /tt-metal-cache
+COPY .github/containers/package-emule-runtime.sh \
+     .github/containers/trim-emule-venv.sh /tmp/
+RUN mkdir -p /runtime \
+    && bash /tmp/package-emule-runtime.sh "$TT_METAL_SOURCE_DIR" /runtime/tt-metal \
+    && cp "$TT_EMULE_RUNTIME_ROOT/stack.json" \
+          "$TT_EMULE_RUNTIME_ROOT/source-manifest.json" /runtime/ \
+    && bash /tmp/trim-emule-venv.sh /opt/ttlang-toolchain/venv/bin/python \
+    && rm -f /opt/ttlang-toolchain/bin/tt-triage
+
+# Use the pinned compiler's Clang, rather than another LLVM SDK from apt.
+RUN mkdir -p /clang/usr/lib/llvm-20/bin /clang/usr/lib/llvm-20/lib \
+             /clang/usr/lib/x86_64-linux-gnu /clang/usr/bin \
+    && cp -L /usr/lib/llvm-20/bin/clang /usr/lib/llvm-20/bin/lld \
+        /clang/usr/lib/llvm-20/bin/ \
+    && cp -a /usr/lib/llvm-20/lib/clang /clang/usr/lib/llvm-20/lib/ \
+    && cp -L /usr/lib/llvm-20/lib/libLLVM.so.20.1 \
+        /usr/lib/llvm-20/lib/libclang-cpp.so.20.1 \
+        /clang/usr/lib/x86_64-linux-gnu/ \
+    && ln -s clang /clang/usr/lib/llvm-20/bin/clang++ \
+    && ln -s lld /clang/usr/lib/llvm-20/bin/ld.lld \
+    && for tool in clang clang++ lld ld.lld; do \
+        ln -s "../lib/llvm-20/bin/$tool" "/clang/usr/bin/$tool-20"; \
+    done \
+    && for package in clang-20 lld-20 libllvm20 libclang-cpp20 \
+        libclang-common-20-dev libclang-rt-20-dev; do \
+        mkdir -p "/clang/usr/share/doc/$package"; \
+        cp "/usr/share/doc/$package/copyright" "/clang/usr/share/doc/$package/"; \
+    done
+
+FROM ubuntu:24.04@sha256:008173c23f95b170204355c12626cb5a965d779a7e1283b09e9cffbb1bf33ca3 AS runtime
+SHELL ["/bin/bash", "-c"]
+
+ARG BASE_IMAGE
+ARG STACK_MANIFEST_SHA256
+ARG TT_LANG_COMPILER_REPOSITORY
+ARG TT_LANG_COMPILER_BASE_COMMIT
+ARG TT_EMULE_COMMIT
+ARG TT_METAL_COMMIT
+ARG TT_METAL_SOURCE_URL
+ARG RUNTIME_PLATFORM
+ARG TARGET_NAME
+ARG TARGET_CLUSTER_DESCRIPTOR
+ARG TARGET_MESH_DEVICE
+
+LABEL org.opencontainers.image.title="TT-Lang compiler-backed emule runtime" \
+      org.opencontainers.image.source="${TT_LANG_COMPILER_REPOSITORY}" \
+      io.tenstorrent.tt-lang.compiler.commit="${TT_LANG_COMPILER_BASE_COMMIT}" \
+      io.tenstorrent.tt-lang.emule.commit="${TT_EMULE_COMMIT}" \
+      io.tenstorrent.tt-lang.metal.repository="${TT_METAL_SOURCE_URL}" \
+      io.tenstorrent.tt-lang.metal.commit="${TT_METAL_COMMIT}" \
+      io.tenstorrent.tt-lang.runtime.base-image="${BASE_IMAGE}" \
+      io.tenstorrent.tt-lang.runtime.manifest-sha256="${STACK_MANIFEST_SHA256}" \
+      io.tenstorrent.tt-lang.runtime.platform="${RUNTIME_PLATFORM}" \
+      io.tenstorrent.tt-lang.target.name="${TARGET_NAME}" \
+      io.tenstorrent.tt-lang.target.cluster-descriptor="${TARGET_CLUSTER_DESCRIPTOR}" \
+      io.tenstorrent.tt-lang.target.mesh-device="${TARGET_MESH_DEVICE}"
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TT_EMULE_RUNTIME_ROOT=/opt/tt-emule-runtime
+ENV TT_METAL_SOURCE_DIR=/opt/tt-emule-runtime/tt-metal
+ENV TT_METAL_BUILD_DIR=/opt/tt-emule-runtime/tt-metal/build_emule
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        binutils ca-certificates cmake g++ gcc git make ninja-build pkg-config \
+        python3 python3.12-dev python3.12-venv \
+        libedit2 libffi8 libhwloc15 libnuma1 libtinfo6 libxml2-dev \
+        libzstd-dev zlib1g-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=build /clang/ /
+COPY --from=build /opt/ttlang-toolchain/bin /opt/ttlang-toolchain/bin/
+COPY --from=build /opt/ttlang-toolchain/include /opt/ttlang-toolchain/include/
+COPY --from=build /opt/ttlang-toolchain/lib /opt/ttlang-toolchain/lib/
+COPY --from=build /opt/ttlang-toolchain/share /opt/ttlang-toolchain/share/
+COPY --from=build /opt/ttlang-toolchain/src /opt/ttlang-toolchain/src/
+COPY --from=build /opt/ttlang-toolchain/python_packages /opt/ttlang-toolchain/python_packages/
+COPY --from=build /opt/ttlang-toolchain/venv /opt/ttlang-toolchain/venv/
+COPY --from=build /runtime/ /opt/tt-emule-runtime/
+COPY --from=build /opt/tt-emule /opt/tt-emule/
+
+# Refresh the copied venv's base-interpreter paths for the final OS.
+RUN ldconfig \
+    && clang-20 --version && ld.lld-20 --version \
+    && python3 -m venv --upgrade --without-pip --copies --prompt ttlang \
+        /opt/ttlang-toolchain/venv \
+    && /opt/ttlang-toolchain/venv/bin/python -m pip check \
+    && TT_METAL_HOME="$TT_METAL_SOURCE_DIR" \
+       TT_METAL_RUNTIME_ROOT="$TT_METAL_SOURCE_DIR" \
+       PYTHONPATH="$TT_METAL_SOURCE_DIR/ttnn:$TT_METAL_SOURCE_DIR/tools" \
+       /opt/ttlang-toolchain/venv/bin/python -c 'import ttnn, pytest, lit' \
+    && mkdir -p /ttlang-build /tt-metal-cache
 
 WORKDIR /workspace
 ENTRYPOINT ["/workspace/scripts/tt-lang-emule-entrypoint.sh"]
