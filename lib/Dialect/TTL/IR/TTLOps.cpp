@@ -2820,6 +2820,9 @@ mlir::LogicalResult mlir::tt::ttl::DFBNetworkOp::verifyRegions() {
   mlir::SymbolTable symbolTable(getOperation());
   llvm::DenseMap<mlir::Attribute, mlir::Operation *> consumedBy;
   llvm::DenseMap<int64_t, mlir::Operation *> producedBy;
+  // The handles each record writes: its output DFB ids, or a merge's symbol.
+  llvm::DenseMap<mlir::Operation *, llvm::SmallVector<Attribute, 4>>
+      producedHandles;
 
   for (Operation &record : *getBody()) {
     // The handles this record reads (DFB ids or merge symbols) and the DFBs it
@@ -2834,6 +2837,8 @@ mlir::LogicalResult mlir::tt::ttl::DFBNetworkOp::verifyRegions() {
       produced = split.getOutputs();
     } else if (auto merge = dyn_cast<DFBMergeOp>(record)) {
       llvm::append_range(consumed, merge.getInputs());
+      producedHandles[&record].push_back(
+          FlatSymbolRefAttr::get(merge.getSymNameAttr()));
     } else {
       return record.emitOpError() << "is not a DFB network record";
     }
@@ -2866,6 +2871,8 @@ mlir::LogicalResult mlir::tt::ttl::DFBNetworkOp::verifyRegions() {
     }
 
     for (int64_t output : produced) {
+      producedHandles[&record].push_back(
+          IntegerAttr::get(IndexType::get(getContext()), output));
       auto [it, inserted] = producedBy.try_emplace(output, &record);
       if (!inserted) {
         InFlightDiagnostic diag = record.emitOpError()
@@ -2874,6 +2881,37 @@ mlir::LogicalResult mlir::tt::ttl::DFBNetworkOp::verifyRegions() {
         diag.attachNote(it->second->getLoc()) << "first produced here";
         return diag;
       }
+    }
+  }
+
+  // Each handle has at most one consumer, so following the consumers of a
+  // record's outputs visits everything downstream of it. Reaching a record
+  // that is still on the current path closes a cycle.
+  enum class VisitState { InProgress, Done };
+  llvm::DenseMap<Operation *, VisitState> visitState;
+  std::function<LogicalResult(Operation *)> visit =
+      [&](Operation *record) -> LogicalResult {
+    visitState[record] = VisitState::InProgress;
+    for (Attribute handle : producedHandles.lookup(record)) {
+      Operation *consumer = consumedBy.lookup(handle);
+      if (!consumer) {
+        continue;
+      }
+      auto it = visitState.find(consumer);
+      if (it == visitState.end()) {
+        if (failed(visit(consumer))) {
+          return failure();
+        }
+      } else if (it->second == VisitState::InProgress) {
+        return record->emitOpError() << "handle " << handle << " forms a cycle";
+      }
+    }
+    visitState[record] = VisitState::Done;
+    return success();
+  };
+  for (Operation &record : *getBody()) {
+    if (!visitState.contains(&record) && failed(visit(&record))) {
+      return failure();
     }
   }
 

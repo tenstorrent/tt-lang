@@ -262,3 +262,29 @@ ttl.dfb.network @invalid_duplicate_record_name_net {
   // expected-error @below {{redefinition of symbol named 'm'}}
   ttl.dfb.merge @m [3 : index, 4 : index] policy = <round_robin>
 }
+
+// -----
+
+// Test that records forming a cycle are rejected.
+ttl.dfb.network @invalid_handle_loop_net {
+  ttl.dfb.fork @a 0 : index -> [1] storage = <auto>
+  // expected-error @below {{handle 0 : index forms a cycle}}
+  ttl.dfb.fork @b 1 : index -> [0] storage = <auto>
+}
+
+// -----
+
+// Test that a self-merge is rejected.
+ttl.dfb.network @invalid_self_merge_net {
+  // expected-error @below {{handle @m forms a cycle}}
+  ttl.dfb.merge @m [@m, 1 : index] policy = <round_robin>
+}
+
+// -----
+
+// Test that a cycle through a merge is rejected.
+ttl.dfb.network @invalid_cycle_through_merge_net {
+  ttl.dfb.merge @m [0 : index, 5 : index] policy = <round_robin>
+  // expected-error @below {{handle 5 : index forms a cycle}}
+  ttl.dfb.split @s @m -> [5, 6] policy = <round_robin>
+}

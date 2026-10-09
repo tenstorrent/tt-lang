@@ -151,3 +151,17 @@ ttl.dfb.network @scope_b {
   ttl.dfb.merge @m [4 : index, 5 : index] policy = <round_robin>
   ttl.dfb.split @s @m -> [6, 7] policy = <round_robin>
 }
+
+// -----
+
+// Verify that paths that split and rejoin through a merge are not a cycle.
+// CHECK-LABEL: ttl.dfb.network @diamond_net {
+// CHECK-NEXT: ttl.dfb.split @s 0 : index -> [1, 2] policy = <round_robin>
+// CHECK-NEXT: ttl.dfb.merge @m [1 : index, 2 : index] policy = <round_robin>
+// CHECK-NEXT: ttl.dfb.fork @f @m -> [3, 4] storage = <auto>
+// CHECK-NEXT: }
+ttl.dfb.network @diamond_net {
+  ttl.dfb.split @s 0 : index -> [1, 2] policy = <round_robin>
+  ttl.dfb.merge @m [1 : index, 2 : index] policy = <round_robin>
+  ttl.dfb.fork @f @m -> [3, 4] storage = <auto>
+}
