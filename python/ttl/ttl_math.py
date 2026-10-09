@@ -17,10 +17,10 @@ from .operators import (
     fill,
     reduce_max,
     reduce_sum,
+    topk,
     transpose,
     typecast,
 )
-
 
 __all__ = [
     "broadcast",
@@ -28,6 +28,7 @@ __all__ = [
     "fill",
     "reduce_max",
     "reduce_sum",
+    "topk",
     "transpose",
     "typecast",
     *_generated_all,
