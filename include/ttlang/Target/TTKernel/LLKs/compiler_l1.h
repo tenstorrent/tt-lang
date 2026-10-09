@@ -4,6 +4,15 @@
 #define TTLANG_COMPILER_L1_H
 #include <cstdint>
 namespace ttlang::l1 {
+/// Clears the producer and consumer sequences for one compiler-managed DFB.
+inline void resetState(uint32_t state) {
+  if constexpr (!target::ownsDFBInterface) {
+    return;
+  }
+  target::store(state, 0);
+  target::store(state + sizeof(uint32_t), 0);
+}
+
 /// Single-producer/single-consumer storage with two block sequence counters.
 template <uint32_t PageBytes, uint32_t PagesPerBlock, uint32_t BlockCount,
           uint32_t PayloadOffset>
