@@ -87,3 +87,67 @@ ttl.dfb.network @merge_net_mixed_inputs {
   ttl.dfb.merge @m2 [3 : index, 4 : index] policy = <round_robin>
   ttl.dfb.merge @merge_final [@m1, @m2, 5 : index] policy = <round_robin>
 }
+
+// -----
+
+// Verify that a record can name a merge defined after it.
+// CHECK-LABEL: ttl.dfb.network @split_net_forward_reference {
+// CHECK-NEXT: ttl.dfb.split @split @m -> [3, 4] policy = <round_robin>
+// CHECK-NEXT: ttl.dfb.merge @m [1 : index, 2 : index] policy = <round_robin>
+// CHECK-NEXT: }
+ttl.dfb.network @split_net_forward_reference {
+  ttl.dfb.split @split @m -> [3, 4] policy = <round_robin>
+  ttl.dfb.merge @m [1 : index, 2 : index] policy = <round_robin>
+}
+
+// -----
+
+// Verify that a DFB produced by one record can be consumed by another, and
+// that a fork can read a merged handle.
+// CHECK-LABEL: ttl.dfb.network @chain_net {
+// CHECK-NEXT: ttl.dfb.fork @fork 0 : index -> [1] storage = <replicated>
+// CHECK-NEXT: ttl.dfb.split @split 1 : index -> [2, 3] policy = <round_robin>
+// CHECK-NEXT: ttl.dfb.merge @merge [3 : index, 4 : index] policy = <round_robin>
+// CHECK-NEXT: ttl.dfb.fork @fork_of_merge @merge -> [5, 6] storage = <replicated>
+// CHECK-NEXT: }
+ttl.dfb.network @chain_net {
+  ttl.dfb.fork @fork 0 : index -> [1] storage = <replicated>
+  ttl.dfb.split @split 1 : index -> [2, 3] policy = <round_robin>
+  ttl.dfb.merge @merge [3 : index, 4 : index] policy = <round_robin>
+  ttl.dfb.fork @fork_of_merge @merge -> [5, 6] storage = <replicated>
+}
+
+// -----
+
+// Verify that records with one output or one input are valid.
+// CHECK-LABEL: ttl.dfb.network @single_output_net {
+// CHECK-NEXT: ttl.dfb.fork @fork 0 : index -> [1] storage = <auto>
+// CHECK-NEXT: ttl.dfb.split @split 2 : index -> [3] policy = <round_robin>
+// CHECK-NEXT: ttl.dfb.merge @merge [4 : index] policy = <round_robin>
+// CHECK-NEXT: }
+ttl.dfb.network @single_output_net {
+  ttl.dfb.fork @fork 0 : index -> [1] storage = <auto>
+  ttl.dfb.split @split 2 : index -> [3] policy = <round_robin>
+  ttl.dfb.merge @merge [4 : index] policy = <round_robin>
+}
+
+// -----
+
+// Verify that record symbols are scoped to their network, so two networks can
+// reuse a record name.
+// CHECK-LABEL: ttl.dfb.network @scope_a {
+// CHECK-NEXT: ttl.dfb.merge @m [0 : index, 1 : index] policy = <round_robin>
+// CHECK-NEXT: ttl.dfb.split @s @m -> [2, 3] policy = <round_robin>
+// CHECK-NEXT: }
+// CHECK-LABEL: ttl.dfb.network @scope_b {
+// CHECK-NEXT: ttl.dfb.merge @m [4 : index, 5 : index] policy = <round_robin>
+// CHECK-NEXT: ttl.dfb.split @s @m -> [6, 7] policy = <round_robin>
+// CHECK-NEXT: }
+ttl.dfb.network @scope_a {
+  ttl.dfb.merge @m [0 : index, 1 : index] policy = <round_robin>
+  ttl.dfb.split @s @m -> [2, 3] policy = <round_robin>
+}
+ttl.dfb.network @scope_b {
+  ttl.dfb.merge @m [4 : index, 5 : index] policy = <round_robin>
+  ttl.dfb.split @s @m -> [6, 7] policy = <round_robin>
+}

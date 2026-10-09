@@ -2643,6 +2643,7 @@ def TTL_DFBNetworkOp : TTL_Op<"dfb.network", [
   }];
   let builders = [OpBuilder<(ins "::llvm::StringRef":$symName)>];
   let skipDefaultBuilders = 1;
+  let hasRegionVerifier = 1;
 }
 
 def TTL_DFBNetworkHandleAttr

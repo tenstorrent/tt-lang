@@ -2816,6 +2816,70 @@ void mlir::tt::ttl::DFBNetworkOp::build(OpBuilder &builder,
                      builder.getStringAttr(symName));
 }
 
+mlir::LogicalResult mlir::tt::ttl::DFBNetworkOp::verifyRegions() {
+  mlir::SymbolTable symbolTable(getOperation());
+  llvm::DenseMap<mlir::Attribute, mlir::Operation *> consumedBy;
+  llvm::DenseMap<int64_t, mlir::Operation *> producedBy;
+
+  for (Operation &record : *getBody()) {
+    // The handles this record reads (DFB ids or merge symbols) and the DFBs it
+    // writes.
+    llvm::SmallVector<Attribute, 4> consumed;
+    llvm::ArrayRef<int64_t> produced;
+    if (auto fork = dyn_cast<DFBForkOp>(record)) {
+      consumed.push_back(fork.getSource());
+      produced = fork.getOutputs();
+    } else if (auto split = dyn_cast<DFBSplitOp>(record)) {
+      consumed.push_back(split.getSource());
+      produced = split.getOutputs();
+    } else if (auto merge = dyn_cast<DFBMergeOp>(record)) {
+      llvm::append_range(consumed, merge.getInputs());
+    } else {
+      return record.emitOpError() << "is not a DFB network record";
+    }
+
+    for (Attribute handle : consumed) {
+      if (auto symbol = dyn_cast<FlatSymbolRefAttr>(handle)) {
+        Operation *target = symbolTable.lookup(symbol.getValue());
+        if (!target) {
+          return record.emitOpError()
+                 << "handle " << symbol
+                 << " does not name a record in this network";
+        }
+        if (!isa<DFBMergeOp>(target)) {
+          InFlightDiagnostic diag = record.emitOpError()
+                                    << "handle " << symbol
+                                    << " does not name a ttl.dfb.merge";
+          diag.attachNote(target->getLoc()) << symbol << " is defined here";
+          return diag;
+        }
+      }
+
+      auto [it, inserted] = consumedBy.try_emplace(handle, &record);
+      if (!inserted) {
+        InFlightDiagnostic diag = record.emitOpError()
+                                  << "handle " << handle
+                                  << " is already consumed";
+        diag.attachNote(it->second->getLoc()) << "first consumed here";
+        return diag;
+      }
+    }
+
+    for (int64_t output : produced) {
+      auto [it, inserted] = producedBy.try_emplace(output, &record);
+      if (!inserted) {
+        InFlightDiagnostic diag = record.emitOpError()
+                                  << "output " << output
+                                  << " is already produced";
+        diag.attachNote(it->second->getLoc()) << "first produced here";
+        return diag;
+      }
+    }
+  }
+
+  return success();
+}
+
 // Verifies the source and outputs shared by fork and split records.
 static mlir::LogicalResult
 verifyDFBNetworkSourceAndOutputs(mlir::Operation *op, mlir::Attribute source,
