@@ -30,12 +30,10 @@ struct TTLRejectDFBNetworksPass
     : public impl::TTLRejectDFBNetworksBase<TTLRejectDFBNetworksPass> {
   void runOnOperation() override {
     ModuleOp module = getOperation();
-
-    // Walk the module and emit an error for each `ttl.dfb.network` found.
     bool foundNetwork = false;
     module.walk([&](DFBNetworkOp network) {
-      network.emitOpError()
-          << network.getSymNameAttr() << ": DFB networks are not supported yet";
+      network.emitOpError() << "@" << network.getSymName()
+                            << ": DFB networks are not supported yet";
       foundNetwork = true;
     });
     if (foundNetwork) {

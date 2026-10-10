@@ -120,7 +120,7 @@ networks, are not part of the verifier.
 `ttl.dfb.network` in the module, naming the network, and fails the pass:
 
 ```
-error: 'ttl.dfb.network' op "copy_and_exp": DFB networks are not supported yet
+error: 'ttl.dfb.network' op @copy_and_exp: DFB networks are not supported yet
 ```
 
 It runs first in `ttl-to-ttkernel-pipeline` and in the pass list that
