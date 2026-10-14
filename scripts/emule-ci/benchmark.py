@@ -29,7 +29,13 @@ import time
 MANIFEST_VERSION = 2
 SELECTION = "complete"
 SUITES = ("mlir", "bindings", "packaging", "pytest", "me2e", "lit")
+PYTEST_KINDS = ("pytest", "packaging")
+LIT_KINDS = ("lit", "mlir", "bindings")
 CLASSIFICATION_MARKERS = ("multi_device", "compile_only")
+LIT_MARKERS = ("expected_unsupported",)
+# lit features that prove the emulator runtime is visible to the Python lit
+# suite; without them its tests silently become UNSUPPORTED.
+REQUIRED_LIT_FEATURES = ("ttnn", "tt-device")
 DIRECTORY_GROUPS = {
     "mlir": "ttlang",
     "bindings": "bindings/python",
@@ -63,7 +69,11 @@ def read_json(path):
 
 
 def write_json(path, value):
-    Path(path).write_text(json.dumps(value, indent=2) + "\n", encoding="utf-8")
+    # Replace atomically: the worker may read a summary while it is rewritten.
+    path = Path(path)
+    temporary = path.with_name(path.name + ".tmp")
+    temporary.write_text(json.dumps(value, indent=2) + "\n", encoding="utf-8")
+    os.replace(temporary, path)
 
 
 def digest(value):
@@ -99,19 +109,12 @@ def suite_of(group_id):
 
 
 def validate_group(group):
-    if "kind" not in group or group["kind"] not in (
-        "pytest",
-        "lit",
-        *DIRECTORY_GROUPS,
-    ):
+    if "kind" not in group or group["kind"] not in (*PYTEST_KINDS, *LIT_KINDS):
         raise ValueError("invalid test group")
     kind = group["kind"]
-    expected_keys = {"id", "kind", "path", "cases"}
-    if kind == "pytest":
-        expected_keys.add("markers")
-    if set(group) != expected_keys:
+    if set(group) != {"id", "kind", "path", "cases", "markers"}:
         raise ValueError("unexpected test group fields")
-    path, cases = group["path"], group["cases"]
+    path, cases, markers = group["path"], group["cases"], group["markers"]
     if (
         not isinstance(path, str)
         or group["id"] != f"{kind}:{path}"
@@ -120,6 +123,13 @@ def validate_group(group):
         or any(not isinstance(case, str) or "\n" in case for case in cases)
     ):
         raise ValueError("invalid test group")
+    expected_markers = CLASSIFICATION_MARKERS if kind in PYTEST_KINDS else LIT_MARKERS
+    if not isinstance(markers, dict) or set(markers) != set(expected_markers):
+        raise ValueError("test group requires its classification markers")
+    for marked in markers.values():
+        if not isinstance(marked, list) or not set(marked) <= set(cases):
+            raise ValueError("classified cases must belong to the group")
+        unique(marked)
     if kind == "pytest":
         if not safe_relative_path(path) or not re.fullmatch(
             r"(?:python|me2e)/.+\.py", path
@@ -127,13 +137,6 @@ def validate_group(group):
             raise ValueError("invalid test group")
         if any(not case.startswith(path + "::") for case in cases):
             raise ValueError("pytest group contains a test from another file")
-        markers = group["markers"]
-        if not isinstance(markers, dict) or set(markers) != set(CLASSIFICATION_MARKERS):
-            raise ValueError("pytest group requires its classification markers")
-        for marked in markers.values():
-            if not isinstance(marked, list) or not set(marked) <= set(cases):
-                raise ValueError("classified cases must belong to the group")
-            unique(marked)
     elif kind == "lit":
         if not safe_relative_path(path) or not re.fullmatch(r"python/.+\.py", path):
             raise ValueError("invalid test group")
@@ -198,30 +201,53 @@ def lit_names(output, prefix):
     return names
 
 
+def pytest_markers(cases, marked):
+    if not isinstance(marked, dict):
+        raise ValueError("invalid pytest collection inventory")
+    return {
+        marker: [case for case in cases if marker in marked.get(case, [])]
+        for marker in CLASSIFICATION_MARKERS
+    }
+
+
 def pytest_groups(inventory):
     nodes = inventory["nodes"]
-    marked = inventory.get("markers", {})
-    if not isinstance(nodes, list) or not isinstance(marked, dict):
+    if not isinstance(nodes, list):
         raise ValueError("invalid pytest collection inventory")
     groups = {}
     for node in nodes:
         path = node.split("::", 1)[0]
         key = "pytest:" + path
         group = groups.setdefault(
-            key,
-            {
-                "id": key,
-                "kind": "pytest",
-                "path": path,
-                "cases": [],
-                "markers": {marker: [] for marker in CLASSIFICATION_MARKERS},
-            },
+            key, {"id": key, "kind": "pytest", "path": path, "cases": []}
         )
         group["cases"].append(node)
-        for marker in CLASSIFICATION_MARKERS:
-            if marker in marked.get(node, []):
-                group["markers"][marker].append(node)
+    for group in groups.values():
+        group["markers"] = pytest_markers(group["cases"], inventory.get("markers", {}))
     return list(groups.values())
+
+
+def lit_markers(cases, expected_unsupported):
+    """Cases lit itself reports UNSUPPORTED before execution (``--no-execute``)."""
+    if not isinstance(expected_unsupported, list) or not set(
+        expected_unsupported
+    ) <= set(cases):
+        raise ValueError("expected unsupported lit tests must be collected tests")
+    return {"expected_unsupported": [c for c in cases if c in expected_unsupported]}
+
+
+def lit_features(output):
+    """Parse the available features from ``llvm-lit --show-suites`` output."""
+    features = set()
+    found = False
+    for line in output.splitlines():
+        prefix, separator, listed = line.strip().partition("Available Features:")
+        if separator and not prefix:
+            found = True
+            features.update(listed.split())
+    if not found:
+        raise ValueError("lit did not report its available features")
+    return features
 
 
 def make_manifest(collected, revision, runtime_id):
@@ -229,39 +255,58 @@ def make_manifest(collected, revision, runtime_id):
 
     ``collected`` maps ``pytest`` and ``packaging`` to collection inventories
     (``nodes`` plus optional ``markers``), and ``lit``, ``mlir`` and
-    ``bindings`` to their ``llvm-lit --show-tests`` output.
+    ``bindings`` to their ``llvm-lit --show-tests`` output (``tests``) with the
+    full names lit reported UNSUPPORTED without executing anything
+    (``expected_unsupported``).
     """
     groups = []
     for kind in ("mlir", "bindings"):
         path = DIRECTORY_GROUPS[kind]
-        names = lit_names(collected[kind], LIT_SUITES[kind])
+        names = lit_names(collected[kind]["tests"], LIT_SUITES[kind])
+        cases = ["TTLang :: " + name for name in names]
         groups.append(
             {
                 "id": f"{kind}:{path}",
                 "kind": kind,
                 "path": path,
-                "cases": ["TTLang :: " + name for name in names],
+                "cases": cases,
+                "markers": lit_markers(cases, collected[kind]["expected_unsupported"]),
             }
         )
-    packaging = collected["packaging"]["nodes"]
+    packaging = collected["packaging"]
+    if not isinstance(packaging["nodes"], list):
+        raise ValueError("invalid pytest collection inventory")
     groups.append(
         {
             "id": "packaging:" + DIRECTORY_GROUPS["packaging"],
             "kind": "packaging",
             "path": DIRECTORY_GROUPS["packaging"],
-            "cases": list(packaging),
+            "cases": list(packaging["nodes"]),
+            "markers": pytest_markers(packaging["nodes"], packaging.get("markers", {})),
         }
     )
     groups.extend(pytest_groups(collected["pytest"]))
-    for name in lit_names(collected["lit"], LIT_SUITES["lit"]):
+    expected_unsupported = collected["lit"]["expected_unsupported"]
+    if not isinstance(expected_unsupported, list):
+        raise ValueError("expected unsupported lit tests must be collected tests")
+    for name in lit_names(collected["lit"]["tests"], LIT_SUITES["lit"]):
+        cases = ["TTLang :: " + name]
         groups.append(
             {
                 "id": "lit:" + name,
                 "kind": "lit",
                 "path": name,
-                "cases": ["TTLang :: " + name],
+                "cases": cases,
+                "markers": lit_markers(
+                    cases, [c for c in expected_unsupported if c in cases]
+                ),
             }
         )
+    unexpected = set(expected_unsupported) - {
+        case for group in groups if group["kind"] == "lit" for case in group["cases"]
+    }
+    if unexpected:
+        raise ValueError("expected unsupported lit tests must be collected tests")
     manifest = {
         "version": MANIFEST_VERSION,
         "revision": revision,
@@ -278,7 +323,18 @@ def make_manifest(collected, revision, runtime_id):
 def read_events(path):
     if not path.exists():
         return []
-    return [json.loads(line) for line in path.read_text().splitlines()]
+    lines = path.read_text().splitlines()
+    events = []
+    for index, line in enumerate(lines):
+        try:
+            events.append(json.loads(line))
+        except ValueError:
+            # A process killed mid-write leaves at most one truncated final
+            # line; the coverage check still fails because its finish event is
+            # missing. Corruption anywhere else is an error.
+            if index != len(lines) - 1:
+                raise
+    return events
 
 
 def collection_inventory(events_path):
@@ -332,9 +388,20 @@ def pytest_outcomes(group, events):
     return dict(counts)
 
 
+def lit_outcome(group, case, code):
+    """Normalize one lit result code; UNSUPPORTED counts only where expected."""
+    if code is None:
+        return "not_run"
+    if code == "UNSUPPORTED":
+        expected = group.get("markers", {}).get("expected_unsupported", [])
+        return "unsupported" if case in expected else "incomplete"
+    return LIT_OUTCOMES.get(code, "incomplete")
+
+
 def lit_coverage(group, tests):
+    """Every planned case reported exactly once with a verdict lit executed."""
     return sorted(test["name"] for test in tests) == sorted(group["cases"]) and all(
-        test["code"] not in ("UNRESOLVED", "TIMEOUT") for test in tests
+        lit_outcome(group, test["name"], test["code"]) != "incomplete" for test in tests
     )
 
 
@@ -342,9 +409,21 @@ def lit_outcomes(group, tests):
     codes = {test["name"]: test["code"] for test in tests}
     counts = Counter()
     for case in group["cases"]:
-        code = codes.get(case)
-        counts["not_run" if code is None else LIT_OUTCOMES.get(code, "incomplete")] += 1
+        counts[lit_outcome(group, case, codes.get(case))] += 1
     return dict(counts)
+
+
+def lit_report(path):
+    """The tests a lit JSON report lists, or none when lit left no report."""
+    if not path.exists():
+        return []
+    tests = read_json(path)["tests"]
+    if not isinstance(tests, list) or any(
+        not isinstance(test.get("name"), str) or not isinstance(test.get("code"), str)
+        for test in tests
+    ):
+        raise ValueError("invalid lit report")
+    return tests
 
 
 def suite_counts(results):
@@ -645,32 +724,72 @@ def collect(args, env):
         env,
         args.source,
     )
-    for kind, path in (("lit", "python"), *DIRECTORY_GROUPS.items()):
-        if kind == "packaging":
-            continue
+    for kind in LIT_KINDS:
+        suite = str(args.build / "test" / LIT_SUITES[kind].rstrip("/"))
         processes[kind] = run_command(
-            [args.lit, "--show-tests", str(args.build / "test" / path)],
+            [args.lit, "--show-tests", suite],
             args.output / f"{kind}.log",
             600,
             env,
             args.source,
         )
+        # Evaluate every test's REQUIRES/UNSUPPORTED directives without running
+        # anything: lit still reports UNSUPPORTED under --no-execute, so the
+        # inventory records which cases may legitimately be unsupported.
+        processes[kind + "_probe"] = run_command(
+            [
+                args.lit,
+                f"-j{lit_jobs(env)}",
+                "--no-execute",
+                "-o",
+                str(args.output / f"{kind}.probe.json"),
+                suite,
+            ],
+            args.output / f"{kind}.probe.log",
+            600,
+            env,
+            args.source,
+        )
+    processes["lit_features"] = run_command(
+        [args.lit, "--show-suites", str(args.build / "test/python")],
+        args.output / "lit-features.log",
+        600,
+        env,
+        args.source,
+    )
     write_json(args.output / "collection.json", processes)
-    if any(result["exit_code"] != 0 for result in processes.values()):
+    # The --no-execute probes may exit 1 (an XFAIL test counts as XPASS when
+    # nothing runs); every other collection command must succeed.
+    if any(
+        result["exit_code"] not in ((0, 1) if name.endswith("_probe") else (0,))
+        for name, result in processes.items()
+    ):
         raise ValueError("collection failed; inspect collection.json and logs")
+    features = lit_features((args.output / "lit-features.log").read_text())
+    if not set(REQUIRED_LIT_FEATURES) <= features:
+        raise ValueError("lit does not detect the emulator runtime features")
     collected = {
         "pytest": collection_inventory(device_events),
         "packaging": collection_inventory(packaging_events),
     }
-    for kind in ("lit", "mlir", "bindings"):
-        collected[kind] = (args.output / f"{kind}.log").read_text()
+    for kind in LIT_KINDS:
+        probe = lit_report(args.output / f"{kind}.probe.json")
+        collected[kind] = {
+            "tests": (args.output / f"{kind}.log").read_text(),
+            "expected_unsupported": [
+                test["name"] for test in probe if test["code"] == "UNSUPPORTED"
+            ],
+        }
     manifest = make_manifest(collected, args.revision, args.runtime_id)
     write_json(args.output / "manifest.json", manifest)
 
 
 def group_command(args, group, prefix, env):
     kind = group["kind"]
-    if kind in ("pytest", "packaging"):
+    if kind in PYTEST_KINDS:
+        # Only the device suites need the observer to wrap ttnn.generic_op;
+        # the packaging suite stays host-only and never imports the runtime.
+        env["TTLANG_EMULE_CI_OBSERVE_RUNTIME"] = "1" if kind == "pytest" else "0"
         command = pytest_command(args) if kind == "pytest" else packaging_command(args)
         return command + [
             "--timeout=" + str(args.timeout),
@@ -728,7 +847,7 @@ def run(args, env):
         )
         result.update(id=group["id"], suite=suite_of(group["id"]), complete=False)
         try:
-            if group["kind"] in ("pytest", "packaging"):
+            if group["kind"] in PYTEST_KINDS:
                 events = read_events(events_path)
                 result["complete"] = pytest_coverage(group, events)
                 result["launch_counts"] = dict(
@@ -740,12 +859,15 @@ def run(args, env):
                 )
                 result["outcomes"] = pytest_outcomes(group, events)
             else:
-                tests = read_json(prefix.with_suffix(".lit.json"))["tests"]
+                tests = lit_report(prefix.with_suffix(".lit.json"))
                 result["complete"] = lit_coverage(group, tests)
                 result["lit_codes"] = dict(Counter(test["code"] for test in tests))
                 result["outcomes"] = lit_outcomes(group, tests)
         except (OSError, ValueError, KeyError, TypeError) as error:
             result["report_error"] = str(error)
+            # An unreadable report must still account for every planned case.
+            result["complete"] = False
+            result.setdefault("outcomes", {"not_run": len(group["cases"])})
         result["status"] = (
             "infrastructure_error"
             if not result["complete"]

@@ -41,13 +41,20 @@ BINDINGS_TESTS = (
 LIT_TESTS = "-- Available Tests --\n  TTLang :: python/add.py\n"
 
 
+MLIR_UNSUPPORTED = ["TTLang :: ttlang/Dialect/TTL/IR/ops_invalid.mlir"]
+
+
+def lit_collection(tests, expected_unsupported=()):
+    return {"tests": tests, "expected_unsupported": list(expected_unsupported)}
+
+
 def collected(**overrides):
     inventory = {
         "pytest": {"nodes": list(DEVICE_NODES), "markers": dict(DEVICE_MARKERS)},
         "packaging": {"nodes": list(PACKAGING_NODES)},
-        "lit": LIT_TESTS,
-        "mlir": MLIR_TESTS,
-        "bindings": BINDINGS_TESTS,
+        "lit": lit_collection(LIT_TESTS),
+        "mlir": lit_collection(MLIR_TESTS, MLIR_UNSUPPORTED),
+        "bindings": lit_collection(BINDINGS_TESTS),
     }
     inventory.update(overrides)
     return inventory
@@ -108,7 +115,16 @@ def test_collection_covers_every_suite_without_selection():
         "pytest",
         "lit",
     ]
-    assert "markers" not in group(inventory, "mlir:ttlang")
+    assert group(inventory, "mlir:ttlang")["markers"] == {
+        "expected_unsupported": MLIR_UNSUPPORTED
+    }
+    assert group(inventory, "lit:python/add.py")["markers"] == {
+        "expected_unsupported": []
+    }
+    assert group(inventory, "packaging:packaging")["markers"] == {
+        "multi_device": [],
+        "compile_only": [],
+    }
     assert group(inventory, "pytest:python/fabric/test_mesh.py")["markers"] == {
         "multi_device": ["python/fabric/test_mesh.py::test_mesh"],
         "compile_only": [],
@@ -131,19 +147,26 @@ def test_collection_preserves_ordered_me2e_stages():
 
 
 @pytest.mark.parametrize(
-    "suite", ["pytest", "packaging", "lit", "mlir", "bindings", "me2e"]
+    "suite,message",
+    [
+        ("pytest", "every compiler suite"),
+        ("me2e", "every compiler suite"),
+        ("lit", "every compiler suite"),
+        ("packaging", "invalid test group"),
+        ("mlir", "invalid test group"),
+        ("bindings", "invalid test group"),
+    ],
 )
-def test_every_compiler_suite_must_collect_tests(suite):
-    empty = {"nodes": []}
+def test_every_compiler_suite_must_collect_tests(suite, message):
     if suite == "me2e":
         override = {
             "pytest": {"nodes": [n for n in DEVICE_NODES if not n.startswith("me2e/")]}
         }
     elif suite in ("pytest", "packaging"):
-        override = {suite: empty}
+        override = {suite: {"nodes": []}}
     else:
-        override = {suite: "-- Available Tests --\n"}
-    with pytest.raises(ValueError, match="every compiler suite|invalid test group"):
+        override = {suite: lit_collection("-- Available Tests --\n")}
+    with pytest.raises(ValueError, match=message):
         manifest(**override)
 
 
@@ -158,7 +181,17 @@ def test_every_compiler_suite_must_collect_tests(suite):
 )
 def test_directory_suites_reject_entries_outside_their_tree(entry):
     with pytest.raises(ValueError, match="unexpected lit collection entry"):
-        manifest(mlir="-- Available Tests --\n" + entry + "\n")
+        manifest(mlir=lit_collection("-- Available Tests --\n" + entry + "\n"))
+
+
+@pytest.mark.parametrize("suite", ["lit", "mlir"])
+def test_expected_unsupported_lit_tests_must_be_collected(suite):
+    stray = ["TTLang :: python/missing.py"]
+    tests = {"lit": LIT_TESTS, "mlir": MLIR_TESTS}[suite]
+    with pytest.raises(ValueError, match="expected unsupported"):
+        manifest(**{suite: lit_collection(tests, stray)})
+    with pytest.raises(ValueError, match="expected unsupported"):
+        manifest(**{suite: {"tests": tests, "expected_unsupported": "all"}})
 
 
 def test_classified_cases_must_belong_to_their_group():
@@ -171,6 +204,14 @@ def test_classified_cases_must_belong_to_their_group():
     inventory = manifest()
     del group(inventory, "pytest:python/test_add.py")["markers"]["compile_only"]
     with pytest.raises(ValueError, match="classification markers"):
+        benchmark.validate_manifest(inventory)
+    inventory = manifest()
+    group(inventory, "mlir:ttlang")["markers"] = {"multi_device": []}
+    with pytest.raises(ValueError, match="classification markers"):
+        benchmark.validate_manifest(inventory)
+    inventory = manifest()
+    del group(inventory, "lit:python/add.py")["markers"]
+    with pytest.raises(ValueError, match="unexpected test group fields"):
         benchmark.validate_manifest(inventory)
 
 
@@ -193,15 +234,63 @@ def test_outcomes_account_for_unsupported_and_never_run_cases():
     xfail = [dict(skipped[0], expected_failure=True)]
     assert benchmark.pytest_outcomes(mesh, xfail) == {"xfail": 1}
     mlir = group(inventory, "mlir:ttlang")
+    supported, expected = mlir["cases"]
+    assert mlir["markers"]["expected_unsupported"] == [expected]
+    # UNSUPPORTED is a verdict only where the --no-execute probe predicted it;
+    # anywhere else it means the runtime features went missing.
     tests = [
-        {"name": mlir["cases"][0], "code": "UNSUPPORTED"},
-        {"name": mlir["cases"][1], "code": "UNRESOLVED"},
+        {"name": expected, "code": "UNSUPPORTED"},
+        {"name": supported, "code": "UNSUPPORTED"},
     ]
     assert benchmark.lit_outcomes(mlir, tests) == {"unsupported": 1, "incomplete": 1}
+    assert not benchmark.lit_coverage(mlir, tests)
+    tests = [
+        {"name": expected, "code": "UNSUPPORTED"},
+        {"name": supported, "code": "UNRESOLVED"},
+    ]
+    assert benchmark.lit_outcomes(mlir, tests) == {"unsupported": 1, "incomplete": 1}
+    assert not benchmark.lit_coverage(mlir, tests)
+    tests = [
+        {"name": expected, "code": "UNSUPPORTED"},
+        {"name": supported, "code": "FLAKYPASS"},
+    ]
     assert not benchmark.lit_coverage(mlir, tests)
     tests = [{"name": name, "code": "PASS"} for name in reversed(mlir["cases"])]
     assert benchmark.lit_coverage(mlir, tests)
     assert benchmark.lit_outcomes(mlir, tests[:1]) == {"passed": 1, "not_run": 1}
+    tests = [{"name": expected, "code": "XPASS"}, {"name": supported, "code": "XFAIL"}]
+    assert benchmark.lit_coverage(mlir, tests)
+    assert benchmark.lit_outcomes(mlir, tests) == {"failed": 1, "xfail": 1}
+
+
+def test_lit_report_tolerates_absence_but_not_malformed_reports(tmp_path):
+    assert benchmark.lit_report(tmp_path / "missing.json") == []
+    benchmark.write_json(tmp_path / "report.json", {"tests": [{"name": "x"}]})
+    with pytest.raises(ValueError, match="invalid lit report"):
+        benchmark.lit_report(tmp_path / "report.json")
+    (tmp_path / "truncated.json").write_text('{"tests": [')
+    with pytest.raises(ValueError):
+        benchmark.lit_report(tmp_path / "truncated.json")
+
+
+def test_truncated_final_event_line_does_not_discard_recorded_outcomes(tmp_path):
+    events = tmp_path / "events.jsonl"
+    events.write_text('{"kind": "collection", "nodes": ["a::b"]}\n{"kind": "fin')
+    assert benchmark.read_events(events) == [{"kind": "collection", "nodes": ["a::b"]}]
+    events.write_text('{"kind": "col\n{"kind": "finish", "nodeid": "a::b"}\n')
+    with pytest.raises(ValueError):
+        benchmark.read_events(events)
+
+
+def test_lit_features_require_the_feature_line():
+    listing = (
+        "-- Test Suites --\n  TTLang - 155 tests\n    Source Root: /private/src\n"
+        "    Available Features: optimized system-linux tt-device ttnn\n"
+        "    Available Substitutions: %python => /private/python\n"
+    )
+    assert benchmark.lit_features(listing) >= {"ttnn", "tt-device", "optimized"}
+    with pytest.raises(ValueError, match="available features"):
+        benchmark.lit_features("-- Test Suites --\n  TTLang - 155 tests\n")
 
 
 def test_public_summary_reports_suites_outcomes_and_unsupported_cases():
@@ -490,6 +579,51 @@ def test_observer_records_classification_markers(tmp_path):
     ]
 
 
+@pytest.mark.parametrize("observe", ["0", "1", None])
+def test_observer_imports_runtime_only_for_device_suites(tmp_path, observe):
+    (tmp_path / "test_sample.py").write_text("def test_first(): pass\n")
+    (tmp_path / "ttnn.py").write_text(
+        "raise RuntimeError('host-only suites must not import ttnn')\n"
+    )
+    events = tmp_path / "events.jsonl"
+    env = {
+        **os.environ,
+        "PYTHONPATH": str(SCRIPT_DIR) + os.pathsep + str(tmp_path),
+        "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
+        "PYTEST_ADDOPTS": "",
+        "TTLANG_EMULE_CI_EVENTS": str(events),
+    }
+    env.pop("TTLANG_EMULE_CI_OBSERVE_RUNTIME", None)
+    if observe is not None:
+        env["TTLANG_EMULE_CI_OBSERVE_RUNTIME"] = observe
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-q",
+            "-p",
+            "observer",
+            "-c",
+            os.devnull,
+            "--rootdir",
+            str(tmp_path),
+            str(tmp_path / "test_sample.py"),
+        ],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if observe == "1":
+        assert result.returncode != 0
+        assert "must not import ttnn" in result.stdout + result.stderr
+    else:
+        assert result.returncode == 0, result.stdout + result.stderr
+        kinds = [event["kind"] for event in benchmark.read_events(events)]
+        assert kinds == ["collection", "report", "report", "report", "finish"]
+
+
 def test_environment_rejects_compile_only(monkeypatch, tmp_path):
     monkeypatch.setenv("TT_METAL_EMULE_MODE", "1")
     monkeypatch.setenv("TT_METAL_MOCK_CLUSTER_DESC_PATH", "descriptor.yaml")
@@ -532,7 +666,7 @@ def test_source_revision_and_cleanliness_are_verified(
 )
 def test_unrecognized_lit_entry_is_not_silently_omitted(entry):
     with pytest.raises(ValueError, match="unexpected lit"):
-        manifest(lit=LIT_TESTS + entry + "\n")
+        manifest(lit=lit_collection(LIT_TESTS + entry + "\n"))
 
 
 @pytest.mark.parametrize(
@@ -559,9 +693,11 @@ def test_run_requires_coverage_and_runtime_execution(
     )
 
     commands = []
+    observe_flags = []
 
     def fake_run(command, output, limit, env, source):
         commands.append(command)
+        observe_flags.append(env.get("TTLANG_EMULE_CI_OBSERVE_RUNTIME"))
         path = Path(command[-1]).relative_to(tmp_path / "test").as_posix()
         selected = next(group for group in inventory["groups"] if group["path"] == path)
         if "pytest" in command:
@@ -629,6 +765,181 @@ def test_run_requires_coverage_and_runtime_execution(
     assert by_kind["packaging"][by_kind["packaging"].index("-c") + 1] == os.devnull
     assert "observer" in by_kind["packaging"] and "observer" in by_kind["pytest"]
     assert "--reruns=0" in by_kind["packaging"]
+    # Only the device suites observe ttnn.generic_op; packaging stays host-only.
+    assert [
+        flag
+        for selected, flag in zip(inventory["groups"], observe_flags)
+        if selected["kind"] in ("pytest", "packaging")
+    ] == ["0", "1", "1", "1", "1"]
+
+
+@pytest.mark.parametrize("failure", ["timeout", "malformed", "events_missing"])
+def test_lost_group_reports_still_account_for_every_planned_case(
+    monkeypatch, tmp_path, failure
+):
+    inventory = manifest()
+    benchmark.write_json(tmp_path / "manifest.json", inventory)
+    args = SimpleNamespace(
+        source=tmp_path,
+        build=tmp_path,
+        revision=inventory["revision"],
+        runtime_id=inventory["runtime_id"],
+        manifest=tmp_path / "manifest.json",
+        plan=None,
+        shard=1,
+        output=tmp_path,
+        timeout=600,
+        group_timeout=7200,
+        lit="llvm-lit",
+    )
+
+    def fake_run(command, output, limit, env, source):
+        path = Path(command[-1]).relative_to(tmp_path / "test").as_posix()
+        selected = next(group for group in inventory["groups"] if group["path"] == path)
+        timed_out = False
+        if selected["kind"] == "mlir":
+            # The group timeout killed lit (no report), lit wrote garbage, or
+            # pytest never produced its event file.
+            if failure == "timeout":
+                timed_out = True
+            elif failure == "malformed":
+                Path(command[command.index("-o") + 1]).write_text("{not json")
+        elif "pytest" in command and failure != "events_missing":
+            events = [{"kind": "collection", "nodes": selected["cases"]}]
+            events += [
+                {
+                    "kind": "report",
+                    "nodeid": node,
+                    "phase": "call",
+                    "outcome": "passed",
+                    "expected_failure": False,
+                }
+                for node in selected["cases"]
+            ]
+            events += [{"kind": "finish", "nodeid": node} for node in selected["cases"]]
+            events += [{"kind": "launch"}, {"kind": "returned"}]
+            Path(env["TTLANG_EMULE_CI_EVENTS"]).write_text(
+                "\n".join(json.dumps(event) for event in events)
+            )
+        elif "pytest" not in command:
+            benchmark.write_json(
+                Path(command[command.index("-o") + 1]),
+                {"tests": [{"name": c, "code": "PASS"} for c in selected["cases"]]},
+            )
+        return {"exit_code": 0, "timed_out": timed_out, "wall_seconds": 1.0}
+
+    monkeypatch.setattr(benchmark, "run_command", fake_run)
+    assert benchmark.run(args, {}) == (2 if failure == "events_missing" else 1)
+    summary = benchmark.read_json(tmp_path / "summary.json")
+    results = benchmark.read_json(tmp_path / "results.json")
+    mlir = results["groups"][0]
+    assert summary["planned_case_count"] == sum(summary["case_outcome_counts"].values())
+    if failure == "events_missing":
+        for entry in results["groups"]:
+            if entry["suite"] in ("pytest", "me2e", "packaging"):
+                assert entry["status"] == "infrastructure_error"
+                planned = len(group(inventory, entry["id"])["cases"])
+                assert entry["outcomes"] == {"not_run": planned}
+        assert summary["runtime_execution_observed"] is False
+    else:
+        assert mlir["status"] == "infrastructure_error" and mlir["complete"] is False
+        assert mlir["outcomes"] == {"not_run": 2}
+        assert summary["suite_counts"]["mlir"]["outcome_counts"] == {"not_run": 2}
+        assert summary["suite_counts"]["mlir"]["status_counts"] == {
+            "infrastructure_error": 1
+        }
+        assert ("report_error" in mlir) == (failure == "malformed")
+    assert "private" not in json.dumps(summary)
+
+
+def test_collect_builds_the_complete_inventory_and_gates_lit_features(
+    monkeypatch, tmp_path
+):
+    args = SimpleNamespace(
+        source=tmp_path / "src",
+        build=tmp_path / "build",
+        revision="a" * 40,
+        runtime_id="sha256:" + "b" * 64,
+        output=tmp_path / "out",
+        lit="llvm-lit",
+    )
+    args.output.mkdir()
+    listings = {
+        "python": (LIT_TESTS, ["TTLang :: python/add.py"]),
+        "ttlang": (MLIR_TESTS, []),
+        "bindings/python": (BINDINGS_TESTS, []),
+    }
+    features = {"value": "optimized system-linux tt-device ttnn"}
+    commands = []
+
+    def fake_run(command, output, limit, env, source):
+        commands.append(command)
+        if command[0] == "llvm-lit":
+            suite = Path(command[-1]).relative_to(args.build / "test").as_posix()
+            tests, unsupported = listings[suite]
+            if "--show-tests" in command:
+                output.write_text(tests)
+            elif "--show-suites" in command:
+                output.write_text(
+                    "-- Test Suites --\n  TTLang - 1 tests\n"
+                    f"    Available Features: {features['value']}\n"
+                )
+            else:
+                assert "--no-execute" in command and "-j1" in command
+                names = benchmark.lit_names(tests, suite.rstrip("/") + "/")
+                benchmark.write_json(
+                    Path(command[command.index("-o") + 1]),
+                    {
+                        "tests": [
+                            {
+                                "name": "TTLang :: " + name,
+                                "code": (
+                                    "UNSUPPORTED"
+                                    if "TTLang :: " + name in unsupported
+                                    else "PASS"
+                                ),
+                            }
+                            for name in names
+                        ]
+                    },
+                )
+                return {"exit_code": 1, "timed_out": False, "wall_seconds": 1.0}
+        else:
+            assert "--collect-only" in command
+            nodes = (
+                PACKAGING_NODES if command[-1].endswith("packaging") else DEVICE_NODES
+            )
+            markers = {} if command[-1].endswith("packaging") else DEVICE_MARKERS
+            Path(env["TTLANG_EMULE_CI_EVENTS"]).write_text(
+                json.dumps({"kind": "collection", "nodes": nodes, "markers": markers})
+            )
+        return {"exit_code": 0, "timed_out": False, "wall_seconds": 1.0}
+
+    monkeypatch.setattr(benchmark, "run_command", fake_run)
+    benchmark.collect(args, {"TTLANG_EMULE_CI_THREADS": "1"})
+    produced = benchmark.read_json(args.output / "manifest.json")
+    expected = manifest(lit=lit_collection(LIT_TESTS, ["TTLang :: python/add.py"]))
+    expected["groups"] = [
+        (
+            {**entry, "markers": {"expected_unsupported": []}}
+            if entry["kind"] == "mlir"
+            else entry
+        )
+        for entry in expected["groups"]
+    ]
+    assert produced == expected
+    assert group(produced, "lit:python/add.py")["markers"] == {
+        "expected_unsupported": ["TTLang :: python/add.py"]
+    }
+    assert sum(command[0] == "llvm-lit" for command in commands) == 7
+    # Without the runtime features every Python lit test would silently become
+    # UNSUPPORTED, so collection refuses to produce an inventory at all.
+    features["value"] = "optimized system-linux"
+    args.output = tmp_path / "out2"
+    args.output.mkdir()
+    with pytest.raises(ValueError, match="emulator runtime features"):
+        benchmark.collect(args, {})
+    assert not (args.output / "manifest.json").exists()
 
 
 def test_lit_build_paths_work_with_separate_execution_root(tmp_path):

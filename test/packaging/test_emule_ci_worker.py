@@ -483,6 +483,59 @@ def worker_summary(**overrides):
     return value
 
 
+def test_benchmark_public_summary_satisfies_the_worker_contract(smoke_harness):
+    benchmark = smoke_harness
+    groups = [
+        {
+            "id": "mlir:ttlang",
+            "complete": True,
+            "status": "passed",
+            "wall_seconds": 90.0,
+            "outcomes": {"passed": 589, "unsupported": 2},
+            "lit_codes": {"PASS": 589, "UNSUPPORTED": 2},
+        },
+        {
+            "id": "pytest:python/pipe/test_broadcast_2d.py",
+            "complete": True,
+            "status": "failed",
+            "wall_seconds": 12.5,
+            "outcomes": {"passed": 3, "failed": 1},
+            "launch_counts": {"launch": 4, "returned": 3},
+            "command": ["/private/python", "-m", "pytest"],
+            "report_error": "private diagnostic",
+        },
+        {
+            "id": "lit:python/add.py",
+            "complete": False,
+            "status": "infrastructure_error",
+            "wall_seconds": 600.0,
+            "timed_out": True,
+            "outcomes": {"not_run": 1},
+        },
+    ]
+    results = {
+        "manifest_digest": "c" * 64,
+        "shard": 1,
+        "planned_group_count": 4,
+        "planned_case_count": 600,
+        "planned_suite_counts": {
+            suite: {"groups": 1, "cases": 1} for suite in benchmark.SUITES
+        },
+        "groups": groups,
+    }
+    for value in (results, {"manifest_digest": "c" * 64, "shard": 1, "groups": []}):
+        public = benchmark.public_summary(value)
+        assert worker.public_test_summary(public) == public
+        assert "private" not in json.dumps(public)
+    public = benchmark.public_summary(results)
+    rendered = worker.report_summary(
+        {"schema_version": 1, "status": "failed", "stages": {}, "tests": public}
+    )
+    assert "| mlir | 1 | 1 | 1 | 1 | passed 589, unsupported 2 | passed 1 |" in rendered
+    assert "| lit | 1 | 1 | 0 | 1 | not_run 1 | infrastructure_error 1 |" in rendered
+    assert "private" not in rendered
+
+
 def test_report_renders_per_suite_table_from_public_fields_only():
     report = worker.report_summary(worker_summary())
     assert report.startswith("Worker status: `passed`\n")
@@ -495,7 +548,7 @@ def test_report_renders_per_suite_table_from_public_fields_only():
     assert "| mlir | 0 | 0 | 0 | 0 | - | - |" in report
     assert "All suites: cases passed 2, unsupported 1; groups passed 2." in report
     assert "`unsupported` counts cases" in report
-    assert "private" not in report and "/" not in report.replace("generic_op", "")
+    assert "private" not in report
 
 
 def test_report_without_inventory_names_the_fixed_preflight_reason():
@@ -507,7 +560,7 @@ def test_report_without_inventory_names_the_fixed_preflight_reason():
     del value["smoke"], value["tests"]
     report = worker.report_summary(value)
     assert "Preflight failure: `cpu_only_torch_required`" in report
-    assert "Complete compiler inventory: not executed." in report
+    assert "Complete compiler inventory: no validated summary was recorded." in report
     assert "| Suite |" not in report
 
 

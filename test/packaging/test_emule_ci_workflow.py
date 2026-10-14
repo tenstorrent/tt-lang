@@ -326,10 +326,39 @@ def test_report_step_publishes_only_the_validated_summary(tmp_path, present):
     if present:
         assert "Preflight failure: `range_lockstep_api_missing`" in published
         assert "Stage `preflight`: exit 22, 4 s" in published
-        assert "not executed" in published
+        assert "no validated summary" in published
     else:
         assert "produced no summary" in published
     assert "/private" not in published
+
+
+def test_report_step_publishes_nothing_from_an_invalid_summary(tmp_path):
+    runner_temp = tmp_path / "runner"
+    (runner_temp / "emule-serial").mkdir(parents=True)
+    step_summary = tmp_path / "step-summary.md"
+    (runner_temp / "emule-serial/summary.json").write_text(
+        json.dumps({"schema_version": 1, "status": "Traceback /private/path"})
+    )
+    result = subprocess.run(
+        [
+            "bash",
+            "-euo",
+            "pipefail",
+            "-c",
+            workflow_step("Report the public per-suite summary")["run"],
+        ],
+        cwd=ROOT,
+        env={
+            **os.environ,
+            "RUNNER_TEMP": str(runner_temp),
+            "GITHUB_STEP_SUMMARY": str(step_summary),
+        },
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 2
+    assert not step_summary.exists() or step_summary.read_text() == ""
+    assert "/private/path" not in result.stdout + result.stderr
 
 
 def test_inline_workflow_shell_syntax():

@@ -38,7 +38,12 @@ def pytest_collection_finish(session):
 
 
 def pytest_sessionstart(session):
-    if session.config.option.collectonly:
+    # Only the device suites ask for runtime observation; collection and the
+    # host-only packaging suite never import the emulator runtime.
+    if (
+        session.config.option.collectonly
+        or os.environ.get("TTLANG_EMULE_CI_OBSERVE_RUNTIME") != "1"
+    ):
         return
     import ttnn
 

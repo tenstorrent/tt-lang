@@ -15,25 +15,36 @@ the selected revision with no marker selection:
 | --- | --- | --- |
 | `mlir` | `llvm-lit --show-tests` on `test/ttlang` | one lit group, compiler-only, parallel |
 | `bindings` | `llvm-lit --show-tests` on `test/bindings/python` | one lit group, compiler-only, parallel |
-| `packaging` | `pytest --collect-only test/packaging` | one pytest group, host-only, as `check-ttlang-packaging` |
+| `packaging` | `pytest --collect-only test/packaging` | one pytest group, host-only, invoked like `check-ttlang-packaging` (rootdir `test/`, so IDs read `packaging/…`) |
 | `pytest` | `pytest --collect-only test/python` | one pytest group per file, emulator execution |
 | `me2e` | `pytest --collect-only test/me2e` | one pytest group per file, ordered stages, emulator execution |
 | `lit` | `llvm-lit --show-tests` on `test/python` | one serial lit group per file, emulator execution |
 
 Cases are never excluded by marker. `compile_only` cases run normally; they do
 not launch kernels. `multi_device` cases run and skip themselves on the
-single-device P150 profile; the benchmark reports those skips, and lit
-`UNSUPPORTED` results, as `unsupported` rather than counting them as ordinary
-skips. Every planned case ends in exactly one outcome: `passed`, `failed`,
-`skipped`, `xfail`, `unsupported`, `incomplete` (unresolved or timed out), or
-`not_run` (planned but never reported, for example after a native abort). A
-group whose coverage is incomplete is an `infrastructure_error`, never a pass.
+single-device P150 profile. Every planned case ends in exactly one outcome:
+`passed`, `failed`, `skipped`, `xfail`, `unsupported`, `incomplete`, or
+`not_run`. `unsupported` means any skip of a `multi_device` pytest case (the
+skip reason itself stays private) or a lit `UNSUPPORTED` verdict for a test
+that lit already reported unsupported during collection (`llvm-lit
+--no-execute`, which evaluates `REQUIRES`/`UNSUPPORTED` directives without
+running anything). A lit `UNSUPPORTED` anywhere else, an `UNRESOLVED`, a
+`TIMEOUT`, or an unrecognized lit code is `incomplete` and makes the group an
+`infrastructure_error`, so a runtime whose `ttnn`/`tt-device` features went
+missing cannot turn the Python lit suite green. Collection also refuses to
+build an inventory unless `llvm-lit --show-suites` lists both features.
+`not_run` counts planned cases without a recorded outcome: after a native
+abort, a killed group, or a lost or unreadable report, the whole group is
+still accounted for. A group whose coverage is incomplete is an
+`infrastructure_error`, never a pass.
 
 The pytest observer records calls and successful returns from `ttnn.generic_op`
 separately from test outcomes, and records each collected case's `multi_device`
-and `compile_only` markers. A returned call does not imply that a numerical
-comparison passed. Lit has separate outcomes and is not covered by that observer.
-The compiler-only suites prove nothing about emulation; the job summary reports
+and `compile_only` markers. It imports the runtime only for the device suites
+(`TTLANG_EMULE_CI_OBSERVE_RUNTIME=1`); collection and the packaging suite never
+import it. A returned call does not imply that a numerical comparison passed.
+Lit has separate outcomes and is not covered by that observer. The
+compiler-only suites prove nothing about emulation; the job summary reports
 them per suite so that emulator coverage is not inferred from their passes.
 
 The Python simulator suite (`test/sim`) tests `tt-lang-sim` itself and is outside

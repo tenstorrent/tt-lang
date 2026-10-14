@@ -363,7 +363,9 @@ def report_summary(summary):
             f"{smoke['runtime_execution_observed']}, {smoke['wall_seconds']:.0f} s"
         )
     if "tests" not in summary:
-        lines.append("Complete compiler inventory: not executed.")
+        # Either the inventory never started or its summary was not readable;
+        # neither is evidence about the suites, so no table is rendered.
+        lines.append("Complete compiler inventory: no validated summary was recorded.")
         return "\n".join(lines) + "\n"
     tests = public_test_summary(summary["tests"])
     lines += [
