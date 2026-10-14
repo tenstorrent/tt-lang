@@ -112,6 +112,7 @@ jobs:
           DOCKER_BUILD_SUMMARY: "false"
           DOCKER_BUILD_RECORD_UPLOAD: "false"
         run: |
+          # shellcheck disable=SC2034  # read by the EXIT trap below
           started=$SECONDS
           trap 'status=$?; printf "Runtime build: exit=%s seconds=%s\n" "$status" "$((SECONDS - started))"; df -Pk "$RUNNER_TEMP"' EXIT
           available_kib="$(df -Pk "$RUNNER_TEMP" | awk 'NR == 2 {print $4}')"
