@@ -2,6 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import json
 import os
 from pathlib import Path
 import re
@@ -131,14 +132,21 @@ def test_workflow_is_one_manual_trusted_runner_local_job():
     )
     build = workflow_step("Measure the cold runner-local runtime build")
     measure = workflow_step(
-        "Measure serial compiler execution suites with fresh caches"
+        "Run the complete compiler test inventory serially with fresh caches"
     )
+    report = workflow_step("Report the public per-suite summary")
     assert (
         steps.index(private)
         < steps.index(verify)
         < steps.index(build)
         < steps.index(measure)
+        < steps.index(report)
     )
+    assert report["if"] == "always()"
+    assert "--report-summary" in report["run"]
+    assert '"$GITHUB_STEP_SUMMARY"' in report["run"]
+    assert "emule-serial/summary.json" in report["run"]
+    assert "private" not in report["run"]
     assert build["env"]["TTLANG_EMULE_BUILD_ONLY"] == "1"
     assert build["env"]["TTLANG_EMULE_REBUILD"] == "1"
     assert (
@@ -188,8 +196,6 @@ def test_stack_step_reads_exact_manifest_pin(tmp_path):
         text=True,
     )
     assert result.returncode == 0, result.stderr
-    import json
-
     pin = json.loads((ROOT / "config/tt-lang-emule-stack.json").read_text())[
         "emulator"
     ]["commit"]
@@ -277,6 +283,53 @@ def test_build_preserves_failures_and_checks_disk_before_launch(
     assert result.returncode == expected
     assert marker.exists() == (available_kib >= 2097152)
     assert f"Runtime build: exit={expected} seconds=" in result.stdout
+
+
+@pytest.mark.parametrize("present", [False, True])
+def test_report_step_publishes_only_the_validated_summary(tmp_path, present):
+    runner_temp = tmp_path / "runner"
+    (runner_temp / "emule-serial").mkdir(parents=True)
+    step_summary = tmp_path / "step-summary.md"
+    if present:
+        (runner_temp / "emule-serial/summary.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "publication_blocked": True,
+                    "status": "failed",
+                    "stages": {"preflight": {"exit_code": 22, "seconds": 3.5}},
+                    "failure_reason": "range_lockstep_api_missing",
+                    "samples": [{"private": "/private/host/path"}],
+                }
+            )
+        )
+    result = subprocess.run(
+        [
+            "bash",
+            "-euo",
+            "pipefail",
+            "-c",
+            workflow_step("Report the public per-suite summary")["run"],
+        ],
+        cwd=ROOT,
+        env={
+            **os.environ,
+            "RUNNER_TEMP": str(runner_temp),
+            "GITHUB_STEP_SUMMARY": str(step_summary),
+        },
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    published = step_summary.read_text()
+    assert published == result.stdout
+    if present:
+        assert "Preflight failure: `range_lockstep_api_missing`" in published
+        assert "Stage `preflight`: exit 22, 4 s" in published
+        assert "not executed" in published
+    else:
+        assert "produced no summary" in published
+    assert "/private" not in published
 
 
 def test_inline_workflow_shell_syntax():

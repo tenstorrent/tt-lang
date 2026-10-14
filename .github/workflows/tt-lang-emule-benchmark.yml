@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: (c) 2026 Tenstorrent AI ULC
 # SPDX-License-Identifier: Apache-2.0
 
-name: Measure runner-local tt-emule builds
+name: Run the compiler test inventory on runner-local tt-emule
 
 on:
   workflow_dispatch:
@@ -119,9 +119,20 @@ jobs:
           timeout --signal=TERM --kill-after=30s 6900 \
             bash scripts/tt-lang-emule-container.sh
 
-      - name: Measure serial compiler execution suites with fresh caches
+      - name: Run the complete compiler test inventory serially with fresh caches
         timeout-minutes: 230
         run: |
           python3 scripts/emule-ci/worker.py --image "$TTLANG_EMULE_IMAGE" \
             --worker serial --output "$RUNNER_TEMP/emule-serial" \
             --cpus 4 --memory-gib 12 --disk-floor-gib 2 --timeout-seconds 13200
+
+      - name: Report the public per-suite summary
+        if: always()
+        run: |
+          summary="$RUNNER_TEMP/emule-serial/summary.json"
+          if [[ -f "$summary" ]]; then
+            python3 scripts/emule-ci/worker.py --report-summary "$summary" \
+              | tee -a "$GITHUB_STEP_SUMMARY"
+          else
+            echo 'The worker produced no summary.' | tee -a "$GITHUB_STEP_SUMMARY"
+          fi

@@ -20,20 +20,47 @@ benchmark = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(benchmark)
 
 
-def manifest():
+DEVICE_NODES = [
+    "me2e/test_ops.py::TestAdd::test_build_module",
+    "me2e/test_ops.py::TestAdd::test_execute",
+    "me2e/test_ops.py::TestAdd::test_validate_golden",
+    "python/test_add.py::test_add[1]",
+    "python/test_add.py::test_add[2]",
+    "python/test_matmul.py::test_matmul",
+    "python/fabric/test_mesh.py::test_mesh",
+]
+DEVICE_MARKERS = {"python/fabric/test_mesh.py::test_mesh": ["multi_device"]}
+PACKAGING_NODES = [
+    "packaging/test_wheel.py::test_metadata",
+    "packaging/test_wheel.py::test_layout[a b]",
+]
+MLIR_TESTS = "-- Available Tests --\n  TTLang :: ttlang/Dialect/TTL/IR/ops.mlir\n  TTLang :: ttlang/Dialect/TTL/IR/ops_invalid.mlir\n"
+BINDINGS_TESTS = (
+    "-- Available Tests --\n  TTLang :: bindings/python/kernel_headers.py\n"
+)
+LIT_TESTS = "-- Available Tests --\n  TTLang :: python/add.py\n"
+
+
+def collected(**overrides):
+    inventory = {
+        "pytest": {"nodes": list(DEVICE_NODES), "markers": dict(DEVICE_MARKERS)},
+        "packaging": {"nodes": list(PACKAGING_NODES)},
+        "lit": LIT_TESTS,
+        "mlir": MLIR_TESTS,
+        "bindings": BINDINGS_TESTS,
+    }
+    inventory.update(overrides)
+    return inventory
+
+
+def manifest(**overrides):
     return benchmark.make_manifest(
-        [
-            "me2e/test_ops.py::TestAdd::test_build_module",
-            "me2e/test_ops.py::TestAdd::test_execute",
-            "me2e/test_ops.py::TestAdd::test_validate_golden",
-            "python/test_add.py::test_add[1]",
-            "python/test_add.py::test_add[2]",
-            "python/test_matmul.py::test_matmul",
-        ],
-        "-- Available Tests --\n  TTLang :: python/add.py\n",
-        "a" * 40,
-        "sha256:" + "b" * 64,
+        collected(**overrides), "a" * 40, "sha256:" + "b" * 64
     )
+
+
+def group(inventory, group_id):
+    return next(group for group in inventory["groups"] if group["id"] == group_id)
 
 
 def results(inventory):
@@ -53,16 +80,153 @@ def results(inventory):
     }
 
 
+def test_collection_covers_every_suite_without_selection():
+    inventory = manifest()
+    assert inventory["version"] == 2 and inventory["selection"] == "complete"
+    assert [group["id"] for group in inventory["groups"]] == [
+        "mlir:ttlang",
+        "bindings:bindings/python",
+        "packaging:packaging",
+        "pytest:me2e/test_ops.py",
+        "pytest:python/test_add.py",
+        "pytest:python/test_matmul.py",
+        "pytest:python/fabric/test_mesh.py",
+        "lit:python/add.py",
+    ]
+    assert group(inventory, "mlir:ttlang")["cases"] == [
+        "TTLang :: ttlang/Dialect/TTL/IR/ops.mlir",
+        "TTLang :: ttlang/Dialect/TTL/IR/ops_invalid.mlir",
+    ]
+    assert group(inventory, "packaging:packaging")["cases"] == PACKAGING_NODES
+    assert [benchmark.suite_of(group["id"]) for group in inventory["groups"]] == [
+        "mlir",
+        "bindings",
+        "packaging",
+        "me2e",
+        "pytest",
+        "pytest",
+        "pytest",
+        "lit",
+    ]
+    assert "markers" not in group(inventory, "mlir:ttlang")
+    assert group(inventory, "pytest:python/fabric/test_mesh.py")["markers"] == {
+        "multi_device": ["python/fabric/test_mesh.py::test_mesh"],
+        "compile_only": [],
+    }
+    assert group(inventory, "pytest:python/test_add.py")["markers"] == {
+        "multi_device": [],
+        "compile_only": [],
+    }
+
+
 def test_collection_preserves_ordered_me2e_stages():
     inventory = manifest()
-    assert len(inventory["groups"]) == 4
-    stages = inventory["groups"][0]["cases"]
+    stages = group(inventory, "pytest:me2e/test_ops.py")["cases"]
     assert [stage.rsplit("::", 1)[1] for stage in stages] == [
         "test_build_module",
         "test_execute",
         "test_validate_golden",
     ]
-    assert len(inventory["groups"][1]["cases"]) == 2
+    assert len(group(inventory, "pytest:python/test_add.py")["cases"]) == 2
+
+
+@pytest.mark.parametrize(
+    "suite", ["pytest", "packaging", "lit", "mlir", "bindings", "me2e"]
+)
+def test_every_compiler_suite_must_collect_tests(suite):
+    empty = {"nodes": []}
+    if suite == "me2e":
+        override = {
+            "pytest": {"nodes": [n for n in DEVICE_NODES if not n.startswith("me2e/")]}
+        }
+    elif suite in ("pytest", "packaging"):
+        override = {suite: empty}
+    else:
+        override = {suite: "-- Available Tests --\n"}
+    with pytest.raises(ValueError, match="every compiler suite|invalid test group"):
+        manifest(**override)
+
+
+@pytest.mark.parametrize(
+    "entry",
+    [
+        "  TTLang :: python/add.py",
+        "  TTLang :: ttlang/../escape.mlir",
+        "  TTLang :: ttlang/Dialect/ops.txt",
+        "  Other :: ttlang/Dialect/ops.mlir",
+    ],
+)
+def test_directory_suites_reject_entries_outside_their_tree(entry):
+    with pytest.raises(ValueError, match="unexpected lit collection entry"):
+        manifest(mlir="-- Available Tests --\n" + entry + "\n")
+
+
+def test_classified_cases_must_belong_to_their_group():
+    inventory = manifest()
+    group(inventory, "pytest:python/test_add.py")["markers"]["multi_device"] = [
+        "python/test_matmul.py::test_matmul"
+    ]
+    with pytest.raises(ValueError, match="classified cases"):
+        benchmark.validate_manifest(inventory)
+    inventory = manifest()
+    del group(inventory, "pytest:python/test_add.py")["markers"]["compile_only"]
+    with pytest.raises(ValueError, match="classification markers"):
+        benchmark.validate_manifest(inventory)
+
+
+def test_outcomes_account_for_unsupported_and_never_run_cases():
+    inventory = manifest()
+    mesh = group(inventory, "pytest:python/fabric/test_mesh.py")
+    add = group(inventory, "pytest:python/test_add.py")
+    skipped = [
+        {
+            "kind": "report",
+            "nodeid": case,
+            "phase": "setup",
+            "outcome": "skipped",
+            "expected_failure": False,
+        }
+        for case in mesh["cases"] + add["cases"][:1]
+    ]
+    assert benchmark.pytest_outcomes(mesh, skipped) == {"unsupported": 1}
+    assert benchmark.pytest_outcomes(add, skipped) == {"skipped": 1, "not_run": 1}
+    xfail = [dict(skipped[0], expected_failure=True)]
+    assert benchmark.pytest_outcomes(mesh, xfail) == {"xfail": 1}
+    mlir = group(inventory, "mlir:ttlang")
+    tests = [
+        {"name": mlir["cases"][0], "code": "UNSUPPORTED"},
+        {"name": mlir["cases"][1], "code": "UNRESOLVED"},
+    ]
+    assert benchmark.lit_outcomes(mlir, tests) == {"unsupported": 1, "incomplete": 1}
+    assert not benchmark.lit_coverage(mlir, tests)
+    tests = [{"name": name, "code": "PASS"} for name in reversed(mlir["cases"])]
+    assert benchmark.lit_coverage(mlir, tests)
+    assert benchmark.lit_outcomes(mlir, tests[:1]) == {"passed": 1, "not_run": 1}
+
+
+def test_public_summary_reports_suites_outcomes_and_unsupported_cases():
+    inventory = manifest()
+    timing = results(inventory)
+    for entry in timing["groups"]:
+        entry["outcomes"] = {"passed": 1}
+    timing["groups"][-2]["outcomes"] = {"unsupported": 1}
+    timing["planned_suite_counts"] = {
+        suite: {"groups": 1, "cases": 2} for suite in benchmark.SUITES
+    }
+    summary = benchmark.public_summary(timing)
+    assert summary["selection"] == "complete"
+    assert summary["case_outcome_counts"] == {"passed": 7, "unsupported": 1}
+    assert set(summary["suite_counts"]) == set(benchmark.SUITES)
+    assert summary["suite_counts"]["pytest"] == {
+        "planned_groups": 1,
+        "planned_cases": 2,
+        "groups": 3,
+        "complete_groups": 3,
+        "status_counts": {"passed": 3},
+        "outcome_counts": {"passed": 2, "unsupported": 1},
+    }
+    assert summary["suite_counts"]["mlir"]["groups"] == 1
+    assert "ttlang" not in json.dumps(summary["suite_counts"])
 
 
 def test_balance_is_deterministic_complete_and_disjoint():
@@ -70,7 +234,7 @@ def test_balance_is_deterministic_complete_and_disjoint():
     timing = results(inventory)
     plan = benchmark.balance(inventory, timing, 3)
     assert plan == benchmark.balance(inventory, timing, 3)
-    assert plan["estimated_seconds"] == [4.0, 3.0, 3.0]
+    assert plan["estimated_seconds"] == [13.0, 12.0, 11.0]
     groups = [
         group
         for index in range(1, 4)
@@ -162,23 +326,25 @@ def test_plan_rejects_changed_recollection(changed):
     elif changed == "group_order":
         inventory["groups"].reverse()
     elif changed == "case_order":
-        inventory["groups"][0]["cases"].reverse()
+        group(inventory, "pytest:me2e/test_ops.py")["cases"].reverse()
     else:
-        inventory["groups"][1]["cases"][0] = "python/test_add.py::test_add[changed]"
+        group(inventory, "pytest:python/test_add.py")["cases"][
+            0
+        ] = "python/test_add.py::test_add[changed]"
     benchmark.validate_manifest(inventory)
     with pytest.raises(ValueError, match="plan belongs to another manifest"):
         benchmark.selected_groups(inventory, plan, 1)
 
 
 def test_native_abort_is_not_complete_coverage():
-    group = manifest()["groups"][0]
-    events = [{"kind": "collection", "nodes": group["cases"]}]
-    events += [{"kind": "finish", "nodeid": node} for node in group["cases"][:-1]]
-    assert not benchmark.pytest_coverage(group, events)
-    events.append({"kind": "finish", "nodeid": group["cases"][-1]})
-    assert benchmark.pytest_coverage(group, events)
+    stages = group(manifest(), "pytest:me2e/test_ops.py")
+    events = [{"kind": "collection", "nodes": stages["cases"]}]
+    events += [{"kind": "finish", "nodeid": node} for node in stages["cases"][:-1]]
+    assert not benchmark.pytest_coverage(stages, events)
+    events.append({"kind": "finish", "nodeid": stages["cases"][-1]})
+    assert benchmark.pytest_coverage(stages, events)
     events.append(events[-1])
-    assert not benchmark.pytest_coverage(group, events)
+    assert not benchmark.pytest_coverage(stages, events)
 
 
 def test_public_summary_excludes_commands_paths_and_errors():
@@ -188,10 +354,11 @@ def test_public_summary_excludes_commands_paths_and_errors():
     )
     summary = benchmark.public_summary(timing)
     assert summary["runtime_execution_observed"]
-    assert summary["wall_seconds"] == 10.0
+    assert summary["wall_seconds"] == 36.0
     assert "private" not in json.dumps(summary)
     assert "secret" not in json.dumps(summary)
     assert "python/" not in json.dumps(summary)
+    assert "ttlang" not in json.dumps(summary)
 
 
 @pytest.mark.parametrize(
@@ -211,12 +378,7 @@ def test_public_summary_excludes_commands_paths_and_errors():
 )
 def test_rejects_unsafe_test_paths(path):
     with pytest.raises(ValueError, match="invalid test group"):
-        benchmark.make_manifest(
-            [path + "::test_a"],
-            "  TTLang :: python/add.py",
-            "a" * 40,
-            "sha256:" + "b" * 64,
-        )
+        manifest(pytest={"nodes": [*DEVICE_NODES, path + "::test_a"]})
 
 
 def test_command_records_launch_failure_and_timeout(tmp_path):
@@ -275,7 +437,56 @@ def test_observer_collects_without_importing_ttnn(tmp_path):
         {
             "kind": "collection",
             "nodes": ["test_sample.py::test_first", "test_sample.py::test_second"],
+            "markers": {},
         }
+    ]
+
+
+def test_observer_records_classification_markers(tmp_path):
+    (tmp_path / "test_sample.py").write_text(
+        "import pytest\n"
+        "pytestmark = pytest.mark.multi_device\n"
+        "@pytest.mark.compile_only\n"
+        "@pytest.mark.slow\n"
+        "def test_first(): pass\n"
+        "def test_second(): pass\n"
+    )
+    events = tmp_path / "events.jsonl"
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "--collect-only",
+            "-q",
+            "-p",
+            "observer",
+            "-c",
+            os.devnull,
+            "--rootdir",
+            str(tmp_path),
+            str(tmp_path / "test_sample.py"),
+        ],
+        env={
+            **os.environ,
+            "PYTHONPATH": str(SCRIPT_DIR) + os.pathsep + str(tmp_path),
+            "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
+            "PYTEST_ADDOPTS": "",
+            "TTLANG_EMULE_CI_EVENTS": str(events),
+        },
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert benchmark.read_events(events)[0]["markers"] == {
+        "test_sample.py::test_first": ["compile_only", "multi_device"],
+        "test_sample.py::test_second": ["multi_device"],
+    }
+    inventory = benchmark.collection_inventory(events)
+    assert inventory["nodes"] == [
+        "test_sample.py::test_first",
+        "test_sample.py::test_second",
     ]
 
 
@@ -311,14 +522,17 @@ def test_source_revision_and_cleanliness_are_verified(
         benchmark.validate_source(tmp_path, "a" * 40)
 
 
-def test_unrecognized_lit_entry_is_not_silently_omitted():
+@pytest.mark.parametrize(
+    "entry",
+    [
+        "  OtherSuite :: python/matmul.py",
+        "  TTLang :: ttlang/Dialect/ops.mlir",
+        "  TTLang :: python/matmul.mlir",
+    ],
+)
+def test_unrecognized_lit_entry_is_not_silently_omitted(entry):
     with pytest.raises(ValueError, match="unexpected lit"):
-        benchmark.make_manifest(
-            ["python/test_add.py::test_add"],
-            "  TTLang :: python/add.py\n  OtherSuite :: python/matmul.py\n",
-            "a" * 40,
-            "sha256:" + "b" * 64,
-        )
+        manifest(lit=LIT_TESTS + entry + "\n")
 
 
 @pytest.mark.parametrize(
@@ -344,15 +558,26 @@ def test_run_requires_coverage_and_runtime_execution(
         lit="llvm-lit",
     )
 
+    commands = []
+
     def fake_run(command, output, limit, env, source):
+        commands.append(command)
+        path = Path(command[-1]).relative_to(tmp_path / "test").as_posix()
+        selected = next(group for group in inventory["groups"] if group["path"] == path)
         if "pytest" in command:
-            path = Path(command[-1]).relative_to(tmp_path / "test").as_posix()
-            group = next(
-                group for group in inventory["groups"] if group["path"] == path
-            )
-            events = [{"kind": "collection", "nodes": group["cases"]}]
-            events += [{"kind": "finish", "nodeid": node} for node in group["cases"]]
-            if observed:
+            events = [{"kind": "collection", "nodes": selected["cases"]}]
+            events += [
+                {
+                    "kind": "report",
+                    "nodeid": node,
+                    "phase": "call",
+                    "outcome": "passed",
+                    "expected_failure": False,
+                }
+                for node in selected["cases"]
+            ]
+            events += [{"kind": "finish", "nodeid": node} for node in selected["cases"]]
+            if observed and selected["kind"] == "pytest":
                 events += [{"kind": "launch"}, {"kind": "returned"}]
             Path(env["TTLANG_EMULE_CI_EVENTS"]).write_text(
                 "\n".join(json.dumps(event) for event in events)
@@ -360,7 +585,11 @@ def test_run_requires_coverage_and_runtime_execution(
         else:
             benchmark.write_json(
                 Path(command[command.index("-o") + 1]),
-                {"tests": [{"name": "TTLang :: python/add.py", "code": "PASS"}]},
+                {
+                    "tests": [
+                        {"name": case, "code": "PASS"} for case in selected["cases"]
+                    ]
+                },
             )
         return {
             "exit_code": int(status == "failed"),
@@ -369,11 +598,37 @@ def test_run_requires_coverage_and_runtime_execution(
         }
 
     monkeypatch.setattr(benchmark, "run_command", fake_run)
-    assert benchmark.run(args, {}) == expected
+    assert benchmark.run(args, {"TTLANG_EMULE_CI_THREADS": "3"}) == expected
     summary = benchmark.read_json(tmp_path / "summary.json")
     assert summary["runtime_execution_observed"] is observed
-    assert summary["planned_group_count"] == summary["complete_group_count"] == 4
-    assert summary["planned_case_count"] == 7
+    assert summary["planned_group_count"] == summary["complete_group_count"] == 8
+    assert summary["planned_case_count"] == 13
+    assert summary["case_outcome_counts"] == {"passed": 13}
+    assert summary["suite_counts"]["mlir"]["planned_cases"] == 2
+    assert summary["suite_counts"]["me2e"]["outcome_counts"] == {"passed": 3}
+    results = benchmark.read_json(tmp_path / "results.json")
+    assert [entry["suite"] for entry in results["groups"]] == [
+        "mlir",
+        "bindings",
+        "packaging",
+        "me2e",
+        "pytest",
+        "pytest",
+        "pytest",
+        "lit",
+    ]
+    assert results["groups"][0]["lit_codes"] == {"PASS": 2}
+    by_kind = {
+        selected["kind"]: command
+        for selected, command in zip(inventory["groups"], commands)
+    }
+    # The only "-m" is "python -m pytest": no marker selection excludes cases.
+    assert by_kind["pytest"].count("-m") == 1 and by_kind["pytest"][1] == "-m"
+    assert "-j3" in by_kind["mlir"] and "-j3" in by_kind["bindings"]
+    assert "-j1" in by_kind["lit"]
+    assert by_kind["packaging"][by_kind["packaging"].index("-c") + 1] == os.devnull
+    assert "observer" in by_kind["packaging"] and "observer" in by_kind["pytest"]
+    assert "--reruns=0" in by_kind["packaging"]
 
 
 def test_lit_build_paths_work_with_separate_execution_root(tmp_path):
@@ -427,7 +682,9 @@ def test_private_manifest_fields_cannot_be_exported(where):
 def test_balance_exports_only_plan_without_private_parameters(tmp_path):
     inventory = manifest()
     sentinel = "PRIVATE_RUNTIME_PARAMETER"
-    inventory["groups"][1]["cases"][0] = f"python/test_add.py::test_add[{sentinel}]"
+    group(inventory, "pytest:python/test_add.py")["cases"][
+        0
+    ] = f"python/test_add.py::test_add[{sentinel}]"
     benchmark.write_json(tmp_path / "input.json", inventory)
     benchmark.write_json(tmp_path / "results.json", results(inventory))
     result = subprocess.run(
@@ -500,11 +757,18 @@ def test_public_plan_requires_clean_exact_source_and_tracked_regular_files(
     inventory = manifest()
     source = tmp_path / "source"
     source.mkdir()
-    tree = {
-        "test/" + group["path"]: ("100755" if index == 0 else "100644", "blob")
-        for index, group in enumerate(inventory["groups"])
-    }
-    path = "test/" + inventory["groups"][0]["path"]
+    tree = {}
+    for index, entry in enumerate(inventory["groups"]):
+        if entry["kind"] in benchmark.DIRECTORY_GROUPS:
+            # Directory suites are proven by their tracked member files.
+            member = entry["cases"][0].removeprefix("TTLang :: ").split("::", 1)[0]
+            tree["test/" + member] = ("100644", "blob")
+        else:
+            tree["test/" + entry["path"]] = (
+                "100755" if index == 3 else "100644",
+                "blob",
+            )
+    path = "test/" + group(inventory, "pytest:me2e/test_ops.py")["path"]
     if problem in ("unknown", "untracked"):
         del tree[path]
         if problem == "untracked":

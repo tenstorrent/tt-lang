@@ -226,6 +226,38 @@ def numeric_stats(raw):
     }
 
 
+SUITES = ("mlir", "bindings", "packaging", "pytest", "me2e", "lit")
+GROUP_STATUSES = {"passed", "failed", "infrastructure_error"}
+CASE_OUTCOMES = {
+    "passed",
+    "failed",
+    "skipped",
+    "xfail",
+    "unsupported",
+    "incomplete",
+    "not_run",
+}
+SUITE_COUNT_KEYS = {
+    "planned_groups",
+    "planned_cases",
+    "groups",
+    "complete_groups",
+    "status_counts",
+    "outcome_counts",
+}
+
+
+def counted(value, vocabulary):
+    """A mapping from a fixed vocabulary to non-negative integers."""
+    if (
+        not isinstance(value, dict)
+        or set(value) - vocabulary
+        or any(type(count) is not int or count < 0 for count in value.values())
+    ):
+        raise ValueError("invalid benchmark counts")
+    return value
+
+
 def public_test_summary(value):
     """Validate the harness's small public contract; never copy private results."""
     counts = (
@@ -240,7 +272,10 @@ def public_test_summary(value):
     keys = {
         *counts,
         "manifest_digest",
+        "selection",
         "group_status_counts",
+        "case_outcome_counts",
+        "suite_counts",
         "wall_seconds",
         "runtime_execution_observed",
     }
@@ -250,16 +285,24 @@ def public_test_summary(value):
         r"[0-9a-f]{64}", value["manifest_digest"]
     ):
         raise ValueError("invalid manifest digest")
+    if value["selection"] != "complete":
+        raise ValueError("invalid benchmark selection")
     for key in counts:
         if type(value[key]) is not int or value[key] < 0:
             raise ValueError("invalid benchmark count")
-    statuses = value["group_status_counts"]
-    if (
-        not isinstance(statuses, dict)
-        or set(statuses) - {"passed", "failed", "infrastructure_error"}
-        or any(type(count) is not int or count < 0 for count in statuses.values())
-    ):
-        raise ValueError("invalid benchmark statuses")
+    counted(value["group_status_counts"], GROUP_STATUSES)
+    counted(value["case_outcome_counts"], CASE_OUTCOMES)
+    suites = value["suite_counts"]
+    if not isinstance(suites, dict) or set(suites) != set(SUITES):
+        raise ValueError("invalid benchmark suites")
+    for suite in suites.values():
+        if not isinstance(suite, dict) or set(suite) != SUITE_COUNT_KEYS:
+            raise ValueError("invalid benchmark suite counts")
+        for key in ("planned_groups", "planned_cases", "groups", "complete_groups"):
+            if type(suite[key]) is not int or suite[key] < 0:
+                raise ValueError("invalid benchmark suite counts")
+        counted(suite["status_counts"], GROUP_STATUSES)
+        counted(suite["outcome_counts"], CASE_OUTCOMES)
     seconds = value["wall_seconds"]
     if type(seconds) not in (int, float) or not math.isfinite(seconds) or seconds < 0:
         raise ValueError("invalid benchmark duration")
@@ -272,6 +315,90 @@ def write_json(path, value):
     with path.open("x", encoding="utf-8") as stream:
         json.dump(value, stream, indent=2, allow_nan=False)
         stream.write("\n")
+
+
+def format_counts(counts):
+    return ", ".join(f"{key} {count}" for key, count in sorted(counts.items())) or "-"
+
+
+def report_summary(summary):
+    """Render a worker summary as Markdown from its validated public fields only.
+
+    Nothing from private logs, commands, paths or test IDs is read: the suite
+    table comes from the benchmark's public contract, and the status fields are
+    the worker's fixed vocabulary.
+    """
+    if not isinstance(summary, dict) or summary.get("schema_version") != 1:
+        raise ValueError("unexpected worker summary")
+    status = summary.get("status")
+    if status not in ("not_started", "passed", "failed", "error"):
+        raise ValueError("unexpected worker status")
+    lines = [f"Worker status: `{status}`"]
+    reason = summary.get("failure_reason")
+    if reason is not None:
+        if reason != "preflight_failure" and reason not in {
+            member.name.lower() for member in PreflightFailure
+        }:
+            raise ValueError("unexpected failure reason")
+        lines.append(f"Preflight failure: `{reason}`")
+    stages = summary.get("stages", {})
+    if not isinstance(stages, dict):
+        raise ValueError("unexpected worker stages")
+    for name in ("preflight", "install", "prepare", "smoke", "collect", "test"):
+        if name in stages:
+            stage = stages[name]
+            if (
+                not isinstance(stage, dict)
+                or type(stage.get("exit_code")) is not int
+                or type(stage.get("seconds")) not in (int, float)
+            ):
+                raise ValueError("unexpected worker stage")
+            lines.append(
+                f"Stage `{name}`: exit {stage['exit_code']}, {stage['seconds']:.0f} s"
+            )
+    if "smoke" in summary:
+        smoke = public_test_summary(summary["smoke"])
+        lines.append(
+            "Representative smoke: runtime execution observed "
+            f"{smoke['runtime_execution_observed']}, {smoke['wall_seconds']:.0f} s"
+        )
+    if "tests" not in summary:
+        lines.append("Complete compiler inventory: not executed.")
+        return "\n".join(lines) + "\n"
+    tests = public_test_summary(summary["tests"])
+    lines += [
+        "",
+        f"Complete compiler inventory: {tests['planned_case_count']} planned cases"
+        f" in {tests['planned_group_count']} groups; {tests['complete_group_count']}"
+        f" groups completed; runtime execution observed"
+        f" {tests['runtime_execution_observed']} ({tests['generic_op_returns']}"
+        f" of {tests['generic_op_launches']} generic_op calls returned);"
+        f" {tests['wall_seconds']:.0f} s of test time.",
+        "",
+        "| Suite | Planned groups | Run | Complete | Planned cases"
+        " | Case outcomes | Group status |",
+        "| --- | ---: | ---: | ---: | ---: | --- | --- |",
+    ]
+    for suite in SUITES:
+        counts = tests["suite_counts"][suite]
+        lines.append(
+            f"| {suite} | {counts['planned_groups']} | {counts['groups']}"
+            f" | {counts['complete_groups']} | {counts['planned_cases']}"
+            f" | {format_counts(counts['outcome_counts'])}"
+            f" | {format_counts(counts['status_counts'])} |"
+        )
+    lines += [
+        "",
+        f"All suites: cases {format_counts(tests['case_outcome_counts'])};"
+        f" groups {format_counts(tests['group_status_counts'])}.",
+        "",
+        "`unsupported` counts cases that declare themselves unsupported on the"
+        " single-device emulator profile (`multi_device` pytest skips and lit"
+        " `UNSUPPORTED`); `not_run` counts planned cases without a recorded"
+        " outcome. Group status `infrastructure_error` marks incomplete coverage,"
+        " timeouts or abnormal exits, not test verdicts.",
+    ]
+    return "\n".join(lines) + "\n"
 
 
 def test_tools_command(environment):
@@ -336,16 +463,17 @@ def runtime_smoke(revision, runtime_id):
     )
     path = "python/pipe/test_broadcast_2d.py"
     manifest = {
-        "version": 1,
+        "version": benchmark.MANIFEST_VERSION,
         "revision": revision,
         "runtime_id": runtime_id,
-        "markers": benchmark.MARKERS,
+        "selection": benchmark.SELECTION,
         "groups": [
             {
                 "id": "pytest:" + path,
                 "kind": "pytest",
                 "path": path,
                 "cases": [path + "::test_broadcast_2d"],
+                "markers": {marker: [] for marker in benchmark.CLASSIFICATION_MARKERS},
             }
         ],
     }
@@ -826,6 +954,16 @@ def main(argv=None):
             print("emule CI: refused an unexpected Docker operation", file=sys.stderr)
             return 2
         os.execv(command[0], command)
+    if argv[:1] == ["--report-summary"]:
+        if len(argv) != 2:
+            print("emule CI: --report-summary takes one summary path", file=sys.stderr)
+            return 2
+        try:
+            print(report_summary(json.loads(Path(argv[1]).read_text())), end="")
+        except (OSError, ValueError, TypeError, KeyError):
+            print("emule CI: the worker summary is missing or invalid", file=sys.stderr)
+            return 2
+        return 0
     args = arguments(argv)
     if args.dry_run:
         print(

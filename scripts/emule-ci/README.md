@@ -1,22 +1,43 @@
 # Compiler/emulator CI measurement
 
 This experiment builds the pinned emulator runtime and selected compiler on one
-standard GitHub-hosted runner, then measures single-device compiler execution.
-It uses the tests' existing assertions, expected failures, and ordered ME2E
-stages. It does not replace normal compiler or hardware CI checks.
+standard GitHub-hosted runner, then runs the complete compiler test inventory
+with tt-emule executing the compiler-generated kernels. It uses the tests'
+existing assertions, expected failures, and ordered ME2E stages. It does not
+replace normal compiler or hardware CI checks.
 
 ## Scope and prerequisites
 
-The inventory comes from the selected revision's Python pytest, ME2E, and
-configured Python lit suites. Pytest excludes `multi_device` and `compile_only`.
-Some remaining tests only compile or inspect host-side behavior. The pytest
-observer records calls and successful returns from `ttnn.generic_op` separately
-from test outcomes. A returned call does not imply that a numerical comparison
-passed. Lit has separate outcomes and is not covered by that Python observer.
+The inventory is the same six suites `check-ttlang-all` runs, collected from
+the selected revision with no marker selection:
 
-The LLVM/MLIR-only, Python bindings, packaging, and Python simulator suites are
-outside this execution benchmark. Normal CI remains responsible for them.
-Passing this benchmark does not mean that every compiler test runs on emulation.
+| Suite | Collection | Execution |
+| --- | --- | --- |
+| `mlir` | `llvm-lit --show-tests` on `test/ttlang` | one lit group, compiler-only, parallel |
+| `bindings` | `llvm-lit --show-tests` on `test/bindings/python` | one lit group, compiler-only, parallel |
+| `packaging` | `pytest --collect-only test/packaging` | one pytest group, host-only, as `check-ttlang-packaging` |
+| `pytest` | `pytest --collect-only test/python` | one pytest group per file, emulator execution |
+| `me2e` | `pytest --collect-only test/me2e` | one pytest group per file, ordered stages, emulator execution |
+| `lit` | `llvm-lit --show-tests` on `test/python` | one serial lit group per file, emulator execution |
+
+Cases are never excluded by marker. `compile_only` cases run normally; they do
+not launch kernels. `multi_device` cases run and skip themselves on the
+single-device P150 profile; the benchmark reports those skips, and lit
+`UNSUPPORTED` results, as `unsupported` rather than counting them as ordinary
+skips. Every planned case ends in exactly one outcome: `passed`, `failed`,
+`skipped`, `xfail`, `unsupported`, `incomplete` (unresolved or timed out), or
+`not_run` (planned but never reported, for example after a native abort). A
+group whose coverage is incomplete is an `infrastructure_error`, never a pass.
+
+The pytest observer records calls and successful returns from `ttnn.generic_op`
+separately from test outcomes, and records each collected case's `multi_device`
+and `compile_only` markers. A returned call does not imply that a numerical
+comparison passed. Lit has separate outcomes and is not covered by that observer.
+The compiler-only suites prove nothing about emulation; the job summary reports
+them per suite so that emulator coverage is not inferred from their passes.
+
+The Python simulator suite (`test/sim`) tests `tt-lang-sim` itself and is outside
+this inventory; `call-test-sim.yml` remains responsible for it.
 
 The runtime must match the selected compiler's LLVM and supported stack pins,
 contain CPU-only Torch and test requirements, and support the compiler's required
@@ -84,10 +105,19 @@ collection errors, test failures, and incomplete coverage remain failures.
 
 Only job logs leave the runner. Build logs can contain runtime diagnostics under
 the recorded approval. Detailed test logs, generated code, test IDs, and manifests
-remain runner-local; the worker prints its validated numeric/boolean summary.
-Preflight failures also expose an allowlisted category for imports, CPU Torch,
-the allocation API, dependency consistency, or timeout; exception text is not
-copied from private logs.
+remain runner-local; the worker prints its validated numeric/boolean summary, and
+a final step renders that summary's per-suite table (planned, run and complete
+groups, planned cases, case outcomes and group statuses per suite) into the job
+summary, even when an earlier step failed. Preflight failures also expose an
+allowlisted category for imports, CPU Torch, the allocation API, dependency
+consistency, or timeout; exception text is not copied from private logs.
+
+The 220-minute worker deadline was sized for a measurement pilot. The complete
+inventory took 2 h 5 min on an 8-CPU/32 GiB CPU-only Linux container on
+October 2, 2026; its cost on a four-CPU standard runner is what the first run
+measures. Groups run compiler-only suites first, then the device suites, and
+results are recorded per group, so an exhausted deadline still reports which
+suites completed. A deadline exhaustion is a failed run, not partial credit.
 There are no artifact uploads, shared Actions/BuildKit caches, image publication,
 or build-record exports. Private runner-local evidence is lost when the runner
 is discarded. Automatic PR triggers, additional workers, paid runners, and
@@ -153,9 +183,13 @@ errors, timeouts, native crashes, missing results, and incomplete coverage remai
 errors. Failed tests are not retried or converted to successful timing results.
 
 Whole pytest files stay together, preserving ordered ME2E prerequisites and normal
-in-file ordering. Python lit files are separate groups. Results include per-group
-elapsed time and per-test events. Group timings include interpreter startup,
-collection, fixture, compilation, execution, and reference-check costs.
+in-file ordering. Python lit files are separate groups. The MLIR, Python-binding
+and packaging suites are one group each, run before the device suites. Results
+include per-group elapsed time, per-suite membership, normalized case outcomes
+and per-test events. Group timings include interpreter startup, collection,
+fixture, compilation, execution, and reference-check costs. The manifest is
+version 2 (`selection: complete`); version 1 manifests with marker selection are
+rejected rather than silently re-run with narrower coverage.
 
 ## Local balancing analysis
 

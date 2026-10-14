@@ -16,8 +16,25 @@ def emit(kind, **fields):
         output.write(json.dumps({"kind": kind, **fields}) + "\n")
 
 
+CLASSIFICATION_MARKERS = ("multi_device", "compile_only")
+
+
 def pytest_collection_finish(session):
-    emit("collection", nodes=[item.nodeid for item in session.items])
+    # Record which cases declare themselves multi-device or compile-only so the
+    # benchmark can report single-device-profile skips as unsupported rather
+    # than silently excluding or miscounting them.
+    markers = {}
+    for item in session.items:
+        names = sorted(
+            {
+                marker.name
+                for marker in item.iter_markers()
+                if marker.name in CLASSIFICATION_MARKERS
+            }
+        )
+        if names:
+            markers[item.nodeid] = names
+    emit("collection", nodes=[item.nodeid for item in session.items], markers=markers)
 
 
 def pytest_sessionstart(session):

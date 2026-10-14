@@ -254,6 +254,7 @@ make_entrypoint_fixture() {
     program="$BATS_TEST_TMPDIR/program.py"
     llvm_revision_header="$BATS_TEST_TMPDIR/toolchain/include/llvm/Support/VCSRevision.h"
     memory_max_file="$BATS_TEST_TMPDIR/memory.max"
+    meminfo_file="$BATS_TEST_TMPDIR/meminfo"
     test_entrypoint="$BATS_TEST_TMPDIR/entrypoint.sh"
     expected_llvm_sha=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
     source_fingerprint=source-fingerprint
@@ -268,6 +269,9 @@ make_entrypoint_fixture() {
         "$build_dir/.ttlang-emule-source-fingerprint"
     printf '#define LLVM_REVISION "%s"\n' "$expected_llvm_sha" > "$llvm_revision_header"
     printf '%s\n' "$((6 * 1024 * 1024 * 1024))" > "$memory_max_file"
+    # The host's real MemTotal must not decide the expected job count: the
+    # entrypoint takes the smaller of the cgroup limit and MemTotal.
+    printf 'MemTotal:       %s kB\n' "$((16 * 1024 * 1024))" > "$meminfo_file"
     sed -e "s|/opt/ttlang-toolchain|$BATS_TEST_TMPDIR/toolchain|g" \
         -e "s|/opt/tt-emule-runtime/requirements|$image_requirements|g" \
         "$ENTRYPOINT" > "$test_entrypoint"
@@ -1109,6 +1113,7 @@ PY
     PATH="$mock_bin:$PATH" \
         TT_METAL_MOCK_CLUSTER_DESC_PATH="$cluster" \
         _TTLANG_EMULE_CGROUP_MEMORY_MAX_PATH="$memory_max_file" \
+        _TTLANG_EMULE_MEMINFO_PATH="$meminfo_file" \
         TTLANG_EMULE_EXPECTED_LLVM_SHA="$expected_llvm_sha" \
         TTLANG_EMULE_INSTALL=1 \
         TTLANG_EMULE_COMPILER_SHA=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \

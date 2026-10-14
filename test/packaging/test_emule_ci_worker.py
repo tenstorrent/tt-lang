@@ -66,14 +66,36 @@ def launcher_arguments(environment):
 
 
 def summary():
+    suites = {
+        suite: {
+            "planned_groups": 0,
+            "planned_cases": 0,
+            "groups": 0,
+            "complete_groups": 0,
+            "status_counts": {},
+            "outcome_counts": {},
+        }
+        for suite in worker.SUITES
+    }
+    suites["pytest"] = {
+        "planned_groups": 2,
+        "planned_cases": 3,
+        "groups": 2,
+        "complete_groups": 2,
+        "status_counts": {"passed": 2},
+        "outcome_counts": {"passed": 2, "unsupported": 1},
+    }
     return {
         "manifest_digest": "a" * 64,
+        "selection": "complete",
         "shard": 1,
         "planned_group_count": 2,
         "planned_case_count": 3,
         "group_count": 2,
         "complete_group_count": 2,
         "group_status_counts": {"passed": 2},
+        "case_outcome_counts": {"passed": 2, "unsupported": 1},
+        "suite_counts": suites,
         "wall_seconds": 5.5,
         "generic_op_launches": 3,
         "generic_op_returns": 3,
@@ -321,12 +343,14 @@ def test_smoke_requires_numerical_pass_and_observed_execution(
     def run(args, env):
         calls.append((args, env))
         manifest = smoke_harness.read_json(args.manifest)
+        assert manifest["version"] == 2 and manifest["selection"] == "complete"
         assert manifest["groups"] == [
             {
                 "id": "pytest:python/pipe/test_broadcast_2d.py",
                 "kind": "pytest",
                 "path": "python/pipe/test_broadcast_2d.py",
                 "cases": ["python/pipe/test_broadcast_2d.py::test_broadcast_2d"],
+                "markers": {"multi_device": [], "compile_only": []},
             }
         ]
         smoke_harness.write_json(
@@ -336,6 +360,7 @@ def test_smoke_requires_numerical_pass_and_observed_execution(
                 "shard": 1,
                 "groups": [
                     {
+                        "id": "pytest:python/pipe/test_broadcast_2d.py",
                         "outcomes": outcomes,
                         "complete": True,
                         "status": "passed" if code == 0 else "failed",
@@ -405,6 +430,11 @@ def test_public_summary_accepts_only_documented_sanitized_contract():
         ("group_count", True),
         ("runtime_execution_observed", "yes"),
         ("group_status_counts", {"secret": 1}),
+        ("selection", "not multi_device"),
+        ("case_outcome_counts", {"passed": "/private/log"}),
+        ("case_outcome_counts", {"private_reason": 1}),
+        ("suite_counts", {}),
+        ("suite_counts", {"python/private_test.py": {}}),
     ],
 )
 def test_public_summary_rejects_untrusted_values(key, value):
@@ -412,6 +442,117 @@ def test_public_summary_rejects_untrusted_values(key, value):
     data[key] = value
     with pytest.raises(ValueError):
         worker.public_test_summary(data)
+
+
+@pytest.mark.parametrize(
+    "key,value",
+    [
+        ("planned_cases", -1),
+        ("groups", "2"),
+        ("status_counts", {"private": 1}),
+        ("outcome_counts", {"unsupported": 1.5}),
+        ("log", "/private/path"),
+    ],
+)
+def test_public_summary_rejects_untrusted_suite_counts(key, value):
+    data = summary()
+    data["suite_counts"]["mlir"][key] = value
+    with pytest.raises(ValueError):
+        worker.public_test_summary(data)
+
+
+def worker_summary(**overrides):
+    value = {
+        "schema_version": 1,
+        "publication_blocked": True,
+        "status": "passed",
+        "cpus": 4,
+        "memory_limit_bytes": 12 * 1024**3,
+        "timeout_seconds": 13200,
+        "disk_floor_bytes": 2 * 1024**3,
+        "low_disk": False,
+        "stages": {
+            "preflight": {"exit_code": 0, "seconds": 12.2},
+            "test": {"exit_code": 1, "seconds": 7000.6},
+        },
+        "samples": [{"stage": "test", "host_disk_free_bytes": 1}],
+        "smoke": summary(),
+        "tests": summary(),
+    }
+    value.update(overrides)
+    return value
+
+
+def test_report_renders_per_suite_table_from_public_fields_only():
+    report = worker.report_summary(worker_summary())
+    assert report.startswith("Worker status: `passed`\n")
+    assert "Stage `preflight`: exit 0, 12 s" in report
+    assert "Stage `test`: exit 1, 7001 s" in report
+    assert "Representative smoke: runtime execution observed True" in report
+    assert "3 planned cases in 2 groups; 2 groups completed" in report
+    assert "| Suite | Planned groups | Run | Complete | Planned cases" in report
+    assert "| pytest | 2 | 2 | 2 | 3 | passed 2, unsupported 1 | passed 2 |" in report
+    assert "| mlir | 0 | 0 | 0 | 0 | - | - |" in report
+    assert "All suites: cases passed 2, unsupported 1; groups passed 2." in report
+    assert "`unsupported` counts cases" in report
+    assert "private" not in report and "/" not in report.replace("generic_op", "")
+
+
+def test_report_without_inventory_names_the_fixed_preflight_reason():
+    value = worker_summary(
+        status="failed",
+        failure_reason="cpu_only_torch_required",
+        stages={"preflight": {"exit_code": 21, "seconds": 1}},
+    )
+    del value["smoke"], value["tests"]
+    report = worker.report_summary(value)
+    assert "Preflight failure: `cpu_only_torch_required`" in report
+    assert "Complete compiler inventory: not executed." in report
+    assert "| Suite |" not in report
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"schema_version": 2},
+        {"status": "private failure text"},
+        {"failure_reason": "Traceback: /private/path"},
+        {"stages": {"test": {"exit_code": 1, "seconds": "7000s"}}},
+        {"stages": {"test": {"exit_code": "1", "seconds": 1}}},
+        {"tests": {**summary(), "command": "/private/source.py"}},
+        {"smoke": {**summary(), "log": "/private/log"}},
+    ],
+)
+def test_report_refuses_undocumented_or_private_fields(overrides):
+    with pytest.raises(ValueError):
+        worker.report_summary(worker_summary(**overrides))
+
+
+def test_report_cli_prints_markdown_and_fails_closed(tmp_path):
+    path = tmp_path / "summary.json"
+    path.write_text(json.dumps(worker_summary()))
+    result = subprocess.run(
+        [sys.executable, worker.__file__, "--report-summary", str(path)],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == worker.report_summary(worker_summary())
+    path.write_text(json.dumps(worker_summary(tests={"private": "/private/path"})))
+    result = subprocess.run(
+        [sys.executable, worker.__file__, "--report-summary", str(path)],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 2
+    assert "/private/path" not in result.stdout + result.stderr
+    for arguments in ([], [str(path), "extra"], [str(tmp_path / "missing.json")]):
+        result = subprocess.run(
+            [sys.executable, worker.__file__, "--report-summary", *arguments],
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 2 and result.stdout == ""
 
 
 def test_dry_run_does_not_query_docker_or_create_output(tmp_path, monkeypatch, capsys):
