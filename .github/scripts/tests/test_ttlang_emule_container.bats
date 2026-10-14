@@ -351,7 +351,7 @@ EOF
     assert_log_line "/workspace/scripts/tt-lang-emule-entrypoint.sh"
     assert_log_line \
         "TTLANG_EMULE_EXPECTED_LLVM_SHA=$(git -C "$TTLANG_REPO_ROOT" rev-parse HEAD:third-party/llvm-project)"
-    [[ "$runtime_id" == 7292395c-b6c508c4-r* ]]
+    [[ "$runtime_id" == 447830f6-e592d14d-r* ]]
     assert_log_line \
         "type=volume,src=tt-lang-emule-build-${runtime_id}-${source_id},dst=/ttlang-build"
     assert_log_line \
