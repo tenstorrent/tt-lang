@@ -149,6 +149,27 @@ def test_rejects_invalid_shard_coverage(problem):
         benchmark.selected_groups(inventory, plan, 1)
 
 
+@pytest.mark.parametrize(
+    "changed", ["revision", "runtime", "group_order", "case_order", "parameters"]
+)
+def test_plan_rejects_changed_recollection(changed):
+    inventory = manifest()
+    plan = benchmark.balance(inventory, results(inventory), 3)
+    if changed == "revision":
+        inventory["revision"] = "c" * 40
+    elif changed == "runtime":
+        inventory["runtime_id"] = "sha256:" + "c" * 64
+    elif changed == "group_order":
+        inventory["groups"].reverse()
+    elif changed == "case_order":
+        inventory["groups"][0]["cases"].reverse()
+    else:
+        inventory["groups"][1]["cases"][0] = "python/test_add.py::test_add[changed]"
+    benchmark.validate_manifest(inventory)
+    with pytest.raises(ValueError, match="plan belongs to another manifest"):
+        benchmark.selected_groups(inventory, plan, 1)
+
+
 def test_native_abort_is_not_complete_coverage():
     group = manifest()["groups"][0]
     events = [{"kind": "collection", "nodes": group["cases"]}]
@@ -180,6 +201,12 @@ def test_public_summary_excludes_commands_paths_and_errors():
         "/python/test_a.py",
         "python/../test_a.py",
         "python//test_a.py",
+        "python/test_\na.py",
+        "python/test_\ra.py",
+        "python/test_\ta.py",
+        "python/test_\x1ba.py",
+        "python/test_ a.py",
+        "python/test_:a.py",
     ],
 )
 def test_rejects_unsafe_test_paths(path):
@@ -394,10 +421,48 @@ def test_private_manifest_fields_cannot_be_exported(where):
     target = inventory if where == "root" else inventory["groups"][0]
     target["private_diagnostic"] = "must not be uploaded"
     with pytest.raises(ValueError, match="unexpected.*fields"):
-        benchmark.public_manifest(inventory)
+        benchmark.balance(inventory, results(inventory), 3)
 
 
-def test_balance_exports_explicit_public_manifest(tmp_path):
+def test_balance_exports_only_plan_without_private_parameters(tmp_path):
+    inventory = manifest()
+    sentinel = "PRIVATE_RUNTIME_PARAMETER"
+    inventory["groups"][1]["cases"][0] = f"python/test_add.py::test_add[{sentinel}]"
+    benchmark.write_json(tmp_path / "input.json", inventory)
+    benchmark.write_json(tmp_path / "results.json", results(inventory))
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT_DIR / "benchmark.py"),
+            "balance",
+            "--manifest",
+            str(tmp_path / "input.json"),
+            "--results",
+            str(tmp_path / "results.json"),
+            "--output",
+            str(tmp_path / "plan.json"),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    exported = benchmark.read_json(tmp_path / "plan.json")
+    assert set(exported) == {"manifest_digest", "shards", "estimated_seconds"}
+    assert exported["manifest_digest"] == benchmark.digest(inventory)
+    assert sentinel not in json.dumps(exported) + result.stdout + result.stderr
+    assert "test_add[" not in json.dumps(exported)
+    assert sorted(key for shard in exported["shards"] for key in shard) == sorted(
+        group["id"] for group in inventory["groups"]
+    )
+    assert set(path.name for path in tmp_path.iterdir()) == {
+        "input.json",
+        "results.json",
+        "plan.json",
+    }
+
+
+def test_balance_refuses_obsolete_public_manifest_export(tmp_path):
     inventory = manifest()
     benchmark.write_json(tmp_path / "input.json", inventory)
     benchmark.write_json(tmp_path / "results.json", results(inventory))
@@ -419,11 +484,93 @@ def test_balance_exports_explicit_public_manifest(tmp_path):
         text=True,
         check=False,
     )
-    assert result.returncode == 0, result.stdout + result.stderr
-    assert benchmark.read_json(tmp_path / "public.json") == inventory
-    exported = benchmark.public_manifest(inventory)
-    exported["groups"][0]["cases"].clear()
-    assert inventory["groups"][0]["cases"]
+    assert result.returncode == 2
+    assert "unrecognized arguments: --public-manifest" in result.stderr
+    assert not (tmp_path / "public.json").exists()
+    assert not (tmp_path / "plan.json").exists()
+
+
+@pytest.mark.parametrize(
+    "problem",
+    [None, "revision", "dirty", "unknown", "untracked", "symlink", "gitlink"],
+)
+def test_public_plan_requires_clean_exact_source_and_tracked_regular_files(
+    tmp_path, monkeypatch, problem
+):
+    inventory = manifest()
+    source = tmp_path / "source"
+    source.mkdir()
+    tree = {
+        "test/" + group["path"]: ("100755" if index == 0 else "100644", "blob")
+        for index, group in enumerate(inventory["groups"])
+    }
+    path = "test/" + inventory["groups"][0]["path"]
+    if problem in ("unknown", "untracked"):
+        del tree[path]
+        if problem == "untracked":
+            untracked = source / path
+            untracked.parent.mkdir(parents=True)
+            untracked.write_text("untracked source does not prove public provenance")
+    elif problem == "symlink":
+        tree[path] = ("120000", "blob")
+    elif problem == "gitlink":
+        tree[path] = ("160000", "commit")
+    tree_output = "".join(
+        f"{mode} {kind} {'d' * 40}\t{path}\0" for path, (mode, kind) in tree.items()
+    )
+    answers = iter(
+        [
+            "c" * 40 if problem == "revision" else inventory["revision"],
+            " M changed.py\n" if problem == "dirty" else "",
+            tree_output,
+        ]
+    )
+    calls = []
+
+    def git(command, **kwargs):
+        calls.append(command)
+        assert kwargs == {"capture_output": True, "text": True, "check": True}
+        return subprocess.CompletedProcess(command, 0, next(answers), "")
+
+    monkeypatch.setattr(benchmark.subprocess, "run", git)
+    benchmark.write_json(tmp_path / "input.json", inventory)
+    benchmark.write_json(tmp_path / "results.json", results(inventory))
+    output = tmp_path / "plan.json"
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "benchmark.py",
+            "balance",
+            "--manifest",
+            str(tmp_path / "input.json"),
+            "--results",
+            str(tmp_path / "results.json"),
+            "--output",
+            str(output),
+            "--public-source",
+            str(source),
+        ],
+    )
+    if problem:
+        with pytest.raises(SystemExit) as error:
+            benchmark.main()
+        assert error.value.code == 2
+        assert not output.exists()
+    else:
+        assert benchmark.main() == 0
+        assert benchmark.read_json(output) == benchmark.balance(
+            inventory, results(inventory), 3
+        )
+    if problem not in ("revision", "dirty"):
+        assert calls[-1][-6:] == [
+            "ls-tree",
+            "-r",
+            "-z",
+            inventory["revision"],
+            "--",
+            "test",
+        ]
 
 
 @pytest.mark.parametrize("threads", ["1", "2", "3", "4"])

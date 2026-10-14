@@ -3,10 +3,12 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import importlib.util
+import builtins
 import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -153,6 +155,218 @@ def test_volume_measurement_mounts_are_read_only(environment):
     assert command[-3:] == [IMAGE, "-c", "du -sk /build /cache"]
 
 
+def test_preflight_uses_image_python_without_compiler_or_device(environment):
+    command = worker.proxy_command(["preflight"], environment)
+    assert "--entrypoint=/opt/ttlang-toolchain/venv/bin/python" in command
+    assert "type=bind,src=/source,dst=/workspace,readonly" in command
+    assert (
+        "PYTHONPATH=/opt/tt-emule-runtime/tt-metal/ttnn:/opt/tt-emule-runtime/tt-metal/tools"
+        in command
+    )
+    assert "--network=none" in command
+    assert "--device" not in command
+    assert not any("type=volume" in part for part in command)
+    assert command[-3:] == [
+        IMAGE,
+        "/workspace/scripts/emule-ci/worker.py",
+        "--runtime-preflight",
+    ]
+
+
+@pytest.fixture
+def runtime_modules(monkeypatch):
+    torch = SimpleNamespace(version=SimpleNamespace(cuda=None, hip=None))
+    memory_config = SimpleNamespace(
+        experimental_set_range_lockstep_allocation=lambda _: None
+    )
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    monkeypatch.setitem(
+        sys.modules, "ttnn", SimpleNamespace(MemoryConfig=memory_config)
+    )
+    monkeypatch.setitem(sys.modules, "lit", SimpleNamespace())
+    return torch, memory_config
+
+
+def test_runtime_preflight_checks_packages_without_allocating(
+    runtime_modules, monkeypatch
+):
+    calls = []
+    monkeypatch.setattr(
+        worker.subprocess,
+        "run",
+        lambda command, **kwargs: calls.append((command, kwargs))
+        or subprocess.CompletedProcess(command, 0),
+    )
+    assert worker.runtime_preflight() == 0
+    assert calls == [
+        ([sys.executable, "-m", "pip", "check"], {"check": False, "timeout": 60})
+    ]
+
+
+@pytest.mark.parametrize("accelerator", ["cuda", "hip"])
+def test_runtime_preflight_rejects_accelerator_torch(runtime_modules, accelerator):
+    setattr(runtime_modules[0].version, accelerator, "version")
+    assert worker.runtime_preflight() == worker.PreflightFailure.CPU_ONLY_TORCH_REQUIRED
+
+
+def test_runtime_preflight_rejects_missing_binding_before_pip_check(
+    runtime_modules, monkeypatch
+):
+    del runtime_modules[1].experimental_set_range_lockstep_allocation
+    monkeypatch.setattr(
+        worker.subprocess,
+        "run",
+        lambda *args, **kwargs: pytest.fail("pip must not run"),
+    )
+    assert (
+        worker.runtime_preflight() == worker.PreflightFailure.RANGE_LOCKSTEP_API_MISSING
+    )
+
+
+def test_runtime_preflight_preserves_pip_check_failure(runtime_modules, monkeypatch):
+    monkeypatch.setattr(
+        worker.subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess([], 1),
+    )
+    assert worker.runtime_preflight() == worker.PreflightFailure.PIP_CHECK_FAILED
+
+
+@pytest.mark.parametrize("module", ["torch", "ttnn", "pytest", "lit"])
+@pytest.mark.parametrize("exception", [ImportError, OSError, RuntimeError])
+def test_runtime_preflight_import_failures_have_fixed_cli_exit(
+    runtime_modules, monkeypatch, module, exception, capsys
+):
+    real_import = builtins.__import__
+
+    def failing_import(name, *args, **kwargs):
+        if name == module:
+            raise exception("private-import-error-sentinel")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", failing_import)
+    assert (
+        worker.main(["--runtime-preflight"])
+        == worker.PreflightFailure.RUNTIME_IMPORT_FAILED
+    )
+    output = capsys.readouterr()
+    assert "private-import-error-sentinel" not in output.out + output.err
+
+
+@pytest.mark.parametrize(
+    "exception,expected",
+    [
+        (
+            subprocess.TimeoutExpired("private-pip-command-sentinel", 60),
+            worker.PreflightFailure.PIP_CHECK_TIMED_OUT,
+        ),
+        (
+            OSError("private-pip-error-sentinel"),
+            worker.PreflightFailure.PIP_CHECK_FAILED,
+        ),
+    ],
+)
+def test_runtime_preflight_pip_errors_have_fixed_cli_exit(
+    runtime_modules, monkeypatch, exception, expected, capsys
+):
+    def failing_run(*args, **kwargs):
+        raise exception
+
+    monkeypatch.setattr(worker.subprocess, "run", failing_run)
+    assert worker.main(["--runtime-preflight"]) == expected
+    output = capsys.readouterr()
+    assert "sentinel" not in output.out + output.err
+
+
+@pytest.fixture
+def smoke_harness(tmp_path, monkeypatch):
+    spec = importlib.util.spec_from_file_location(
+        "benchmark", Path(worker.__file__).with_name("benchmark.py")
+    )
+    benchmark = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(benchmark)
+    monkeypatch.setitem(sys.modules, "benchmark", benchmark)
+    monkeypatch.setattr(
+        worker,
+        "Path",
+        lambda value: (
+            tmp_path / value.lstrip("/")
+            if value.startswith(("/workspace", "/ttlang-build", "/emule-results"))
+            else Path(value)
+        ),
+    )
+    monkeypatch.setattr(benchmark, "validate_source", lambda *args: None)
+    monkeypatch.setenv("TT_METAL_EMULE_MODE", "1")
+    monkeypatch.setenv("TT_METAL_MOCK_CLUSTER_DESC_PATH", "/mock-descriptor.yaml")
+    monkeypatch.setenv("TTLANG_EMULE_CI_CACHE", str(tmp_path / "cache"))
+    for key in ("TTLANG_COMPILE_ONLY", "TTLANG_SIM_ONLY", "TT_METAL_SIMULATOR"):
+        monkeypatch.delenv(key, raising=False)
+    return benchmark
+
+
+@pytest.mark.parametrize(
+    "code,outcomes,returns,expected",
+    [
+        (0, {"passed": 1}, 1, 0),
+        (0, {"skipped": 1}, 1, 1),
+        (0, {"passed": 1}, 0, 1),
+        (1, {"failed": 1}, 1, 1),
+    ],
+)
+def test_smoke_requires_numerical_pass_and_observed_execution(
+    smoke_harness, monkeypatch, tmp_path, code, outcomes, returns, expected
+):
+    calls = []
+
+    def run(args, env):
+        calls.append((args, env))
+        manifest = smoke_harness.read_json(args.manifest)
+        assert manifest["groups"] == [
+            {
+                "id": "pytest:python/pipe/test_broadcast_2d.py",
+                "kind": "pytest",
+                "path": "python/pipe/test_broadcast_2d.py",
+                "cases": ["python/pipe/test_broadcast_2d.py::test_broadcast_2d"],
+            }
+        ]
+        smoke_harness.write_json(
+            args.output / "results.json",
+            {
+                "manifest_digest": smoke_harness.digest(manifest),
+                "shard": 1,
+                "groups": [
+                    {
+                        "outcomes": outcomes,
+                        "complete": True,
+                        "status": "passed" if code == 0 else "failed",
+                        "wall_seconds": 1,
+                        "launch_counts": {"launch": 1, "returned": returns},
+                    }
+                ],
+            },
+        )
+        return code
+
+    monkeypatch.setattr(smoke_harness, "run", run)
+    assert worker.runtime_smoke("a" * 40, IMAGE) == expected
+    args, env = calls[0]
+    assert env["TT_METAL_CACHE"] == str(tmp_path / "cache/smoke")
+    assert env["TT_EMULE_JIT_CACHE_DIR"] == str(tmp_path / "cache/smoke/emule-jit")
+    args.output = tmp_path / "emule-results/run"
+    assert smoke_harness.environment(args)["TT_METAL_CACHE"] == str(
+        tmp_path / "cache/run"
+    )
+
+
+def test_smoke_refuses_reused_cache(smoke_harness, tmp_path, monkeypatch):
+    (tmp_path / "cache/smoke").mkdir(parents=True)
+    monkeypatch.setattr(
+        smoke_harness, "run", lambda *args: pytest.fail("must not execute")
+    )
+    with pytest.raises(RuntimeError, match="fresh cache"):
+        worker.runtime_smoke("a" * 40, IMAGE)
+
+
 def test_stats_expose_only_numeric_resource_fields():
     value = worker.numeric_stats(
         json.dumps(
@@ -212,8 +426,10 @@ def test_dry_run_does_not_query_docker_or_create_output(tmp_path, monkeypatch, c
     )
     assert not output.exists()
     assert json.loads(capsys.readouterr().out)["stages"] == [
+        "preflight",
         "install",
         "prepare",
+        "smoke",
         "collect",
         "test",
     ]
@@ -228,6 +444,8 @@ def test_dry_run_does_not_query_docker_or_create_output(tmp_path, monkeypatch, c
         ["--disk-floor-gib", "0"],
         ["--plan", "plan.json"],
         ["--shard", "1"],
+        ["--manifest", "manifest.json", "--plan", "plan.json"],
+        ["--manifest", "manifest.json", "--shard", "1"],
         ["--worker", "has spaces"],
     ],
 )
@@ -247,6 +465,9 @@ def instance(tmp_path, monkeypatch):
     )
     value = worker.Worker(args)
     (value.private / "container/inputs").mkdir(parents=True)
+    report = value.private / "container/smoke/summary.json"
+    report.parent.mkdir()
+    report.write_text(json.dumps(summary()))
     return value
 
 
@@ -305,10 +526,106 @@ def test_failed_install_does_not_run_tests(instance, monkeypatch):
     monkeypatch.setattr(instance, "prepare", prepare)
     monkeypatch.setattr(instance, "sizes", lambda _: None)
     monkeypatch.setattr(
-        instance, "stage", lambda name, command: calls.append(name) or 1
+        instance,
+        "stage",
+        lambda name, command: calls.append(name) or int(name == "install"),
     )
     assert instance.execute() == 1
-    assert calls == ["install"]
+    assert calls == ["preflight", "install"]
+
+
+@pytest.mark.parametrize(
+    "failure,expected",
+    [
+        ("preflight", ["preflight"]),
+        ("smoke", ["preflight", "install", "prepare", "smoke"]),
+    ],
+)
+def test_preflight_or_smoke_failure_stops_before_benchmark(
+    instance, monkeypatch, failure, expected
+):
+    def prepare():
+        instance.revision = "a" * 40
+        instance.environment["TTLANG_EMULE_IMAGE"] = IMAGE
+
+    calls = []
+    monkeypatch.setattr(instance, "prepare", prepare)
+    monkeypatch.setattr(instance, "sizes", lambda _: None)
+    monkeypatch.setattr(
+        instance,
+        "stage",
+        lambda name, command: calls.append(name) or int(name == failure),
+    )
+    assert instance.execute() == 1
+    assert calls == expected
+
+
+@pytest.mark.parametrize(
+    "code,reason",
+    [
+        (20, "runtime_import_failed"),
+        (21, "cpu_only_torch_required"),
+        (22, "range_lockstep_api_missing"),
+        (23, "pip_check_failed"),
+        (24, "pip_check_timed_out"),
+        (1, "preflight_failure"),
+        (124, "preflight_failure"),
+        (255, "preflight_failure"),
+    ],
+)
+def test_preflight_summary_publishes_only_fixed_reason(
+    tmp_path, monkeypatch, capsys, code, reason
+):
+    output = tmp_path / "result"
+    calls = []
+
+    def prepare(self):
+        self.revision = "a" * 40
+        self.environment["TTLANG_EMULE_IMAGE"] = IMAGE
+
+    def stage(self, name, command):
+        calls.append(name)
+        (self.private / "preflight.log").write_text("private-preflight-error-sentinel")
+        return code
+
+    monkeypatch.setattr(worker.shutil, "which", lambda _: "/usr/bin/docker")
+    monkeypatch.setattr(
+        worker.shutil, "disk_usage", lambda _: SimpleNamespace(free=200 * 1024**3)
+    )
+    monkeypatch.setattr(worker.Worker, "prepare", prepare)
+    monkeypatch.setattr(worker.Worker, "sizes", lambda *args: None)
+    monkeypatch.setattr(worker.Worker, "stage", stage)
+    original_umask = os.umask(0o077)
+    try:
+        assert worker.main(["--image", "local:runtime", "--output", str(output)]) == 1
+    finally:
+        os.umask(original_umask)
+    public = capsys.readouterr().out
+    assert json.loads(public)["failure_reason"] == reason
+    assert json.loads((output / "summary.json").read_text())["failure_reason"] == reason
+    assert "private-preflight-error-sentinel" not in public
+    assert (
+        output / "private/preflight.log"
+    ).read_text() == "private-preflight-error-sentinel"
+    assert calls == ["preflight"]
+
+
+def test_smoke_without_runtime_evidence_stops_before_collection(instance, monkeypatch):
+    def prepare():
+        instance.revision = "a" * 40
+        instance.environment["TTLANG_EMULE_IMAGE"] = IMAGE
+
+    report = summary()
+    report["runtime_execution_observed"] = False
+    (instance.private / "container/smoke/summary.json").write_text(json.dumps(report))
+    calls = []
+    monkeypatch.setattr(instance, "prepare", prepare)
+    monkeypatch.setattr(instance, "sizes", lambda _: None)
+    monkeypatch.setattr(
+        instance, "stage", lambda name, command: calls.append(name) or 0
+    )
+    assert instance.execute() == 1
+    assert calls == ["preflight", "install", "prepare", "smoke"]
 
 
 @pytest.mark.parametrize("supplied_manifest", [False, True])
@@ -330,12 +647,73 @@ def test_test_tools_are_prepared_before_every_execution(
     )
     instance.execute()
     assert [name for name, _ in calls] == [
+        "preflight",
         "install",
         "prepare",
+        "smoke",
         *([] if supplied_manifest else ["collect"]),
         "test",
     ]
-    assert calls[1][1][-2:] == ["scripts/emule-ci/worker.py", "--prepare-test-tools"]
+    assert calls[2][1][-2:] == ["scripts/emule-ci/worker.py", "--prepare-test-tools"]
+
+
+def test_plan_only_worker_recollects_before_running_shard(
+    instance, monkeypatch, capsys
+):
+    plan = instance.output / "plan.json"
+    plan.write_text('{"manifest_digest": "private-inventory-digest"}')
+    arguments = [
+        "--image",
+        "local:runtime",
+        "--output",
+        str(instance.output),
+        "--plan",
+        str(plan),
+        "--shard",
+        "2",
+    ]
+    instance.args = worker.arguments(arguments)
+    assert instance.args.manifest is None
+    assert worker.main([*arguments, "--dry-run"]) == 0
+    assert json.loads(capsys.readouterr().out)["stages"] == [
+        "preflight",
+        "install",
+        "prepare",
+        "smoke",
+        "collect",
+        "test",
+    ]
+
+    def prepare():
+        instance.revision = "a" * 40
+        instance.environment["TTLANG_EMULE_IMAGE"] = IMAGE
+
+    calls = []
+    monkeypatch.setattr(instance, "prepare", prepare)
+    monkeypatch.setattr(instance, "sizes", lambda _: None)
+    monkeypatch.setattr(
+        instance, "stage", lambda name, command: calls.append((name, command)) or 0
+    )
+    instance.execute()
+    assert [name for name, _ in calls] == [
+        "preflight",
+        "install",
+        "prepare",
+        "smoke",
+        "collect",
+        "test",
+    ]
+    assert calls[4][1][-2:] == ["--output", "/emule-results/collection"]
+    command = calls[5][1]
+    assert command[command.index("--manifest") + 1] == (
+        "/emule-results/collection/manifest.json"
+    )
+    assert command[command.index("--plan") + 1] == "/emule-results/inputs/plan.json"
+    assert command[command.index("--shard") + 1] == "2"
+    assert (instance.private / "container/inputs/plan.json").read_text() == (
+        plan.read_text()
+    )
+    assert not (instance.private / "container/inputs/manifest.json").exists()
 
 
 def test_missing_test_tools_stop_before_collection(instance, monkeypatch):
@@ -352,7 +730,7 @@ def test_missing_test_tools_stop_before_collection(instance, monkeypatch):
         lambda name, command: calls.append(name) or int(name == "prepare"),
     )
     assert instance.execute() == 1
-    assert calls == ["install", "prepare"]
+    assert calls == ["preflight", "install", "prepare"]
 
 
 def test_prepare_uses_existing_cmake_test_tools_target():

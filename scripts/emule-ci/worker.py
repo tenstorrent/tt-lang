@@ -6,6 +6,7 @@
 """Local-only, bounded emulator worker. No image builds, pulls or publication."""
 
 import argparse
+from enum import IntEnum
 import json
 import math
 import os
@@ -31,6 +32,14 @@ ENVIRONMENT_KEYS = {
     "TTLANG_EMULE_SOURCE_FINGERPRINT",
     "TTLANG_EMULE_INSTALL",
 }
+
+
+class PreflightFailure(IntEnum):
+    RUNTIME_IMPORT_FAILED = 20
+    CPU_ONLY_TORCH_REQUIRED = 21
+    RANGE_LOCKSTEP_API_MISSING = 22
+    PIP_CHECK_FAILED = 23
+    PIP_CHECK_TIMED_OUT = 24
 
 
 def bounded_integer(value, maximum):
@@ -102,6 +111,25 @@ def proxy_command(arguments, environment):
         "-e",
         "TTLANG_EMULE_CI_CACHE=/tt-metal-cache",
     ]
+    if arguments == ["preflight"]:
+        source = safe_mount_path(environment["TTLANG_CI_SOURCE"])
+        metal = "/opt/tt-emule-runtime/tt-metal"
+        return command + [
+            "--rm",
+            "--platform=linux/amd64",
+            "--entrypoint=/opt/ttlang-toolchain/venv/bin/python",
+            "--mount",
+            f"type=bind,src={source},dst=/workspace,readonly",
+            "-e",
+            f"TT_METAL_HOME={metal}",
+            "-e",
+            f"TT_METAL_RUNTIME_ROOT={metal}",
+            "-e",
+            f"PYTHONPATH={metal}/ttnn:{metal}/tools",
+            image,
+            "/workspace/scripts/emule-ci/worker.py",
+            "--runtime-preflight",
+        ]
     if arguments == ["measure"]:
         return command + [
             "--rm",
@@ -259,6 +287,86 @@ def test_tools_command(environment):
         "--parallel",
         str(threads),
     ]
+
+
+def runtime_preflight():
+    try:
+        import torch
+        import ttnn
+        import pytest
+        import lit
+    except Exception:
+        return PreflightFailure.RUNTIME_IMPORT_FAILED
+
+    if torch.version.cuda is not None or torch.version.hip is not None:
+        return PreflightFailure.CPU_ONLY_TORCH_REQUIRED
+    if not callable(
+        getattr(
+            getattr(ttnn, "MemoryConfig", None),
+            "experimental_set_range_lockstep_allocation",
+            None,
+        )
+    ):
+        return PreflightFailure.RANGE_LOCKSTEP_API_MISSING
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "pip", "check"], check=False, timeout=60
+        )
+    except subprocess.TimeoutExpired:
+        return PreflightFailure.PIP_CHECK_TIMED_OUT
+    except OSError:
+        return PreflightFailure.PIP_CHECK_FAILED
+    return 0 if result.returncode == 0 else PreflightFailure.PIP_CHECK_FAILED
+
+
+def runtime_smoke(revision, runtime_id):
+    import benchmark
+
+    args = argparse.Namespace(
+        source=Path("/workspace"),
+        build=Path("/ttlang-build"),
+        output=Path("/emule-results/smoke"),
+        revision=revision,
+        runtime_id=runtime_id,
+        manifest=Path("/emule-results/smoke/manifest.json"),
+        plan=None,
+        shard=1,
+        timeout=600,
+        group_timeout=900,
+    )
+    path = "python/pipe/test_broadcast_2d.py"
+    manifest = {
+        "version": 1,
+        "revision": revision,
+        "runtime_id": runtime_id,
+        "markers": benchmark.MARKERS,
+        "groups": [
+            {
+                "id": "pytest:" + path,
+                "kind": "pytest",
+                "path": path,
+                "cases": [path + "::test_broadcast_2d"],
+            }
+        ],
+    }
+    benchmark.validate_manifest(manifest)
+    benchmark.validate_source(args.source, revision)
+    env = benchmark.environment(args)
+    if Path(env["TT_METAL_CACHE"]).exists():
+        raise RuntimeError("the representative smoke requires a fresh cache")
+    args.output.mkdir(parents=True, exist_ok=False)
+    benchmark.write_json(args.manifest, manifest)
+    result = benchmark.run(args, env)
+    evidence = benchmark.read_json(args.output / "results.json")
+    groups = evidence["groups"]
+    if (
+        result != 0
+        or len(groups) != 1
+        or groups[0]["outcomes"] != {"passed": 1}
+        or not benchmark.public_summary(evidence)["runtime_execution_observed"]
+    ):
+        return 1
+    return 0
 
 
 class Worker:
@@ -552,6 +660,17 @@ class Worker:
         manifest = "/emule-results/collection/manifest.json"
         self.summary["status"] = "failed"
         try:
+            self.environment["TTLANG_CI_CONTAINER"] = self.token + "-preflight"
+            preflight = self.stage(
+                "preflight", proxy_command(["preflight"], self.environment)
+            )
+            if preflight:
+                try:
+                    reason = PreflightFailure(preflight).name.lower()
+                except ValueError:
+                    reason = "preflight_failure"
+                self.summary["failure_reason"] = reason
+                return 1
             if self.stage(
                 "install",
                 ["bash", str(self.source / "scripts/install-tt-lang-emule.sh")],
@@ -566,6 +685,26 @@ class Worker:
                     "--prepare-test-tools",
                 ],
             ):
+                return 1
+            if self.stage(
+                "smoke",
+                [
+                    "bash",
+                    str(self.source / "scripts/tt-lang-emule-container.sh"),
+                    "scripts/emule-ci/worker.py",
+                    "--runtime-smoke",
+                    "--revision",
+                    self.revision,
+                    "--runtime-id",
+                    self.environment["TTLANG_EMULE_IMAGE"],
+                ],
+            ):
+                return 1
+            smoke_report = self.private / "container/smoke/summary.json"
+            self.summary["smoke"] = public_test_summary(
+                json.loads(smoke_report.read_text())
+            )
+            if not self.summary["smoke"]["runtime_execution_observed"]:
                 return 1
             if self.args.manifest:
                 shutil.copyfile(
@@ -652,8 +791,8 @@ def arguments(argv):
         parser.error("worker must be a short lowercase identifier")
     if not 1 <= args.timeout_seconds <= 18000:
         parser.error("timeout must be between 1 and 18000 seconds")
-    if bool(args.plan) != bool(args.shard) or (args.plan and not args.manifest):
-        parser.error("--plan and --shard require each other and --manifest")
+    if bool(args.plan) != bool(args.shard):
+        parser.error("--plan and --shard require each other")
     if not args.image or args.image.startswith("-"):
         parser.error("invalid local image reference")
     return args
@@ -661,6 +800,14 @@ def arguments(argv):
 
 def main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
+    if argv == ["--runtime-preflight"]:
+        return runtime_preflight()
+    if argv[:1] == ["--runtime-smoke"]:
+        parser = argparse.ArgumentParser()
+        parser.add_argument("--revision", required=True)
+        parser.add_argument("--runtime-id", required=True)
+        args = parser.parse_args(argv[1:])
+        return runtime_smoke(args.revision, args.runtime_id)
     if argv == ["--prepare-test-tools"]:
         try:
             return subprocess.run(
@@ -691,8 +838,10 @@ def main(argv=None):
                     "timeout_seconds": args.timeout_seconds,
                     "disk_floor_gib": args.disk_floor_gib,
                     "stages": [
+                        "preflight",
                         "install",
                         "prepare",
+                        "smoke",
                         *([] if args.manifest else ["collect"]),
                         "test",
                     ],

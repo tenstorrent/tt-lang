@@ -68,9 +68,9 @@ def validate_manifest(manifest):
             or parsed.is_absolute()
             or ".." in parsed.parts
             or parsed.as_posix() != path
-            or not path.startswith(("python/", "me2e/"))
-            or not path.endswith(".py")
-            or "::" in path
+            or not re.fullmatch(
+                r"(?:python|me2e)/(?:[A-Za-z0-9_.-]+/)*[A-Za-z0-9_.-]+\.py", path
+            )
             or (kind == "lit" and not path.startswith("python/"))
             or group["id"] != f"{kind}:{path}"
             or not group["cases"]
@@ -83,25 +83,6 @@ def validate_manifest(manifest):
                 raise ValueError("invalid lit test ID")
         cases.extend(group["cases"])
     unique(cases)
-
-
-def public_manifest(manifest):
-    validate_manifest(manifest)
-    return {
-        "version": manifest["version"],
-        "revision": manifest["revision"],
-        "runtime_id": manifest["runtime_id"],
-        "markers": manifest["markers"],
-        "groups": [
-            {
-                "id": group["id"],
-                "kind": group["kind"],
-                "path": group["path"],
-                "cases": list(group["cases"]),
-            }
-            for group in manifest["groups"]
-        ],
-    }
 
 
 def make_manifest(nodes, lit_output, revision, runtime_id):
@@ -359,6 +340,39 @@ def validate_source(source, revision):
         raise ValueError("benchmark source must be a clean committed checkout")
 
 
+def validate_public_source(source, manifest):
+    validate_source(source, manifest["revision"])
+    tree = subprocess.run(
+        [
+            "git",
+            "-c",
+            "safe.directory=" + str(source),
+            "-C",
+            str(source),
+            "ls-tree",
+            "-r",
+            "-z",
+            manifest["revision"],
+            "--",
+            "test",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    regular_files = set()
+    for entry in tree.stdout.split("\0"):
+        if entry:
+            metadata, path = entry.split("\t", 1)
+            mode, kind, _ = metadata.split()
+            if mode in ("100644", "100755") and kind == "blob":
+                regular_files.add(path)
+    if any(
+        "test/" + group["path"] not in regular_files for group in manifest["groups"]
+    ):
+        raise ValueError("public plan paths must be tracked regular source files")
+
+
 def collect(args, env):
     events_path = args.output / "collection.events.jsonl"
     env["TTLANG_EMULE_CI_EVENTS"] = str(events_path)
@@ -511,30 +525,17 @@ def main():
     command.add_argument("--results", type=Path, required=True)
     command.add_argument("--shards", type=int, default=3)
     command.add_argument("--output", type=Path, required=True)
-    command.add_argument("--public-manifest", type=Path)
+    command.add_argument("--public-source", type=Path)
     args = parser.parse_args()
     try:
         if args.command == "balance":
-            if args.output.exists() or (
-                args.public_manifest and args.public_manifest.exists()
-            ):
+            if args.output.exists():
                 raise ValueError("choose a new output path")
-            if (
-                args.public_manifest
-                and args.public_manifest.resolve() == args.output.resolve()
-            ):
-                raise ValueError(
-                    "plan and public manifest require separate output paths"
-                )
             manifest = read_json(args.manifest)
             plan = balance(manifest, read_json(args.results), args.shards)
-            sanitized = public_manifest(manifest)
-            write_json(
-                args.output,
-                plan,
-            )
-            if args.public_manifest:
-                write_json(args.public_manifest, sanitized)
+            if args.public_source:
+                validate_public_source(args.public_source.resolve(), manifest)
+            write_json(args.output, plan)
             return 0
         args.source, args.build, args.output = (
             args.source.resolve(),

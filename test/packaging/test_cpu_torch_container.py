@@ -131,6 +131,96 @@ def test_container_build_uses_and_checks_cpu_torch():
         assert f".github/containers/{helper}" in uplift_paths
 
 
+def test_emule_image_replaces_donor_venv_after_native_build_and_rechecks_cpu():
+    dockerfile = (CONTAINERS / "Dockerfile.emule").read_text()
+    build, runtime = dockerfile.split(" AS runtime\n", 1)
+    prepare = "bash /tmp/prepare-toolchain-venv.sh /opt/ttlang-toolchain"
+    cpu_check = "/opt/ttlang-toolchain/venv/bin/python /tmp/check-cpu-torch.py"
+    assert build.index("--target precompile-fw") < build.index(prepare)
+    assert build.index("rm -rf /opt/ttlang-toolchain/venv") < build.index(prepare)
+    assert build.index(prepare) < build.index(
+        "-r /runtime/requirements/requirements-test.txt"
+    )
+    assert build.index("-r /runtime/requirements/requirements-test.txt") < build.index(
+        cpu_check
+    )
+    assert build.index(cpu_check) < build.index("bash /tmp/trim-emule-venv.sh")
+    assert (
+        "source=prepare-toolchain-venv.sh,target=/tmp/prepare-toolchain-venv.sh"
+        in build
+    )
+    for stage in (build, runtime):
+        assert "source=check-cpu-torch.py,target=/tmp/check-cpu-torch.py" in stage
+        assert "download.pytorch.org" not in stage
+    assert runtime.index("--without-pip --symlinks") < runtime.index(cpu_check)
+    assert runtime.index("-m pip check") < runtime.index(cpu_check)
+
+
+@pytest.mark.parametrize("failure", ["", "abi", "prepare", "install", "check", "trim"])
+def test_emule_packaging_cpu_transition_stops_on_failures(tmp_path, failure):
+    dockerfile = (CONTAINERS / "Dockerfile.emule").read_text()
+    section = dockerfile.split(
+        "RUN --mount=type=bind,source=prepare-toolchain-venv.sh", 1
+    )[1]
+    command = (
+        "mkdir -p /runtime"
+        + section.split("mkdir -p /runtime", 1)[1].split("\n\n", 1)[0]
+    )
+    toolchain = tmp_path / "toolchain"
+    helpers = tmp_path / "helpers"
+    runtime = tmp_path / "runtime"
+    source = tmp_path / "native"
+    log = tmp_path / "calls.jsonl"
+    for directory in (toolchain / "venv/bin", helpers, source):
+        directory.mkdir(parents=True)
+    for name in ("stack.json", "source-manifest.json"):
+        (source / name).write_text("{}\n")
+    python_stub = f"""#!{sys.executable}
+import json, os, sys
+step = 'abi' if '-c' in sys.argv else 'install' if 'install' in sys.argv else 'check'
+with open(os.environ['CALL_LOG'], 'a') as stream:
+    stream.write(json.dumps(step) + '\\n')
+sys.exit(23 if step == os.environ['FAIL_STEP'] else 0)
+"""
+    interpreter = toolchain / "venv/bin/python"
+    interpreter.write_text(python_stub)
+    interpreter.chmod(0o755)
+    template = helpers / "python-template"
+    template.write_text(python_stub)
+    (helpers / "package-emule-runtime.sh").write_text("exit 0\n")
+    (helpers / "prepare-toolchain-venv.sh").write_text(
+        'set -eu\n[ ! -e "$1/venv" ]\n'
+        'printf \'"prepare"\\n\' >> "$CALL_LOG"\n'
+        '[ "$FAIL_STEP" != prepare ] || exit 23\n'
+        'mkdir -p "$1/venv/bin"\n'
+        f'cp "{template}" "$1/venv/bin/python"\n'
+        'chmod +x "$1/venv/bin/python"\n'
+    )
+    (helpers / "trim-emule-venv.sh").write_text(
+        'printf \'"trim"\\n\' >> "$CALL_LOG"\n' '[ "$FAIL_STEP" != trim ] || exit 23\n'
+    )
+    command = command.replace("/opt/ttlang-toolchain", str(toolchain))
+    command = command.replace("/tmp/", f"{helpers}/")
+    command = command.replace("/runtime", str(runtime))
+    result = subprocess.run(
+        ["bash", "-e", "-c", command],
+        env={
+            **os.environ,
+            "TT_METAL_SOURCE_DIR": str(source),
+            "TT_EMULE_RUNTIME_ROOT": str(source),
+            "CALL_LOG": str(log),
+            "FAIL_STEP": failure,
+        },
+        capture_output=True,
+        text=True,
+    )
+    expected = ["abi", "prepare", "install", "check", "trim"]
+    if failure:
+        expected = expected[: expected.index(failure) + 1]
+    assert [json.loads(line) for line in log.read_text().splitlines()] == expected
+    assert result.returncode == (23 if failure else 0), result.stderr
+
+
 @pytest.mark.parametrize(
     "document", [".github/containers/README.md", "docs/sphinx/build.md"]
 )

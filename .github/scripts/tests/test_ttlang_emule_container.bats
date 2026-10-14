@@ -27,6 +27,8 @@ make_runner_fixture() {
     cp "$SOURCE_REPO_ROOT/.github/containers/Dockerfile.emule" \
         "$SOURCE_REPO_ROOT/.github/containers/package-emule-runtime.sh" \
         "$SOURCE_REPO_ROOT/.github/containers/trim-emule-venv.sh" \
+        "$SOURCE_REPO_ROOT/.github/containers/prepare-toolchain-venv.sh" \
+        "$SOURCE_REPO_ROOT/.github/containers/check-cpu-torch.py" \
         "$root/.github/containers/"
     cp "$SOURCE_REPO_ROOT/scripts/tt-lang-emule-entrypoint.sh" \
         "$SOURCE_REPO_ROOT/scripts/tt-lang-emule-container.sh" \
@@ -67,6 +69,23 @@ stack["emulator"]["commit"] = sys.argv[2]
 stack["metal"]["commit"] = sys.argv[3]
 manifest.write_text(json.dumps(stack, indent=2) + "\n")
 PY
+}
+
+make_emulator_fixture() {
+    local source="$1"
+    mkdir -p "$source/cluster_descriptors"
+    git -C "$source" init -q
+    touch "$source/tracked-source" \
+        "$source/cluster_descriptors/blackhole_P150_unharvested.yaml"
+    printf '%s\n' bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb > \
+        "$source/tt-metal-pin.txt"
+    git -C "$source" add .
+    git -C "$source" \
+        -c user.name=test -c user.email=test@example.com \
+        commit -q -m "Pinned source"
+    touch "$source/untracked-secret"
+    pin_emulator_runtime "$(git -C "$source" rev-parse HEAD)" \
+        bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 }
 
 make_mock_docker() {
@@ -134,10 +153,12 @@ case "${1:-}" in
             done
             [ -f "$context/package-emule-runtime.sh" ] || exit 95
             [ -f "$context/trim-emule-venv.sh" ] || exit 94
+            [ -f "$context/prepare-toolchain-venv.sh" ] || exit 90
+            [ -f "$context/check-cpu-torch.py" ] || exit 89
             [ ! -e "$context/third-party" ] || exit 93
             [ ! -e "$context/.git" ] || exit 92
         fi
-        exit 0
+        exit "${MOCK_DOCKER_BUILD_STATUS:-0}"
         ;;
     run)
         exit "${MOCK_DOCKER_RUN_STATUS:-0}"
@@ -427,6 +448,26 @@ EOF
     [ ! -e "$MOCK_DOCKER_LOG" ]
 }
 
+@test "build-only mode rejects installation shell and script arguments before Docker" {
+    TTLANG_EMULE_BUILD_ONLY=1 TTLANG_EMULE_INSTALL=1 run -2 "$RUNNER"
+    assert_output --partial "mutually exclusive"
+    TTLANG_EMULE_BUILD_ONLY=1 TTLANG_EMULE_SHELL=1 run -2 "$RUNNER"
+    assert_output --partial "mutually exclusive"
+    TTLANG_EMULE_BUILD_ONLY=1 run -2 "$RUNNER" unexpected
+    assert_output --partial "do not accept script arguments"
+    [ ! -e "$MOCK_DOCKER_LOG" ]
+}
+
+@test "build-only mode accepts an existing image without installing or running" {
+    TTLANG_EMULE_BUILD_ONLY=1 TTLANG_EMULE_DOCKER="$MOCK_DOCKER" \
+        run -0 "$RUNNER"
+    assert_output --partial "Runtime image: tt-lang-emule:"
+    refute_output --partial "Compiler build volume:"
+    assert_log_line image
+    refute_log_line build
+    refute_log_line run
+}
+
 @test "workload edits and outputs preserve the installed compiler identity" {
     local synthetic_root="$BATS_TEST_TMPDIR/synthetic-repo"
     local synthetic_runner="$synthetic_root/scripts/tt-lang-emule-container.sh"
@@ -517,7 +558,8 @@ EOF
     local first_image
     local first_fingerprint
     local recipe_input
-    for recipe_input in package-emule-runtime.sh trim-emule-venv.sh; do
+    for recipe_input in package-emule-runtime.sh trim-emule-venv.sh \
+        prepare-toolchain-venv.sh check-cpu-torch.py; do
         : > "$MOCK_DOCKER_LOG"
         TTLANG_EMULE_DOCKER="$MOCK_DOCKER" run -0 "$RUNNER" \
             "$TTLANG_REPO_ROOT/examples/program.py"
@@ -658,25 +700,10 @@ PY
     local source_url
     local rebuild
     local inspect_status
-    mkdir -p "$emule_source"
     mkdir -p "$runtime_tmp"
-    git -C "$emule_source" init -q
-    mkdir -p "$emule_source/cluster_descriptors"
-    touch "$emule_source/tracked-source"
-    touch \
-        "$emule_source/cluster_descriptors/blackhole_P150_unharvested.yaml"
-    printf '%s\n' bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb > \
-        "$emule_source/tt-metal-pin.txt"
-    git -C "$emule_source" add \
-        tracked-source cluster_descriptors/blackhole_P150_unharvested.yaml \
-        tt-metal-pin.txt
-    git -C "$emule_source" \
-        -c user.name=test -c user.email=test@example.com \
-        commit -q -m "Pinned source"
-    touch "$emule_source/untracked-secret"
+    make_emulator_fixture "$emule_source"
     emule_commit="$(git -C "$emule_source" rev-parse HEAD)"
     emule_source="$(cd "$emule_source" && pwd -P)"
-    pin_emulator_runtime "$emule_commit" bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
     cd "$TTLANG_REPO_ROOT"
     for source_mode in directory url rebuild; do
         source_dir=""
@@ -737,6 +764,64 @@ PY
         [ -f "$emule_source/tracked-source" ]
         [ -f "$emule_source/untracked-secret" ]
     done
+}
+
+@test "build-only mode exports the pinned source and never runs a container" {
+    local emule_source="$BATS_TEST_TMPDIR/external-emule"
+    local runtime_tmp="$BATS_TEST_TMPDIR/runtime-tmp"
+    local rebuild build_status
+    make_emulator_fixture "$emule_source"
+    mkdir -p "$runtime_tmp"
+    for rebuild in 0 1; do
+        for build_status in 0 42; do
+            : > "$MOCK_DOCKER_LOG"
+            TMPDIR="$runtime_tmp" \
+                MOCK_DOCKER_IMAGE_STATUS=1 \
+                MOCK_DOCKER_BUILD_STATUS="$build_status" \
+                MOCK_DOCKER_REQUIRE_SANITIZED_CONTEXT=1 \
+                TTLANG_EMULE_DOCKER="$MOCK_DOCKER" \
+                TTLANG_EMULE_BUILD_ONLY=1 \
+                TTLANG_EMULE_REBUILD="$rebuild" \
+                TTLANG_EMULE_RUNTIME_SOURCE_DIR="$emule_source" \
+                TTLANG_EMULE_IMAGE=local-runtime:pilot \
+                run -"$build_status" "$RUNNER"
+
+            if [ "$build_status" -eq 0 ]; then
+                assert_output --partial "Runtime image: local-runtime:pilot"
+            else
+                refute_output --partial "Runtime image: local-runtime:pilot"
+            fi
+            assert_log_line build
+            assert_log_line local-runtime:pilot
+            assert_log_line \
+                "TT_EMULE_COMMIT=$(git -C "$emule_source" rev-parse HEAD)"
+            refute_log_line run
+            if [ "$rebuild" -eq 1 ]; then
+                refute_log_line image
+            fi
+            shopt -s nullglob
+            local retained_runtime_dirs=(
+                "$runtime_tmp"/tt-lang-emule.*
+                "$runtime_tmp"/tt-lang-emule-context.*
+                "$runtime_tmp"/tt-lang-stack-context.*
+            )
+            shopt -u nullglob
+            [ "${#retained_runtime_dirs[@]}" -eq 0 ]
+            [ -f "$emule_source/tracked-source" ]
+            [ -f "$emule_source/untracked-secret" ]
+        done
+    done
+}
+
+@test "build-only mode rejects an unpinned source without building or running" {
+    MOCK_DOCKER_IMAGE_STATUS=1 \
+        TTLANG_EMULE_BUILD_ONLY=1 \
+        TTLANG_EMULE_RUNTIME_SOURCE_DIR="$TTLANG_REPO_ROOT" \
+        TTLANG_EMULE_DOCKER="$MOCK_DOCKER" \
+        run -1 "$RUNNER"
+    assert_output --partial "emulator source must be at"
+    refute_log_line build
+    refute_log_line run
 }
 
 @test "P150 target rejects an incompatible pinned runtime before Docker build" {

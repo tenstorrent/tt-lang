@@ -1,180 +1,127 @@
 # SPDX-FileCopyrightText: (c) 2026 Tenstorrent AI ULC
 # SPDX-License-Identifier: Apache-2.0
 
-name: Measure tt-emule on standard hosted runners
+name: Measure runner-local tt-emule builds
 
 on:
   workflow_dispatch:
     inputs:
-      image:
-        description: Approved private GHCR runtime image, pinned by sha256 digest
-        required: true
-        type: string
-      company_policy_approved:
-        description: Company approval covers the runtime, runner, logs and registry access
+      owner_approval_recorded:
+        description: Owner approval for runner-local builds and possible public logs is recorded
         required: true
         default: false
         type: boolean
 
-permissions:
-  contents: read
+permissions: {}
 
 concurrency:
   group: emule-hosted-experiment
   cancel-in-progress: false
 
 jobs:
-  serial:
+  authorize:
     if: >-
-      inputs.company_policy_approved &&
+      inputs.owner_approval_recorded &&
       github.repository == 'tenstorrent/tt-lang' &&
       github.ref == 'refs/heads/kostas/tt-lang-emule-hosted-ci-experiment'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    permissions: {}
+    steps:
+      - name: Verify the reviewed candidate and configured source
+        env:
+          SELECTED_SHA: ${{ github.sha }}
+          APPROVED_SHA: ${{ vars.TTLANG_EMULE_APPROVED_SHA }}
+          SOURCE_REPOSITORY: ${{ vars.TTLANG_EMULE_SOURCE_REPOSITORY }}
+        run: |
+          if [[ ! "$SELECTED_SHA" =~ ^[0-9a-f]{40}$ ]] ||
+             [[ "$SELECTED_SHA" != "$APPROVED_SHA" ]] ||
+             [[ ! "$SOURCE_REPOSITORY" =~ ^tenstorrent/[A-Za-z0-9_.-]+$ ]]; then
+            echo 'No matching reviewed candidate/source configuration is available.' >&2
+            exit 2
+          fi
+
+  serial:
+    needs: authorize
     runs-on: ubuntu-24.04
     timeout-minutes: 360
     permissions:
       contents: read
-      packages: read
-    outputs:
-      plan_ready: ${{ steps.plan.outputs.ready }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: compiler
+    env:
+      TTLANG_EMULE_IMAGE: ttlang-emule-ci:runner-local
     steps:
-      - uses: actions/checkout@v6
+      - name: Checkout the reviewed compiler revision
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
+          ref: ${{ github.sha }}
+          path: compiler
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Validate immutable company image reference
-        env:
-          IMAGE: ${{ inputs.image }}
+      - name: Read the pinned emulator revision
+        id: stack
         run: |
-          if [[ ! "$IMAGE" =~ ^ghcr\.io/tenstorrent/[a-z0-9._/-]+@sha256:[0-9a-f]{64}$ ]]; then
-            exit 2
-          fi
+          python3 scripts/tt-lang-emule-stack.py \
+            --manifest config/tt-lang-emule-stack.json validate \
+            --compiler-source . --quiet
+          pin="$(python3 scripts/tt-lang-emule-stack.py \
+            --manifest config/tt-lang-emule-stack.json emit |
+            awk -F '\t' '$1 == "TTLANG_EMULE_COMMIT" {print $2}')"
+          [[ "$pin" =~ ^[0-9a-f]{40}$ ]]
+          printf 'emulator_sha=%s\n' "$pin" >> "$GITHUB_OUTPUT"
 
-      - uses: docker/login-action@v4
+      - name: Checkout the pinned private source without retaining credentials
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ github.token }}
+          repository: ${{ vars.TTLANG_EMULE_SOURCE_REPOSITORY }}
+          ref: ${{ steps.stack.outputs.emulator_sha }}
+          token: ${{ secrets.TTLANG_EMULE_SOURCE_READ_TOKEN }}
+          path: private-runtime
+          fetch-depth: 1
+          persist-credentials: false
+          submodules: false
+          lfs: false
 
-      - name: Measure cold pull
-        timeout-minutes: 20
-        env:
-          IMAGE: ${{ inputs.image }}
+      - name: Verify sources and absence of retained checkout credentials
         run: |
-          bash scripts/emule-ci/pull.sh "$IMAGE" "$RUNNER_TEMP/emule-pull"
+          for source in "$GITHUB_WORKSPACE/compiler" "$GITHUB_WORKSPACE/private-runtime"; do
+            if git -C "$source" config --local --get-regexp \
+              '^(http\..*\.extraheader|credential\..*|core\.sshcommand|include\.path)$' \
+              > /dev/null; then
+              echo 'A checkout retains authentication configuration.' >&2
+              exit 2
+            else
+              status=$?
+              test "$status" -eq 1
+            fi
+          done
+          python3 scripts/tt-lang-emule-stack.py \
+            --manifest config/tt-lang-emule-stack.json validate \
+            --compiler-source . --emulator-source "$GITHUB_WORKSPACE/private-runtime" --quiet
 
-      - name: Measure serial compiler execution suites
-        id: measure
-        continue-on-error: true
+      - name: Measure the cold runner-local runtime build
+        timeout-minutes: 120
         env:
-          IMAGE: ${{ inputs.image }}
+          TTLANG_EMULE_BUILD_ONLY: "1"
+          TTLANG_EMULE_REBUILD: "1"
+          TTLANG_EMULE_RUNTIME_SOURCE_DIR: ${{ github.workspace }}/private-runtime
+          DOCKER_BUILD_SUMMARY: "false"
+          DOCKER_BUILD_RECORD_UPLOAD: "false"
         run: |
-          python3 scripts/emule-ci/worker.py --image "$IMAGE" \
+          started=$SECONDS
+          trap 'status=$?; printf "Runtime build: exit=%s seconds=%s\n" "$status" "$((SECONDS - started))"; df -Pk "$RUNNER_TEMP"' EXIT
+          available_kib="$(df -Pk "$RUNNER_TEMP" | awk 'NR == 2 {print $4}')"
+          test "$available_kib" -ge 2097152
+          timeout --signal=TERM --kill-after=30s 6900 \
+            bash scripts/tt-lang-emule-container.sh
+
+      - name: Measure serial compiler execution suites with fresh caches
+        timeout-minutes: 230
+        run: |
+          python3 scripts/emule-ci/worker.py --image "$TTLANG_EMULE_IMAGE" \
             --worker serial --output "$RUNNER_TEMP/emule-serial" \
-            --cpus 4 --memory-gib 12 --disk-floor-gib 2 --timeout-seconds 18000
-
-      - name: Balance complete timing baseline
-        id: plan
-        if: ${{ !cancelled() }}
-        run: |
-          mkdir -p "$RUNNER_TEMP/emule-public"
-          python3 scripts/emule-ci/benchmark.py balance \
-            --manifest "$RUNNER_TEMP/emule-serial/private/container/collection/manifest.json" \
-            --results "$RUNNER_TEMP/emule-serial/private/container/run/results.json" \
-            --shards 3 --output "$RUNNER_TEMP/emule-public/plan.json" \
-            --public-manifest "$RUNNER_TEMP/emule-public/manifest.json"
-          echo 'ready=true' >> "$GITHUB_OUTPUT"
-
-      - name: Stage bounded summary
-        id: bounded
-        if: ${{ always() }}
-        run: |
-          mkdir -p "$RUNNER_TEMP/emule-public"
-          if test -d "$RUNNER_TEMP/emule-pull/public"; then
-            cp "$RUNNER_TEMP/emule-pull/public/"*.txt "$RUNNER_TEMP/emule-public/"
-          fi
-          if test -f "$RUNNER_TEMP/emule-serial/summary.json"; then
-            cp "$RUNNER_TEMP/emule-serial/summary.json" "$RUNNER_TEMP/emule-public/summary.json"
-          fi
-          test "$(du -sk "$RUNNER_TEMP/emule-public" | cut -f1)" -le 4096
-
-      - uses: actions/upload-artifact@v4
-        if: ${{ always() && steps.bounded.outcome == 'success' }}
-        with:
-          name: emule-serial-summary
-          path: ${{ runner.temp }}/emule-public/
-          retention-days: 1
-          if-no-files-found: error
-
-      - name: Preserve serial test failure status
-        if: ${{ steps.measure.outcome != 'success' }}
-        run: exit 1
-
-  shards:
-    needs: serial
-    if: ${{ !cancelled() && needs.serial.outputs.plan_ready == 'true' }}
-    runs-on: ubuntu-24.04
-    timeout-minutes: 180
-    permissions:
-      contents: read
-      packages: read
-    strategy:
-      fail-fast: false
-      max-parallel: 3
-      matrix:
-        shard: [1, 2, 3]
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-
-      - uses: actions/download-artifact@v4
-        with:
-          name: emule-serial-summary
-          path: ${{ runner.temp }}/emule-plan
-
-      - uses: docker/login-action@v4
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ github.token }}
-
-      - name: Measure the same immutable runtime pull
-        timeout-minutes: 20
-        env:
-          IMAGE: ${{ inputs.image }}
-        run: |
-          bash scripts/emule-ci/pull.sh "$IMAGE" "$RUNNER_TEMP/emule-pull"
-
-      - name: Measure independent shard
-        env:
-          IMAGE: ${{ inputs.image }}
-          SHARD: ${{ matrix.shard }}
-        run: |
-          python3 scripts/emule-ci/worker.py --image "$IMAGE" \
-            --worker "shard-$SHARD" --output "$RUNNER_TEMP/emule-shard" \
-            --cpus 4 --memory-gib 12 --disk-floor-gib 2 --timeout-seconds 9000 \
-            --manifest "$RUNNER_TEMP/emule-plan/manifest.json" \
-            --plan "$RUNNER_TEMP/emule-plan/plan.json" --shard "$SHARD"
-
-      - name: Stage bounded summary
-        id: bounded
-        if: ${{ always() }}
-        run: |
-          mkdir -p "$RUNNER_TEMP/emule-public"
-          if test -d "$RUNNER_TEMP/emule-pull/public"; then
-            cp "$RUNNER_TEMP/emule-pull/public/"*.txt "$RUNNER_TEMP/emule-public/"
-          fi
-          if test -f "$RUNNER_TEMP/emule-shard/summary.json"; then
-            cp "$RUNNER_TEMP/emule-shard/summary.json" "$RUNNER_TEMP/emule-public/summary.json"
-          fi
-          test "$(du -sk "$RUNNER_TEMP/emule-public" | cut -f1)" -le 4096
-
-      - uses: actions/upload-artifact@v4
-        if: ${{ always() && steps.bounded.outcome == 'success' }}
-        with:
-          name: emule-shard-${{ matrix.shard }}-summary
-          path: ${{ runner.temp }}/emule-public/
-          retention-days: 1
-          if-no-files-found: error
+            --cpus 4 --memory-gib 12 --disk-floor-gib 2 --timeout-seconds 13200
