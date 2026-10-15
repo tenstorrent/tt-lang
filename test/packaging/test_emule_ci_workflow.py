@@ -140,9 +140,6 @@ def test_workflow_is_one_manual_trusted_runner_local_job():
         < steps.index(report)
     )
     assert report["if"] == "always()"
-    assert "--report-summary" in report["run"]
-    assert '"$GITHUB_STEP_SUMMARY"' in report["run"]
-    assert "emule-serial/summary.json" in report["run"]
     assert "private" not in report["run"]
     assert build["env"]["TTLANG_EMULE_BUILD_ONLY"] == "1"
     assert build["env"]["TTLANG_EMULE_REBUILD"] == "1"
@@ -310,24 +307,32 @@ def test_build_preserves_failures_and_checks_disk_before_launch(
     assert f"Runtime build: exit={expected} seconds=" in result.stdout
 
 
-@pytest.mark.parametrize("present", [False, True])
-def test_report_step_publishes_only_the_validated_summary(tmp_path, present):
+PREFLIGHT_FAILURE = {
+    "schema_version": 1,
+    "publication_blocked": True,
+    "status": "failed",
+    "stages": {"preflight": {"exit_code": 22, "seconds": 3.5}},
+    "failure_reason": "range_lockstep_api_missing",
+    "samples": [{"private": "/private/host/path"}],
+}
+
+
+@pytest.mark.parametrize(
+    "summary,returncode",
+    [
+        (None, 0),
+        (PREFLIGHT_FAILURE, 0),
+        ({"schema_version": 1, "status": "Traceback /private/path"}, 2),
+    ],
+)
+def test_report_step_publishes_only_the_validated_summary(
+    tmp_path, summary, returncode
+):
     runner_temp = tmp_path / "runner"
     (runner_temp / "emule-serial").mkdir(parents=True)
     step_summary = tmp_path / "step-summary.md"
-    if present:
-        (runner_temp / "emule-serial/summary.json").write_text(
-            json.dumps(
-                {
-                    "schema_version": 1,
-                    "publication_blocked": True,
-                    "status": "failed",
-                    "stages": {"preflight": {"exit_code": 22, "seconds": 3.5}},
-                    "failure_reason": "range_lockstep_api_missing",
-                    "samples": [{"private": "/private/host/path"}],
-                }
-            )
-        )
+    if summary:
+        (runner_temp / "emule-serial/summary.json").write_text(json.dumps(summary))
     result = subprocess.run(
         [
             "bash",
@@ -345,45 +350,21 @@ def test_report_step_publishes_only_the_validated_summary(tmp_path, present):
         capture_output=True,
         text=True,
     )
-    assert result.returncode == 0, result.stderr
-    published = step_summary.read_text()
+    assert result.returncode == returncode, result.stderr
+    published = step_summary.read_text() if step_summary.exists() else ""
+    assert "/private" not in published + result.stdout + result.stderr
+    if returncode:
+        # An invalid summary appends nothing; pipefail fails the step.
+        assert published == ""
+        return
     assert published == result.stdout
-    if present:
+    if summary:
         assert "Preflight failure: `range_lockstep_api_missing`" in published
         assert "Stage `preflight`: exit 22, 4 s" in published
         assert "no validated summary" in published
+        assert "| Suite |" not in published
     else:
         assert "produced no summary" in published
-    assert "/private" not in published
-
-
-def test_report_step_publishes_nothing_from_an_invalid_summary(tmp_path):
-    runner_temp = tmp_path / "runner"
-    (runner_temp / "emule-serial").mkdir(parents=True)
-    step_summary = tmp_path / "step-summary.md"
-    (runner_temp / "emule-serial/summary.json").write_text(
-        json.dumps({"schema_version": 1, "status": "Traceback /private/path"})
-    )
-    result = subprocess.run(
-        [
-            "bash",
-            "-euo",
-            "pipefail",
-            "-c",
-            workflow_step("Report the public per-suite summary")["run"],
-        ],
-        cwd=ROOT,
-        env={
-            **os.environ,
-            "RUNNER_TEMP": str(runner_temp),
-            "GITHUB_STEP_SUMMARY": str(step_summary),
-        },
-        capture_output=True,
-        text=True,
-    )
-    assert result.returncode == 2
-    assert not step_summary.exists() or step_summary.read_text() == ""
-    assert "/private/path" not in result.stdout + result.stderr
 
 
 def test_inline_workflow_shell_syntax():

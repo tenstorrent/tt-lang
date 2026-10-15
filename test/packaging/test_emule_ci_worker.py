@@ -512,19 +512,6 @@ def test_report_renders_per_suite_table_from_public_fields_only():
     assert "private" not in report
 
 
-def test_report_without_inventory_names_the_fixed_preflight_reason():
-    value = worker_summary(
-        status="failed",
-        failure_reason="cpu_only_torch_required",
-        stages={"preflight": {"exit_code": 21, "seconds": 1}},
-    )
-    del value["smoke"], value["tests"]
-    report = worker.report_summary(value)
-    assert "Preflight failure: `cpu_only_torch_required`" in report
-    assert "Complete compiler inventory: no validated summary was recorded." in report
-    assert "| Suite |" not in report
-
-
 @pytest.mark.parametrize(
     "overrides",
     [
@@ -615,65 +602,50 @@ def test_missing_image_stops_before_install(instance, monkeypatch):
     assert calls[0][1:3] == ["image", "inspect"]
 
 
+def execute_stages(instance, monkeypatch, failure=None):
+    """Run execute() with stubbed setup, failing only the named stage."""
+
+    def prepare():
+        instance.revision = "a" * 40
+        instance.environment["TTLANG_EMULE_IMAGE"] = IMAGE
+
+    calls = []
+    monkeypatch.setattr(instance, "prepare", prepare)
+    monkeypatch.setattr(instance, "sizes", lambda _: None)
+    monkeypatch.setattr(
+        instance,
+        "stage",
+        lambda name, command: calls.append((name, command)) or int(name == failure),
+    )
+    return instance.execute(), calls
+
+
+STAGES = ["preflight", "install", "prepare", "smoke", "collect", "test"]
+
+
 @pytest.mark.parametrize("test_summary,expected", [(None, 1), (summary(), 0)])
 def test_success_requires_sanitized_runtime_execution_evidence(
     instance, monkeypatch, test_summary, expected
 ):
-    def prepare():
-        instance.revision = "a" * 40
-        instance.environment["TTLANG_EMULE_IMAGE"] = IMAGE
-
-    monkeypatch.setattr(instance, "prepare", prepare)
-    monkeypatch.setattr(instance, "sizes", lambda _: None)
-    monkeypatch.setattr(instance, "stage", lambda *args: 0)
     if test_summary:
         report = instance.private / "container/run/summary.json"
         report.parent.mkdir()
         report.write_text(json.dumps(test_summary))
-    assert instance.execute() == expected
+    assert execute_stages(instance, monkeypatch)[0] == expected
 
 
-def test_failed_install_does_not_run_tests(instance, monkeypatch):
-    def prepare():
-        instance.revision = "a" * 40
-        instance.environment["TTLANG_EMULE_IMAGE"] = IMAGE
-
-    calls = []
-    monkeypatch.setattr(instance, "prepare", prepare)
-    monkeypatch.setattr(instance, "sizes", lambda _: None)
-    monkeypatch.setattr(
-        instance,
-        "stage",
-        lambda name, command: calls.append(name) or int(name == "install"),
-    )
-    assert instance.execute() == 1
-    assert calls == ["preflight", "install"]
-
-
-@pytest.mark.parametrize(
-    "failure,expected",
-    [
-        ("preflight", ["preflight"]),
-        ("smoke", ["preflight", "install", "prepare", "smoke"]),
-    ],
-)
-def test_preflight_or_smoke_failure_stops_before_benchmark(
-    instance, monkeypatch, failure, expected
-):
-    def prepare():
-        instance.revision = "a" * 40
-        instance.environment["TTLANG_EMULE_IMAGE"] = IMAGE
-
-    calls = []
-    monkeypatch.setattr(instance, "prepare", prepare)
-    monkeypatch.setattr(instance, "sizes", lambda _: None)
-    monkeypatch.setattr(
-        instance,
-        "stage",
-        lambda name, command: calls.append(name) or int(name == failure),
-    )
-    assert instance.execute() == 1
-    assert calls == expected
+@pytest.mark.parametrize("failure", [*STAGES[:-1], "smoke-without-evidence"])
+def test_failed_stage_stops_before_later_stages(instance, monkeypatch, failure):
+    last = failure
+    if failure == "smoke-without-evidence":
+        last = "smoke"
+        report = summary()
+        report["runtime_execution_observed"] = False
+        smoke = instance.private / "container/smoke/summary.json"
+        smoke.write_text(json.dumps(report))
+    code, calls = execute_stages(instance, monkeypatch, failure)
+    assert code == 1
+    assert [name for name, _ in calls] == STAGES[: STAGES.index(last) + 1]
 
 
 @pytest.mark.parametrize(
@@ -726,67 +698,15 @@ def test_preflight_summary_publishes_only_fixed_reason(
     assert calls == ["preflight"]
 
 
-def test_smoke_without_runtime_evidence_stops_before_collection(instance, monkeypatch):
-    def prepare():
-        instance.revision = "a" * 40
-        instance.environment["TTLANG_EMULE_IMAGE"] = IMAGE
-
-    report = summary()
-    report["runtime_execution_observed"] = False
-    (instance.private / "container/smoke/summary.json").write_text(json.dumps(report))
-    calls = []
-    monkeypatch.setattr(instance, "prepare", prepare)
-    monkeypatch.setattr(instance, "sizes", lambda _: None)
-    monkeypatch.setattr(
-        instance, "stage", lambda name, command: calls.append(name) or 0
-    )
-    assert instance.execute() == 1
-    assert calls == ["preflight", "install", "prepare", "smoke"]
-
-
 def test_test_tools_are_prepared_before_every_execution(instance, monkeypatch):
-    def prepare():
-        instance.revision = "a" * 40
-        instance.environment["TTLANG_EMULE_IMAGE"] = IMAGE
-
-    calls = []
-    monkeypatch.setattr(instance, "prepare", prepare)
-    monkeypatch.setattr(instance, "sizes", lambda _: None)
-    monkeypatch.setattr(
-        instance, "stage", lambda name, command: calls.append((name, command)) or 0
-    )
-    instance.execute()
-    assert [name for name, _ in calls] == [
-        "preflight",
-        "install",
-        "prepare",
-        "smoke",
-        "collect",
-        "test",
-    ]
+    _, calls = execute_stages(instance, monkeypatch)
+    assert [name for name, _ in calls] == STAGES
     assert calls[2][1][-2:] == ["scripts/emule-ci/worker.py", "--prepare-test-tools"]
     assert calls[4][1][-2:] == ["--output", "/emule-results/collection"]
     command = calls[5][1]
     assert command[command.index("--manifest") + 1] == (
         "/emule-results/collection/manifest.json"
     )
-
-
-def test_missing_test_tools_stop_before_collection(instance, monkeypatch):
-    def prepare():
-        instance.revision = "a" * 40
-        instance.environment["TTLANG_EMULE_IMAGE"] = IMAGE
-
-    calls = []
-    monkeypatch.setattr(instance, "prepare", prepare)
-    monkeypatch.setattr(instance, "sizes", lambda _: None)
-    monkeypatch.setattr(
-        instance,
-        "stage",
-        lambda name, command: calls.append(name) or int(name == "prepare"),
-    )
-    assert instance.execute() == 1
-    assert calls == ["preflight", "install", "prepare"]
 
 
 def test_prepare_uses_existing_cmake_test_tools_target():

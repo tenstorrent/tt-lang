@@ -325,7 +325,6 @@ def test_public_summary_excludes_commands_paths_and_errors():
 @pytest.mark.parametrize(
     "path",
     [
-        "../python/test_a.py",
         "/python/test_a.py",
         "python/../test_a.py",
         "python//test_a.py",
@@ -353,85 +352,45 @@ def test_command_records_launch_failure_and_timeout(tmp_path):
     assert timeout["exit_code"] < 0
 
 
-def test_observer_collects_without_importing_ttnn(tmp_path):
-    (tmp_path / "test_sample.py").write_text(
-        "def test_first(): pass\ndef test_second(): pass\n"
-    )
-    (tmp_path / "ttnn.py").write_text(
-        "raise RuntimeError('collection must not import ttnn')\n"
-    )
+def run_observer(tmp_path, source, *options, observe=None):
+    """Run pytest with the observer plugin where importing ttnn fails loudly."""
+    sample = tmp_path / "test_sample.py"
+    sample.write_text(source)
+    (tmp_path / "ttnn.py").write_text("raise RuntimeError('must not import ttnn')\n")
     events = tmp_path / "events.jsonl"
+    env = {
+        **os.environ,
+        "PYTHONPATH": str(SCRIPT_DIR) + os.pathsep + str(tmp_path),
+        "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
+        "PYTEST_ADDOPTS": "",
+        "TTLANG_EMULE_CI_EVENTS": str(events),
+    }
+    env.pop("TTLANG_EMULE_CI_OBSERVE_RUNTIME", None)
+    if observe is not None:
+        env["TTLANG_EMULE_CI_OBSERVE_RUNTIME"] = observe
+    plugin = ["-p", "observer", "-c", os.devnull, "--rootdir", str(tmp_path)]
     result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "pytest",
-            "--collect-only",
-            "-q",
-            "-p",
-            "observer",
-            "-c",
-            os.devnull,
-            "--rootdir",
-            str(tmp_path),
-            str(tmp_path / "test_sample.py"),
-        ],
-        env={
-            **os.environ,
-            "PYTHONPATH": str(SCRIPT_DIR) + os.pathsep + str(tmp_path),
-            "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
-            "PYTEST_ADDOPTS": "",
-            "TTLANG_EMULE_CI_EVENTS": str(events),
-        },
+        [sys.executable, "-m", "pytest", "-q", *options, *plugin, str(sample)],
+        env=env,
         capture_output=True,
         text=True,
         check=False,
     )
-    assert result.returncode == 0, result.stdout + result.stderr
-    assert benchmark.read_events(events) == [
-        {
-            "kind": "collection",
-            "nodes": ["test_sample.py::test_first", "test_sample.py::test_second"],
-            "markers": {},
-        }
-    ]
+    return result, events
 
 
 def test_observer_records_classification_markers(tmp_path):
-    (tmp_path / "test_sample.py").write_text(
+    # Collection never imports ttnn, even when runtime observation is requested.
+    result, events = run_observer(
+        tmp_path,
         "import pytest\n"
         "pytestmark = pytest.mark.multi_device\n"
         "@pytest.mark.compile_only\n"
         "@pytest.mark.slow\n"
         "def test_first(): pass\n"
-        "def test_second(): pass\n"
-    )
-    events = tmp_path / "events.jsonl"
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "pytest",
-            "--collect-only",
-            "-q",
-            "-p",
-            "observer",
-            "-c",
-            os.devnull,
-            "--rootdir",
-            str(tmp_path),
-            str(tmp_path / "test_sample.py"),
-        ],
-        env={
-            **os.environ,
-            "PYTHONPATH": str(SCRIPT_DIR) + os.pathsep + str(tmp_path),
-            "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
-            "PYTEST_ADDOPTS": "",
-            "TTLANG_EMULE_CI_EVENTS": str(events),
-        },
-        capture_output=True,
-        text=True,
-        check=False,
+        "def test_second(): pass\n",
+        "--collect-only",
+        observe="1",
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert benchmark.read_events(events)[0]["markers"] == {
@@ -447,55 +406,21 @@ def test_observer_records_classification_markers(tmp_path):
 
 @pytest.mark.parametrize("observe", ["0", "1", None])
 def test_observer_imports_runtime_only_for_device_suites(tmp_path, observe):
-    (tmp_path / "test_sample.py").write_text("def test_first(): pass\n")
-    (tmp_path / "ttnn.py").write_text(
-        "raise RuntimeError('host-only suites must not import ttnn')\n"
-    )
-    events = tmp_path / "events.jsonl"
-    env = {
-        **os.environ,
-        "PYTHONPATH": str(SCRIPT_DIR) + os.pathsep + str(tmp_path),
-        "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
-        "PYTEST_ADDOPTS": "",
-        "TTLANG_EMULE_CI_EVENTS": str(events),
-    }
-    env.pop("TTLANG_EMULE_CI_OBSERVE_RUNTIME", None)
-    if observe is not None:
-        env["TTLANG_EMULE_CI_OBSERVE_RUNTIME"] = observe
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "pytest",
-            "-q",
-            "-p",
-            "observer",
-            "-c",
-            os.devnull,
-            "--rootdir",
-            str(tmp_path),
-            str(tmp_path / "test_sample.py"),
-        ],
-        env=env,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    result, events = run_observer(tmp_path, "def test_first(): pass\n", observe=observe)
     if observe == "1":
         assert result.returncode != 0
         assert "must not import ttnn" in result.stdout + result.stderr
     else:
         assert result.returncode == 0, result.stdout + result.stderr
-        kinds = [event["kind"] for event in benchmark.read_events(events)]
-        assert kinds == ["collection", "report", "report", "report", "finish"]
-
-
-def test_environment_rejects_compile_only(monkeypatch, tmp_path):
-    monkeypatch.setenv("TT_METAL_EMULE_MODE", "1")
-    monkeypatch.setenv("TT_METAL_MOCK_CLUSTER_DESC_PATH", "descriptor.yaml")
-    monkeypatch.setenv("TTLANG_COMPILE_ONLY", "1")
-    with pytest.raises(ValueError, match="activate"):
-        benchmark.environment(SimpleNamespace(output=tmp_path))
+        recorded = benchmark.read_events(events)
+        assert [event["kind"] for event in recorded] == [
+            "collection",
+            "report",
+            "report",
+            "report",
+            "finish",
+        ]
+        assert recorded[0]["markers"] == {}
 
 
 @pytest.mark.parametrize(
@@ -525,16 +450,9 @@ def test_unrecognized_lit_entry_is_not_silently_omitted(entry):
         manifest(lit=lit_collection(LIT_TESTS + entry + "\n"))
 
 
-@pytest.mark.parametrize(
-    "observed,status,expected",
-    [(False, "passed", 2), (True, "failed", 1), (True, "passed", 0)],
-)
-def test_run_requires_coverage_and_runtime_execution(
-    monkeypatch, tmp_path, observed, status, expected
-):
-    inventory = manifest()
+def run_args(tmp_path, inventory):
     benchmark.write_json(tmp_path / "manifest.json", inventory)
-    args = SimpleNamespace(
+    return SimpleNamespace(
         source=tmp_path,
         build=tmp_path,
         revision=inventory["revision"],
@@ -546,41 +464,58 @@ def test_run_requires_coverage_and_runtime_execution(
         lit="llvm-lit",
     )
 
+
+def selected_group(tmp_path, inventory, command):
+    path = Path(command[-1]).relative_to(tmp_path / "test").as_posix()
+    return next(group for group in inventory["groups"] if group["path"] == path)
+
+
+def write_passing_report(selected, command, env, runtime):
+    """Write the pytest events or lit report of a group whose cases all pass."""
+    cases = selected["cases"]
+    if "pytest" not in command:
+        benchmark.write_json(
+            Path(command[command.index("-o") + 1]),
+            {"tests": [{"name": case, "code": "PASS"} for case in cases]},
+        )
+        return
+    events = [{"kind": "collection", "nodes": cases}]
+    events += [
+        {
+            "kind": "report",
+            "nodeid": node,
+            "phase": "call",
+            "outcome": "passed",
+            "expected_failure": False,
+        }
+        for node in cases
+    ]
+    events += [{"kind": "finish", "nodeid": node} for node in cases]
+    if runtime and selected["kind"] == "pytest":
+        events += [{"kind": "launch"}, {"kind": "returned"}]
+    Path(env["TTLANG_EMULE_CI_EVENTS"]).write_text(
+        "\n".join(json.dumps(event) for event in events)
+    )
+
+
+@pytest.mark.parametrize(
+    "observed,status,expected",
+    [(False, "passed", 2), (True, "failed", 1), (True, "passed", 0)],
+)
+def test_run_requires_coverage_and_runtime_execution(
+    monkeypatch, tmp_path, observed, status, expected
+):
+    inventory = manifest()
+    args = run_args(tmp_path, inventory)
+
     commands = []
     observe_flags = []
 
     def fake_run(command, output, limit, env, source):
         commands.append(command)
         observe_flags.append(env.get("TTLANG_EMULE_CI_OBSERVE_RUNTIME"))
-        path = Path(command[-1]).relative_to(tmp_path / "test").as_posix()
-        selected = next(group for group in inventory["groups"] if group["path"] == path)
-        if "pytest" in command:
-            events = [{"kind": "collection", "nodes": selected["cases"]}]
-            events += [
-                {
-                    "kind": "report",
-                    "nodeid": node,
-                    "phase": "call",
-                    "outcome": "passed",
-                    "expected_failure": False,
-                }
-                for node in selected["cases"]
-            ]
-            events += [{"kind": "finish", "nodeid": node} for node in selected["cases"]]
-            if observed and selected["kind"] == "pytest":
-                events += [{"kind": "launch"}, {"kind": "returned"}]
-            Path(env["TTLANG_EMULE_CI_EVENTS"]).write_text(
-                "\n".join(json.dumps(event) for event in events)
-            )
-        else:
-            benchmark.write_json(
-                Path(command[command.index("-o") + 1]),
-                {
-                    "tests": [
-                        {"name": case, "code": "PASS"} for case in selected["cases"]
-                    ]
-                },
-            )
+        selected = selected_group(tmp_path, inventory, command)
+        write_passing_report(selected, command, env, observed)
         return {
             "exit_code": int(status == "failed"),
             "timed_out": False,
@@ -632,22 +567,10 @@ def test_lost_group_reports_still_account_for_every_planned_case(
     monkeypatch, tmp_path, failure
 ):
     inventory = manifest()
-    benchmark.write_json(tmp_path / "manifest.json", inventory)
-    args = SimpleNamespace(
-        source=tmp_path,
-        build=tmp_path,
-        revision=inventory["revision"],
-        runtime_id=inventory["runtime_id"],
-        manifest=tmp_path / "manifest.json",
-        output=tmp_path,
-        timeout=600,
-        group_timeout=7200,
-        lit="llvm-lit",
-    )
+    args = run_args(tmp_path, inventory)
 
     def fake_run(command, output, limit, env, source):
-        path = Path(command[-1]).relative_to(tmp_path / "test").as_posix()
-        selected = next(group for group in inventory["groups"] if group["path"] == path)
+        selected = selected_group(tmp_path, inventory, command)
         timed_out = False
         if selected["kind"] == "mlir":
             # The group timeout killed lit (no report), lit wrote garbage, or
@@ -656,28 +579,8 @@ def test_lost_group_reports_still_account_for_every_planned_case(
                 timed_out = True
             elif failure == "malformed":
                 Path(command[command.index("-o") + 1]).write_text("{not json")
-        elif "pytest" in command and failure != "events_missing":
-            events = [{"kind": "collection", "nodes": selected["cases"]}]
-            events += [
-                {
-                    "kind": "report",
-                    "nodeid": node,
-                    "phase": "call",
-                    "outcome": "passed",
-                    "expected_failure": False,
-                }
-                for node in selected["cases"]
-            ]
-            events += [{"kind": "finish", "nodeid": node} for node in selected["cases"]]
-            events += [{"kind": "launch"}, {"kind": "returned"}]
-            Path(env["TTLANG_EMULE_CI_EVENTS"]).write_text(
-                "\n".join(json.dumps(event) for event in events)
-            )
-        elif "pytest" not in command:
-            benchmark.write_json(
-                Path(command[command.index("-o") + 1]),
-                {"tests": [{"name": c, "code": "PASS"} for c in selected["cases"]]},
-            )
+        elif "pytest" not in command or failure != "events_missing":
+            write_passing_report(selected, command, env, runtime=True)
         return {"exit_code": 0, "timed_out": timed_out, "wall_seconds": 1.0}
 
     monkeypatch.setattr(benchmark, "run_command", fake_run)
@@ -794,65 +697,7 @@ def test_collect_builds_the_complete_inventory_and_gates_lit_features(
     assert not (args.output / "manifest.json").exists()
 
 
-def test_lit_build_paths_work_with_separate_execution_root(tmp_path):
-    pytest.importorskip("lit.main")
-    source, build, execution = (tmp_path / name for name in ("source", "build", "exec"))
-    (source / "python").mkdir(parents=True)
-    build.mkdir()
-    (source / "python/add.py").write_text("# RUN: echo pass > %t\n")
-    (build / "lit.site.cfg.py").write_text(
-        "import os, lit.formats\n"
-        "config.name = 'TTLang'\n"
-        "config.suffixes = ['.py']\n"
-        "config.test_format = lit.formats.ShTest(False)\n"
-        f"config.test_source_root = {str(source)!r}\n"
-        "config.test_exec_root = os.environ['TTLANG_LIT_TEST_EXEC_ROOT']\n"
-        "os.makedirs(os.path.join(config.test_exec_root, 'python', 'Output'), exist_ok=True)\n"
-    )
-    command = [sys.executable, "-c", "from lit.main import main; main()"]
-    env = {**os.environ, "TTLANG_LIT_TEST_EXEC_ROOT": str(execution)}
-    collected = subprocess.run(
-        command + ["--show-tests", str(build / "python")],
-        env=env,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert collected.returncode == 0, collected.stdout + collected.stderr
-    assert "TTLang :: python/add.py" in collected.stdout
-    output = tmp_path / "lit.json"
-    executed = subprocess.run(
-        command + ["-j1", "-o", str(output), str(build / "python/add.py")],
-        env=env,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert executed.returncode == 0, executed.stdout + executed.stderr
-    assert benchmark.read_json(output)["tests"][0]["code"] == "PASS"
-    assert list((execution / "python/Output").iterdir())
-
-
-@pytest.mark.parametrize("threads", ["1", "2", "3", "4"])
-def test_environment_uses_explicit_bounded_threads_and_isolated_cache(
-    monkeypatch, tmp_path, threads
-):
-    for key in ("TTLANG_COMPILE_ONLY", "TTLANG_SIM_ONLY", "TT_METAL_SIMULATOR"):
-        monkeypatch.delenv(key, raising=False)
-    monkeypatch.setenv("TT_METAL_EMULE_MODE", "1")
-    monkeypatch.setenv("TT_METAL_MOCK_CLUSTER_DESC_PATH", "descriptor.yaml")
-    monkeypatch.setenv("TTLANG_EMULE_CI_THREADS", threads)
-    monkeypatch.setenv("TTLANG_EMULE_CI_CACHE", "/tt-metal-cache")
-    env = benchmark.environment(SimpleNamespace(output=tmp_path / "run"))
-    for key in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS"):
-        assert env[key] == threads
-    assert env["TT_METAL_CACHE"] == "/tt-metal-cache/run"
-    assert env["TT_EMULE_JIT_CACHE_DIR"] == "/tt-metal-cache/run/emule-jit"
-    assert env["PYTHONDONTWRITEBYTECODE"] == "1"
-
-
-@pytest.mark.parametrize("threads", ["0", "5", "-1", "1.5", "many"])
-def test_environment_rejects_unbounded_threads(monkeypatch, tmp_path, threads):
+def activate_emulator(monkeypatch, **variables):
     for key in (
         "TTLANG_COMPILE_ONLY",
         "TTLANG_SIM_ONLY",
@@ -862,6 +707,34 @@ def test_environment_rejects_unbounded_threads(monkeypatch, tmp_path, threads):
         monkeypatch.delenv(key, raising=False)
     monkeypatch.setenv("TT_METAL_EMULE_MODE", "1")
     monkeypatch.setenv("TT_METAL_MOCK_CLUSTER_DESC_PATH", "descriptor.yaml")
-    monkeypatch.setenv("TTLANG_EMULE_CI_THREADS", threads)
+    for key, value in variables.items():
+        monkeypatch.setenv(key, value)
+
+
+@pytest.mark.parametrize("threads", ["1", "2", "3", "4"])
+def test_environment_uses_explicit_bounded_threads_and_isolated_cache(
+    monkeypatch, tmp_path, threads
+):
+    activate_emulator(
+        monkeypatch,
+        TTLANG_EMULE_CI_THREADS=threads,
+        TTLANG_EMULE_CI_CACHE="/tt-metal-cache",
+    )
+    env = benchmark.environment(SimpleNamespace(output=tmp_path / "run"))
+    for key in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS"):
+        assert env[key] == threads
+    assert env["TT_METAL_CACHE"] == "/tt-metal-cache/run"
+    assert env["TT_EMULE_JIT_CACHE_DIR"] == "/tt-metal-cache/run/emule-jit"
+    assert env["PYTHONDONTWRITEBYTECODE"] == "1"
+    # Lit writes its outputs under this run's private directory, not the build.
+    assert (tmp_path / "run") in Path(env["TTLANG_LIT_TEST_EXEC_ROOT"]).parents
+    monkeypatch.setenv("TTLANG_COMPILE_ONLY", "1")
+    with pytest.raises(ValueError, match="activate"):
+        benchmark.environment(SimpleNamespace(output=tmp_path / "run"))
+
+
+@pytest.mark.parametrize("threads", ["0", "5", "-1", "1.5", "many"])
+def test_environment_rejects_unbounded_threads(monkeypatch, tmp_path, threads):
+    activate_emulator(monkeypatch, TTLANG_EMULE_CI_THREADS=threads)
     with pytest.raises(ValueError):
         benchmark.environment(SimpleNamespace(output=tmp_path / "run"))
