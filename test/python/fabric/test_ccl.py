@@ -1327,6 +1327,94 @@ def test_one_dimensional_route(
     assert_allclose(result.float(), expected.float(), rtol=rtol, atol=atol)
 
 
+# Verify that the 1D ring fabric routes between the ends of a device line over
+# the ring's closing link. Reshaping a 2x2 mesh to a line always places the
+# line ends on linked devices.
+@pytest.mark.parametrize("torch_dtype,ttnn_dtype,rtol,atol", FABRIC_DTYPES)
+def test_one_dimensional_ring_closing_link(torch_dtype, ttnn_dtype, rtol, atol):
+    fabric_config = ttnn.FabricConfig.FABRIC_1D_RING
+    route_mesh_shape = _get_route_mesh_shape(fabric_config)
+    if tuple(route_mesh_shape) != (2, 2):
+        pytest.skip("requires a 2x2 mesh whose line ends are physical neighbors")
+    line_shape = (4, 1)
+    source_device = (3, 0)
+    destination_device = (0, 0)
+    point_to_point = _make_point_to_point_operation(
+        line_shape, source_device, destination_device
+    )
+    logical_shape = (4 * TILE_SIZE, TILE_SIZE)
+    inp_torch = torch.randn(logical_shape, dtype=torch_dtype)
+    out_torch = torch.zeros(logical_shape, dtype=torch_dtype)
+
+    with _open_route_mesh(route_mesh_shape, fabric_config) as mesh:
+        mesh.reshape(ttnn.MeshShape(line_shape))
+        inp = _mesh_tensor(mesh, inp_torch, ttnn_dtype)
+        out = _mesh_tensor(mesh, out_torch, ttnn_dtype)
+
+        point_to_point(inp, out)
+
+        result = _compose(mesh, out)
+
+    expected = torch.zeros_like(inp_torch)
+    expected[:TILE_SIZE, :] = inp_torch[-TILE_SIZE:, :]
+    assert_allclose(result.float(), expected.float(), rtol=rtol, atol=atol)
+
+
+# Verify 1D ring routes that cross the closing link after and before another
+# hop. On a torus axis of at least five devices, the route between coordinates
+# 1 and extent - 1 passes through coordinate 0 and the closing link.
+@pytest.mark.parametrize("torch_dtype,ttnn_dtype,rtol,atol", FABRIC_DTYPES)
+@pytest.mark.parametrize("toward_axis_end", [True, False], ids=["to-end", "to-start"])
+def test_one_dimensional_ring_route_crosses_closing_link(
+    toward_axis_end, torch_dtype, ttnn_dtype, rtol, atol
+):
+    fabric_config = ttnn.FabricConfig.FABRIC_1D_RING
+    route_mesh_shape = _get_route_mesh_shape(fabric_config)
+    line_axis = max(
+        range(len(route_mesh_shape)), key=lambda axis: route_mesh_shape[axis]
+    )
+    line_extent = route_mesh_shape[line_axis]
+    if line_extent < 5:
+        pytest.skip("requires a device line of at least five devices")
+    line_shape = tuple(
+        line_extent if axis == line_axis else 1 for axis in range(len(route_mesh_shape))
+    )
+
+    def line_device(line_coordinate):
+        return tuple(
+            line_coordinate if axis == line_axis else 0
+            for axis in range(len(line_shape))
+        )
+
+    source_index, destination_index = 1, line_extent - 1
+    if not toward_axis_end:
+        source_index, destination_index = destination_index, source_index
+    point_to_point = _make_point_to_point_operation(
+        line_shape, line_device(source_index), line_device(destination_index)
+    )
+    logical_shape = (line_extent * TILE_SIZE, TILE_SIZE)
+    inp_torch = torch.randn(logical_shape, dtype=torch_dtype)
+    out_torch = torch.zeros(logical_shape, dtype=torch_dtype)
+
+    with _open_route_mesh(route_mesh_shape, fabric_config) as parent_mesh:
+        mesh = parent_mesh.create_submesh(ttnn.MeshShape(line_shape))
+        try:
+            inp = _mesh_tensor(mesh, inp_torch, ttnn_dtype)
+            out = _mesh_tensor(mesh, out_torch, ttnn_dtype)
+
+            point_to_point(inp, out)
+
+            result = _compose(mesh, out)
+        finally:
+            ttnn.close_mesh_device(mesh)
+
+    expected = torch.zeros_like(inp_torch)
+    expected[destination_index * TILE_SIZE : (destination_index + 1) * TILE_SIZE, :] = (
+        inp_torch[source_index * TILE_SIZE : (source_index + 1) * TILE_SIZE, :]
+    )
+    assert_allclose(result.float(), expected.float(), rtol=rtol, atol=atol)
+
+
 # Verify that neighbor-exchange mode accepts an adjacent transfer without
 # depending on fabric-router forwarding.
 @pytest.mark.parametrize("torch_dtype,ttnn_dtype,rtol,atol", FABRIC_DTYPES)
