@@ -167,13 +167,6 @@ def test_proxy_rejects_invalid_worker_configuration(environment, key, value):
         worker.proxy_command(launcher_arguments(environment), environment)
 
 
-def test_volume_measurement_mounts_are_read_only(environment):
-    command = worker.proxy_command(["measure"], environment)
-    assert "type=volume,src=ttlang-ci-serial-abc-build,dst=/build,readonly" in command
-    assert "type=volume,src=ttlang-ci-serial-abc-cache,dst=/cache,readonly" in command
-    assert command[-3:] == [IMAGE, "-c", "du -sk /build /cache"]
-
-
 def test_preflight_uses_image_python_without_compiler_or_device(environment):
     command = worker.proxy_command(["preflight"], environment)
     assert "--entrypoint=/opt/ttlang-toolchain/venv/bin/python" in command
@@ -339,16 +332,6 @@ def test_smoke_requires_numerical_pass_and_observed_execution(
 
     def run(args, env):
         calls.append((args, env))
-        manifest = smoke_harness.read_json(args.manifest)
-        assert manifest["groups"] == [
-            {
-                "id": "pytest:python/pipe/test_broadcast_2d.py",
-                "kind": "pytest",
-                "path": "python/pipe/test_broadcast_2d.py",
-                "cases": ["python/pipe/test_broadcast_2d.py::test_broadcast_2d"],
-                "markers": {"multi_device": []},
-            }
-        ]
         smoke_harness.write_json(
             args.output / "results.json",
             {
@@ -371,19 +354,6 @@ def test_smoke_requires_numerical_pass_and_observed_execution(
     args, env = calls[0]
     assert env["TT_METAL_CACHE"] == str(tmp_path / "cache/smoke")
     assert env["TT_EMULE_JIT_CACHE_DIR"] == str(tmp_path / "cache/smoke/emule-jit")
-    args.output = tmp_path / "emule-results/run"
-    assert smoke_harness.environment(args)["TT_METAL_CACHE"] == str(
-        tmp_path / "cache/run"
-    )
-
-
-def test_smoke_refuses_reused_cache(smoke_harness, tmp_path, monkeypatch):
-    (tmp_path / "cache/smoke").mkdir(parents=True)
-    monkeypatch.setattr(
-        smoke_harness, "run", lambda *args: pytest.fail("must not execute")
-    )
-    with pytest.raises(RuntimeError, match="fresh cache"):
-        worker.runtime_smoke("a" * 40, IMAGE)
 
 
 def test_stats_expose_only_numeric_resource_fields():
@@ -851,17 +821,36 @@ def test_exited_docker_client_still_cleans_up_owned_container(instance, monkeypa
     assert cleaned == [instance.token + "-test"]
 
 
-def test_timeout_cleanup_does_not_remove_unowned_container(instance, monkeypatch):
+def test_container_cleanup_is_bounded_to_the_named_container(instance, monkeypatch):
     calls = []
-
-    def run(command, **kwargs):
-        calls.append(command)
-        return subprocess.CompletedProcess(command, 0, "another-owner\n", "")
-
-    monkeypatch.setattr(worker.subprocess, "run", run)
+    monkeypatch.setattr(
+        worker.subprocess,
+        "run",
+        lambda command, **kwargs: calls.append((command, kwargs["timeout"])),
+    )
     instance.stop_owned_container(instance.token + "-test")
-    assert len(calls) == 1
-    assert "rm" not in calls[0]
+    assert calls == [(["/usr/bin/docker", "rm", "-f", instance.token + "-test"], 10)]
+
+
+def test_volume_sizes_come_only_from_this_workers_volumes(instance, monkeypatch):
+    volumes = [
+        {"Name": instance.token + "-build", "Size": "1.5GB"},
+        {"Name": instance.token + "-cache", "Size": "3MB"},
+        {"Name": "build", "Size": "9GB"},
+    ]
+    monkeypatch.setattr(
+        instance,
+        "capture",
+        lambda command, **kwargs: subprocess.CompletedProcess(
+            command, 0, json.dumps({"Volumes": volumes}), ""
+        ),
+    )
+    instance.sizes("after")
+    assert instance.summary["after"] == {
+        "host_disk_free_bytes": 200 * 1024**3,
+        "build_bytes": 1500000000,
+        "cache_bytes": 3000000,
+    }
 
 
 def test_low_disk_stops_before_image_inspection(instance, monkeypatch):

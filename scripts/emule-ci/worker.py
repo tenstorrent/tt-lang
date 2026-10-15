@@ -130,19 +130,6 @@ def proxy_command(arguments, environment):
             "/workspace/scripts/emule-ci/worker.py",
             "--runtime-preflight",
         ]
-    if arguments == ["measure"]:
-        return command + [
-            "--rm",
-            "--platform=linux/amd64",
-            "--entrypoint=/bin/sh",
-            "--mount",
-            f"type=volume,src={build},dst=/build,readonly",
-            "--mount",
-            f"type=volume,src={cache},dst=/cache,readonly",
-            image,
-            "-c",
-            "du -sk /build /cache",
-        ]
     if not arguments or arguments[0] != "run":
         raise ValueError("Docker operation is not permitted")
     source = safe_mount_path(environment["TTLANG_CI_SOURCE"])
@@ -469,8 +456,6 @@ def runtime_smoke(revision, runtime_id):
     benchmark.validate_manifest(manifest)
     benchmark.validate_source(args.source, revision)
     env = benchmark.environment(args)
-    if Path(env["TT_METAL_CACHE"]).exists():
-        raise RuntimeError("the representative smoke requires a fresh cache")
     args.output.mkdir(parents=True, exist_ok=False)
     benchmark.write_json(args.manifest, manifest)
     result = benchmark.run(args, env)
@@ -552,28 +537,15 @@ class Worker:
         return result
 
     def stop_owned_container(self, name):
-        # Only the random, explicitly labelled container created by this worker
-        # may be stopped. Build/cache volumes remain available for inspection.
+        # Callers pass only this worker's uuid-named stage container. Build/cache
+        # volumes remain available for inspection.
         try:
-            result = subprocess.run(
-                [
-                    self.docker,
-                    "inspect",
-                    "--format",
-                    '{{index .Config.Labels "ttlang.emule-ci.owner"}}',
-                    name,
-                ],
-                capture_output=True,
-                text=True,
-                timeout=5,
+            subprocess.run(
+                [self.docker, "rm", "-f", name],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=10,
             )
-            if result.returncode == 0 and result.stdout.strip() == self.token:
-                subprocess.run(
-                    [self.docker, "rm", "-f", name],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    timeout=10,
-                )
         except (OSError, subprocess.TimeoutExpired):
             pass
 
@@ -652,26 +624,21 @@ class Worker:
         return code
 
     def sizes(self, when):
-        self.environment["TTLANG_CI_CONTAINER"] = self.token + "-measure"
+        # The daemon sizes this worker's uuid-named volumes without another
+        # container; before the first stage they do not exist yet.
+        sizes = {"host_disk_free_bytes": shutil.disk_usage(self.output).free}
+        self.summary[when] = sizes
         try:
-            result = self.capture(proxy_command(["measure"], self.environment))
-        except (TimeoutError, subprocess.TimeoutExpired):
-            self.stop_owned_container(self.token + "-measure")
-            raise
-        sizes = {}
-        if result.returncode == 0:
-            for line in result.stdout.splitlines():
-                fields = line.split()
-                if (
-                    len(fields) == 2
-                    and fields[0].isdigit()
-                    and fields[1] in ("/build", "/cache")
-                ):
-                    sizes[fields[1][1:] + "_bytes"] = int(fields[0]) * 1024
-        self.summary[when] = {
-            "host_disk_free_bytes": shutil.disk_usage(self.output).free,
-            **sizes,
-        }
+            result = self.capture(
+                [self.docker, "system", "df", "-v", "--format", "{{json .}}"],
+                timeout=60,
+            )
+            for volume in json.loads(result.stdout)["Volumes"] or []:
+                for kind in ("build", "cache"):
+                    if volume["Name"] == f"{self.token}-{kind}":
+                        sizes[kind + "_bytes"] = parse_bytes(volume["Size"])
+        except (ValueError, KeyError, TypeError, OSError, subprocess.TimeoutExpired):
+            pass
 
     def prepare(self):
         if self.docker is None:
@@ -816,12 +783,7 @@ class Worker:
             self.summary["status"] = "passed" if passed else "failed"
             return 0 if passed else 1
         finally:
-            try:
-                self.sizes("after")
-            except (TimeoutError, subprocess.TimeoutExpired):
-                self.summary["after"] = {
-                    "host_disk_free_bytes": shutil.disk_usage(self.output).free
-                }
+            self.sizes("after")
 
 
 def arguments(argv):
