@@ -670,6 +670,10 @@ class Worker:
             raise RuntimeError("source identity unavailable")
         self.revision = revision.stdout.strip()
         self.environment["TTLANG_CI_GIT_COMMON"] = common.stdout.strip()
+        # Nothing unreviewed may be mounted into the preflight or install stage.
+        clean = self.capture(["git", "status", "--porcelain", "--untracked-files=all"])
+        if clean.returncode or clean.stdout.strip():
+            raise RuntimeError("commit the experiment locally before measuring it")
         # CMake/tests may generate temporary files under source/build. Only add
         # its empty mountpoint when Git explicitly ignores it; never replace an
         # existing symlink or expose existing build products to the container.

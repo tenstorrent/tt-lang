@@ -2,10 +2,12 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import importlib.util
 import json
 import os
 from pathlib import Path
 import re
+import shlex
 import subprocess
 
 import pytest
@@ -152,9 +154,17 @@ def test_workflow_is_one_manual_trusted_runner_local_job():
     assert int(build["timeout-minutes"]) <= 120
     assert "--kill-after=30s 6900" in build["run"]
     assert "scripts/tt-lang-emule-container.sh" in build["run"]
-    assert "--disk-floor-gib 2" in measure["run"]
-    assert "--manifest" not in measure["run"]
-    assert "--plan" not in measure["run"]
+    # The worker must accept the exact hosted options before anything is dispatched.
+    command = shlex.split(measure["run"].replace("\\\n", " "))
+    assert command[:2] == ["python3", "scripts/emule-ci/worker.py"]
+    spec = importlib.util.spec_from_file_location(
+        "emule_ci_worker", ROOT / "scripts/emule-ci/worker.py"
+    )
+    worker = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(worker)
+    options = worker.arguments(command[2:])
+    assert (options.cpus, options.memory_gib, options.disk_floor_gib) == (4, 12, 2)
+    assert options.timeout_seconds == 13200
     assert "continue-on-error" not in measure
     raw = (ROOT / ".github/workflows/tt-lang-emule-benchmark.yml").read_text()
     assert raw.count("secrets.") == 1

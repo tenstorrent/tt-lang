@@ -815,16 +815,26 @@ def test_private_parent_protects_container_writable_child(tmp_path, monkeypatch)
     assert (output / "private/container").stat().st_mode & 0o777 == 0o777
 
 
-def test_unignored_build_mountpoint_is_never_created(instance, monkeypatch, tmp_path):
+@pytest.mark.parametrize(
+    "status,match",
+    [
+        ([(0, " M changed.py\n")], "commit the experiment"),
+        ([(0, "?? untracked/file\n")], "commit the experiment"),
+        ([(0, ""), (1, "")], "ignored directory"),
+    ],
+)
+def test_dirty_source_or_unignored_build_mountpoint_stops_before_any_container(
+    instance, monkeypatch, tmp_path, status, match
+):
     instance.source = tmp_path / "source"
     instance.source.mkdir()
-    answers = iter([(0, IMAGE), (0, "a" * 40), (0, "/repo/.git"), (1, "")])
+    answers = iter([(0, IMAGE), (0, "a" * 40), (0, "/repo/.git"), *status])
 
     def capture(command, **kwargs):
         code, output = next(answers)
         return subprocess.CompletedProcess(command, code, output, "")
 
     monkeypatch.setattr(instance, "capture", capture)
-    with pytest.raises(RuntimeError, match="ignored directory"):
+    with pytest.raises(RuntimeError, match=match):
         instance.prepare()
     assert not (instance.source / "build").exists()

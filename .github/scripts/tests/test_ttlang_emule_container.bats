@@ -158,7 +158,7 @@ case "${1:-}" in
             [ ! -e "$context/third-party" ] || exit 93
             [ ! -e "$context/.git" ] || exit 92
         fi
-        exit 0
+        exit "${MOCK_DOCKER_BUILD_STATUS:-0}"
         ;;
     run)
         exit "${MOCK_DOCKER_RUN_STATUS:-0}"
@@ -762,21 +762,50 @@ PY
 
 @test "build-only mode builds the pinned source and never runs a container" {
     local emule_source="$BATS_TEST_TMPDIR/external-emule"
+    local runtime_tmp="$BATS_TEST_TMPDIR/runtime-tmp"
+    local rebuild build_status
     make_emulator_fixture "$emule_source"
-    MOCK_DOCKER_REQUIRE_SANITIZED_CONTEXT=1 \
-        TTLANG_EMULE_DOCKER="$MOCK_DOCKER" \
-        TTLANG_EMULE_BUILD_ONLY=1 \
-        TTLANG_EMULE_REBUILD=1 \
-        TTLANG_EMULE_RUNTIME_SOURCE_DIR="$emule_source" \
-        TTLANG_EMULE_IMAGE=local-runtime:pilot \
-        run -0 "$RUNNER"
-    assert_output --partial "Runtime image: local-runtime:pilot"
-    refute_output --partial "Compiler build volume:"
-    assert_log_line build
-    assert_log_line local-runtime:pilot
-    assert_log_line "TT_EMULE_COMMIT=$(git -C "$emule_source" rev-parse HEAD)"
-    refute_log_line image
-    refute_log_line run
+    mkdir -p "$runtime_tmp"
+    # The workflow rebuilds; rebuild=0 covers a missing image. A failed build
+    # must propagate, print no image, and still remove the exported sources.
+    for rebuild in 0 1; do
+        for build_status in 0 42; do
+            : > "$MOCK_DOCKER_LOG"
+            TMPDIR="$runtime_tmp" \
+                MOCK_DOCKER_IMAGE_STATUS=1 \
+                MOCK_DOCKER_BUILD_STATUS="$build_status" \
+                MOCK_DOCKER_REQUIRE_SANITIZED_CONTEXT=1 \
+                TTLANG_EMULE_DOCKER="$MOCK_DOCKER" \
+                TTLANG_EMULE_BUILD_ONLY=1 \
+                TTLANG_EMULE_REBUILD="$rebuild" \
+                TTLANG_EMULE_RUNTIME_SOURCE_DIR="$emule_source" \
+                TTLANG_EMULE_IMAGE=local-runtime:pilot \
+                run -"$build_status" "$RUNNER"
+            if [ "$build_status" -eq 0 ]; then
+                assert_output --partial "Runtime image: local-runtime:pilot"
+            else
+                refute_output --partial "Runtime image:"
+            fi
+            refute_output --partial "Compiler build volume:"
+            assert_log_line build
+            assert_log_line local-runtime:pilot
+            assert_log_line "TT_EMULE_COMMIT=$(git -C "$emule_source" rev-parse HEAD)"
+            refute_log_line run
+            if [ "$rebuild" -eq 1 ]; then
+                refute_log_line image
+            else
+                assert_log_line image
+            fi
+            shopt -s nullglob
+            local retained_runtime_dirs=(
+                "$runtime_tmp"/tt-lang-emule.*
+                "$runtime_tmp"/tt-lang-emule-context.*
+                "$runtime_tmp"/tt-lang-stack-context.*
+            )
+            shopt -u nullglob
+            [ "${#retained_runtime_dirs[@]}" -eq 0 ]
+        done
+    done
 }
 
 @test "P150 target rejects an incompatible pinned runtime before Docker build" {
