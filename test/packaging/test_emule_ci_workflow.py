@@ -289,7 +289,6 @@ def test_build_preserves_failures_and_checks_disk_before_launch(
 
 PREFLIGHT_FAILURE = {
     "schema_version": 1,
-    "publication_blocked": True,
     "status": "failed",
     "stages": {"preflight": {"exit_code": 22, "seconds": 3.5}},
     "failure_reason": "range_lockstep_api_missing",

@@ -16,10 +16,10 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT_DIR = REPO_ROOT / "scripts/emule-ci"
 SPEC = importlib.util.spec_from_file_location(
-    "emule_benchmark", SCRIPT_DIR / "benchmark.py"
+    "emule_inventory", SCRIPT_DIR / "inventory.py"
 )
-benchmark = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(benchmark)
+emule_inventory = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(emule_inventory)
 
 
 DEVICE_NODES = [
@@ -75,7 +75,7 @@ def collected(**overrides):
 
 
 def manifest(**overrides):
-    return benchmark.make_manifest(
+    return emule_inventory.make_manifest(
         collected(**overrides), "a" * 40, "sha256:" + "b" * 64
     )
 
@@ -85,9 +85,9 @@ def group(inventory, group_id):
 
 
 def write_xfail(source, tests):
-    path = source / benchmark.XFAIL_LIST
+    path = source / emule_inventory.XFAIL_LIST
     path.parent.mkdir(parents=True, exist_ok=True)
-    benchmark.write_json(path, {"schema_version": 1, "tests": tests})
+    emule_inventory.write_json(path, {"schema_version": 1, "tests": tests})
     return path
 
 
@@ -126,7 +126,7 @@ def test_collection_covers_every_suite_without_selection():
         "TTLang :: ttlang/Dialect/TTL/IR/ops_invalid.mlir",
     ]
     assert group(inventory, "packaging:packaging")["cases"] == PACKAGING_NODES
-    assert [benchmark.suite_of(group["id"]) for group in inventory["groups"]] == [
+    assert [emule_inventory.suite_of(group["id"]) for group in inventory["groups"]] == [
         "mlir",
         "bindings",
         "packaging",
@@ -233,7 +233,13 @@ def test_classified_cases_must_belong_to_their_group():
         "python/test_matmul.py::test_matmul"
     ]
     with pytest.raises(ValueError, match="classified cases"):
-        benchmark.validate_manifest(inventory)
+        emule_inventory.validate_manifest(inventory)
+
+
+@pytest.mark.parametrize("stale", [-1, "1", True, 1.0])
+def test_manifest_rejects_an_invalid_stale_xfail_count(stale):
+    with pytest.raises(ValueError, match="stale"):
+        emule_inventory.validate_manifest({**manifest(), "stale_xfail_count": stale})
 
 
 def test_outcomes_account_for_unsupported_and_never_run_cases():
@@ -250,10 +256,16 @@ def test_outcomes_account_for_unsupported_and_never_run_cases():
         }
         for case in mesh["cases"] + add["cases"][:1]
     ]
-    assert benchmark.pytest_outcomes(mesh, skipped) == {"unsupported": 1}
-    assert benchmark.pytest_outcomes(add, skipped) == {"skipped": 1, "not_run": 1}
+    assert emule_inventory.pytest_outcomes(mesh, skipped) == {"unsupported": 1}
+    assert emule_inventory.pytest_outcomes(add, skipped) == {"skipped": 1, "not_run": 1}
     xfail = [dict(skipped[0], expected_failure=True)]
-    assert benchmark.pytest_outcomes(mesh, xfail) == {"xfail": 1}
+    assert emule_inventory.pytest_outcomes(mesh, xfail) == {"xfail": 1}
+    # A case that began without any report aborted mid-test.
+    started = skipped + [{"kind": "start", "nodeid": add["cases"][1]}]
+    assert emule_inventory.pytest_outcomes(add, started) == {
+        "skipped": 1,
+        "incomplete": 1,
+    }
     mlir = group(inventory, "mlir:ttlang")
     supported, expected = mlir["cases"]
     assert mlir["markers"]["expected_unsupported"] == [expected]
@@ -263,31 +275,34 @@ def test_outcomes_account_for_unsupported_and_never_run_cases():
         {"name": expected, "code": "UNSUPPORTED"},
         {"name": supported, "code": "UNSUPPORTED"},
     ]
-    assert benchmark.lit_outcomes(mlir, tests, {}) == {
+    assert emule_inventory.lit_outcomes(mlir, tests, {}) == {
         "unsupported": 1,
         "incomplete": 1,
     }
-    assert not benchmark.lit_coverage(mlir, tests, {})
+    assert not emule_inventory.lit_coverage(mlir, tests, {})
     tests = [
         {"name": expected, "code": "UNSUPPORTED"},
         {"name": supported, "code": "UNRESOLVED"},
     ]
-    assert benchmark.lit_outcomes(mlir, tests, {}) == {
+    assert emule_inventory.lit_outcomes(mlir, tests, {}) == {
         "unsupported": 1,
         "incomplete": 1,
     }
-    assert not benchmark.lit_coverage(mlir, tests, {})
+    assert not emule_inventory.lit_coverage(mlir, tests, {})
     tests = [
         {"name": expected, "code": "UNSUPPORTED"},
         {"name": supported, "code": "FLAKYPASS"},
     ]
-    assert not benchmark.lit_coverage(mlir, tests, {})
+    assert not emule_inventory.lit_coverage(mlir, tests, {})
     tests = [{"name": name, "code": "PASS"} for name in reversed(mlir["cases"])]
-    assert benchmark.lit_coverage(mlir, tests, {})
-    assert benchmark.lit_outcomes(mlir, tests[:1], {}) == {"passed": 1, "not_run": 1}
+    assert emule_inventory.lit_coverage(mlir, tests, {})
+    assert emule_inventory.lit_outcomes(mlir, tests[:1], {}) == {
+        "passed": 1,
+        "not_run": 1,
+    }
     tests = [{"name": expected, "code": "XPASS"}, {"name": supported, "code": "XFAIL"}]
-    assert benchmark.lit_coverage(mlir, tests, {})
-    assert benchmark.lit_outcomes(mlir, tests, {}) == {"failed": 1, "xfail": 1}
+    assert emule_inventory.lit_coverage(mlir, tests, {})
+    assert emule_inventory.lit_outcomes(mlir, tests, {}) == {"failed": 1, "xfail": 1}
 
 
 def test_listed_lit_cases_are_non_strict_and_not_run_cases_are_xfail():
@@ -296,9 +311,12 @@ def test_listed_lit_cases_are_non_strict_and_not_run_cases_are_xfail():
     # A listed pass (XPASS) is a non-strict pass; an unlisted XPASS still fails.
     tests = [{"name": ops, "code": "XPASS"}, {"name": invalid, "code": "XFAIL"}]
     listed = {ops: True, invalid: True}
-    assert benchmark.lit_coverage(mlir, tests, listed)
-    assert benchmark.lit_outcomes(mlir, tests, listed) == {"passed": 1, "xfail": 1}
-    assert benchmark.lit_outcomes(mlir, tests, {invalid: True}) == {
+    assert emule_inventory.lit_coverage(mlir, tests, listed)
+    assert emule_inventory.lit_outcomes(mlir, tests, listed) == {
+        "passed": 1,
+        "xfail": 1,
+    }
+    assert emule_inventory.lit_outcomes(mlir, tests, {invalid: True}) == {
         "failed": 1,
         "xfail": 1,
     }
@@ -306,12 +324,15 @@ def test_listed_lit_cases_are_non_strict_and_not_run_cases_are_xfail():
     # if lit reported it anyway.
     listed = {invalid: False}
     tests = [{"name": ops, "code": "PASS"}]
-    assert benchmark.lit_coverage(mlir, tests, listed)
-    assert benchmark.lit_outcomes(mlir, tests, listed) == {"passed": 1, "xfail": 1}
+    assert emule_inventory.lit_coverage(mlir, tests, listed)
+    assert emule_inventory.lit_outcomes(mlir, tests, listed) == {
+        "passed": 1,
+        "xfail": 1,
+    }
     tests.append({"name": invalid, "code": "FAIL"})
-    assert not benchmark.lit_coverage(mlir, tests, listed)
+    assert not emule_inventory.lit_coverage(mlir, tests, listed)
     args = SimpleNamespace(lit="llvm-lit", timeout=300, build=Path("/build"))
-    command = benchmark.group_command(
+    command = emule_inventory.group_command(
         args, mlir, Path("/out/group"), {}, {ops: True, invalid: False}
     )
     assert "--xfail=" + ops in command and "--allow-empty-runs" in command
@@ -320,7 +341,7 @@ def test_listed_lit_cases_are_non_strict_and_not_run_cases_are_xfail():
     assert pattern.search(invalid) and not pattern.search(ops)
     assert not pattern.search(invalid + ".orig")
     assert command[-3:] == ["-o", "/out/group.lit.json", "/build/test/ttlang"]
-    command = benchmark.group_command(args, mlir, Path("/out/group"), {}, {})
+    command = emule_inventory.group_command(args, mlir, Path("/out/group"), {}, {})
     assert not any(arg.startswith(("--xfail", "--filter-out")) for arg in command)
 
 
@@ -343,30 +364,57 @@ def test_listed_lit_cases_are_non_strict_and_not_run_cases_are_xfail():
 def test_malformed_xfail_list_fails_closed(tmp_path, contents):
     (tmp_path / "xfail.json").write_text(contents)
     with pytest.raises(ValueError):
-        benchmark.xfail_list(tmp_path / "xfail.json")
+        emule_inventory.xfail_list(tmp_path / "xfail.json")
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [
+        "see /private/source/test.py",
+        "tracked in issue #12",
+        "ask @owner",
+        "https://example.com/issue",
+        "line\nbreak",
+        "x" * 161,
+    ],
+)
+def test_xfail_reasons_are_generic_text_only(tmp_path, reason):
+    """The public list must not carry paths, references, URLs or names."""
+    write_xfail(tmp_path, {"a::b": {"reason": reason, "run": True}})
+    with pytest.raises(ValueError, match="malformed"):
+        emule_inventory.xfail_list(tmp_path / emule_inventory.XFAIL_LIST)
+    generic = "Emulator gap: tile reuse (dst_reg), see note; it's slow - 2x."
+    write_xfail(tmp_path, {"a::b": {"reason": generic, "run": False}})
+    assert emule_inventory.xfail_list(tmp_path / emule_inventory.XFAIL_LIST) == {
+        "a::b": {"reason": generic, "run": False}
+    }
 
 
 def test_checked_in_xfail_list_is_valid():
-    assert isinstance(benchmark.xfail_list(REPO_ROOT / benchmark.XFAIL_LIST), dict)
+    assert isinstance(
+        emule_inventory.xfail_list(REPO_ROOT / emule_inventory.XFAIL_LIST), dict
+    )
 
 
 def test_lit_report_tolerates_absence_but_not_malformed_reports(tmp_path):
-    assert benchmark.lit_report(tmp_path / "missing.json") == []
-    benchmark.write_json(tmp_path / "report.json", {"tests": [{"name": "x"}]})
+    assert emule_inventory.lit_report(tmp_path / "missing.json") == []
+    emule_inventory.write_json(tmp_path / "report.json", {"tests": [{"name": "x"}]})
     with pytest.raises(ValueError, match="invalid lit report"):
-        benchmark.lit_report(tmp_path / "report.json")
+        emule_inventory.lit_report(tmp_path / "report.json")
     (tmp_path / "truncated.json").write_text('{"tests": [')
     with pytest.raises(ValueError):
-        benchmark.lit_report(tmp_path / "truncated.json")
+        emule_inventory.lit_report(tmp_path / "truncated.json")
 
 
 def test_truncated_final_event_line_does_not_discard_recorded_outcomes(tmp_path):
     events = tmp_path / "events.jsonl"
     events.write_text('{"kind": "collection", "nodes": ["a::b"]}\n{"kind": "fin')
-    assert benchmark.read_events(events) == [{"kind": "collection", "nodes": ["a::b"]}]
+    assert emule_inventory.read_events(events) == [
+        {"kind": "collection", "nodes": ["a::b"]}
+    ]
     events.write_text('{"kind": "col\n{"kind": "finish", "nodeid": "a::b"}\n')
     with pytest.raises(ValueError):
-        benchmark.read_events(events)
+        emule_inventory.read_events(events)
 
 
 def test_lit_features_require_the_feature_line():
@@ -375,9 +423,9 @@ def test_lit_features_require_the_feature_line():
         "    Available Features: optimized system-linux tt-device ttnn\n"
         "    Available Substitutions: %python => /private/python\n"
     )
-    assert benchmark.lit_features(listing) >= {"ttnn", "tt-device", "optimized"}
+    assert emule_inventory.lit_features(listing) >= {"ttnn", "tt-device", "optimized"}
     with pytest.raises(ValueError, match="available features"):
-        benchmark.lit_features("-- Test Suites --\n  TTLang - 155 tests\n")
+        emule_inventory.lit_features("-- Test Suites --\n  TTLang - 155 tests\n")
 
 
 def test_public_summary_reports_suites_outcomes_and_unsupported_cases():
@@ -390,11 +438,11 @@ def test_public_summary_reports_suites_outcomes_and_unsupported_cases():
     )
     timing["groups"][mesh]["outcomes"] = {"unsupported": 1}
     timing["planned_suite_counts"] = {
-        suite: {"groups": 1, "cases": 2} for suite in benchmark.SUITES
+        suite: {"groups": 1, "cases": 2} for suite in emule_inventory.SUITES
     }
-    summary = benchmark.public_summary(timing)
+    summary = emule_inventory.public_summary(timing)
     assert summary["case_outcome_counts"] == {"passed": 10, "unsupported": 1}
-    assert set(summary["suite_counts"]) == set(benchmark.SUITES)
+    assert set(summary["suite_counts"]) == set(emule_inventory.SUITES)
     assert summary["suite_counts"]["pytest"] == {
         "planned_groups": 1,
         "planned_cases": 2,
@@ -411,11 +459,11 @@ def test_native_abort_is_not_complete_coverage():
     stages = group(manifest(), "pytest:me2e/test_ops.py")
     events = [{"kind": "collection", "nodes": stages["cases"]}]
     events += [{"kind": "finish", "nodeid": node} for node in stages["cases"][:-1]]
-    assert not benchmark.pytest_coverage(stages, events)
+    assert not emule_inventory.pytest_coverage(stages, events)
     events.append({"kind": "finish", "nodeid": stages["cases"][-1]})
-    assert benchmark.pytest_coverage(stages, events)
+    assert emule_inventory.pytest_coverage(stages, events)
     events.append(events[-1])
-    assert not benchmark.pytest_coverage(stages, events)
+    assert not emule_inventory.pytest_coverage(stages, events)
 
 
 def test_public_summary_excludes_commands_paths_and_errors():
@@ -423,7 +471,7 @@ def test_public_summary_excludes_commands_paths_and_errors():
     timing["groups"][0].update(
         command=["secret"], report_error="private log", log="/private/path"
     )
-    summary = benchmark.public_summary(timing)
+    summary = emule_inventory.public_summary(timing)
     assert summary["runtime_execution_observed"]
     assert summary["wall_seconds"] == 66.0
     assert "private" not in json.dumps(summary)
@@ -446,12 +494,12 @@ def test_rejects_unsafe_test_paths(path):
 
 
 def test_command_records_launch_failure_and_timeout(tmp_path):
-    failure = benchmark.run_command(
+    failure = emule_inventory.run_command(
         [str(tmp_path / "missing")], tmp_path / "missing.log", 5, os.environ, tmp_path
     )
     assert failure["exit_code"] is None
     assert "error" in failure
-    timeout = benchmark.run_command(
+    timeout = emule_inventory.run_command(
         [sys.executable, "-c", "import time; time.sleep(10)"],
         tmp_path / "timeout.log",
         0.1,
@@ -506,11 +554,11 @@ def test_observer_records_classification_markers(tmp_path):
         observe="1",
     )
     assert result.returncode == 0, result.stdout + result.stderr
-    assert benchmark.read_events(events)[0]["markers"] == {
+    assert emule_inventory.read_events(events)[0]["markers"] == {
         "test_sample.py::test_first": ["multi_device"],
         "test_sample.py::test_second": ["multi_device"],
     }
-    inventory = benchmark.collection_inventory(events)
+    inventory = emule_inventory.collection_inventory(events)
     assert inventory["nodes"] == [
         "test_sample.py::test_first",
         "test_sample.py::test_second",
@@ -525,15 +573,48 @@ def test_observer_imports_runtime_only_for_device_suites(tmp_path, observe):
         assert "must not import ttnn" in result.stdout + result.stderr
     else:
         assert result.returncode == 0, result.stdout + result.stderr
-        recorded = benchmark.read_events(events)
+        recorded = emule_inventory.read_events(events)
         assert [event["kind"] for event in recorded] == [
             "collection",
+            "start",
             "report",
             "report",
             "report",
             "finish",
         ]
         assert recorded[0]["markers"] == {}
+
+
+@pytest.mark.parametrize("reruns", [False, True])
+def test_case_that_aborts_the_process_is_attributed_as_incomplete(tmp_path, reruns):
+    options = ()
+    if reruns:
+        pytest.importorskip("pytest_rerunfailures")
+        options = ("-p", "pytest_rerunfailures", "--reruns=0")
+    result, events = run_observer(
+        tmp_path,
+        "import os\n"
+        "def test_first(): pass\n"
+        "def test_aborts(): os._exit(134)\n"
+        "def test_never(): pass\n",
+        *options,
+    )
+    assert result.returncode == 134, result.stdout + result.stderr
+    recorded = emule_inventory.read_events(events)
+    aborted = "test_sample.py::test_aborts"
+    # pytest-rerunfailures holds back a case's reports until it finishes; drop
+    # them as it would, so only the start event names the aborted case.
+    held = [event for event in recorded if event.get("nodeid") != aborted]
+    held.append({"kind": "start", "nodeid": aborted})
+    sample = {"cases": recorded[0]["nodes"]}
+    for observed in (recorded, held):
+        outcomes = emule_inventory.pytest_case_outcomes(sample, observed)
+        assert outcomes == {
+            "test_sample.py::test_first": "passed",
+            aborted: "incomplete",
+            "test_sample.py::test_never": "not_run",
+        }
+        assert not emule_inventory.pytest_coverage(sample, observed)
 
 
 def test_observer_marks_listed_cases_non_strict_and_skips_cases_not_run(tmp_path):
@@ -561,9 +642,11 @@ def test_observer_marks_listed_cases_non_strict_and_skips_cases_not_run(tmp_path
     )
     assert result.returncode == 1, result.stdout + result.stderr
     assert not ran.exists()
-    recorded = benchmark.read_events(events)
+    recorded = emule_inventory.read_events(events)
     outcomes = {
-        case.partition("::")[2]: benchmark.pytest_outcomes({"cases": [case]}, recorded)
+        case.partition("::")[2]: emule_inventory.pytest_outcomes(
+            {"cases": [case]}, recorded
+        )
         for case in recorded[0]["nodes"]
     }
     assert outcomes == {
@@ -583,10 +666,10 @@ def test_source_revision_and_cleanliness_are_verified(
 ):
     responses = iter([SimpleNamespace(stdout=head), SimpleNamespace(stdout=dirty)])
     monkeypatch.setattr(
-        benchmark.subprocess, "run", lambda *args, **kwargs: next(responses)
+        emule_inventory.subprocess, "run", lambda *args, **kwargs: next(responses)
     )
     with pytest.raises(ValueError):
-        benchmark.validate_source(tmp_path, "a" * 40)
+        emule_inventory.validate_source(tmp_path, "a" * 40)
 
 
 @pytest.mark.parametrize(
@@ -603,7 +686,7 @@ def test_unrecognized_lit_entry_is_not_silently_omitted(entry):
 
 
 def run_args(tmp_path, inventory):
-    benchmark.write_json(tmp_path / "manifest.json", inventory)
+    emule_inventory.write_json(tmp_path / "manifest.json", inventory)
     write_xfail(tmp_path, {})
     return SimpleNamespace(
         source=tmp_path,
@@ -627,7 +710,7 @@ def write_passing_report(selected, command, env, runtime):
     """Write the pytest events or lit report of a group whose cases all pass."""
     cases = selected["cases"]
     if "pytest" not in command:
-        benchmark.write_json(
+        emule_inventory.write_json(
             Path(command[command.index("-o") + 1]),
             {"tests": [{"name": case, "code": "PASS"} for case in cases]},
         )
@@ -678,16 +761,16 @@ def test_run_requires_coverage_and_runtime_execution(
             "wall_seconds": 1.0,
         }
 
-    monkeypatch.setattr(benchmark, "run_command", fake_run)
-    assert benchmark.run(args, {"TTLANG_EMULE_CI_THREADS": "3"}) == expected
-    summary = benchmark.read_json(tmp_path / "summary.json")
+    monkeypatch.setattr(emule_inventory, "run_command", fake_run)
+    assert emule_inventory.run(args, {"TTLANG_EMULE_CI_THREADS": "3"}) == expected
+    summary = emule_inventory.read_json(tmp_path / "summary.json")
     assert summary["runtime_execution_observed"] is observed
     assert summary["planned_group_count"] == summary["complete_group_count"] == 11
     assert summary["planned_case_count"] == 17
     assert summary["case_outcome_counts"] == {"passed": 17}
     assert summary["suite_counts"]["mlir"]["planned_cases"] == 2
     assert summary["suite_counts"]["me2e"]["outcome_counts"] == {"passed": 3}
-    results = benchmark.read_json(tmp_path / "results.json")
+    results = emule_inventory.read_json(tmp_path / "results.json")
     assert [entry["suite"] for entry in results["groups"]] == [
         "mlir",
         "bindings",
@@ -744,15 +827,15 @@ def test_lost_group_reports_still_account_for_every_planned_case(
             write_passing_report(selected, command, env, runtime=True)
         return {"exit_code": 0, "timed_out": timed_out, "wall_seconds": 1.0}
 
-    monkeypatch.setattr(benchmark, "run_command", fake_run)
-    assert benchmark.run(args, {}) == (2 if failure == "events_missing" else 1)
-    summary = benchmark.read_json(tmp_path / "summary.json")
-    results = benchmark.read_json(tmp_path / "results.json")
+    monkeypatch.setattr(emule_inventory, "run_command", fake_run)
+    assert emule_inventory.run(args, {}) == (2 if failure == "events_missing" else 1)
+    summary = emule_inventory.read_json(tmp_path / "summary.json")
+    results = emule_inventory.read_json(tmp_path / "results.json")
     mlir = results["groups"][0]
     assert summary["planned_case_count"] == sum(summary["case_outcome_counts"].values())
     if failure == "events_missing":
         for entry in results["groups"]:
-            if group(inventory, entry["id"])["kind"] in benchmark.PYTEST_KINDS:
+            if group(inventory, entry["id"])["kind"] in emule_inventory.PYTEST_KINDS:
                 assert entry["status"] == "infrastructure_error"
                 planned = len(group(inventory, entry["id"])["cases"])
                 assert entry["outcomes"] == {"not_run": planned}
@@ -770,7 +853,7 @@ def test_lost_group_reports_still_account_for_every_planned_case(
 
 @pytest.mark.parametrize("listed", [True, False, None])
 def test_run_applies_the_xfail_list_to_lit_groups(monkeypatch, tmp_path, listed):
-    inventory = manifest()
+    inventory = {**manifest(), "stale_xfail_count": 2}
     args = run_args(tmp_path, inventory)
     case = "TTLang :: python/add.py"
     if listed is not None:
@@ -788,12 +871,15 @@ def test_run_applies_the_xfail_list_to_lit_groups(monkeypatch, tmp_path, listed)
             return {"exit_code": 0, "timed_out": False, "wall_seconds": 1.0}
         # The case passes, so lit reports XPASS for a listed (or XFAIL) test.
         report = Path(command[command.index("-o") + 1])
-        benchmark.write_json(report, {"tests": [{"name": case, "code": "XPASS"}]})
+        emule_inventory.write_json(report, {"tests": [{"name": case, "code": "XPASS"}]})
         return {"exit_code": 1, "timed_out": False, "wall_seconds": 1.0}
 
-    monkeypatch.setattr(benchmark, "run_command", fake_run)
-    assert benchmark.run(args, {}) == (1 if listed is None else 0)
-    results = benchmark.read_json(tmp_path / "results.json")
+    monkeypatch.setattr(emule_inventory, "run_command", fake_run)
+    assert emule_inventory.run(args, {}) == (1 if listed is None else 0)
+    summary = emule_inventory.read_json(tmp_path / "summary.json")
+    assert summary["xpass_count"] == int(listed is True)
+    assert summary["stale_xfail_count"] == 2
+    results = emule_inventory.read_json(tmp_path / "results.json")
     lit = next(entry for entry in results["groups"] if entry["suite"] == "lit")
     assert lit["complete"]
     assert (lit["status"], lit["outcomes"]) == {
@@ -842,8 +928,8 @@ def test_collect_builds_the_complete_inventory_and_gates_lit_features(
                 )
             else:
                 assert "--no-execute" in command and "-j1" in command
-                names = benchmark.lit_names(tests, suite.rstrip("/") + "/")
-                benchmark.write_json(
+                names = emule_inventory.lit_names(tests, suite.rstrip("/") + "/")
+                emule_inventory.write_json(
                     Path(command[command.index("-o") + 1]),
                     {
                         "tests": [
@@ -872,9 +958,9 @@ def test_collect_builds_the_complete_inventory_and_gates_lit_features(
             )
         return {"exit_code": 0, "timed_out": False, "wall_seconds": 1.0}
 
-    monkeypatch.setattr(benchmark, "run_command", fake_run)
-    benchmark.collect(args, {"TTLANG_EMULE_CI_THREADS": "1"})
-    produced = benchmark.read_json(args.output / "manifest.json")
+    monkeypatch.setattr(emule_inventory, "run_command", fake_run)
+    emule_inventory.collect(args, {"TTLANG_EMULE_CI_THREADS": "1"})
+    produced = emule_inventory.read_json(args.output / "manifest.json")
     expected = manifest(lit=lit_collection(LIT_TESTS, ["TTLang :: python/add.py"]))
     expected["groups"] = [
         (
@@ -884,27 +970,30 @@ def test_collect_builds_the_complete_inventory_and_gates_lit_features(
         )
         for entry in expected["groups"]
     ]
-    assert produced == expected
+    assert produced == {**expected, "stale_xfail_count": 0}
     assert group(produced, "lit:python/add.py")["markers"] == {
         "expected_unsupported": ["TTLang :: python/add.py"]
     }
     assert sum(command[0] == "llvm-lit" for command in commands) == 7
-    # Every listed case must be collected; the error names only the count.
+    # A listed case that was not collected (renamed or removed on main) does
+    # not fail the run; it is counted as stale.
     entry = {"reason": "emulator gap", "run": True}
-    write_xfail(args.source, {"python/test_gone.py::test_gone": entry})
+    write_xfail(
+        args.source,
+        {"python/test_gone.py::test_gone": entry, "TTLang :: python/add.py": entry},
+    )
     args.output = tmp_path / "out-xfail"
     args.output.mkdir()
-    with pytest.raises(ValueError, match="names 1 uncollected") as error:
-        benchmark.collect(args, {})
-    assert "test_gone" not in str(error.value)
-    assert not (args.output / "manifest.json").exists()
+    emule_inventory.collect(args, {})
+    produced = emule_inventory.read_json(args.output / "manifest.json")
+    assert produced == {**expected, "stale_xfail_count": 1}
     # Without the runtime features every Python lit test would silently become
     # UNSUPPORTED, so collection refuses to produce an inventory at all.
     features["value"] = "optimized system-linux"
     args.output = tmp_path / "out2"
     args.output.mkdir()
     with pytest.raises(ValueError, match="emulator runtime features"):
-        benchmark.collect(args, {})
+        emule_inventory.collect(args, {})
     assert not (args.output / "manifest.json").exists()
 
 
@@ -931,7 +1020,7 @@ def test_environment_uses_explicit_bounded_threads_and_isolated_cache(
         TTLANG_EMULE_CI_THREADS=threads,
         TTLANG_EMULE_CI_CACHE="/tt-metal-cache",
     )
-    env = benchmark.environment(
+    env = emule_inventory.environment(
         SimpleNamespace(source=tmp_path, output=tmp_path / "run")
     )
     for key in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS"):
@@ -939,19 +1028,23 @@ def test_environment_uses_explicit_bounded_threads_and_isolated_cache(
     assert env["TT_METAL_CACHE"] == "/tt-metal-cache/run"
     assert env["TT_EMULE_JIT_CACHE_DIR"] == "/tt-metal-cache/run/emule-jit"
     assert env["PYTHONDONTWRITEBYTECODE"] == "1"
-    assert env["TTLANG_EMULE_CI_XFAIL"] == str(tmp_path / benchmark.XFAIL_LIST)
+    assert env["TTLANG_EMULE_CI_XFAIL"] == str(tmp_path / emule_inventory.XFAIL_LIST)
     # Lit writes its outputs under this run's private directory, not the build.
     assert (tmp_path / "run") in Path(env["TTLANG_LIT_TEST_EXEC_ROOT"]).parents
     monkeypatch.setenv("TTLANG_COMPILE_ONLY", "1")
     with pytest.raises(ValueError, match="activate"):
-        benchmark.environment(SimpleNamespace(source=tmp_path, output=tmp_path / "run"))
+        emule_inventory.environment(
+            SimpleNamespace(source=tmp_path, output=tmp_path / "run")
+        )
 
 
 @pytest.mark.parametrize("threads", ["0", "5", "-1", "1.5", "many"])
 def test_environment_rejects_unbounded_threads(monkeypatch, tmp_path, threads):
     activate_emulator(monkeypatch, TTLANG_EMULE_CI_THREADS=threads)
     with pytest.raises(ValueError):
-        benchmark.environment(SimpleNamespace(source=tmp_path, output=tmp_path / "run"))
+        emule_inventory.environment(
+            SimpleNamespace(source=tmp_path, output=tmp_path / "run")
+        )
 
 
 # The wrapper registers multi_device in its own conftest, absent here.

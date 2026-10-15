@@ -17,7 +17,7 @@ def emit(kind, **fields):
 
 
 def pytest_collection_modifyitems(items):
-    # The benchmark validates the emulator-only xfail list. Its marks come
+    # inventory.py validates the emulator-only xfail list. Its marks come
     # first so they override a test's own xfail marks; non-strict, a listed
     # case that passes is reported passed.
     path = os.environ.get("TTLANG_EMULE_CI_XFAIL")
@@ -35,7 +35,7 @@ def pytest_collection_modifyitems(items):
 
 
 def pytest_collection_finish(session):
-    # Record which cases declare themselves multi-device so the benchmark can
+    # Record which cases declare themselves multi-device so the inventory can
     # report single-device-profile skips as unsupported rather than silently
     # excluding or miscounting them.
     markers = {
@@ -66,6 +66,15 @@ def pytest_sessionstart(session):
         return result
 
     ttnn.generic_op = observe
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_protocol(item, nextitem):
+    # pytest-rerunfailures logs a case's reports only after it finishes, so a
+    # native abort mid-test leaves no report. This wrapper runs before any
+    # protocol implementation, so the events still name the case that began.
+    emit("start", nodeid=item.nodeid)
+    yield
 
 
 def pytest_runtest_logreport(report):

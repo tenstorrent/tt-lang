@@ -11,8 +11,9 @@ selection, and every Python lit test runs as its own group. The hardware
 example and tutorial scripts and the binding pytest file run last. Cases a test
 declares unsupported on the single-device emulator profile (``multi_device``
 pytest skips, lit ``UNSUPPORTED``) are reported explicitly instead of being
-excluded, and cases that never ran are counted as ``not_run``. Cases the
-checked-in emulator xfail list names are non-strict expected failures here only.
+excluded; a case that started without a verdict is ``incomplete`` and one that
+never started is ``not_run``. Cases the checked-in emulator xfail list names are
+non-strict expected failures here only.
 """
 
 import argparse
@@ -73,6 +74,9 @@ LIT_OUTCOMES = {
 }
 MAX_THREADS = 4
 XFAIL_LIST = "config/tt-lang-emule-xfail.json"
+# The public list may explain a failure only in generic words: no paths, issue
+# references, URLs or repository names.
+XFAIL_REASON = re.compile(r"[A-Za-z0-9 ,.;:()'_-]{1,160}")
 
 
 def read_json(path):
@@ -112,6 +116,7 @@ def xfail_list(path):
             or set(entry) != {"reason", "run"}
             or not isinstance(entry["reason"], str)
             or not entry["reason"].strip()
+            or not XFAIL_REASON.fullmatch(entry["reason"])
             or not isinstance(entry["run"], bool)
             for entry in listing["tests"].values()
         )
@@ -150,6 +155,9 @@ def validate_group(group):
 def validate_manifest(manifest):
     if not manifest["groups"]:
         raise ValueError("manifest requires nonempty groups")
+    stale = manifest.get("stale_xfail_count", 0)
+    if type(stale) is not int or stale < 0:
+        raise ValueError("invalid stale xfail count")
     for group in manifest["groups"]:
         validate_group(group)
     unique([group["id"] for group in manifest["groups"]])
@@ -327,18 +335,23 @@ def pytest_coverage(group, events):
     )
 
 
-def pytest_outcomes(group, events):
-    """Account for every planned case, including cases that never ran."""
+def pytest_case_outcomes(group, events):
+    """Account for every planned case, including cases that never ran.
+
+    pytest-rerunfailures holds back a case's reports until it finishes, so a
+    case that started but aborted the process leaves only its start event.
+    """
     reports = {}
     for event in events:
         if event["kind"] == "report":
             reports.setdefault(event["nodeid"], []).append(event)
+    started = {event["nodeid"] for event in events if event["kind"] == "start"}
     unsupported = set(group.get("markers", {}).get("multi_device", []))
-    counts = Counter()
+    outcomes = {}
     for case in group["cases"]:
         node_reports = reports.get(case, [])
         if not node_reports:
-            outcome = "not_run"
+            outcome = "incomplete" if case in started else "not_run"
         elif any(report["outcome"] == "failed" for report in node_reports):
             outcome = "failed"
         elif any(report["outcome"] == "skipped" for report in node_reports):
@@ -352,8 +365,12 @@ def pytest_outcomes(group, events):
             outcome = "passed"
         else:
             outcome = "incomplete"
-        counts[outcome] += 1
-    return dict(counts)
+        outcomes[case] = outcome
+    return outcomes
+
+
+def pytest_outcomes(group, events):
+    return dict(Counter(pytest_case_outcomes(group, events).values()))
 
 
 def lit_outcome(group, case, code, listed):
@@ -382,12 +399,16 @@ def lit_coverage(group, tests, listed):
     )
 
 
-def lit_outcomes(group, tests, listed):
+def lit_case_outcomes(group, tests, listed):
     codes = {test["name"]: test["code"] for test in tests}
-    counts = Counter()
-    for case in group["cases"]:
-        counts[lit_outcome(group, case, codes.get(case), listed)] += 1
-    return dict(counts)
+    return {
+        case: lit_outcome(group, case, codes.get(case), listed)
+        for case in group["cases"]
+    }
+
+
+def lit_outcomes(group, tests, listed):
+    return dict(Counter(lit_case_outcomes(group, tests, listed).values()))
 
 
 def lit_report(path):
@@ -451,6 +472,8 @@ def public_summary(results):
         "generic_op_launches": launches,
         "generic_op_returns": returned,
         "runtime_execution_observed": returned > 0,
+        "stale_xfail_count": results.get("stale_xfail_count", 0),
+        "xpass_count": sum(group.get("xpass_count", 0) for group in groups),
     }
 
 
@@ -581,7 +604,7 @@ def validate_source(source, revision):
         check=True,
     )
     if clean.stdout.strip():
-        raise ValueError("benchmark source must be a clean committed checkout")
+        raise ValueError("inventory source must be a clean committed checkout")
 
 
 def collect(args, env):
@@ -680,11 +703,10 @@ def collect(args, env):
         }
     manifest = make_manifest(collected, args.revision, args.runtime_id)
     planned = {case for group in manifest["groups"] for case in group["cases"]}
-    unknown = set(xfail_list(args.source / XFAIL_LIST)) - planned
-    if unknown:
-        raise ValueError(
-            f"the emulator xfail list names {len(unknown)} uncollected cases"
-        )
+    # A renamed or removed test must not fail every run; the stale entries are
+    # counted instead.
+    stale = set(xfail_list(args.source / XFAIL_LIST)) - planned
+    manifest["stale_xfail_count"] = len(stale)
     write_json(args.output / "manifest.json", manifest)
 
 
@@ -742,6 +764,7 @@ def run(args, env):
         "planned_group_count": len(groups),
         "planned_case_count": sum(len(group["cases"]) for group in groups),
         "planned_suite_counts": planned,
+        "stale_xfail_count": manifest.get("stale_xfail_count", 0),
         "groups": [],
     }
     write_json(args.output / "results.json", summary)
@@ -771,14 +794,19 @@ def run(args, env):
                         if event["kind"] in ("launch", "returned")
                     )
                 )
-                result["outcomes"] = pytest_outcomes(group, events)
+                cases = pytest_case_outcomes(group, events)
             else:
                 tests = lit_report(prefix.with_suffix(".lit.json"))
                 result["complete"] = lit_coverage(group, tests, listed)
                 result["lit_codes"] = dict(Counter(test["code"] for test in tests))
-                result["outcomes"] = lit_outcomes(group, tests, listed)
+                cases = lit_case_outcomes(group, tests, listed)
                 # lit exits 1 for the XPASS of a listed case, a non-strict pass.
-                failed = failed and "failed" in result["outcomes"]
+                failed = failed and "failed" in cases.values()
+            result["outcomes"] = dict(Counter(cases.values()))
+            result["xpass_count"] = sum(
+                listed.get(case) is True and outcome == "passed"
+                for case, outcome in cases.items()
+            )
         except (OSError, ValueError, KeyError, TypeError) as error:
             result["report_error"] = str(error)
             # An unreadable report must still account for every planned case.

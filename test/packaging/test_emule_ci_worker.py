@@ -60,7 +60,7 @@ def launcher_arguments(environment):
         "--workdir",
         "/workspace",
         IMAGE,
-        "scripts/emule-ci/benchmark.py",
+        "scripts/emule-ci/inventory.py",
         "run",
     ]
 
@@ -97,6 +97,8 @@ def summary():
         "generic_op_launches": 3,
         "generic_op_returns": 3,
         "runtime_execution_observed": True,
+        "stale_xfail_count": 1,
+        "xpass_count": 2,
     }
 
 
@@ -122,7 +124,7 @@ def test_proxy_hardens_existing_launcher_without_replacing_it(environment):
         "type=bind,src=/results/private/container,dst=/emule-results",
     ):
         assert option in command
-    assert command[-3:] == [IMAGE, "scripts/emule-ci/benchmark.py", "run"]
+    assert command[-3:] == [IMAGE, "scripts/emule-ci/inventory.py", "run"]
 
 
 @pytest.mark.parametrize(
@@ -293,11 +295,11 @@ def test_runtime_preflight_pip_errors_have_fixed_cli_exit(
 @pytest.fixture
 def smoke_harness(tmp_path, monkeypatch):
     spec = importlib.util.spec_from_file_location(
-        "benchmark", Path(worker.__file__).with_name("benchmark.py")
+        "inventory", Path(worker.__file__).with_name("inventory.py")
     )
-    benchmark = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(benchmark)
-    monkeypatch.setitem(sys.modules, "benchmark", benchmark)
+    inventory = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(inventory)
+    monkeypatch.setitem(sys.modules, "inventory", inventory)
     monkeypatch.setattr(
         worker,
         "Path",
@@ -307,13 +309,13 @@ def smoke_harness(tmp_path, monkeypatch):
             else Path(value)
         ),
     )
-    monkeypatch.setattr(benchmark, "validate_source", lambda *args: None)
+    monkeypatch.setattr(inventory, "validate_source", lambda *args: None)
     monkeypatch.setenv("TT_METAL_EMULE_MODE", "1")
     monkeypatch.setenv("TT_METAL_MOCK_CLUSTER_DESC_PATH", "/mock-descriptor.yaml")
     monkeypatch.setenv("TTLANG_EMULE_CI_CACHE", str(tmp_path / "cache"))
     for key in ("TTLANG_COMPILE_ONLY", "TTLANG_SIM_ONLY", "TT_METAL_SIMULATOR"):
         monkeypatch.delenv(key, raising=False)
-    return benchmark
+    return inventory
 
 
 @pytest.mark.parametrize(
@@ -398,6 +400,8 @@ def test_public_summary_accepts_only_documented_sanitized_contract():
         ("case_outcome_counts", {"private_reason": 1}),
         ("suite_counts", {}),
         ("suite_counts", {"python/private_test.py": {}}),
+        ("stale_xfail_count", -1),
+        ("xpass_count", "python/private_test.py"),
     ],
 )
 def test_public_summary_rejects_untrusted_values(key, value):
@@ -427,7 +431,6 @@ def test_public_summary_rejects_untrusted_suite_counts(key, value):
 def worker_summary(**overrides):
     value = {
         "schema_version": 1,
-        "publication_blocked": True,
         "status": "passed",
         "cpus": 4,
         "memory_limit_bytes": 12 * 1024**3,
@@ -446,8 +449,8 @@ def worker_summary(**overrides):
     return value
 
 
-def test_benchmark_public_summary_satisfies_the_worker_contract(smoke_harness):
-    benchmark = smoke_harness
+def test_inventory_public_summary_satisfies_the_worker_contract(smoke_harness):
+    inventory = smoke_harness
     groups = [
         {
             "id": "mlir:ttlang",
@@ -480,15 +483,15 @@ def test_benchmark_public_summary_satisfies_the_worker_contract(smoke_harness):
         "planned_group_count": 4,
         "planned_case_count": 600,
         "planned_suite_counts": {
-            suite: {"groups": 1, "cases": 1} for suite in benchmark.SUITES
+            suite: {"groups": 1, "cases": 1} for suite in inventory.SUITES
         },
         "groups": groups,
     }
     for value in (results, {"groups": []}):
-        public = benchmark.public_summary(value)
+        public = inventory.public_summary(value)
         assert worker.public_test_summary(public) == public
         assert "private" not in json.dumps(public)
-    public = benchmark.public_summary(results)
+    public = inventory.public_summary(results)
     rendered = worker.report_summary(
         {"schema_version": 1, "status": "failed", "stages": {}, "tests": public}
     )
@@ -513,6 +516,10 @@ def test_report_renders_per_suite_table_from_public_fields_only():
     assert "| pytest | 2 | 2 | 2 | 3 | passed 2, unsupported 1 | passed 2 |" in report
     assert "| mlir | 0 | 0 | 0 | 0 | - | - |" in report
     assert "All suites: cases passed 2, unsupported 1; groups passed 2." in report
+    assert (
+        "Emulator xfail list: 2 listed cases passed and 1 listed cases were not"
+        " collected" in report
+    )
     assert "`unsupported` counts cases" in report
     assert "private" not in report
 
@@ -824,8 +831,8 @@ def test_private_parent_protects_container_writable_child(tmp_path, monkeypatch)
 @pytest.mark.parametrize(
     "status,match",
     [
-        ([(0, " M changed.py\n")], "commit the experiment"),
-        ([(0, "?? untracked/file\n")], "commit the experiment"),
+        ([(0, " M changed.py\n")], "commit the source"),
+        ([(0, "?? untracked/file\n")], "commit the source"),
         ([(0, ""), (1, "")], "ignored directory"),
     ],
 )

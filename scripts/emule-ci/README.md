@@ -20,11 +20,12 @@ No case is excluded by marker. Every planned case ends in exactly one outcome:
 `passed`, `failed`, `skipped`, `xfail`, `unsupported`, `incomplete`, or
 `not_run`. `unsupported` is a `multi_device` pytest skip or a lit `UNSUPPORTED`
 that the collection-time `llvm-lit --no-execute` probe predicted; any other lit
-`UNSUPPORTED`, `UNRESOLVED`, `TIMEOUT`, or unknown code is `incomplete`.
-`not_run` counts planned cases without a recorded outcome, such as after a
-crash, a lost report, or the worker deadline. The `examples` and `tutorial`
-cases run each script in a child process, so their verdicts come from exit
-codes without `generic_op` evidence. Each case is limited to 300 s and each
+`UNSUPPORTED`, `UNRESOLVED`, `TIMEOUT`, or unknown code is `incomplete`, as is a
+pytest case that started without a verdict, such as when the emulator aborts
+mid-test. `not_run` counts planned cases that never started or lost their
+report, such as after a crash or at the worker deadline. The `examples` and
+`tutorial` cases run each script in a child process, so their verdicts come from
+exit codes without `generic_op` evidence. Each case is limited to 300 s and each
 group to 45 minutes. A group whose coverage is incomplete is an
 `infrastructure_error`, never a pass. The compiler-only suites prove nothing
 about emulation, so the job summary reports each suite separately. `test/sim`
@@ -33,8 +34,12 @@ is outside this inventory.
 `config/tt-lang-emule-xfail.json` lists known emulator failures by inventory
 case ID, each with a `reason` and `run`; only this job applies it, as
 non-strict pytest `xfail` marks or lit `--xfail`. A listed failure is `xfail`, a
-listed pass is `passed`, and a `run: false` case (a crash or hang) is never
-executed and counts as `xfail`. A malformed list or an uncollected entry fails.
+listed pass is `passed` and counted in `xpass_count`, and a `run: false` case (a
+crash or hang) is never executed and counts as `xfail`. A listed case that was
+not collected, for example after a rename, is counted in `stale_xfail_count`
+instead of failing the run; remove both kinds of entry. A malformed list fails,
+and a `reason` must be plain text of at most 160 characters without paths,
+issue references, URLs, or repository names.
 
 ## Reproduce locally
 
@@ -48,7 +53,7 @@ TTLANG_EMULE_RUNTIME_SOURCE_DIR=/absolute/pinned-emulator-checkout \
 TTLANG_EMULE_IMAGE=ttlang-emule-ci:runner-local \
 bash scripts/tt-lang-emule-container.sh
 python3 scripts/emule-ci/worker.py --image ttlang-emule-ci:runner-local \
-  --worker serial --output "$(mktemp -d)/serial" --timeout-seconds 13200
+  --output "$(mktemp -d)/inventory"
 ```
 
 `summary.json` holds the validated counts-only summary; detailed logs, test

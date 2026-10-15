@@ -256,7 +256,7 @@ def counted(value, vocabulary):
         or set(value) - vocabulary
         or any(type(count) is not int or count < 0 for count in value.values())
     ):
-        raise ValueError("invalid benchmark counts")
+        raise ValueError("invalid inventory counts")
     return value
 
 
@@ -269,6 +269,8 @@ def public_test_summary(value):
         "complete_group_count",
         "generic_op_launches",
         "generic_op_returns",
+        "stale_xfail_count",
+        "xpass_count",
     )
     keys = {
         *counts,
@@ -279,26 +281,26 @@ def public_test_summary(value):
         "runtime_execution_observed",
     }
     if not isinstance(value, dict) or set(value) != keys:
-        raise ValueError("unexpected benchmark summary fields")
+        raise ValueError("unexpected inventory summary fields")
     for key in counts:
         if type(value[key]) is not int or value[key] < 0:
-            raise ValueError("invalid benchmark count")
+            raise ValueError("invalid inventory count")
     counted(value["group_status_counts"], GROUP_STATUSES)
     counted(value["case_outcome_counts"], CASE_OUTCOMES)
     suites = value["suite_counts"]
     if not isinstance(suites, dict) or set(suites) != set(SUITES):
-        raise ValueError("invalid benchmark suites")
+        raise ValueError("invalid inventory suites")
     for suite in suites.values():
         if not isinstance(suite, dict) or set(suite) != SUITE_COUNT_KEYS:
-            raise ValueError("invalid benchmark suite counts")
+            raise ValueError("invalid inventory suite counts")
         for key in ("planned_groups", "planned_cases", "groups", "complete_groups"):
             if type(suite[key]) is not int or suite[key] < 0:
-                raise ValueError("invalid benchmark suite counts")
+                raise ValueError("invalid inventory suite counts")
         counted(suite["status_counts"], GROUP_STATUSES)
         counted(suite["outcome_counts"], CASE_OUTCOMES)
     seconds = value["wall_seconds"]
     if type(seconds) not in (int, float) or not math.isfinite(seconds) or seconds < 0:
-        raise ValueError("invalid benchmark duration")
+        raise ValueError("invalid inventory duration")
     if type(value["runtime_execution_observed"]) is not bool:
         raise ValueError("invalid execution observation")
     return value
@@ -326,7 +328,7 @@ def report_summary(summary):
     """Render a worker summary as Markdown from its validated public fields only.
 
     Nothing from private logs, commands, paths or test IDs is read: the suite
-    table comes from the benchmark's public contract, and the status fields are
+    table comes from the inventory's public contract, and the status fields are
     the worker's fixed vocabulary.
     """
     if not isinstance(summary, dict) or summary.get("schema_version") != 1:
@@ -378,6 +380,10 @@ def report_summary(summary):
         f" of {tests['generic_op_launches']} generic_op calls returned);"
         f" {tests['wall_seconds']:.0f} s of test time.",
         "",
+        f"Emulator xfail list: {tests['xpass_count']} listed cases passed and"
+        f" {tests['stale_xfail_count']} listed cases were not collected; review"
+        " both for removal.",
+        "",
         "| Suite | Planned groups | Run | Complete | Planned cases"
         " | Case outcomes | Group status |",
         "| --- | ---: | ---: | ---: | ---: | --- | --- |",
@@ -399,10 +405,11 @@ def report_summary(summary):
         "",
         "`unsupported` counts cases that declare themselves unsupported on the"
         " single-device emulator profile (`multi_device` pytest skips and lit"
-        " `UNSUPPORTED`); `not_run` counts planned cases without a recorded"
-        " outcome, including cases the worker deadline never reached. Group"
-        " status `infrastructure_error` marks incomplete coverage, timeouts or"
-        " abnormal exits, not test verdicts.",
+        " `UNSUPPORTED`); `incomplete` counts cases that started without a"
+        " verdict, such as after an emulator crash mid-test; `not_run` counts"
+        " planned cases that never started, including cases the worker deadline"
+        " never reached. Group status `infrastructure_error` marks incomplete"
+        " coverage, timeouts or abnormal exits, not test verdicts.",
     ]
     return "\n".join(lines) + "\n"
 
@@ -453,7 +460,7 @@ def runtime_preflight():
 
 
 def runtime_smoke(revision, runtime_id):
-    import benchmark
+    import inventory
 
     args = argparse.Namespace(
         source=Path("/workspace"),
@@ -475,23 +482,23 @@ def runtime_smoke(revision, runtime_id):
                 "kind": "pytest",
                 "path": path,
                 "cases": [path + "::test_broadcast_2d"],
-                "markers": {marker: [] for marker in benchmark.CLASSIFICATION_MARKERS},
+                "markers": {marker: [] for marker in inventory.CLASSIFICATION_MARKERS},
             }
         ],
     }
-    benchmark.validate_manifest(manifest)
-    benchmark.validate_source(args.source, revision)
-    env = benchmark.environment(args)
+    inventory.validate_manifest(manifest)
+    inventory.validate_source(args.source, revision)
+    env = inventory.environment(args)
     args.output.mkdir(parents=True, exist_ok=False)
-    benchmark.write_json(args.manifest, manifest)
-    result = benchmark.run(args, env)
-    evidence = benchmark.read_json(args.output / "results.json")
+    inventory.write_json(args.manifest, manifest)
+    result = inventory.run(args, env)
+    evidence = inventory.read_json(args.output / "results.json")
     groups = evidence["groups"]
     if (
         result != 0
         or len(groups) != 1
         or groups[0]["outcomes"] != {"passed": 1}
-        or not benchmark.public_summary(evidence)["runtime_execution_observed"]
+        or not inventory.public_summary(evidence)["runtime_execution_observed"]
     ):
         return 1
     return 0
@@ -504,7 +511,7 @@ class Worker:
         self.output = args.output.resolve()
         self.private = self.output / "private"
         self.token = f"ttlang-ci-{args.worker}-{uuid.uuid4().hex[:12]}"
-        # Reserve time for bounded Docker/process cleanup within a 45-minute run.
+        # Reserve time for bounded Docker/process cleanup before the deadline.
         self.deadline = (
             time.monotonic() + args.timeout_seconds - min(30, args.timeout_seconds / 2)
         )
@@ -533,7 +540,6 @@ class Worker:
         )
         self.summary = {
             "schema_version": 1,
-            "publication_blocked": True,
             "status": "not_started",
             "cpus": args.cpus,
             "memory_limit_bytes": args.memory_gib * 1024**3,
@@ -699,7 +705,7 @@ class Worker:
         # Nothing unreviewed may be mounted into the preflight or install stage.
         clean = self.capture(["git", "status", "--porcelain", "--untracked-files=all"])
         if clean.returncode or clean.stdout.strip():
-            raise RuntimeError("commit the experiment locally before measuring it")
+            raise RuntimeError("commit the source locally before running the inventory")
         # CMake/tests may generate temporary files under source/build. Only add
         # its empty mountpoint when Git explicitly ignores it; never replace an
         # existing symlink or expose existing build products to the container.
@@ -713,13 +719,13 @@ class Worker:
         self.started = time.monotonic()
         if shutil.disk_usage(self.output).free < self.summary["disk_floor_bytes"]:
             self.summary["low_disk"] = True
-            raise RuntimeError("insufficient host disk free space for this experiment")
+            raise RuntimeError("insufficient host disk free space for this run")
         self.prepare()
         self.sizes("before")
         launcher = [
             "bash",
             str(self.source / "scripts/tt-lang-emule-container.sh"),
-            "scripts/emule-ci/benchmark.py",
+            "scripts/emule-ci/inventory.py",
         ]
         identity = [
             "--source",
@@ -828,15 +834,13 @@ def arguments(argv):
         help="Already available local image or digest; never pulled",
     )
     parser.add_argument(
-        "--output", required=True, type=Path, help="New private experiment directory"
+        "--output", required=True, type=Path, help="New private output directory"
     )
-    parser.add_argument("--worker", default="serial")
+    parser.add_argument("--worker", default="inventory")
     parser.add_argument("--cpus", type=int, choices=range(1, 5), default=4)
     parser.add_argument("--memory-gib", type=int, choices=range(1, 13), default=12)
-    parser.add_argument("--timeout-seconds", type=int, default=2700)
-    parser.add_argument(
-        "--disk-floor-gib", type=int, choices=range(1, 1025), default=10
-    )
+    parser.add_argument("--timeout-seconds", type=int, default=13200)
+    parser.add_argument("--disk-floor-gib", type=int, choices=range(1, 1025), default=2)
     args = parser.parse_args(argv)
     if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,15}", args.worker):
         parser.error("worker must be a short lowercase identifier")
