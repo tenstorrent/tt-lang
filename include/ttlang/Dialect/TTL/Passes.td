@@ -1106,17 +1106,35 @@ def TTLVerifyDFBSPSC
   let dependentDialects = [];
 }
 
-def TTLRejectDFBNetworks
-    : Pass<"ttl-reject-dfb-networks", "::mlir::ModuleOp"> {
-  let summary = "Reject DFB networks, which nothing lowers yet";
+def TTLExpandDFBNetworks
+    : Pass<"ttl-expand-dfb-networks", "::mlir::ModuleOp"> {
+  let summary = "Expand DFB networks into ordinary DFBs";
   let description = [{
-    Emits an error for each `ttl.dfb.network` in the module, naming the
-    network. Nothing lowers networks yet.
+    Rewrites each `ttl.dfb.network` and the kernel ops that use it into
+    ordinary DFBs: `ttl.bind_cb` bindings with their own `dfb_id`, and
+    `ttl.cb_reserve`/`ttl.cb_push`/`ttl.cb_wait`/`ttl.cb_pop` on them. Network
+    records and `ttl.dfb.network` ops do not survive the pass.
+
+    The pass plans every network on the unchanged module before rewriting.
+    A network it cannot expand yet is reported as not supported, and an
+    invalid one as an error; either way the module is left unchanged.
 
     Network records declare DFB producers and consumers that no kernel op
-    shows, so passes that infer DFB endpoints from kernel ops would see an
-    incomplete program. This pass must therefore run before any pass that
-    reasons about DFB producers or consumers.
+    shows, so this pass must run before any pass that reasons about DFB
+    producers or consumers.
+  }];
+
+  let dependentDialects = [];
+}
+
+def TTLPrintDFBNetworkPlan
+    : Pass<"ttl-print-dfb-network-plan", "::mlir::ModuleOp"> {
+  let summary = "Print DFB network expansion plans for debugging and tests";
+  let description = [{
+    This diagnostic pass prints the plan that `ttl-expand-dfb-networks` builds
+    for the module, or the networks it cannot expand yet. It supports
+    debugging and deterministic regression tests of planning without applying
+    the plan. The pass emits text to stderr and does not modify IR.
   }];
 
   let dependentDialects = [];

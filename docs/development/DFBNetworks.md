@@ -114,10 +114,12 @@ Checks that compare records with the kernel functions of the module, such as
 whether each DFB id has a `ttl.bind_cb` or whether a handle belongs to two
 networks, are not part of the verifier.
 
-## Rejection at pipeline entry
+## Expansion at pipeline entry
 
-`ttl-reject-dfb-networks` is a module pass that emits an error for each
-`ttl.dfb.network` in the module, naming the network, and fails the pass:
+`ttl-expand-dfb-networks` is a module pass that plans the expansion of every
+`ttl.dfb.network` in the module before it changes any IR. No network is
+supported yet, so the pass emits an error for each network, naming it, and
+fails:
 
 ```
 error: 'ttl.dfb.network' op @copy_and_exp: DFB networks are not supported yet
@@ -131,3 +133,12 @@ incomplete program and either report errors against the kernels or accept a
 program whose connections are ignored. The pass therefore runs before every
 function pass, and before any pass that reasons about DFB producers or
 consumers.
+
+`ttl-print-dfb-network-plan` builds the same plan and prints it to stderr
+without applying it or failing on unsupported networks. Tests use it to check
+planning decisions directly:
+
+```
+DFB network plan: rejected
+  @copy_and_exp: DFB networks are not supported yet
+```

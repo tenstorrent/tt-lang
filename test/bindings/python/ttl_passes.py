@@ -44,7 +44,7 @@ def test_ttl_passes_registered():
 
     # Module-level passes.
     module_passes = [
-        "ttl-reject-dfb-networks",
+        "ttl-expand-dfb-networks",
         "convert-ttl-to-ttkernel",
         "ttl-verify-pipenet-guards",
         "ttl-verify-pipenet-schedule",
@@ -55,7 +55,7 @@ def test_ttl_passes_registered():
     for pass_name in module_passes:
         PassManager.parse(f"builtin.module({pass_name})", context=ctx)
         print(f"{pass_name} pass registered")
-        # CHECK: ttl-reject-dfb-networks pass registered
+        # CHECK: ttl-expand-dfb-networks pass registered
         # CHECK: convert-ttl-to-ttkernel pass registered
         # CHECK: ttl-verify-pipenet-guards pass registered
         # CHECK: ttl-verify-pipenet-schedule pass registered

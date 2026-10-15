@@ -1,9 +1,10 @@
-// RUN: ttlang-opt %s --split-input-file --verify-diagnostics --ttl-reject-dfb-networks | FileCheck %s
+// RUN: ttlang-opt %s --split-input-file --verify-diagnostics --ttl-expand-dfb-networks | FileCheck %s
 // RUN: ttlang-opt %s --split-input-file --verify-diagnostics --ttl-to-ttkernel-pipeline -o /dev/null
 
-// Summary: Verifies that every DFB network reaching the pass is rejected, both
-// when the pass runs alone and as the first pass of the TTL-to-TTKernel
-// pipeline, and that a module without networks passes through unchanged.
+// Summary: Verifies that the expansion pass reports every DFB network as not
+// supported yet, both when the pass runs alone and as the first pass of the
+// TTL-to-TTKernel pipeline, and that a module without networks passes through
+// unchanged.
 
 // Test that each network in a module is reported, not only the first.
 module {
