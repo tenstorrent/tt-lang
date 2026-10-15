@@ -9,7 +9,7 @@ from enum import Enum, auto
 import hashlib
 import json
 import os
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 
 @dataclass(frozen=True)
@@ -56,6 +56,7 @@ class _ResolvedFabricConnection:
 
 class _FabricRoutingMode(Enum):
     ONE_DIMENSIONAL = auto()
+    ONE_DIMENSIONAL_RING = auto()
     NEIGHBOR_EXCHANGE = auto()
     TWO_DIMENSIONAL = auto()
 
@@ -77,6 +78,7 @@ class FabricRouteCache:
         self._fabric_config = None
         self._directions: Dict[Tuple[int, int, int, int], int] = {}
         self._forwarding_links: Dict[Tuple[int, int, int, int], Tuple[int, ...]] = {}
+        self._direct_links: Dict[Tuple[int, int, int, int], bool] = {}
 
     def _prepare_query(self, mesh_device: Any, fabric_config: Any) -> None:
         if self._mesh_device is mesh_device and self._fabric_config == fabric_config:
@@ -85,6 +87,7 @@ class FabricRouteCache:
         self._fabric_config = fabric_config
         self._directions.clear()
         self._forwarding_links.clear()
+        self._direct_links.clear()
 
     def resolve_direction(
         self,
@@ -110,6 +113,42 @@ class FabricRouteCache:
                 )
             self._directions[route_key] = int(direction)
         return self._directions[route_key]
+
+    def is_direct_link(
+        self,
+        ttnn_api: Any,
+        mesh_device: Any,
+        fabric_config: Any,
+        source_node_id: Any,
+        destination_node_id: Any,
+    ) -> bool:
+        """Return whether one ethernet link connects the two nodes.
+
+        Scans every routing direction because TT-Metal's 1D connection setup
+        accepts a destination that is a direct neighbor in any direction.
+        Reports no link when TTNN cannot enumerate chip neighbors.
+        """
+        self._prepare_query(mesh_device, fabric_config)
+        route_key = (
+            *_fabric_node_key(source_node_id),
+            *_fabric_node_key(destination_node_id),
+        )
+        if route_key not in self._direct_links:
+            multi_device = getattr(
+                getattr(ttnn_api, "_ttnn", None), "multi_device", None
+            )
+            neighbor_api = getattr(multi_device, "experimental", None)
+            mesh_id, chip_id = _fabric_node_key(destination_node_id)
+            self._direct_links[route_key] = hasattr(
+                neighbor_api, "get_chip_neighbors"
+            ) and any(
+                chip_id
+                in neighbor_api.get_chip_neighbors(
+                    source_node_id, getattr(neighbor_api.RoutingDirection, direction)
+                ).get(mesh_id, ())
+                for direction in ("N", "E", "S", "W", "Z")
+            )
+        return self._direct_links[route_key]
 
     def get_forwarding_links(
         self,
@@ -404,7 +443,11 @@ def _get_fabric_routing_mode(ttnn_api: Any, fabric_config: Any) -> _FabricRoutin
         ),
         (
             _FabricRoutingMode.ONE_DIMENSIONAL,
-            ("FABRIC_1D", "FABRIC_1D_RING"),
+            ("FABRIC_1D",),
+        ),
+        (
+            _FabricRoutingMode.ONE_DIMENSIONAL_RING,
+            ("FABRIC_1D_RING",),
         ),
         (
             _FabricRoutingMode.TWO_DIMENSIONAL,
@@ -430,6 +473,8 @@ def _resolve_fabric_route(
     routing_mode: _FabricRoutingMode,
     local_device: Tuple[int, ...],
     remote_device: Tuple[int, ...],
+    mesh_shape: Tuple[int, ...],
+    has_closing_link: Callable[[Tuple[int, ...], Tuple[int, ...]], bool],
 ) -> _ResolvedFabricRoute:
     """Resolve the manager endpoint and target-specific route metadata."""
     if routing_mode == _FabricRoutingMode.TWO_DIMENSIONAL:
@@ -448,14 +493,34 @@ def _resolve_fabric_route(
         )
 
     route_axis = differing_axes[0]
-    route_step = 1 if remote_device[route_axis] > local_device[route_axis] else -1
-    route_coordinates = range(
-        local_device[route_axis],
-        remote_device[route_axis] + route_step,
-        route_step,
-    )
+    local_coordinate = local_device[route_axis]
+    remote_coordinate = remote_device[route_axis]
+    route_step = 1 if remote_coordinate > local_coordinate else -1
+    hop_count = abs(remote_coordinate - local_coordinate)
+    extent = mesh_shape[route_axis]
+    if routing_mode == _FabricRoutingMode.ONE_DIMENSIONAL_RING:
+        if not (0 <= local_coordinate < extent and 0 <= remote_coordinate < extent):
+            raise ValueError(
+                f"FABRIC_1D_RING route from {local_device} to {remote_device} "
+                f"leaves mesh extent {mesh_shape}"
+            )
+        # FABRIC_1D_RING does not guarantee a link between the two ends of
+        # an axis, and 1D connection setup accepts only a direct neighbor.
+        # A tie keeps the axis order so the route matches FABRIC_1D.
+        first_device = list(local_device)
+        first_device[route_axis] = 0
+        last_device = list(local_device)
+        last_device[route_axis] = extent - 1
+        if extent - hop_count < hop_count and has_closing_link(
+            tuple(first_device), tuple(last_device)
+        ):
+            route_step = -route_step
+            hop_count = extent - hop_count
     device_chain = []
-    for route_coordinate in route_coordinates:
+    for hop in range(hop_count + 1):
+        route_coordinate = local_coordinate + route_step * hop
+        if routing_mode == _FabricRoutingMode.ONE_DIMENSIONAL_RING:
+            route_coordinate %= extent
         device = list(local_device)
         device[route_axis] = route_coordinate
         device_chain.append(tuple(device))
@@ -1218,6 +1283,19 @@ def build_fabric_target_binding_plan(
     active_route_cache = route_cache or FabricRouteCache()
     fabric_config = ttnn_api.get_fabric_config()
     routing_mode = _get_fabric_routing_mode(ttnn_api, fabric_config)
+    mesh_shape = tuple(mesh_device.shape)
+
+    def has_closing_link(
+        first_device: Tuple[int, ...], last_device: Tuple[int, ...]
+    ) -> bool:
+        return active_route_cache.is_direct_link(
+            ttnn_api,
+            mesh_device,
+            fabric_config,
+            _get_fabric_node_id(ttnn_api, mesh_device, first_device),
+            _get_fabric_node_id(ttnn_api, mesh_device, last_device),
+        )
+
     can_enumerate_forwarding_links = (
         getattr(ttnn_api, "get_forwarding_link_indices", None) is not None
     )
@@ -1246,7 +1324,13 @@ def build_fabric_target_binding_plan(
             }
 
             resolved_routes = [
-                _resolve_fabric_route(routing_mode, device_coordinates, remote_device)
+                _resolve_fabric_route(
+                    routing_mode,
+                    device_coordinates,
+                    remote_device,
+                    mesh_shape,
+                    has_closing_link,
+                )
                 for remote_device in active_remote_devices
             ]
             resolved_connections = [
@@ -1415,7 +1499,11 @@ def build_fabric_target_binding_plan(
                 continue
             remote_device = _flatten_device_ref(requirement.remote_device)
             resolved_route = _resolve_fabric_route(
-                routing_mode, device_coordinates, remote_device
+                routing_mode,
+                device_coordinates,
+                remote_device,
+                mesh_shape,
+                has_closing_link,
             )
             resolved_connection = _resolve_fabric_connection(
                 ttnn_api,

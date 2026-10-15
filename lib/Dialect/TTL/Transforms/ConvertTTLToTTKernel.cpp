@@ -752,16 +752,8 @@ struct TileStoreLowering : OpConversionPattern<TileStoreOp> {
       }
     }
 
-    // Linearize multi-dimensional CB indices to a flat tile index.
-    auto viewTy = mlir::cast<RankedTensorType>(op.getView().getType());
-    ValueRange indices = adaptor.getIndices();
-    Value cbTileIndex = affine::AffineLinearizeIndexOp::create(
-        rewriter, loc, indices, viewTy.getShape());
-
-    // If the view is a subblock slice, add the slice offset to produce
-    // the global DFB tile index.
-    cbTileIndex =
-        utils::addSliceOffset(op.getView(), cbTileIndex, rewriter, loc);
+    Value cbTileIndex = utils::computeDFBTileIndex(
+        op.getView(), adaptor.getIndices(), rewriter, loc);
 
     Value dstIndex = adaptor.getDstIndex();
 
@@ -1640,7 +1632,7 @@ static LogicalResult lowerDFBReset(Operation *operation,
   }
   ttk::OpaqueCallOp::create(
       rewriter, location, TypeRange{},
-      rewriter.getStringAttr("experimental::reset_dfb_interfaces"),
+      rewriter.getStringAttr("::experimental::reset_dfb_interfaces"),
       rewriter.getStringAttr("<cstdint>"),
       ValueRange{synchronizationAddress, lowMask, highMask}, ArrayAttr(),
       rewriter.getDenseI32ArrayAttr({0, 1, 2}),
@@ -1741,7 +1733,7 @@ struct DFBReconfigurationLowering : OpConversionPattern<DFBReconfigurationOp> {
         runtimeArgIndex);
     auto reconfigurationCall = ttk::OpaqueCallOp::create(
         rewriter, op.getLoc(), TypeRange{},
-        rewriter.getStringAttr("experimental::reconfigure_dfb_interfaces"),
+        rewriter.getStringAttr("::experimental::reconfigure_dfb_interfaces"),
         rewriter.getStringAttr("<cstdint>"), ValueRange{configurationAddress},
         ArrayAttr(), rewriter.getDenseI32ArrayAttr({0}), DenseI32ArrayAttr());
     reconfigurationCall->setAttr(kDFBReconfigurationOrdinalAttrName,

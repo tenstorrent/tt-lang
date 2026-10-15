@@ -266,14 +266,26 @@ Route resolution depends on the active fabric mode:
 - In 1D mode, the source and destination must differ along exactly one logical
   mesh axis. Host binding enumerates every intervening logical coordinate,
   maps each coordinate to a `FabricNodeId`, and requires every consecutive hop
-  to use the same forwarding direction. Neighbor-exchange mode additionally
-  requires exactly one logical hop. The generated packet encodes the validated
-  hop count and opens its connection toward the first mapped hop.
+  to use the same forwarding direction. In 1D ring mode, host binding routes
+  over the ring's closing link only when the control plane lists the two ends
+  of the axis as direct neighbors and the route over that link takes fewer
+  hops; otherwise, including ties, it keeps the direction along the axis
+  order. `FABRIC_1D_RING` does not guarantee that link, and 1D connection
+  setup accepts only a direct neighbor. External fabric connection
+  requirements follow the same rule, so an external manager must connect in
+  the direction it selects.
+  Neighbor-exchange mode additionally requires exactly one logical hop. The
+  generated packet encodes the validated hop count and opens its connection
+  toward the first mapped hop.
 
-For example, a 1D transfer from `(0, 0)` to `(0, 3)` enumerates `(0, 0)`,
-`(0, 1)`, `(0, 2)`, and `(0, 3)`. The runtime maps all four coordinates to
-physical node ids, validates that the three hops use one forwarding direction,
-opens the connection toward the node for `(0, 1)`, and encodes hop count three.
+For example, in 1D mode a transfer from `(0, 0)` to `(0, 3)` enumerates
+`(0, 0)`, `(0, 1)`, `(0, 2)`, and `(0, 3)`. The runtime maps all four
+coordinates to physical node ids, validates that the three hops use one
+forwarding direction, opens the connection toward the node for `(0, 1)`, and
+encodes hop count three. On a four-device axis in 1D ring mode whose ends
+are direct neighbors, the same transfer enumerates `(0, 0)` and `(0, 3)`,
+opens the connection toward `(0, 3)` over the closing link, and encodes hop
+count one.
 A 1D transfer from `(0, 3)` to `(1, 0)` is rejected because two logical axes
 differ. In 2D mode, that pair is legal when TT-Metal can route between the two
 resolved `FabricNodeId` values; TT-Metal's routing tables select intermediate
@@ -727,15 +739,16 @@ logical device coordinate and places those descriptors into a
 `python/ttl/_src/fabric_target.py` owns target route resolution, complete-plan
 validation, and descriptor mutation. For each generated kernel and TENSIX node,
 it determines the active logical routes, maps remote coordinates with
-`mesh_device.get_fabric_node_id()`, queries forwarding directions and eligible
-links, and groups destinations by direction. It validates a distinct-link
-assignment for all interfering managers first. If that assignment fails and
-mux is enabled, it keeps external and repeated-lifetime managers direct and
-assigns eligible single-execution managers to shared links. Each mux group
-requires one common routing-plane endpoint, one otherwise unused worker node,
-an in-bounds private L1 interval, and sufficient client and mux-node
-semaphores. `--no-ttl-fabric-mux` disables this fallback. No semaphore, runtime
-argument, or program descriptor is modified until the complete plan is valid.
+`mesh_device.get_fabric_node_id()`, checks direct neighbors before selecting a
+shorter 1D ring closing link, queries forwarding directions and eligible links,
+and groups destinations by direction. It validates a distinct-link assignment
+for all interfering managers first. If that assignment fails and mux is
+enabled, it keeps external and repeated-lifetime managers direct and assigns
+eligible single-execution managers to shared links. Each mux group requires
+one common routing-plane endpoint, one otherwise unused worker node, an
+in-bounds private L1 interval, and sufficient client and mux-node semaphores.
+`--no-ttl-fabric-mux` disables this fallback. No semaphore, runtime argument,
+or program descriptor is modified until the complete plan is valid.
 
 An operation executes on its complete `device_domain` by default. The
 `mesh_program_placements` operation option can instead select explicit logical
@@ -784,6 +797,8 @@ tt-lang uses these TTNN bindings during host runtime route binding:
   returns its outgoing direction;
 - `get_forwarding_link_indices()` exposes TT-Metal's existing control-plane
   forwarding-link query to Python;
+- `get_chip_neighbors()` lists direct neighbors; 1D ring routing uses it to
+  check for a closing link;
 - `get_fabric_kernel_defines()` returns the defines required by the active
   direct fabric API;
 - `fabric_connection_rt_args()` validates explicit links, allocates direct
@@ -792,21 +807,21 @@ tt-lang uses these TTNN bindings during host runtime route binding:
 - `ttnn.experimental.fabric_mux.Config` and its client helpers compute mux L1
   layout, compile-time arguments, runtime arguments, and descriptor resources.
 
-Each `CompiledTTNNKernel` caches forwarding directions and eligible links by
-source and destination `FabricNodeId`. The cache is cleared when the mesh
-object or active fabric configuration changes. The binder first collects every
-connection required by one source device. Within a manager, destinations with
-the same direction reuse one connection only when their eligible-link sets
-intersect. Across managers, the compiler records ownership intervals and an
-interference graph. Deterministic graph coloring permits a proven
-receiver/sender ownership pair to reuse a forwarding link and assigns distinct
-links to all other managers. An external manager may reserve a fixed link
-through operation runtime resources; tt-lang validates the reservation but does
-not interpret or modify the external manager's runtime arguments. The complete
-plan is validated before program descriptors, semaphores, or runtime arguments
-are modified. If link enumeration is unavailable, noninterfering managers may
-use the control-plane default; a plan that needs explicit link assignment is
-rejected.
+Each `CompiledTTNNKernel` caches forwarding directions, eligible links, and
+direct-neighbor results by source and destination `FabricNodeId`. The cache is
+cleared when the mesh object or active fabric configuration changes. The binder
+first collects every connection required by one source device. Within a
+manager, destinations with the same direction reuse one connection only when
+their eligible-link sets intersect. Across managers, the compiler records
+ownership intervals and an interference graph. Deterministic graph coloring
+permits a proven receiver/sender ownership pair to reuse a forwarding link and
+assigns distinct links to all other managers. An external manager may reserve a
+fixed link through operation runtime resources; tt-lang validates the
+reservation but does not interpret or modify the external manager's runtime
+arguments. The complete plan is validated before program descriptors,
+semaphores, or runtime arguments are modified. If link enumeration is
+unavailable, noninterfering managers may use the control-plane default; a plan
+that needs explicit link assignment is rejected.
 
 An external scoped manager call inside structured control flow records its
 compiler-proven launch-node domain. Runtime binding resolves each kernel
