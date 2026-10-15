@@ -992,7 +992,10 @@ def test_example_wrapper_matches_the_hardware_examples_runner():
     }
     assert set(marks) == set(shell) and len(marks) == len(examples.EXAMPLES)
     for script, found in shell.items():
-        unsupported = examples.REQUIRES_MESH_TAG in examples.tags(script)
+        # skip-compiler wins over requires-multi-device, as in the runner.
+        unsupported = (
+            examples.REQUIRES_MESH_TAG in examples.tags(script) and "skip" not in found
+        )
         assert ("multi_device" in marks[script]) == unsupported
         assert ("skip" in marks[script]) == ("skip" in found or unsupported)
         expect_failure = found == {"xfail"} and not unsupported

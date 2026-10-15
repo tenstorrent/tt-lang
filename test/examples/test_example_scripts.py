@@ -8,9 +8,10 @@ Discovery and tags mirror .github/scripts/compile-and-run-examples.sh: the
 top-level examples/*.py and every *.py under examples/tutorial and
 examples/errors that contain ``@ttl.operation``, with tags read from a script's
 first 80 lines. skip-compiler skips a script; xfail-compiler expects a nonzero
-exit, and an unexpected pass fails. A ``requires-multi-device`` tutorial tag
-marks the script multi_device and skips it, since this suite runs only on the
-single-device emulator profile; hardware CI keeps using the shell script.
+exit, and an unexpected pass fails. skip-compiler takes precedence, as in the
+script. Otherwise a ``requires-multi-device`` tutorial tag marks the script
+multi_device and skips it, since this suite runs only on the single-device
+emulator profile; hardware CI keeps using the shell script.
 """
 
 import os
@@ -59,10 +60,10 @@ def example_param(script):
     # Above the child's worst-case lifetime so the subprocess handles timeouts;
     # pytest-timeout's thread method would abort the whole session.
     marks = [pytest.mark.timeout(TIMEOUT_SECONDS + SIGTERM_GRACE_SECONDS + 60)]
-    if REQUIRES_MESH_TAG in found:
-        marks += [pytest.mark.multi_device, pytest.mark.skip(reason="needs a mesh")]
-    elif SKIP_TAG in found:
+    if SKIP_TAG in found:
         marks.append(pytest.mark.skip(reason=SKIP_TAG.lstrip("# ")))
+    elif REQUIRES_MESH_TAG in found:
+        marks += [pytest.mark.multi_device, pytest.mark.skip(reason="needs a mesh")]
     elif XFAIL_TAG in found:
         marks.append(pytest.mark.xfail(reason=XFAIL_TAG.lstrip("# "), strict=True))
     return pytest.param(script, id=script.removeprefix("examples/"), marks=marks)
