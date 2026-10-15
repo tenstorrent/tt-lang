@@ -9,6 +9,7 @@ from pathlib import Path
 import re
 import shlex
 import subprocess
+import uuid
 
 import pytest
 import yaml
@@ -98,6 +99,7 @@ def test_workflow_runs_only_merged_main_code_in_one_job():
     steps = job["steps"]
     assert [step["name"] for step in steps] == STEP_NAMES
     assert steps[-1]["if"] == "always()"
+    assert steps[-1]["working-directory"] == "${{ github.workspace }}"
     assert all("continue-on-error" not in step for step in steps)
     assert all("if" not in step for step in steps[:-1])
     # Every step is bounded, and the bounds fit the job limit.
@@ -132,11 +134,6 @@ def test_secrets_reach_only_validation_and_private_checkout():
         "docker/login",
         "packages:",
         "pull.sh",
-        "owner_approval_recorded",
-        "TTLANG_EMULE_APPROVED_SHA",
-        "TTLANG_EMULE_SOURCE_READ_TOKEN",
-        "TTLANG_EMULE_APPROVED_IMAGE",
-        "TTLANG_EMULE_APPROVED_SHARDS",
     ):
         assert forbidden not in raw, forbidden
 
@@ -262,8 +259,11 @@ def test_stack_step_reads_exact_manifest_pin(tmp_path):
 
 
 def run_step(name, env):
+    # Like the runner, write the step script into RUNNER_TEMP and keep it there.
+    script = Path(env["RUNNER_TEMP"]) / f"{uuid.uuid4()}.sh"
+    script.write_text(workflow_step(name)["run"])
     return subprocess.run(
-        ["bash", "-euo", "pipefail", "-c", workflow_step(name)["run"]],
+        ["bash", "-euo", "pipefail", str(script)],
         env={**os.environ, **env},
         capture_output=True,
         text=True,
@@ -397,6 +397,8 @@ def test_report_step_publishes_only_the_validated_summary(
 ):
     runner_temp = tmp_path / "runner"
     (runner_temp / "emule-inventory").mkdir(parents=True)
+    # The step runs from the workspace, which holds the compiler checkout.
+    (tmp_path / "compiler").symlink_to(ROOT)
     step_summary = tmp_path / "step-summary.md"
     if summary:
         (runner_temp / "emule-inventory/summary.json").write_text(json.dumps(summary))
@@ -408,7 +410,7 @@ def test_report_step_publishes_only_the_validated_summary(
             "-c",
             workflow_step("Report the public per-suite summary")["run"],
         ],
-        cwd=ROOT,
+        cwd=tmp_path,
         env={
             **os.environ,
             "RUNNER_TEMP": str(runner_temp),

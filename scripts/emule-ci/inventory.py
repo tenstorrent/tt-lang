@@ -74,8 +74,8 @@ LIT_OUTCOMES = {
 }
 MAX_THREADS = 4
 XFAIL_LIST = "config/tt-lang-emule-xfail.json"
-# The public list may explain a failure only in generic words: no paths, issue
-# references, URLs or repository names.
+# The public list may explain a failure only in generic words: no `/` or `#`, so
+# no paths, URLs or #N references. Review keeps repository names out.
 XFAIL_REASON = re.compile(r"[A-Za-z0-9 ,.;:()'_-]{1,160}")
 
 

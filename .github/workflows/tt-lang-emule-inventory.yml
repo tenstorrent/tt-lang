@@ -52,10 +52,9 @@ jobs:
           printf 'emulator_sha=%s\n' "$pin" >> "$GITHUB_OUTPUT"
 
       - name: Free runner disk space
-        timeout-minutes: 3
+        timeout-minutes: 6
         run: |
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
-            /opt/hostedtoolcache/CodeQL
+          bash .github/scripts/cleanup-ci-space.sh
           df -Pk "$RUNNER_TEMP"
 
       - name: Validate the emulator source configuration
@@ -106,8 +105,9 @@ jobs:
             fi
           done
           # A key, known_hosts or credentials file left behind by the checkout.
-          leftovers="$(find "$RUNNER_TEMP" -mindepth 1 -maxdepth 1 | LC_ALL=C sort |
-            LC_ALL=C comm -13 "$RUNNER_TEMP/runner-temp.before" -)"
+          # The runner writes this step's own script ($0) there after the snapshot.
+          leftovers="$(find "$RUNNER_TEMP" -mindepth 1 -maxdepth 1 ! -name "${0##*/}" |
+            LC_ALL=C sort | LC_ALL=C comm -13 "$RUNNER_TEMP/runner-temp.before" -)"
           if [[ -n "$leftovers" ]]; then
             echo 'The private checkout left files in the runner temporary directory.' >&2
             exit 2
@@ -145,10 +145,12 @@ jobs:
       - name: Report the public per-suite summary
         if: always()
         timeout-minutes: 2
+        # Outside compiler/, which does not exist if its checkout failed.
+        working-directory: ${{ github.workspace }}
         run: |
           summary="$RUNNER_TEMP/emule-inventory/summary.json"
           if [[ -f "$summary" ]]; then
-            python3 scripts/emule-ci/worker.py --report-summary "$summary" \
+            python3 compiler/scripts/emule-ci/worker.py --report-summary "$summary" \
               | tee -a "$GITHUB_STEP_SUMMARY"
           else
             echo 'The worker produced no summary.' | tee -a "$GITHUB_STEP_SUMMARY"

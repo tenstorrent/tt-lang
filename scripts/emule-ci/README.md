@@ -25,7 +25,9 @@ never runs on pull requests, because only code already reviewed and merged to
 `main` may run next to the private source and its credential. A cold build plus
 the inventory is expected to take about 3.5 to 4 hours (not yet measured on
 hosted runners); the job limit is 6 hours. The job summary publishes per-suite
-counts only; build output, logs, and test IDs stay on the runner.
+counts only. Build output, logs, and test IDs stay on the runner and are deleted
+when the job ends; to investigate a failure, check out that `main` commit and
+follow "Reproduce locally" below.
 
 **Outcomes.** Every planned case ends in exactly one of `passed`, `failed`,
 `skipped`, `xfail`, `unsupported`, `incomplete`, or `not_run`. `unsupported` is
@@ -39,24 +41,29 @@ inventory.
 
 **xfail list.** `config/tt-lang-emule-xfail.json` lists known emulator failures
 by inventory case ID; only this job applies it. Each entry has a generic
-`reason` (plain text, at most 160 characters, no paths, issue references, URLs,
-or repository names) and `run`; use `run: false` for crashes and hangs, which
-are then never executed. Listed passes are counted as `xpass_count`, and listed
-cases that were not collected as `stale_xfail_count`; both are reported, not
-fatal, and should be pruned. Refresh the list on every stack-pin bump.
+`reason` (at most 160 characters of letters, digits, spaces and `,.;:()'_-`,
+so no paths, URLs, or `#N` references; review and the public-content check keep
+issue and repository names out) and `run`; use `run: false` for crashes and
+hangs, which are then never executed. Listed passes are counted as
+`xpass_count`, and listed cases that were not collected as `stale_xfail_count`;
+both are reported, not fatal, and should be pruned. Refresh the list on every
+stack-pin bump.
 
 **Admin setup.** Create the environment `tt-lang-emule`, restricted to the
-`main` branch, with "Allow administrators to bypass" off. Add a read-only deploy
-key to the private emulator repository, and store its private key and the
-repository's `owner/name` as the environment secrets
-`TTLANG_EMULE_SOURCE_SSH_KEY` and `TTLANG_EMULE_SOURCE_REPOSITORY`. Do not
-create repository- or organization-level copies. Revoke the deploy key to stop
+`main` branch, with "Allow administrators to bypass" off. Add a deploy key with
+"Allow write access" off to the private emulator repository (organization
+policy must allow deploy keys there). Store its private key as the environment
+secret `TTLANG_EMULE_SOURCE_SSH_KEY`, and the repository as
+`TTLANG_EMULE_SOURCE_REPOSITORY` in the form `tenstorrent/<name>` (no URL, no
+trailing newline); any other value fails the validation step. Do not create
+repository- or organization-level copies. Revoke the deploy key to stop
 all access at once.
 
 **Recommended `main` ruleset hardening** (not enforced by this workflow):
-require approval of the most recent push, and require code-owner review for
-`.github/containers/**`, `scripts/emule-ci/**`, `config/tt-lang-emule-*.json`,
-and `requirements*.txt`.
+enable "Require review from Code Owners" and "Require approval of the most
+recent reviewable push", and add `.github/CODEOWNERS` entries that route
+`.github/containers/`, `scripts/emule-ci/`, `config/tt-lang-emule-*.json`, and
+`requirements*.txt` to the sim area's owner group.
 
 **Follow-ups.** Hash-locked Python and CMake dependencies for the image build;
 build parallelism; more runners if the run gets too slow.
