@@ -11,7 +11,8 @@ selection, and every Python lit test runs as its own group. The hardware
 example and tutorial scripts and the binding pytest file run last. Cases a test
 declares unsupported on the single-device emulator profile (``multi_device``
 pytest skips, lit ``UNSUPPORTED``) are reported explicitly instead of being
-excluded, and cases that never ran are counted as ``not_run``.
+excluded, and cases that never ran are counted as ``not_run``. Cases the
+checked-in emulator xfail list names are non-strict expected failures here only.
 """
 
 import argparse
@@ -71,6 +72,7 @@ LIT_OUTCOMES = {
     "NOEXE": "failed",
 }
 MAX_THREADS = 4
+XFAIL_LIST = "config/tt-lang-emule-xfail.json"
 
 
 def read_json(path):
@@ -88,6 +90,34 @@ def write_json(path, value):
 def unique(values):
     if len(values) != len(set(values)):
         raise ValueError("duplicate group or test IDs")
+
+
+def unique_keys(pairs):
+    unique([key for key, _ in pairs])
+    return dict(pairs)
+
+
+def xfail_list(path):
+    """Load the emulator-only expected failures: case ID -> reason and run."""
+    listing = json.loads(
+        Path(path).read_text(encoding="utf-8"), object_pairs_hook=unique_keys
+    )
+    if (
+        not isinstance(listing, dict)
+        or set(listing) != {"schema_version", "tests"}
+        or listing["schema_version"] != 1
+        or not isinstance(listing["tests"], dict)
+        or any(
+            not isinstance(entry, dict)
+            or set(entry) != {"reason", "run"}
+            or not isinstance(entry["reason"], str)
+            or not entry["reason"].strip()
+            or not isinstance(entry["run"], bool)
+            for entry in listing["tests"].values()
+        )
+    ):
+        raise ValueError("malformed emulator xfail list")
+    return listing["tests"]
 
 
 def suite_of(group_id):
@@ -326,28 +356,37 @@ def pytest_outcomes(group, events):
     return dict(counts)
 
 
-def lit_outcome(group, case, code):
-    """Normalize one lit result code; UNSUPPORTED counts only where expected."""
+def lit_outcome(group, case, code, listed):
+    """Normalize one lit result code; UNSUPPORTED counts only where expected.
+
+    ``listed`` maps the group's xfail-listed cases to whether they run: lit
+    reports a listed failure as XFAIL, a listed pass (non-strict) counts as
+    passed, and a listed case that must not run is an xfail without a code.
+    """
     if code is None:
-        return "not_run"
+        return "xfail" if listed.get(case) is False else "not_run"
+    if code == "XPASS" and case in listed:
+        return "passed"
     if code == "UNSUPPORTED":
         expected = group.get("markers", {}).get("expected_unsupported", [])
         return "unsupported" if case in expected else "incomplete"
     return LIT_OUTCOMES.get(code, "incomplete")
 
 
-def lit_coverage(group, tests):
-    """Every planned case reported exactly once with a verdict lit executed."""
-    return sorted(test["name"] for test in tests) == sorted(group["cases"]) and all(
-        lit_outcome(group, test["name"], test["code"]) != "incomplete" for test in tests
+def lit_coverage(group, tests, listed):
+    """Every case meant to run reported exactly once with a verdict lit executed."""
+    planned = [case for case in group["cases"] if listed.get(case, True)]
+    return sorted(test["name"] for test in tests) == sorted(planned) and all(
+        lit_outcome(group, test["name"], test["code"], listed) != "incomplete"
+        for test in tests
     )
 
 
-def lit_outcomes(group, tests):
+def lit_outcomes(group, tests, listed):
     codes = {test["name"]: test["code"] for test in tests}
     counts = Counter()
     for case in group["cases"]:
-        counts[lit_outcome(group, case, codes.get(case))] += 1
+        counts[lit_outcome(group, case, codes.get(case), listed)] += 1
     return dict(counts)
 
 
@@ -517,6 +556,8 @@ def environment(args):
     env["TT_METAL_CACHE"] = str(cache)
     env["TT_EMULE_JIT_CACHE_DIR"] = str(cache / "emule-jit")
     env["TTLANG_LIT_TEST_EXEC_ROOT"] = str(args.output / "lit-exec")
+    # The observer marks the listed pytest cases; lit gets them as arguments.
+    env["TTLANG_EMULE_CI_XFAIL"] = str(args.source / XFAIL_LIST)
     threads = lit_jobs(env) if "TTLANG_EMULE_CI_THREADS" in env else MAX_THREADS
     for key in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS"):
         env[key] = str(threads)
@@ -638,10 +679,16 @@ def collect(args, env):
             ],
         }
     manifest = make_manifest(collected, args.revision, args.runtime_id)
+    planned = {case for group in manifest["groups"] for case in group["cases"]}
+    unknown = set(xfail_list(args.source / XFAIL_LIST)) - planned
+    if unknown:
+        raise ValueError(
+            f"the emulator xfail list names {len(unknown)} uncollected cases"
+        )
     write_json(args.output / "manifest.json", manifest)
 
 
-def group_command(args, group, prefix, env):
+def group_command(args, group, prefix, env, listed):
     kind = group["kind"]
     if kind in PYTEST_KINDS:
         # Only the device suites need the observer to wrap ttnn.generic_op:
@@ -661,11 +708,16 @@ def group_command(args, group, prefix, env):
             str(args.source / "test" / group["path"]),
         ]
     jobs = 1 if kind == "lit" else lit_jobs(env)
-    return [
-        args.lit,
-        f"-j{jobs}",
-        "--timeout=" + str(args.timeout),
-        "-v",
+    command = [args.lit, f"-j{jobs}", "--timeout=" + str(args.timeout), "-v"]
+    expected = [case for case, run in listed.items() if run]
+    if expected:
+        command.append("--xfail=" + ";".join(expected))
+    excluded = [re.escape(case) for case, run in listed.items() if not run]
+    if excluded:
+        # lit omits filtered-out cases from its report; a group of only such
+        # cases then runs nothing and exits successfully.
+        command += ["--allow-empty-runs", f"--filter-out=^(?:{'|'.join(excluded)})$"]
+    return command + [
         "-o",
         str(prefix.with_suffix(".lit.json")),
         str(args.build / "test" / group["path"]),
@@ -681,6 +733,7 @@ def run(args, env):
     ):
         raise ValueError("source/runtime identity differs from collected inventory")
     groups = manifest["groups"]
+    xfail = xfail_list(args.source / XFAIL_LIST)
     planned = {suite: {"groups": 0, "cases": 0} for suite in SUITES}
     for group in groups:
         planned[suite_of(group["id"])]["groups"] += 1
@@ -697,14 +750,16 @@ def run(args, env):
         prefix = args.output / f"group-{index:04d}"
         events_path = prefix.with_suffix(".events.jsonl")
         env["TTLANG_EMULE_CI_EVENTS"] = str(events_path)
+        listed = {case: xfail[case]["run"] for case in group["cases"] if case in xfail}
         result = run_command(
-            group_command(args, group, prefix, env),
+            group_command(args, group, prefix, env, listed),
             prefix.with_suffix(".log"),
             args.group_timeout,
             env,
             args.source,
         )
         result.update(id=group["id"], suite=suite_of(group["id"]), complete=False)
+        failed = result["exit_code"] == 1
         try:
             if group["kind"] in PYTEST_KINDS:
                 events = read_events(events_path)
@@ -719,9 +774,11 @@ def run(args, env):
                 result["outcomes"] = pytest_outcomes(group, events)
             else:
                 tests = lit_report(prefix.with_suffix(".lit.json"))
-                result["complete"] = lit_coverage(group, tests)
+                result["complete"] = lit_coverage(group, tests, listed)
                 result["lit_codes"] = dict(Counter(test["code"] for test in tests))
-                result["outcomes"] = lit_outcomes(group, tests)
+                result["outcomes"] = lit_outcomes(group, tests, listed)
+                # lit exits 1 for the XPASS of a listed case, a non-strict pass.
+                failed = failed and "failed" in result["outcomes"]
         except (OSError, ValueError, KeyError, TypeError) as error:
             result["report_error"] = str(error)
             # An unreadable report must still account for every planned case.
@@ -732,7 +789,7 @@ def run(args, env):
             if not result["complete"]
             or result["timed_out"]
             or result["exit_code"] not in (0, 1)
-            else "passed" if result["exit_code"] == 0 else "failed"
+            else "failed" if failed else "passed"
         )
         summary["groups"].append(result)
         write_json(args.output / "results.json", summary)

@@ -30,6 +30,12 @@ group to 45 minutes. A group whose coverage is incomplete is an
 about emulation, so the job summary reports each suite separately. `test/sim`
 is outside this inventory.
 
+`config/tt-lang-emule-xfail.json` lists known emulator failures by inventory
+case ID, each with a `reason` and `run`; only this job applies it, as
+non-strict pytest `xfail` marks or lit `--xfail`. A listed failure is `xfail`, a
+listed pass is `passed`, and a `run: false` case (a crash or hang) is never
+executed and counts as `xfail`. A malformed list or an uncollected entry fails.
+
 ## Reproduce locally
 
 Build the runtime image from a pinned emulator checkout, then run the worker

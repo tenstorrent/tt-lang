@@ -84,6 +84,13 @@ def group(inventory, group_id):
     return next(group for group in inventory["groups"] if group["id"] == group_id)
 
 
+def write_xfail(source, tests):
+    path = source / benchmark.XFAIL_LIST
+    path.parent.mkdir(parents=True, exist_ok=True)
+    benchmark.write_json(path, {"schema_version": 1, "tests": tests})
+    return path
+
+
 def results(inventory):
     return {
         "groups": [
@@ -256,25 +263,91 @@ def test_outcomes_account_for_unsupported_and_never_run_cases():
         {"name": expected, "code": "UNSUPPORTED"},
         {"name": supported, "code": "UNSUPPORTED"},
     ]
-    assert benchmark.lit_outcomes(mlir, tests) == {"unsupported": 1, "incomplete": 1}
-    assert not benchmark.lit_coverage(mlir, tests)
+    assert benchmark.lit_outcomes(mlir, tests, {}) == {
+        "unsupported": 1,
+        "incomplete": 1,
+    }
+    assert not benchmark.lit_coverage(mlir, tests, {})
     tests = [
         {"name": expected, "code": "UNSUPPORTED"},
         {"name": supported, "code": "UNRESOLVED"},
     ]
-    assert benchmark.lit_outcomes(mlir, tests) == {"unsupported": 1, "incomplete": 1}
-    assert not benchmark.lit_coverage(mlir, tests)
+    assert benchmark.lit_outcomes(mlir, tests, {}) == {
+        "unsupported": 1,
+        "incomplete": 1,
+    }
+    assert not benchmark.lit_coverage(mlir, tests, {})
     tests = [
         {"name": expected, "code": "UNSUPPORTED"},
         {"name": supported, "code": "FLAKYPASS"},
     ]
-    assert not benchmark.lit_coverage(mlir, tests)
+    assert not benchmark.lit_coverage(mlir, tests, {})
     tests = [{"name": name, "code": "PASS"} for name in reversed(mlir["cases"])]
-    assert benchmark.lit_coverage(mlir, tests)
-    assert benchmark.lit_outcomes(mlir, tests[:1]) == {"passed": 1, "not_run": 1}
+    assert benchmark.lit_coverage(mlir, tests, {})
+    assert benchmark.lit_outcomes(mlir, tests[:1], {}) == {"passed": 1, "not_run": 1}
     tests = [{"name": expected, "code": "XPASS"}, {"name": supported, "code": "XFAIL"}]
-    assert benchmark.lit_coverage(mlir, tests)
-    assert benchmark.lit_outcomes(mlir, tests) == {"failed": 1, "xfail": 1}
+    assert benchmark.lit_coverage(mlir, tests, {})
+    assert benchmark.lit_outcomes(mlir, tests, {}) == {"failed": 1, "xfail": 1}
+
+
+def test_listed_lit_cases_are_non_strict_and_not_run_cases_are_xfail():
+    mlir = group(manifest(), "mlir:ttlang")
+    ops, invalid = mlir["cases"]
+    # A listed pass (XPASS) is a non-strict pass; an unlisted XPASS still fails.
+    tests = [{"name": ops, "code": "XPASS"}, {"name": invalid, "code": "XFAIL"}]
+    listed = {ops: True, invalid: True}
+    assert benchmark.lit_coverage(mlir, tests, listed)
+    assert benchmark.lit_outcomes(mlir, tests, listed) == {"passed": 1, "xfail": 1}
+    assert benchmark.lit_outcomes(mlir, tests, {invalid: True}) == {
+        "failed": 1,
+        "xfail": 1,
+    }
+    # A case that must not run is an xfail without a report, and fails coverage
+    # if lit reported it anyway.
+    listed = {invalid: False}
+    tests = [{"name": ops, "code": "PASS"}]
+    assert benchmark.lit_coverage(mlir, tests, listed)
+    assert benchmark.lit_outcomes(mlir, tests, listed) == {"passed": 1, "xfail": 1}
+    tests.append({"name": invalid, "code": "FAIL"})
+    assert not benchmark.lit_coverage(mlir, tests, listed)
+    args = SimpleNamespace(lit="llvm-lit", timeout=300, build=Path("/build"))
+    command = benchmark.group_command(
+        args, mlir, Path("/out/group"), {}, {ops: True, invalid: False}
+    )
+    assert "--xfail=" + ops in command and "--allow-empty-runs" in command
+    excluded = next(arg for arg in command if arg.startswith("--filter-out="))
+    pattern = re.compile(excluded.partition("=")[2], re.IGNORECASE)
+    assert pattern.search(invalid) and not pattern.search(ops)
+    assert not pattern.search(invalid + ".orig")
+    assert command[-3:] == ["-o", "/out/group.lit.json", "/build/test/ttlang"]
+    command = benchmark.group_command(args, mlir, Path("/out/group"), {}, {})
+    assert not any(arg.startswith(("--xfail", "--filter-out")) for arg in command)
+
+
+@pytest.mark.parametrize(
+    "contents",
+    [
+        "[]",
+        "{not json",
+        '{"schema_version": 2, "tests": {}}',
+        '{"schema_version": 1, "tests": []}',
+        '{"schema_version": 1, "tests": {}, "extra": 1}',
+        '{"schema_version": 1, "tests": {"a": {"run": true}}}',
+        '{"schema_version": 1, "tests": {"a": {"reason": " ", "run": true}}}',
+        '{"schema_version": 1, "tests": {"a": {"reason": "r", "run": "no"}}}',
+        '{"schema_version": 1, "tests": {"a": {"reason": "r", "run": true, "x": 1}}}',
+        '{"schema_version": 1, "tests": {"a": {"reason": "r", "run": true},'
+        ' "a": {"reason": "r", "run": false}}}',
+    ],
+)
+def test_malformed_xfail_list_fails_closed(tmp_path, contents):
+    (tmp_path / "xfail.json").write_text(contents)
+    with pytest.raises(ValueError):
+        benchmark.xfail_list(tmp_path / "xfail.json")
+
+
+def test_checked_in_xfail_list_is_valid():
+    assert isinstance(benchmark.xfail_list(REPO_ROOT / benchmark.XFAIL_LIST), dict)
 
 
 def test_lit_report_tolerates_absence_but_not_malformed_reports(tmp_path):
@@ -389,7 +462,7 @@ def test_command_records_launch_failure_and_timeout(tmp_path):
     assert timeout["exit_code"] < 0
 
 
-def run_observer(tmp_path, source, *options, observe=None):
+def run_observer(tmp_path, source, *options, observe=None, xfail=None):
     """Run pytest with the observer plugin where importing ttnn fails loudly."""
     sample = tmp_path / "test_sample.py"
     sample.write_text(source)
@@ -403,8 +476,11 @@ def run_observer(tmp_path, source, *options, observe=None):
         "TTLANG_EMULE_CI_EVENTS": str(events),
     }
     env.pop("TTLANG_EMULE_CI_OBSERVE_RUNTIME", None)
+    env.pop("TTLANG_EMULE_CI_XFAIL", None)
     if observe is not None:
         env["TTLANG_EMULE_CI_OBSERVE_RUNTIME"] = observe
+    if xfail is not None:
+        env["TTLANG_EMULE_CI_XFAIL"] = str(write_xfail(tmp_path, xfail))
     plugin = ["-p", "observer", "-c", os.devnull, "--rootdir", str(tmp_path)]
     result = subprocess.run(
         [sys.executable, "-m", "pytest", "-q", *options, *plugin, str(sample)],
@@ -460,6 +536,45 @@ def test_observer_imports_runtime_only_for_device_suites(tmp_path, observe):
         assert recorded[0]["markers"] == {}
 
 
+def test_observer_marks_listed_cases_non_strict_and_skips_cases_not_run(tmp_path):
+    ran = tmp_path / "ran"
+    entry = {"reason": "emulator gap", "run": True}
+    result, events = run_observer(
+        tmp_path,
+        "import pytest\n"
+        f"RAN = {str(ran)!r}\n"
+        "def test_fails(): assert False\n"
+        "def test_passes(): pass\n"
+        "@pytest.mark.xfail(strict=True)\n"
+        "def test_own_strict(): pass\n"
+        "def test_hangs(): open(RAN, 'w').close()\n"
+        "def test_unlisted(): assert False\n",
+        "-o",
+        "xfail_strict=true",
+        xfail={
+            "test_sample.py::test_fails": entry,
+            "test_sample.py::test_passes": entry,
+            "test_sample.py::test_own_strict": entry,
+            "test_sample.py::test_hangs": {"reason": "hangs", "run": False},
+            "TTLang :: python/add.py": entry,
+        },
+    )
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert not ran.exists()
+    recorded = benchmark.read_events(events)
+    outcomes = {
+        case.partition("::")[2]: benchmark.pytest_outcomes({"cases": [case]}, recorded)
+        for case in recorded[0]["nodes"]
+    }
+    assert outcomes == {
+        "test_fails": {"xfail": 1},
+        "test_passes": {"passed": 1},
+        "test_own_strict": {"passed": 1},
+        "test_hangs": {"xfail": 1},
+        "test_unlisted": {"failed": 1},
+    }
+
+
 @pytest.mark.parametrize(
     "head,dirty", [("b" * 40, ""), ("a" * 40, " M test/python/test_add.py\n")]
 )
@@ -489,6 +604,7 @@ def test_unrecognized_lit_entry_is_not_silently_omitted(entry):
 
 def run_args(tmp_path, inventory):
     benchmark.write_json(tmp_path / "manifest.json", inventory)
+    write_xfail(tmp_path, {})
     return SimpleNamespace(
         source=tmp_path,
         build=tmp_path,
@@ -652,6 +768,45 @@ def test_lost_group_reports_still_account_for_every_planned_case(
     assert "private" not in json.dumps(summary)
 
 
+@pytest.mark.parametrize("listed", [True, False, None])
+def test_run_applies_the_xfail_list_to_lit_groups(monkeypatch, tmp_path, listed):
+    inventory = manifest()
+    args = run_args(tmp_path, inventory)
+    case = "TTLang :: python/add.py"
+    if listed is not None:
+        write_xfail(tmp_path, {case: {"reason": "emulator gap", "run": listed}})
+    commands = []
+
+    def fake_run(command, output, limit, env, source):
+        selected = selected_group(tmp_path, inventory, command)
+        if selected["id"] != "lit:python/add.py":
+            write_passing_report(selected, command, env, runtime=True)
+            return {"exit_code": 0, "timed_out": False, "wall_seconds": 1.0}
+        commands.append(command)
+        if listed is False:
+            # Filtered out: lit runs nothing, writes no report and succeeds.
+            return {"exit_code": 0, "timed_out": False, "wall_seconds": 1.0}
+        # The case passes, so lit reports XPASS for a listed (or XFAIL) test.
+        report = Path(command[command.index("-o") + 1])
+        benchmark.write_json(report, {"tests": [{"name": case, "code": "XPASS"}]})
+        return {"exit_code": 1, "timed_out": False, "wall_seconds": 1.0}
+
+    monkeypatch.setattr(benchmark, "run_command", fake_run)
+    assert benchmark.run(args, {}) == (1 if listed is None else 0)
+    results = benchmark.read_json(tmp_path / "results.json")
+    lit = next(entry for entry in results["groups"] if entry["suite"] == "lit")
+    assert lit["complete"]
+    assert (lit["status"], lit["outcomes"]) == {
+        True: ("passed", {"passed": 1}),
+        False: ("passed", {"xfail": 1}),
+        None: ("failed", {"failed": 1}),
+    }[listed]
+    assert ("--xfail=" + case in commands[0]) is bool(listed)
+    assert any(arg.startswith("--filter-out") for arg in commands[0]) is (
+        listed is False
+    )
+
+
 def test_collect_builds_the_complete_inventory_and_gates_lit_features(
     monkeypatch, tmp_path
 ):
@@ -664,6 +819,7 @@ def test_collect_builds_the_complete_inventory_and_gates_lit_features(
         lit="llvm-lit",
     )
     args.output.mkdir()
+    write_xfail(args.source, {})
     listings = {
         "python": (LIT_TESTS, ["TTLang :: python/add.py"]),
         "ttlang": (MLIR_TESTS, []),
@@ -733,6 +889,15 @@ def test_collect_builds_the_complete_inventory_and_gates_lit_features(
         "expected_unsupported": ["TTLang :: python/add.py"]
     }
     assert sum(command[0] == "llvm-lit" for command in commands) == 7
+    # Every listed case must be collected; the error names only the count.
+    entry = {"reason": "emulator gap", "run": True}
+    write_xfail(args.source, {"python/test_gone.py::test_gone": entry})
+    args.output = tmp_path / "out-xfail"
+    args.output.mkdir()
+    with pytest.raises(ValueError, match="names 1 uncollected") as error:
+        benchmark.collect(args, {})
+    assert "test_gone" not in str(error.value)
+    assert not (args.output / "manifest.json").exists()
     # Without the runtime features every Python lit test would silently become
     # UNSUPPORTED, so collection refuses to produce an inventory at all.
     features["value"] = "optimized system-linux"
@@ -766,24 +931,27 @@ def test_environment_uses_explicit_bounded_threads_and_isolated_cache(
         TTLANG_EMULE_CI_THREADS=threads,
         TTLANG_EMULE_CI_CACHE="/tt-metal-cache",
     )
-    env = benchmark.environment(SimpleNamespace(output=tmp_path / "run"))
+    env = benchmark.environment(
+        SimpleNamespace(source=tmp_path, output=tmp_path / "run")
+    )
     for key in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS"):
         assert env[key] == threads
     assert env["TT_METAL_CACHE"] == "/tt-metal-cache/run"
     assert env["TT_EMULE_JIT_CACHE_DIR"] == "/tt-metal-cache/run/emule-jit"
     assert env["PYTHONDONTWRITEBYTECODE"] == "1"
+    assert env["TTLANG_EMULE_CI_XFAIL"] == str(tmp_path / benchmark.XFAIL_LIST)
     # Lit writes its outputs under this run's private directory, not the build.
     assert (tmp_path / "run") in Path(env["TTLANG_LIT_TEST_EXEC_ROOT"]).parents
     monkeypatch.setenv("TTLANG_COMPILE_ONLY", "1")
     with pytest.raises(ValueError, match="activate"):
-        benchmark.environment(SimpleNamespace(output=tmp_path / "run"))
+        benchmark.environment(SimpleNamespace(source=tmp_path, output=tmp_path / "run"))
 
 
 @pytest.mark.parametrize("threads", ["0", "5", "-1", "1.5", "many"])
 def test_environment_rejects_unbounded_threads(monkeypatch, tmp_path, threads):
     activate_emulator(monkeypatch, TTLANG_EMULE_CI_THREADS=threads)
     with pytest.raises(ValueError):
-        benchmark.environment(SimpleNamespace(output=tmp_path / "run"))
+        benchmark.environment(SimpleNamespace(source=tmp_path, output=tmp_path / "run"))
 
 
 # The wrapper registers multi_device in its own conftest, absent here.

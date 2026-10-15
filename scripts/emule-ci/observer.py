@@ -8,10 +8,30 @@ import functools
 import json
 import os
 
+import pytest
+
 
 def emit(kind, **fields):
     with open(os.environ["TTLANG_EMULE_CI_EVENTS"], "a", encoding="utf-8") as output:
         output.write(json.dumps({"kind": kind, **fields}) + "\n")
+
+
+def pytest_collection_modifyitems(items):
+    # The benchmark validates the emulator-only xfail list. Its marks come
+    # first so they override a test's own xfail marks; non-strict, a listed
+    # case that passes is reported passed.
+    path = os.environ.get("TTLANG_EMULE_CI_XFAIL")
+    if not path:
+        return
+    with open(path, encoding="utf-8") as listing:
+        listed = json.load(listing)["tests"]
+    for item in items:
+        if item.nodeid in listed:
+            entry = listed[item.nodeid]
+            mark = pytest.mark.xfail(
+                reason=entry["reason"], run=entry["run"], strict=False
+            )
+            item.add_marker(mark, append=False)
 
 
 def pytest_collection_finish(session):
