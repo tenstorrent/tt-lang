@@ -30,7 +30,7 @@ SELECTION = "complete"
 SUITES = ("mlir", "bindings", "packaging", "pytest", "me2e", "lit")
 PYTEST_KINDS = ("pytest", "packaging")
 LIT_KINDS = ("lit", "mlir", "bindings")
-CLASSIFICATION_MARKERS = ("multi_device", "compile_only")
+CLASSIFICATION_MARKERS = ("multi_device",)
 LIT_MARKERS = ("expected_unsupported",)
 # lit features that prove the emulator runtime is visible to the Python lit
 # suite; without them its tests silently become UNSUPPORTED.
@@ -41,16 +41,6 @@ DIRECTORY_GROUPS = {
     "packaging": "packaging",
 }
 LIT_SUITES = {"lit": "python/", "mlir": "ttlang/", "bindings": "bindings/python/"}
-OUTCOMES = (
-    "passed",
-    "failed",
-    "skipped",
-    "xfail",
-    "unsupported",
-    "incomplete",
-    "not_run",
-)
-GROUP_STATUSES = ("passed", "failed", "infrastructure_error")
 LIT_OUTCOMES = {
     "PASS": "passed",
     "XFAIL": "xfail",

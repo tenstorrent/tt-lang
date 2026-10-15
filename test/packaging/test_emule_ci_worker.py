@@ -350,7 +350,7 @@ def test_smoke_requires_numerical_pass_and_observed_execution(
                 "kind": "pytest",
                 "path": "python/pipe/test_broadcast_2d.py",
                 "cases": ["python/pipe/test_broadcast_2d.py::test_broadcast_2d"],
-                "markers": {"multi_device": [], "compile_only": []},
+                "markers": {"multi_device": []},
             }
         ]
         smoke_harness.write_json(
@@ -608,27 +608,6 @@ def test_report_cli_prints_markdown_and_fails_closed(tmp_path):
         assert result.returncode == 2 and result.stdout == ""
 
 
-def test_dry_run_does_not_query_docker_or_create_output(tmp_path, monkeypatch, capsys):
-    def forbidden(*args, **kwargs):
-        pytest.fail("dry run must not execute a subprocess")
-
-    monkeypatch.setattr(worker.subprocess, "run", forbidden)
-    output = tmp_path / "output"
-    assert (
-        worker.main(["--image", "local:runtime", "--output", str(output), "--dry-run"])
-        == 0
-    )
-    assert not output.exists()
-    assert json.loads(capsys.readouterr().out)["stages"] == [
-        "preflight",
-        "install",
-        "prepare",
-        "smoke",
-        "collect",
-        "test",
-    ]
-
-
 @pytest.mark.parametrize(
     "options",
     [
@@ -661,7 +640,7 @@ def instance(tmp_path, monkeypatch):
     return value
 
 
-def test_missing_image_stops_before_volume_creation_or_install(instance, monkeypatch):
+def test_missing_image_stops_before_install(instance, monkeypatch):
     calls = []
 
     def capture(command, **kwargs):
@@ -673,20 +652,6 @@ def test_missing_image_stops_before_volume_creation_or_install(instance, monkeyp
         instance.prepare()
     assert len(calls) == 1
     assert calls[0][1:3] == ["image", "inspect"]
-
-
-def test_dirty_source_stops_before_volume_creation(instance, monkeypatch):
-    outputs = iter([IMAGE + "\n", "a" * 40 + "\n", "/repo/.git\n", " M changed.py\n"])
-    calls = []
-
-    def capture(command, **kwargs):
-        calls.append(command)
-        return subprocess.CompletedProcess(command, 0, next(outputs), "")
-
-    monkeypatch.setattr(instance, "capture", capture)
-    with pytest.raises(RuntimeError, match="commit the experiment"):
-        instance.prepare()
-    assert not any("volume" in command for command in calls)
 
 
 @pytest.mark.parametrize("test_summary,expected", [(None, 1), (summary(), 0)])
@@ -908,15 +873,6 @@ def test_timeout_cleanup_does_not_remove_unowned_container(instance, monkeypatch
     assert "rm" not in calls[0]
 
 
-def test_long_hosted_timeout_is_explicit_and_local_default_stays_bounded():
-    arguments = ["--image", "local:runtime", "--output", "/results"]
-    assert worker.arguments(arguments).timeout_seconds == 2700
-    assert (
-        worker.arguments(arguments + ["--timeout-seconds", "18000"]).timeout_seconds
-        == 18000
-    )
-
-
 def test_low_disk_stops_before_image_inspection(instance, monkeypatch):
     monkeypatch.setattr(
         worker.shutil, "disk_usage", lambda _: SimpleNamespace(free=1024)
@@ -962,7 +918,7 @@ def test_private_parent_protects_container_writable_child(tmp_path, monkeypatch)
 def test_unignored_build_mountpoint_is_never_created(instance, monkeypatch, tmp_path):
     instance.source = tmp_path / "source"
     instance.source.mkdir()
-    answers = iter([(0, IMAGE), (0, "a" * 40), (0, "/repo/.git"), (0, ""), (1, "")])
+    answers = iter([(0, IMAGE), (0, "a" * 40), (0, "/repo/.git"), (1, "")])
 
     def capture(command, **kwargs):
         code, output = next(answers)

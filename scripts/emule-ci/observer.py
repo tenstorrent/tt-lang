@@ -8,32 +8,21 @@ import functools
 import json
 import os
 
-current_node = None
-
 
 def emit(kind, **fields):
     with open(os.environ["TTLANG_EMULE_CI_EVENTS"], "a", encoding="utf-8") as output:
         output.write(json.dumps({"kind": kind, **fields}) + "\n")
 
 
-CLASSIFICATION_MARKERS = ("multi_device", "compile_only")
-
-
 def pytest_collection_finish(session):
-    # Record which cases declare themselves multi-device or compile-only so the
-    # benchmark can report single-device-profile skips as unsupported rather
-    # than silently excluding or miscounting them.
-    markers = {}
-    for item in session.items:
-        names = sorted(
-            {
-                marker.name
-                for marker in item.iter_markers()
-                if marker.name in CLASSIFICATION_MARKERS
-            }
-        )
-        if names:
-            markers[item.nodeid] = names
+    # Record which cases declare themselves multi-device so the benchmark can
+    # report single-device-profile skips as unsupported rather than silently
+    # excluding or miscounting them.
+    markers = {
+        item.nodeid: ["multi_device"]
+        for item in session.items
+        if item.get_closest_marker("multi_device")
+    }
     emit("collection", nodes=[item.nodeid for item in session.items], markers=markers)
 
 
@@ -51,17 +40,12 @@ def pytest_sessionstart(session):
 
     @functools.wraps(original)
     def observe(*args, **kwargs):
-        emit("launch", nodeid=current_node)
+        emit("launch")
         result = original(*args, **kwargs)
-        emit("returned", nodeid=current_node)
+        emit("returned")
         return result
 
     ttnn.generic_op = observe
-
-
-def pytest_runtest_logstart(nodeid, location):
-    global current_node
-    current_node = nodeid
 
 
 def pytest_runtest_logreport(report):
@@ -77,5 +61,3 @@ def pytest_runtest_logreport(report):
 
 def pytest_runtest_logfinish(nodeid, location):
     emit("finish", nodeid=nodeid)
-    global current_node
-    current_node = None

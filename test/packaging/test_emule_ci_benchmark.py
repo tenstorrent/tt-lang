@@ -123,15 +123,12 @@ def test_collection_covers_every_suite_without_selection():
     }
     assert group(inventory, "packaging:packaging")["markers"] == {
         "multi_device": [],
-        "compile_only": [],
     }
     assert group(inventory, "pytest:python/fabric/test_mesh.py")["markers"] == {
         "multi_device": ["python/fabric/test_mesh.py::test_mesh"],
-        "compile_only": [],
     }
     assert group(inventory, "pytest:python/test_add.py")["markers"] == {
         "multi_device": [],
-        "compile_only": [],
     }
 
 
@@ -202,7 +199,7 @@ def test_classified_cases_must_belong_to_their_group():
     with pytest.raises(ValueError, match="classified cases"):
         benchmark.validate_manifest(inventory)
     inventory = manifest()
-    del group(inventory, "pytest:python/test_add.py")["markers"]["compile_only"]
+    del group(inventory, "pytest:python/test_add.py")["markers"]["multi_device"]
     with pytest.raises(ValueError, match="classification markers"):
         benchmark.validate_manifest(inventory)
     inventory = manifest()
@@ -462,7 +459,7 @@ def test_observer_records_classification_markers(tmp_path):
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert benchmark.read_events(events)[0]["markers"] == {
-        "test_sample.py::test_first": ["compile_only", "multi_device"],
+        "test_sample.py::test_first": ["multi_device"],
         "test_sample.py::test_second": ["multi_device"],
     }
     inventory = benchmark.collection_inventory(events)

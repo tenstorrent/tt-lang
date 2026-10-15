@@ -714,9 +714,6 @@ class Worker:
             raise RuntimeError("source identity unavailable")
         self.revision = revision.stdout.strip()
         self.environment["TTLANG_CI_GIT_COMMON"] = common.stdout.strip()
-        clean = self.capture(["git", "status", "--porcelain", "--untracked-files=all"])
-        if clean.returncode or clean.stdout.strip():
-            raise RuntimeError("commit the experiment locally before measuring it")
         # CMake/tests may generate temporary files under source/build. Only add
         # its empty mountpoint when Git explicitly ignores it; never replace an
         # existing symlink or expose existing build products to the container.
@@ -725,43 +722,6 @@ class Worker:
         if ignored.returncode or build_mountpoint.is_symlink():
             raise RuntimeError("source build mountpoint must be an ignored directory")
         build_mountpoint.mkdir(exist_ok=True)
-        for key in ("TTLANG_EMULE_BUILD_VOLUME", "TTLANG_EMULE_CACHE_VOLUME"):
-            volume = self.environment[key]
-            found = self.capture(
-                [
-                    self.docker,
-                    "volume",
-                    "ls",
-                    "--format",
-                    "{{.Name}}",
-                    "--filter",
-                    f"name=^{volume}$",
-                ]
-            )
-            if found.returncode or found.stdout.strip():
-                raise RuntimeError("refusing to reuse a volume")
-            created = self.capture(
-                [
-                    self.docker,
-                    "volume",
-                    "create",
-                    "--label",
-                    f"ttlang.emule-ci.owner={self.token}",
-                    volume,
-                ]
-            )
-            if created.returncode:
-                raise RuntimeError("could not create worker volume")
-        write_json(
-            self.private / "identity.json",
-            {
-                "image_id": image_id,
-                "revision": self.revision,
-                "worker_token": self.token,
-                "build_volume": self.environment["TTLANG_EMULE_BUILD_VOLUME"],
-                "cache_volume": self.environment["TTLANG_EMULE_CACHE_VOLUME"],
-            },
-        )
 
     def execute(self):
         self.started = time.monotonic()
@@ -892,7 +852,6 @@ def arguments(argv):
     parser.add_argument(
         "--disk-floor-gib", type=int, choices=range(1, 1025), default=10
     )
-    parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
     if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,15}", args.worker):
         parser.error("worker must be a short lowercase identifier")
@@ -942,28 +901,6 @@ def main(argv=None):
             return 2
         return 0
     args = arguments(argv)
-    if args.dry_run:
-        print(
-            json.dumps(
-                {
-                    "dry_run": True,
-                    "publication_blocked": True,
-                    "cpus": args.cpus,
-                    "memory_gib": args.memory_gib,
-                    "timeout_seconds": args.timeout_seconds,
-                    "disk_floor_gib": args.disk_floor_gib,
-                    "stages": [
-                        "preflight",
-                        "install",
-                        "prepare",
-                        "smoke",
-                        "collect",
-                        "test",
-                    ],
-                }
-            )
-        )
-        return 0
     os.umask(0o077)
     worker = Worker(args)
     if worker.output == worker.source or worker.source in worker.output.parents:

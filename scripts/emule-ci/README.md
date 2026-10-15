@@ -38,14 +38,10 @@ abort, a killed group, or a lost or unreadable report, the whole group is
 still accounted for. A group whose coverage is incomplete is an
 `infrastructure_error`, never a pass.
 
-The pytest observer records calls and successful returns from `ttnn.generic_op`
-separately from test outcomes, and records each collected case's `multi_device`
-and `compile_only` markers. It imports the runtime only for the device suites
-(`TTLANG_EMULE_CI_OBSERVE_RUNTIME=1`); collection and the packaging suite never
-import it. A returned call does not imply that a numerical comparison passed.
-Lit has separate outcomes and is not covered by that observer. The
-compiler-only suites prove nothing about emulation; the job summary reports
-them per suite so that emulator coverage is not inferred from their passes.
+Returned `ttnn.generic_op` calls are counted separately from test outcomes and
+do not imply that a numerical comparison passed. The compiler-only suites prove
+nothing about emulation; the job summary reports them per suite so that
+emulator coverage is not inferred from their passes.
 
 The Python simulator suite (`test/sim`) tests `tt-lang-sim` itself and is outside
 this inventory; `call-test-sim.yml` remains responsible for it.
@@ -149,11 +145,11 @@ python3 scripts/emule-ci/worker.py \
   --worker serial --cpus 4 --memory-gib 12
 ```
 
-The output is a new directory outside the checkout. `--dry-run` prints the stage
-plan without invoking Docker. Local defaults are four CPUs, 12 GiB RAM, a
-45-minute limit, and a 10 GiB host disk-free floor. Sampling approximates peaks;
-on macOS the disk-free floor describes the output filesystem, not the Docker
-VM's separate disk. Runtime build resource use is not measured by the worker.
+The output is a new directory outside the checkout. Local defaults are four
+CPUs, 12 GiB RAM, a 45-minute limit, and a 10 GiB host disk-free floor. Sampling
+approximates peaks; on macOS the disk-free floor describes the output
+filesystem, not the Docker VM's separate disk. Runtime build resource use is not
+measured by the worker.
 
 A runtime-only build uses the existing manifest/Dockerfile owner and stops before
 compiler installation:
@@ -166,44 +162,20 @@ bash scripts/tt-lang-emule-container.sh
 ```
 
 `summary.json` contains bounded measurements. Verbose evidence stays under
-`private/`; its `identity.json` records the newly created, labeled build/cache
-volumes, which remain available for inspection. Only task-owned processes and
-containers may be stopped during local measurement.
-
-## Collect and measure
-
-After activating the installed compiler/emulator environment, collection and
-execution use the same source revision and immutable runtime identity:
-
-```sh
-revision="$(git -C /workspace rev-parse HEAD)"
-runtime_id=sha256:REPLACE_WITH_VERIFIED_IMAGE_ID
-python /workspace/scripts/emule-ci/benchmark.py collect \
-  --source /workspace --build /ttlang-build \
-  --revision "$revision" --runtime-id "$runtime_id" \
-  --output /emule-results/collection
-python /workspace/scripts/emule-ci/benchmark.py run \
-  --source /workspace --build /ttlang-build \
-  --revision "$revision" --runtime-id "$runtime_id" \
-  --manifest /emule-results/collection/manifest.json \
-  --output /emule-results/serial
-```
-
-Output locations are new directories. Existing evidence is preserved. Collection
-errors, timeouts, native crashes, missing results, and incomplete coverage remain
-errors. Failed tests are not retried or converted to successful timing results.
-
-Whole pytest files stay together, preserving ordered ME2E prerequisites and normal
-in-file ordering. Python lit files are separate groups. The MLIR, Python-binding
-and packaging suites are one group each, run before the device suites. Results
-include per-group elapsed time, per-suite membership, normalized case outcomes
-and per-test events. Group timings include interpreter startup, collection,
-fixture, compilation, execution, and reference-check costs. The manifest is
-version 2 (`selection: complete`); version 1 manifests with marker selection are
-rejected rather than silently re-run with narrower coverage. All groups run
-serially on one worker; hosted sharding is not implemented.
+`private/`, and the worker's build/cache volumes remain available for
+inspection. Only task-owned processes and containers may be stopped during
+local measurement.
 
 ## Evidence and interpretation
+
+Collection errors, timeouts, native crashes, missing results, and incomplete
+coverage remain errors. Failed tests are not retried or converted to successful
+timing results. Whole pytest files stay together, preserving ordered ME2E
+prerequisites and normal in-file ordering. Python lit files are separate groups.
+The MLIR, Python-binding and packaging suites are one group each, run before the
+device suites. Group timings include interpreter startup, collection, fixture,
+compilation, execution, and reference-check costs. All groups run serially on
+one worker; hosted sharding is not implemented.
 
 Record the compiler revision, local image identity, dependency pins, requirement
 hashes, CPU/RAM limits, cold build/setup times, test times, cache sizes, and sampled
