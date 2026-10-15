@@ -261,7 +261,6 @@ def counted(value, vocabulary):
 def public_test_summary(value):
     """Validate the harness's small public contract; never copy private results."""
     counts = (
-        "shard",
         "planned_group_count",
         "planned_case_count",
         "group_count",
@@ -271,8 +270,6 @@ def public_test_summary(value):
     )
     keys = {
         *counts,
-        "manifest_digest",
-        "selection",
         "group_status_counts",
         "case_outcome_counts",
         "suite_counts",
@@ -281,12 +278,6 @@ def public_test_summary(value):
     }
     if not isinstance(value, dict) or set(value) != keys:
         raise ValueError("unexpected benchmark summary fields")
-    if not isinstance(value["manifest_digest"], str) or not re.fullmatch(
-        r"[0-9a-f]{64}", value["manifest_digest"]
-    ):
-        raise ValueError("invalid manifest digest")
-    if value["selection"] != "complete":
-        raise ValueError("invalid benchmark selection")
     for key in counts:
         if type(value[key]) is not int or value[key] < 0:
             raise ValueError("invalid benchmark count")
@@ -463,10 +454,8 @@ def runtime_smoke(revision, runtime_id):
     )
     path = "python/pipe/test_broadcast_2d.py"
     manifest = {
-        "version": benchmark.MANIFEST_VERSION,
         "revision": revision,
         "runtime_id": runtime_id,
-        "selection": benchmark.SELECTION,
         "groups": [
             {
                 "id": "pytest:" + path,

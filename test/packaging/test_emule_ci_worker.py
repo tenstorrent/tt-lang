@@ -86,9 +86,6 @@ def summary():
         "outcome_counts": {"passed": 2, "unsupported": 1},
     }
     return {
-        "manifest_digest": "a" * 64,
-        "selection": "complete",
-        "shard": 1,
         "planned_group_count": 2,
         "planned_case_count": 3,
         "group_count": 2,
@@ -343,7 +340,6 @@ def test_smoke_requires_numerical_pass_and_observed_execution(
     def run(args, env):
         calls.append((args, env))
         manifest = smoke_harness.read_json(args.manifest)
-        assert manifest["version"] == 2 and manifest["selection"] == "complete"
         assert manifest["groups"] == [
             {
                 "id": "pytest:python/pipe/test_broadcast_2d.py",
@@ -356,8 +352,6 @@ def test_smoke_requires_numerical_pass_and_observed_execution(
         smoke_harness.write_json(
             args.output / "results.json",
             {
-                "manifest_digest": smoke_harness.digest(manifest),
-                "shard": 1,
                 "groups": [
                     {
                         "id": "pytest:python/pipe/test_broadcast_2d.py",
@@ -425,12 +419,11 @@ def test_public_summary_accepts_only_documented_sanitized_contract():
 @pytest.mark.parametrize(
     "key,value",
     [
-        ("manifest_digest", "/private/path"),
+        ("planned_case_count", "/private/path"),
         ("wall_seconds", float("nan")),
         ("group_count", True),
         ("runtime_execution_observed", "yes"),
         ("group_status_counts", {"secret": 1}),
-        ("selection", "not multi_device"),
         ("case_outcome_counts", {"passed": "/private/log"}),
         ("case_outcome_counts", {"private_reason": 1}),
         ("suite_counts", {}),
@@ -514,8 +507,6 @@ def test_benchmark_public_summary_satisfies_the_worker_contract(smoke_harness):
         },
     ]
     results = {
-        "manifest_digest": "c" * 64,
-        "shard": 1,
         "planned_group_count": 4,
         "planned_case_count": 600,
         "planned_suite_counts": {
@@ -523,7 +514,7 @@ def test_benchmark_public_summary_satisfies_the_worker_contract(smoke_harness):
         },
         "groups": groups,
     }
-    for value in (results, {"manifest_digest": "c" * 64, "shard": 1, "groups": []}):
+    for value in (results, {"groups": []}):
         public = benchmark.public_summary(value)
         assert worker.public_test_summary(public) == public
         assert "private" not in json.dumps(public)

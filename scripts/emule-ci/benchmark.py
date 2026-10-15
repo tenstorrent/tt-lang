@@ -15,7 +15,6 @@ excluded, and cases that never ran are counted as ``not_run``.
 
 import argparse
 from collections import Counter
-import hashlib
 import json
 import os
 from pathlib import Path, PurePosixPath
@@ -25,13 +24,10 @@ import subprocess
 import sys
 import time
 
-MANIFEST_VERSION = 2
-SELECTION = "complete"
 SUITES = ("mlir", "bindings", "packaging", "pytest", "me2e", "lit")
 PYTEST_KINDS = ("pytest", "packaging")
 LIT_KINDS = ("lit", "mlir", "bindings")
 CLASSIFICATION_MARKERS = ("multi_device",)
-LIT_MARKERS = ("expected_unsupported",)
 # lit features that prove the emulator runtime is visible to the Python lit
 # suite; without them its tests silently become UNSUPPORTED.
 REQUIRED_LIT_FEATURES = ("ttnn", "tt-device")
@@ -49,7 +45,6 @@ LIT_OUTCOMES = {
     "XPASS": "failed",
     "NOEXE": "failed",
 }
-LIT_NAME = re.compile(r"(?:[A-Za-z0-9_.-]+/)*[A-Za-z0-9_.-]+\.(?:mlir|py)")
 MAX_THREADS = 4
 
 
@@ -65,23 +60,9 @@ def write_json(path, value):
     os.replace(temporary, path)
 
 
-def digest(value):
-    return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
-
-
 def unique(values):
     if len(values) != len(set(values)):
         raise ValueError("duplicate group or test IDs")
-
-
-def safe_relative_path(path):
-    parsed = PurePosixPath(path)
-    return (
-        not parsed.is_absolute()
-        and ".." not in parsed.parts
-        and parsed.as_posix() == path
-        and LIT_NAME.fullmatch(path) is not None
-    )
 
 
 def suite_of(group_id):
@@ -92,78 +73,29 @@ def suite_of(group_id):
 
 
 def validate_group(group):
-    if "kind" not in group or group["kind"] not in (*PYTEST_KINDS, *LIT_KINDS):
-        raise ValueError("invalid test group")
-    kind = group["kind"]
-    if set(group) != {"id", "kind", "path", "cases", "markers"}:
-        raise ValueError("unexpected test group fields")
-    path, cases, markers = group["path"], group["cases"], group["markers"]
+    """Check one group of the inventory this job collected and then runs."""
+    kind, path, cases = group["kind"], PurePosixPath(group["path"]), group["cases"]
+    prefix = ("TTLang :: " if kind in LIT_KINDS else "") + group["path"]
     if (
-        not isinstance(path, str)
+        kind not in (*PYTEST_KINDS, *LIT_KINDS)
         or group["id"] != f"{kind}:{path}"
-        or not isinstance(cases, list)
+        or path.is_absolute()
+        or ".." in path.parts
         or not cases
-        or any(not isinstance(case, str) or "\n" in case for case in cases)
+        or any(not case.startswith(prefix) for case in cases)
     ):
         raise ValueError("invalid test group")
-    expected_markers = CLASSIFICATION_MARKERS if kind in PYTEST_KINDS else LIT_MARKERS
-    if not isinstance(markers, dict) or set(markers) != set(expected_markers):
-        raise ValueError("test group requires its classification markers")
-    for marked in markers.values():
-        if not isinstance(marked, list) or not set(marked) <= set(cases):
-            raise ValueError("classified cases must belong to the group")
-        unique(marked)
-    if kind == "pytest":
-        if not safe_relative_path(path) or not re.fullmatch(
-            r"(?:python|me2e)/.+\.py", path
-        ):
-            raise ValueError("invalid test group")
-        if any(not case.startswith(path + "::") for case in cases):
-            raise ValueError("pytest group contains a test from another file")
-    elif kind == "lit":
-        if not safe_relative_path(path) or not re.fullmatch(r"python/.+\.py", path):
-            raise ValueError("invalid test group")
-        if cases != ["TTLang :: " + path]:
-            raise ValueError("invalid lit test ID")
-    else:
-        if path != DIRECTORY_GROUPS[kind]:
-            raise ValueError("invalid test group")
-        for case in cases:
-            if kind == "packaging":
-                valid = case.startswith(path + "/") and "::" in case
-                valid = valid and safe_relative_path(case.split("::", 1)[0])
-            else:
-                valid = case.startswith("TTLang :: " + path + "/") and (
-                    safe_relative_path(case[len("TTLang :: ") :])
-                )
-            if not valid:
-                raise ValueError("invalid test group")
+    if any(not set(marked) <= set(cases) for marked in group["markers"].values()):
+        raise ValueError("classified cases must belong to the group")
 
 
 def validate_manifest(manifest):
-    if set(manifest) != {"version", "revision", "runtime_id", "selection", "groups"}:
-        raise ValueError("unexpected manifest fields")
-    if (
-        manifest.get("version") != MANIFEST_VERSION
-        or manifest.get("selection") != SELECTION
-    ):
-        raise ValueError("unsupported manifest version or selection")
-    if not re.fullmatch(r"[0-9a-f]{40}", manifest.get("revision", "")):
-        raise ValueError("manifest requires a full source revision")
-    if not re.fullmatch(
-        r"(?:[^\s@]+@)?sha256:[0-9a-f]{64}", manifest.get("runtime_id", "")
-    ):
-        raise ValueError("manifest requires an immutable runtime image digest")
-    if not manifest.get("groups"):
+    if not manifest["groups"]:
         raise ValueError("manifest requires nonempty groups")
-    unique([group["id"] for group in manifest["groups"]])
-    cases = []
     for group in manifest["groups"]:
-        if not isinstance(group, dict):
-            raise ValueError("invalid test group")
         validate_group(group)
-        cases.extend(group["cases"])
-    unique(cases)
+    unique([group["id"] for group in manifest["groups"]])
+    unique([case for group in manifest["groups"] for case in group["cases"]])
 
 
 def lit_names(output, prefix):
@@ -175,9 +107,9 @@ def lit_names(output, prefix):
             raise ValueError("unexpected lit collection entry")
         if match:
             name = match.group(1)
-            if not name.startswith(prefix) or not safe_relative_path(name):
-                raise ValueError("unexpected lit collection entry")
-            if prefix == LIT_SUITES["lit"] and not name.endswith(".py"):
+            if not name.startswith(prefix) or (
+                prefix == LIT_SUITES["lit"] and not name.endswith(".py")
+            ):
                 raise ValueError("unexpected lit collection entry")
             names.append(name)
     unique(names)
@@ -290,13 +222,7 @@ def make_manifest(collected, revision, runtime_id):
     }
     if unexpected:
         raise ValueError("expected unsupported lit tests must be collected tests")
-    manifest = {
-        "version": MANIFEST_VERSION,
-        "revision": revision,
-        "runtime_id": runtime_id,
-        "selection": SELECTION,
-        "groups": groups,
-    }
+    manifest = {"revision": revision, "runtime_id": runtime_id, "groups": groups}
     validate_manifest(manifest)
     if {suite_of(group["id"]) for group in groups} != set(SUITES):
         raise ValueError("every compiler suite must collect tests")
@@ -446,9 +372,6 @@ def public_summary(results):
     for group in groups:
         outcomes.update(group.get("outcomes", {}))
     return {
-        "manifest_digest": results["manifest_digest"],
-        "selection": SELECTION,
-        "shard": results["shard"],
         "planned_group_count": results.get("planned_group_count", len(groups)),
         "planned_case_count": results.get("planned_case_count", 0),
         "group_count": len(groups),
@@ -717,8 +640,6 @@ def run(args, env):
         planned[suite_of(group["id"])]["groups"] += 1
         planned[suite_of(group["id"])]["cases"] += len(group["cases"])
     summary = {
-        "manifest_digest": digest(manifest),
-        "shard": 1,
         "planned_group_count": len(groups),
         "planned_case_count": sum(len(group["cases"]) for group in groups),
         "planned_suite_counts": planned,

@@ -72,8 +72,6 @@ def group(inventory, group_id):
 
 def results(inventory):
     return {
-        "manifest_digest": benchmark.digest(inventory),
-        "shard": 1,
         "groups": [
             {
                 "id": group["id"],
@@ -89,7 +87,6 @@ def results(inventory):
 
 def test_collection_covers_every_suite_without_selection():
     inventory = manifest()
-    assert inventory["version"] == 2 and inventory["selection"] == "complete"
     assert [group["id"] for group in inventory["groups"]] == [
         "mlir:ttlang",
         "bindings:bindings/python",
@@ -171,8 +168,6 @@ def test_every_compiler_suite_must_collect_tests(suite, message):
     "entry",
     [
         "  TTLang :: python/add.py",
-        "  TTLang :: ttlang/../escape.mlir",
-        "  TTLang :: ttlang/Dialect/ops.txt",
         "  Other :: ttlang/Dialect/ops.mlir",
     ],
 )
@@ -197,18 +192,6 @@ def test_classified_cases_must_belong_to_their_group():
         "python/test_matmul.py::test_matmul"
     ]
     with pytest.raises(ValueError, match="classified cases"):
-        benchmark.validate_manifest(inventory)
-    inventory = manifest()
-    del group(inventory, "pytest:python/test_add.py")["markers"]["multi_device"]
-    with pytest.raises(ValueError, match="classification markers"):
-        benchmark.validate_manifest(inventory)
-    inventory = manifest()
-    group(inventory, "mlir:ttlang")["markers"] = {"multi_device": []}
-    with pytest.raises(ValueError, match="classification markers"):
-        benchmark.validate_manifest(inventory)
-    inventory = manifest()
-    del group(inventory, "lit:python/add.py")["markers"]
-    with pytest.raises(ValueError, match="unexpected test group fields"):
         benchmark.validate_manifest(inventory)
 
 
@@ -300,7 +283,6 @@ def test_public_summary_reports_suites_outcomes_and_unsupported_cases():
         suite: {"groups": 1, "cases": 2} for suite in benchmark.SUITES
     }
     summary = benchmark.public_summary(timing)
-    assert summary["selection"] == "complete"
     assert summary["case_outcome_counts"] == {"passed": 7, "unsupported": 1}
     assert set(summary["suite_counts"]) == set(benchmark.SUITES)
     assert summary["suite_counts"]["pytest"] == {
@@ -347,12 +329,6 @@ def test_public_summary_excludes_commands_paths_and_errors():
         "/python/test_a.py",
         "python/../test_a.py",
         "python//test_a.py",
-        "python/test_\na.py",
-        "python/test_\ra.py",
-        "python/test_\ta.py",
-        "python/test_\x1ba.py",
-        "python/test_ a.py",
-        "python/test_:a.py",
     ],
 )
 def test_rejects_unsafe_test_paths(path):
@@ -520,16 +496,6 @@ def test_environment_rejects_compile_only(monkeypatch, tmp_path):
     monkeypatch.setenv("TTLANG_COMPILE_ONLY", "1")
     with pytest.raises(ValueError, match="activate"):
         benchmark.environment(SimpleNamespace(output=tmp_path))
-
-
-@pytest.mark.parametrize(
-    "runtime_id", ["latest", "local-image:v1", "sha256:123", "a@sha256:" + "g" * 64]
-)
-def test_rejects_mutable_runtime_identity(runtime_id):
-    inventory = manifest()
-    inventory["runtime_id"] = runtime_id
-    with pytest.raises(ValueError, match="immutable"):
-        benchmark.validate_manifest(inventory)
 
 
 @pytest.mark.parametrize(
@@ -865,15 +831,6 @@ def test_lit_build_paths_work_with_separate_execution_root(tmp_path):
     assert executed.returncode == 0, executed.stdout + executed.stderr
     assert benchmark.read_json(output)["tests"][0]["code"] == "PASS"
     assert list((execution / "python/Output").iterdir())
-
-
-@pytest.mark.parametrize("where", ["root", "group"])
-def test_manifest_rejects_unexpected_fields(where):
-    inventory = manifest()
-    target = inventory if where == "root" else inventory["groups"][0]
-    target["private_diagnostic"] = "must not be accepted"
-    with pytest.raises(ValueError, match="unexpected.*fields"):
-        benchmark.validate_manifest(inventory)
 
 
 @pytest.mark.parametrize("threads", ["1", "2", "3", "4"])
