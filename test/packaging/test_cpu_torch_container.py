@@ -5,6 +5,7 @@
 
 import json
 import os
+import re
 import runpy
 import shlex
 import subprocess
@@ -199,9 +200,15 @@ sys.exit(23 if step == os.environ['FAIL_STEP'] else 0)
     (helpers / "trim-emule-venv.sh").write_text(
         'printf \'"trim"\\n\' >> "$CALL_LOG"\n' '[ "$FAIL_STEP" != trim ] || exit 23\n'
     )
-    command = command.replace("/opt/ttlang-toolchain", str(toolchain))
-    command = command.replace("/tmp/", f"{helpers}/")
-    command = command.replace("/runtime", str(runtime))
+    # One pass, so a tmp_path under /tmp cannot be rewritten a second time.
+    paths = {
+        "/opt/ttlang-toolchain": str(toolchain),
+        "/tmp/": f"{helpers}/",
+        "/runtime": str(runtime),
+    }
+    command = re.sub(
+        "|".join(map(re.escape, paths)), lambda match: paths[match[0]], command
+    )
     result = subprocess.run(
         ["bash", "-e", "-c", command],
         env={

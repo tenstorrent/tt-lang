@@ -181,6 +181,36 @@ def test_workflow_is_one_manual_trusted_runner_local_job():
 
 
 def test_stack_step_reads_exact_manifest_pin(tmp_path):
+    # CI checks out shallowly, so the real baseline may be absent; validate
+    # against a fixture history whose baseline is an ancestor of HEAD.
+    repo = tmp_path / "compiler"
+    git = [
+        "git",
+        "-C",
+        str(repo),
+        "-c",
+        "user.name=tt-lang tests",
+        "-c",
+        "user.email=tt-lang-tests@example.invalid",
+        "-c",
+        "commit.gpgsign=false",
+    ]
+    manifest = json.loads((ROOT / "config/tt-lang-emule-stack.json").read_text())
+    (repo / "scripts").mkdir(parents=True)
+    (repo / "config").mkdir()
+    (repo / "scripts/tt-lang-emule-stack.py").write_text(
+        (ROOT / "scripts/tt-lang-emule-stack.py").read_text()
+    )
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    subprocess.run([*git, "add", "scripts"], check=True)
+    subprocess.run([*git, "commit", "-q", "-m", "baseline"], check=True)
+    baseline = subprocess.run(
+        [*git, "rev-parse", "HEAD"], check=True, capture_output=True, text=True
+    ).stdout.strip()
+    manifest["compiler"]["base_commit"] = baseline
+    (repo / "config/tt-lang-emule-stack.json").write_text(json.dumps(manifest))
+    subprocess.run([*git, "add", "config"], check=True)
+    subprocess.run([*git, "commit", "-q", "-m", "manifest"], check=True)
     output = tmp_path / "output"
     result = subprocess.run(
         [
@@ -190,15 +220,13 @@ def test_stack_step_reads_exact_manifest_pin(tmp_path):
             "-c",
             workflow_step("Read the pinned emulator revision")["run"],
         ],
-        cwd=ROOT,
+        cwd=repo,
         env={**os.environ, "GITHUB_OUTPUT": str(output)},
         capture_output=True,
         text=True,
     )
     assert result.returncode == 0, result.stderr
-    pin = json.loads((ROOT / "config/tt-lang-emule-stack.json").read_text())[
-        "emulator"
-    ]["commit"]
+    pin = manifest["emulator"]["commit"]
     assert output.read_text() == f"emulator_sha={pin}\n"
 
 
