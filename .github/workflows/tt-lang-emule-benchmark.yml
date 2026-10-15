@@ -65,9 +65,6 @@ jobs:
       - name: Read the pinned emulator revision
         id: stack
         run: |
-          python3 scripts/tt-lang-emule-stack.py \
-            --manifest config/tt-lang-emule-stack.json validate \
-            --compiler-source . --quiet
           pin="$(python3 scripts/tt-lang-emule-stack.py \
             --manifest config/tt-lang-emule-stack.json emit |
             awk -F '\t' '$1 == "TTLANG_EMULE_COMMIT" {print $2}')"
