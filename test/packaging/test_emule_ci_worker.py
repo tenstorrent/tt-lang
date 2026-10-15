@@ -494,6 +494,11 @@ def test_benchmark_public_summary_satisfies_the_worker_contract(smoke_harness):
     )
     assert "| mlir | 1 | 1 | 1 | 1 | passed 589, unsupported 2 | passed 1 |" in rendered
     assert "| lit | 1 | 1 | 0 | 1 | not_run 1 | infrastructure_error 1 |" in rendered
+    # Planned cases the worker deadline never reached are reported as not run.
+    assert "| tutorial | 1 | 0 | 0 | 1 | not_run 1 | - |" in rendered
+    assert "All suites: cases failed 1, not_run 5, passed 592, unsupported 2;" in (
+        rendered
+    )
     assert "private" not in rendered
 
 
@@ -707,6 +712,7 @@ def test_test_tools_are_prepared_before_every_execution(instance, monkeypatch):
     assert command[command.index("--manifest") + 1] == (
         "/emule-results/collection/manifest.json"
     )
+    assert command[-4:] == ["--timeout", "300", "--group-timeout", "2700"]
 
 
 def test_prepare_uses_existing_cmake_test_tools_target():

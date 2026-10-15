@@ -7,7 +7,8 @@
 The inventory mirrors ``check-ttlang-all``: the MLIR, Python-binding and
 packaging suites run as compiler-only directory groups, every ``test/python``
 and ``test/me2e`` pytest file runs through the emulator without marker
-selection, and every Python lit test runs as its own group. Cases a test
+selection, and every Python lit test runs as its own group. The hardware
+example and tutorial scripts and the binding pytest file run last. Cases a test
 declares unsupported on the single-device emulator profile (``multi_device``
 pytest skips, lit ``UNSUPPORTED``) are reported explicitly instead of being
 excluded, and cases that never ran are counted as ``not_run``.
@@ -24,7 +25,16 @@ import subprocess
 import sys
 import time
 
-SUITES = ("mlir", "bindings", "packaging", "pytest", "me2e", "lit")
+SUITES = (
+    "mlir",
+    "bindings",
+    "packaging",
+    "pytest",
+    "me2e",
+    "lit",
+    "examples",
+    "tutorial",
+)
 PYTEST_KINDS = ("pytest", "packaging")
 LIT_KINDS = ("lit", "mlir", "bindings")
 CLASSIFICATION_MARKERS = ("multi_device",)
@@ -37,6 +47,21 @@ DIRECTORY_GROUPS = {
     "packaging": "packaging",
 }
 LIT_SUITES = {"lit": "python/", "mlir": "ttlang/", "bindings": "bindings/python/"}
+PYTEST_SUITES = {
+    "python/": "pytest",
+    "me2e/": "me2e",
+    "bindings/": "bindings",
+    "examples/": "examples",
+    "tutorial/": "tutorial",
+}
+# Collected separately and run after every other group, cheapest first, so a
+# deadline overrun loses only these; lit skips pytest files, so no other CI
+# runs the binding file.
+APPENDED_PYTEST_PATHS = (
+    "bindings/python/test_ttl_ttcore_integration.py",
+    "examples",
+    "tutorial",
+)
 LIT_OUTCOMES = {
     "PASS": "passed",
     "XFAIL": "xfail",
@@ -67,9 +92,12 @@ def unique(values):
 
 def suite_of(group_id):
     kind, _, path = group_id.partition(":")
-    if kind == "pytest":
-        return "pytest" if path.startswith("python/") else "me2e"
-    return kind
+    if kind != "pytest":
+        return kind
+    for prefix, suite in PYTEST_SUITES.items():
+        if path.startswith(prefix):
+            return suite
+    raise ValueError("pytest group outside the known compiler suites")
 
 
 def validate_group(group):
@@ -168,8 +196,8 @@ def lit_features(output):
 def make_manifest(collected, revision, runtime_id):
     """Build the complete inventory from collection outputs.
 
-    ``collected`` maps ``pytest`` and ``packaging`` to collection inventories
-    (``nodes`` plus optional ``markers``), and ``lit``, ``mlir`` and
+    ``collected`` maps ``pytest``, ``packaging`` and ``appended`` to collection
+    inventories (``nodes`` plus optional ``markers``), and ``lit``, ``mlir`` and
     ``bindings`` to their ``llvm-lit --show-tests`` output (``tests``) with the
     full names lit reported UNSUPPORTED without executing anything
     (``expected_unsupported``).
@@ -222,6 +250,7 @@ def make_manifest(collected, revision, runtime_id):
     }
     if unexpected:
         raise ValueError("expected unsupported lit tests must be collected tests")
+    groups.extend(pytest_groups(collected["appended"]))
     manifest = {"revision": revision, "runtime_id": runtime_id, "groups": groups}
     validate_manifest(manifest)
     if {suite_of(group["id"]) for group in groups} != set(SUITES):
@@ -540,6 +569,17 @@ def collect(args, env):
         env,
         args.source,
     )
+    appended_events = args.output / "appended.events.jsonl"
+    env["TTLANG_EMULE_CI_EVENTS"] = str(appended_events)
+    processes["appended"] = run_command(
+        pytest_command(args)
+        + ["--collect-only"]
+        + [str(args.source / "test" / path) for path in APPENDED_PYTEST_PATHS],
+        args.output / "appended.log",
+        600,
+        env,
+        args.source,
+    )
     for kind in LIT_KINDS:
         suite = str(args.build / "test" / LIT_SUITES[kind].rstrip("/"))
         processes[kind] = run_command(
@@ -587,6 +627,7 @@ def collect(args, env):
     collected = {
         "pytest": collection_inventory(device_events),
         "packaging": collection_inventory(packaging_events),
+        "appended": collection_inventory(appended_events),
     }
     for kind in LIT_KINDS:
         probe = lit_report(args.output / f"{kind}.probe.json")
@@ -603,9 +644,14 @@ def collect(args, env):
 def group_command(args, group, prefix, env):
     kind = group["kind"]
     if kind in PYTEST_KINDS:
-        # Only the device suites need the observer to wrap ttnn.generic_op;
-        # the packaging suite stays host-only and never imports the runtime.
-        env["TTLANG_EMULE_CI_OBSERVE_RUNTIME"] = "1" if kind == "pytest" else "0"
+        # Only the device suites need the observer to wrap ttnn.generic_op:
+        # packaging and the binding file stay host-only, and the tutorial and
+        # example scripts launch kernels in child processes it cannot see.
+        observe = suite_of(group["id"]) in ("pytest", "me2e")
+        env["TTLANG_EMULE_CI_OBSERVE_RUNTIME"] = "1" if observe else "0"
+        # Those scripts bound each child process themselves.
+        env["TUTORIAL_TIMEOUT_SECONDS"] = str(args.timeout)
+        env["TTLANG_EXAMPLE_TIMEOUT_SECONDS"] = str(args.timeout)
         command = pytest_command(args) if kind == "pytest" else packaging_command(args)
         return command + [
             "--timeout=" + str(args.timeout),

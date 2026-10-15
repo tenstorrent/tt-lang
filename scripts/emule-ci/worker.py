@@ -213,7 +213,22 @@ def numeric_stats(raw):
     }
 
 
-SUITES = ("mlir", "bindings", "packaging", "pytest", "me2e", "lit")
+SUITES = (
+    "mlir",
+    "bindings",
+    "packaging",
+    "pytest",
+    "me2e",
+    "lit",
+    "examples",
+    "tutorial",
+)
+# The per-case limit matches hardware CI. A group is one test file or
+# compiler-only directory; the largest measured file took under 10 minutes of
+# test time and the tutorial file is expected to take 15-40, so 45 minutes
+# bounds a stall that escapes the per-case limit without cutting off either.
+CASE_TIMEOUT_SECONDS = 300
+GROUP_TIMEOUT_SECONDS = 2700
 GROUP_STATUSES = {"passed", "failed", "infrastructure_error"}
 CASE_OUTCOMES = {
     "passed",
@@ -299,6 +314,14 @@ def format_counts(counts):
     return ", ".join(f"{key} {count}" for key, count in sorted(counts.items())) or "-"
 
 
+def with_unreached(outcomes, planned):
+    """Count planned cases the run never reached, e.g. at the worker deadline."""
+    unreached = planned - sum(outcomes.values())
+    if unreached <= 0:
+        return outcomes
+    return {**outcomes, "not_run": outcomes.get("not_run", 0) + unreached}
+
+
 def report_summary(summary):
     """Render a worker summary as Markdown from its validated public fields only.
 
@@ -361,22 +384,25 @@ def report_summary(summary):
     ]
     for suite in SUITES:
         counts = tests["suite_counts"][suite]
+        outcomes = with_unreached(counts["outcome_counts"], counts["planned_cases"])
         lines.append(
             f"| {suite} | {counts['planned_groups']} | {counts['groups']}"
             f" | {counts['complete_groups']} | {counts['planned_cases']}"
-            f" | {format_counts(counts['outcome_counts'])}"
+            f" | {format_counts(outcomes)}"
             f" | {format_counts(counts['status_counts'])} |"
         )
+    outcomes = with_unreached(tests["case_outcome_counts"], tests["planned_case_count"])
     lines += [
         "",
-        f"All suites: cases {format_counts(tests['case_outcome_counts'])};"
+        f"All suites: cases {format_counts(outcomes)};"
         f" groups {format_counts(tests['group_status_counts'])}.",
         "",
         "`unsupported` counts cases that declare themselves unsupported on the"
         " single-device emulator profile (`multi_device` pytest skips and lit"
         " `UNSUPPORTED`); `not_run` counts planned cases without a recorded"
-        " outcome. Group status `infrastructure_error` marks incomplete coverage,"
-        " timeouts or abnormal exits, not test verdicts.",
+        " outcome, including cases the worker deadline never reached. Group"
+        " status `infrastructure_error` marks incomplete coverage, timeouts or"
+        " abnormal exits, not test verdicts.",
     ]
     return "\n".join(lines) + "\n"
 
@@ -774,6 +800,10 @@ class Worker:
                     "/emule-results/collection/manifest.json",
                     "--output",
                     "/emule-results/run",
+                    "--timeout",
+                    str(CASE_TIMEOUT_SECONDS),
+                    "--group-timeout",
+                    str(GROUP_TIMEOUT_SECONDS),
                 ],
             )
             report = self.private / "container/run/summary.json"

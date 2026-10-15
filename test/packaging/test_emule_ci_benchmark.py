@@ -6,13 +6,15 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 from types import SimpleNamespace
 
 import pytest
 
-SCRIPT_DIR = Path(__file__).resolve().parents[2] / "scripts/emule-ci"
+REPO_ROOT = Path(__file__).resolve().parents[2]
+SCRIPT_DIR = REPO_ROOT / "scripts/emule-ci"
 SPEC = importlib.util.spec_from_file_location(
     "emule_benchmark", SCRIPT_DIR / "benchmark.py"
 )
@@ -30,6 +32,17 @@ DEVICE_NODES = [
     "python/fabric/test_mesh.py::test_mesh",
 ]
 DEVICE_MARKERS = {"python/fabric/test_mesh.py::test_mesh": ["multi_device"]}
+APPENDED_NODES = [
+    "bindings/python/test_ttl_ttcore_integration.py::test_context",
+    "examples/test_example_scripts.py::test_example[eltwise_add.py]",
+    "examples/test_example_scripts.py::test_example[multidevice_all_reduce.py]",
+    "tutorial/test_tutorials.py::test_tutorial[matmul-tutorial/step_1.py]",
+]
+APPENDED_MARKERS = {
+    "examples/test_example_scripts.py::test_example[multidevice_all_reduce.py]": [
+        "multi_device"
+    ]
+}
 PACKAGING_NODES = [
     "packaging/test_wheel.py::test_metadata",
     "packaging/test_wheel.py::test_layout[a b]",
@@ -52,6 +65,7 @@ def collected(**overrides):
     inventory = {
         "pytest": {"nodes": list(DEVICE_NODES), "markers": dict(DEVICE_MARKERS)},
         "packaging": {"nodes": list(PACKAGING_NODES)},
+        "appended": {"nodes": list(APPENDED_NODES), "markers": dict(APPENDED_MARKERS)},
         "lit": lit_collection(LIT_TESTS),
         "mlir": lit_collection(MLIR_TESTS, MLIR_UNSUPPORTED),
         "bindings": lit_collection(BINDINGS_TESTS),
@@ -96,6 +110,9 @@ def test_collection_covers_every_suite_without_selection():
         "pytest:python/test_matmul.py",
         "pytest:python/fabric/test_mesh.py",
         "lit:python/add.py",
+        "pytest:bindings/python/test_ttl_ttcore_integration.py",
+        "pytest:examples/test_example_scripts.py",
+        "pytest:tutorial/test_tutorials.py",
     ]
     assert group(inventory, "mlir:ttlang")["cases"] == [
         "TTLang :: ttlang/Dialect/TTL/IR/ops.mlir",
@@ -111,6 +128,9 @@ def test_collection_covers_every_suite_without_selection():
         "pytest",
         "pytest",
         "lit",
+        "bindings",
+        "examples",
+        "tutorial",
     ]
     assert group(inventory, "mlir:ttlang")["markers"] == {
         "expected_unsupported": MLIR_UNSUPPORTED
@@ -127,6 +147,15 @@ def test_collection_covers_every_suite_without_selection():
     assert group(inventory, "pytest:python/test_add.py")["markers"] == {
         "multi_device": [],
     }
+    assert group(inventory, "pytest:examples/test_example_scripts.py")["markers"] == {
+        "multi_device": list(APPENDED_MARKERS),
+    }
+
+
+@pytest.mark.parametrize("path", ["sim/test_a.py", "pythonic/test_a.py"])
+def test_pytest_groups_outside_known_suites_are_rejected(path):
+    with pytest.raises(ValueError, match="known compiler suites"):
+        manifest(appended={"nodes": [*APPENDED_NODES, path + "::test_a"]})
 
 
 def test_collection_preserves_ordered_me2e_stages():
@@ -146,6 +175,8 @@ def test_collection_preserves_ordered_me2e_stages():
         ("pytest", "every compiler suite"),
         ("me2e", "every compiler suite"),
         ("lit", "every compiler suite"),
+        ("examples", "every compiler suite"),
+        ("tutorial", "every compiler suite"),
         ("packaging", "invalid test group"),
         ("mlir", "invalid test group"),
         ("bindings", "invalid test group"),
@@ -156,6 +187,9 @@ def test_every_compiler_suite_must_collect_tests(suite, message):
         override = {
             "pytest": {"nodes": [n for n in DEVICE_NODES if not n.startswith("me2e/")]}
         }
+    elif suite in ("examples", "tutorial"):
+        nodes = [n for n in APPENDED_NODES if not n.startswith(suite + "/")]
+        override = {"appended": {"nodes": nodes}}
     elif suite in ("pytest", "packaging"):
         override = {suite: {"nodes": []}}
     else:
@@ -278,12 +312,15 @@ def test_public_summary_reports_suites_outcomes_and_unsupported_cases():
     timing = results(inventory)
     for entry in timing["groups"]:
         entry["outcomes"] = {"passed": 1}
-    timing["groups"][-2]["outcomes"] = {"unsupported": 1}
+    mesh = [entry["id"] for entry in timing["groups"]].index(
+        "pytest:python/fabric/test_mesh.py"
+    )
+    timing["groups"][mesh]["outcomes"] = {"unsupported": 1}
     timing["planned_suite_counts"] = {
         suite: {"groups": 1, "cases": 2} for suite in benchmark.SUITES
     }
     summary = benchmark.public_summary(timing)
-    assert summary["case_outcome_counts"] == {"passed": 7, "unsupported": 1}
+    assert summary["case_outcome_counts"] == {"passed": 10, "unsupported": 1}
     assert set(summary["suite_counts"]) == set(benchmark.SUITES)
     assert summary["suite_counts"]["pytest"] == {
         "planned_groups": 1,
@@ -315,7 +352,7 @@ def test_public_summary_excludes_commands_paths_and_errors():
     )
     summary = benchmark.public_summary(timing)
     assert summary["runtime_execution_observed"]
-    assert summary["wall_seconds"] == 36.0
+    assert summary["wall_seconds"] == 66.0
     assert "private" not in json.dumps(summary)
     assert "secret" not in json.dumps(summary)
     assert "python/" not in json.dumps(summary)
@@ -510,10 +547,13 @@ def test_run_requires_coverage_and_runtime_execution(
 
     commands = []
     observe_flags = []
+    script_timeouts = set()
 
     def fake_run(command, output, limit, env, source):
         commands.append(command)
         observe_flags.append(env.get("TTLANG_EMULE_CI_OBSERVE_RUNTIME"))
+        script_timeouts.add(env.get("TUTORIAL_TIMEOUT_SECONDS"))
+        script_timeouts.add(env.get("TTLANG_EXAMPLE_TIMEOUT_SECONDS"))
         selected = selected_group(tmp_path, inventory, command)
         write_passing_report(selected, command, env, observed)
         return {
@@ -526,9 +566,9 @@ def test_run_requires_coverage_and_runtime_execution(
     assert benchmark.run(args, {"TTLANG_EMULE_CI_THREADS": "3"}) == expected
     summary = benchmark.read_json(tmp_path / "summary.json")
     assert summary["runtime_execution_observed"] is observed
-    assert summary["planned_group_count"] == summary["complete_group_count"] == 8
-    assert summary["planned_case_count"] == 13
-    assert summary["case_outcome_counts"] == {"passed": 13}
+    assert summary["planned_group_count"] == summary["complete_group_count"] == 11
+    assert summary["planned_case_count"] == 17
+    assert summary["case_outcome_counts"] == {"passed": 17}
     assert summary["suite_counts"]["mlir"]["planned_cases"] == 2
     assert summary["suite_counts"]["me2e"]["outcome_counts"] == {"passed": 3}
     results = benchmark.read_json(tmp_path / "results.json")
@@ -541,6 +581,9 @@ def test_run_requires_coverage_and_runtime_execution(
         "pytest",
         "pytest",
         "lit",
+        "bindings",
+        "examples",
+        "tutorial",
     ]
     assert results["groups"][0]["lit_codes"] == {"PASS": 2}
     by_kind = {
@@ -554,12 +597,14 @@ def test_run_requires_coverage_and_runtime_execution(
     assert by_kind["packaging"][by_kind["packaging"].index("-c") + 1] == os.devnull
     assert "observer" in by_kind["packaging"] and "observer" in by_kind["pytest"]
     assert "--reruns=0" in by_kind["packaging"]
-    # Only the device suites observe ttnn.generic_op; packaging stays host-only.
+    # Only the device suites observe ttnn.generic_op: packaging and the binding
+    # file stay host-only, and the scripts run kernels in child processes.
     assert [
         flag
         for selected, flag in zip(inventory["groups"], observe_flags)
         if selected["kind"] in ("pytest", "packaging")
-    ] == ["0", "1", "1", "1", "1"]
+    ] == ["0", "1", "1", "1", "1", "0", "0", "0"]
+    assert script_timeouts - {None} == {"600"}
 
 
 @pytest.mark.parametrize("failure", ["timeout", "malformed", "events_missing"])
@@ -591,7 +636,7 @@ def test_lost_group_reports_still_account_for_every_planned_case(
     assert summary["planned_case_count"] == sum(summary["case_outcome_counts"].values())
     if failure == "events_missing":
         for entry in results["groups"]:
-            if entry["suite"] in ("pytest", "me2e", "packaging"):
+            if group(inventory, entry["id"])["kind"] in benchmark.PYTEST_KINDS:
                 assert entry["status"] == "infrastructure_error"
                 planned = len(group(inventory, entry["id"])["cases"])
                 assert entry["outcomes"] == {"not_run": planned}
@@ -661,10 +706,11 @@ def test_collect_builds_the_complete_inventory_and_gates_lit_features(
                 return {"exit_code": 1, "timed_out": False, "wall_seconds": 1.0}
         else:
             assert "--collect-only" in command
-            nodes = (
-                PACKAGING_NODES if command[-1].endswith("packaging") else DEVICE_NODES
-            )
-            markers = {} if command[-1].endswith("packaging") else DEVICE_MARKERS
+            nodes, markers = {
+                "packaging": (PACKAGING_NODES, {}),
+                "me2e": (DEVICE_NODES, DEVICE_MARKERS),
+                "tutorial": (APPENDED_NODES, APPENDED_MARKERS),
+            }[Path(command[-1]).name]
             Path(env["TTLANG_EMULE_CI_EVENTS"]).write_text(
                 json.dumps({"kind": "collection", "nodes": nodes, "markers": markers})
             )
@@ -738,3 +784,50 @@ def test_environment_rejects_unbounded_threads(monkeypatch, tmp_path, threads):
     activate_emulator(monkeypatch, TTLANG_EMULE_CI_THREADS=threads)
     with pytest.raises(ValueError):
         benchmark.environment(SimpleNamespace(output=tmp_path / "run"))
+
+
+# The wrapper registers multi_device in its own conftest, absent here.
+@pytest.mark.filterwarnings("ignore::pytest.PytestUnknownMarkWarning")
+def test_example_wrapper_matches_the_hardware_examples_runner():
+    """Discovery and tags must not drift from compile-and-run-examples.sh."""
+    spec = importlib.util.spec_from_file_location(
+        "emule_example_scripts", REPO_ROOT / "test/examples/test_example_scripts.py"
+    )
+    examples = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(examples)
+    runner = (REPO_ROOT / ".github/scripts/compile-and-run-examples.sh").read_text()
+    # Reuse the runner's own settings and functions without running any script.
+    definitions = re.findall(
+        r"(?ms)^(?:(?:SCAN_LINES|SKIP_TAG|XFAIL_TAG)=.*?$|\w+\(\) \{.*?^\}$)", runner
+    )
+    probe = "\n".join(definitions) + (
+        "\ncollect_scripts | while IFS= read -r f; do\n"
+        '  tags=""\n'
+        '  file_has_tag "$ROOT/$f" "$SKIP_TAG" && tags=skip\n'
+        '  file_has_tag "$ROOT/$f" "$XFAIL_TAG" && tags="$tags xfail"\n'
+        '  printf "%s:%s\\n" "$f" "$tags"\n'
+        "done\n"
+    )
+    listed = subprocess.run(
+        ["bash", "-c", probe],
+        env={**os.environ, "ROOT": str(REPO_ROOT)},
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    shell = {
+        script: set(found.split()) for script, found in re.findall(r"(.+):(.*)", listed)
+    }
+    marks = {
+        param.values[0]: {mark.name: mark for mark in param.marks}
+        for param in examples.EXAMPLES
+    }
+    assert set(marks) == set(shell) and len(marks) == len(examples.EXAMPLES)
+    for script, found in shell.items():
+        unsupported = examples.REQUIRES_MESH_TAG in examples.tags(script)
+        assert ("multi_device" in marks[script]) == unsupported
+        assert ("skip" in marks[script]) == ("skip" in found or unsupported)
+        expect_failure = found == {"xfail"} and not unsupported
+        assert ("xfail" in marks[script]) == expect_failure
+        if expect_failure:
+            assert marks[script]["xfail"].kwargs["strict"] is True
