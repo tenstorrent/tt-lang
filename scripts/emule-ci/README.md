@@ -200,31 +200,8 @@ include per-group elapsed time, per-suite membership, normalized case outcomes
 and per-test events. Group timings include interpreter startup, collection,
 fixture, compilation, execution, and reference-check costs. The manifest is
 version 2 (`selection: complete`); version 1 manifests with marker selection are
-rejected rather than silently re-run with narrower coverage.
-
-## Local balancing analysis
-
-The harness retains its existing local analysis support:
-
-```sh
-python /workspace/scripts/emule-ci/benchmark.py balance \
-  --manifest /emule-results/collection/manifest.json \
-  --results /emule-results/serial/results.json \
-  --shards 3 --output /emule-results/plan.json \
-  --public-source /workspace
-```
-
-Balancing requires complete, uncensored timings for the exact inventory. It
-assigns whole files to the lightest shard, preserving original group order.
-The plan contains the inventory digest, tracked group paths, and estimated times,
-not runtime-generated case IDs. Inventory drift fails rather than omitting tests.
-
-Hosted sharding is disabled. Independently rebuilt runtime images can have
-different image IDs, which the current inventory digest deliberately treats as
-different runtimes. A future multi-runner design needs separately reviewed
-provenance and measurements; this pilot does not distribute private images or
-plans to other runners. Predicted totals exclude runtime and compiler setup and
-are not measured hosted performance.
+rejected rather than silently re-run with narrower coverage. All groups run
+serially on one worker; hosted sharding is not implemented.
 
 ## Evidence and interpretation
 

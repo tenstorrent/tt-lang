@@ -318,113 +318,6 @@ def test_public_summary_reports_suites_outcomes_and_unsupported_cases():
     assert "ttlang" not in json.dumps(summary["suite_counts"])
 
 
-def test_balance_is_deterministic_complete_and_disjoint():
-    inventory = manifest()
-    timing = results(inventory)
-    plan = benchmark.balance(inventory, timing, 3)
-    assert plan == benchmark.balance(inventory, timing, 3)
-    assert plan["estimated_seconds"] == [13.0, 12.0, 11.0]
-    groups = [
-        group
-        for index in range(1, 4)
-        for group in benchmark.selected_groups(inventory, plan, index)
-    ]
-    assert sorted(group["id"] for group in groups) == sorted(
-        group["id"] for group in inventory["groups"]
-    )
-    assert inventory["groups"][0] in groups
-
-
-@pytest.mark.parametrize("value", [0, -1, float("nan"), float("inf"), True, "2"])
-def test_balance_rejects_invalid_timings(value):
-    inventory = manifest()
-    timing = results(inventory)
-    timing["groups"][0]["wall_seconds"] = value
-    with pytest.raises(ValueError, match="finite positive"):
-        benchmark.balance(inventory, timing, 3)
-
-
-@pytest.mark.parametrize(
-    "problem",
-    [
-        "missing",
-        "duplicate",
-        "incomplete",
-        "infrastructure",
-        "wrong_revision",
-        "no_execution",
-    ],
-)
-def test_balance_rejects_invalid_baseline(problem):
-    inventory = manifest()
-    timing = results(inventory)
-    if problem == "missing":
-        timing["groups"].pop()
-    elif problem == "duplicate":
-        timing["groups"].append(timing["groups"][0])
-    elif problem == "incomplete":
-        timing["groups"][0]["complete"] = False
-    elif problem == "infrastructure":
-        timing["groups"][0]["status"] = "infrastructure_error"
-    elif problem == "wrong_revision":
-        timing["manifest_digest"] = "wrong"
-    else:
-        for group in timing["groups"]:
-            group["launch_counts"] = {}
-    with pytest.raises(ValueError):
-        benchmark.balance(inventory, timing, 3)
-
-
-def test_completed_test_failures_remain_in_timing_baseline():
-    inventory = manifest()
-    timing = results(inventory)
-    timing["groups"][0]["status"] = "failed"
-    assert len(benchmark.balance(inventory, timing, 3)["shards"]) == 3
-
-
-@pytest.mark.parametrize(
-    "problem", ["duplicate", "missing", "unknown", "empty", "digest"]
-)
-def test_rejects_invalid_shard_coverage(problem):
-    inventory = manifest()
-    plan = benchmark.balance(inventory, results(inventory), 3)
-    if problem == "duplicate":
-        plan["shards"][0].append(plan["shards"][1][0])
-    elif problem == "missing":
-        plan["shards"][0].pop()
-    elif problem == "unknown":
-        plan["shards"][0][0] = "pytest:python/missing.py"
-    elif problem == "empty":
-        plan["shards"].append([])
-    else:
-        plan["manifest_digest"] = "wrong"
-    with pytest.raises(ValueError):
-        benchmark.selected_groups(inventory, plan, 1)
-
-
-@pytest.mark.parametrize(
-    "changed", ["revision", "runtime", "group_order", "case_order", "parameters"]
-)
-def test_plan_rejects_changed_recollection(changed):
-    inventory = manifest()
-    plan = benchmark.balance(inventory, results(inventory), 3)
-    if changed == "revision":
-        inventory["revision"] = "c" * 40
-    elif changed == "runtime":
-        inventory["runtime_id"] = "sha256:" + "c" * 64
-    elif changed == "group_order":
-        inventory["groups"].reverse()
-    elif changed == "case_order":
-        group(inventory, "pytest:me2e/test_ops.py")["cases"].reverse()
-    else:
-        group(inventory, "pytest:python/test_add.py")["cases"][
-            0
-        ] = "python/test_add.py::test_add[changed]"
-    benchmark.validate_manifest(inventory)
-    with pytest.raises(ValueError, match="plan belongs to another manifest"):
-        benchmark.selected_groups(inventory, plan, 1)
-
-
 def test_native_abort_is_not_complete_coverage():
     stages = group(manifest(), "pytest:me2e/test_ops.py")
     events = [{"kind": "collection", "nodes": stages["cases"]}]
@@ -684,8 +577,6 @@ def test_run_requires_coverage_and_runtime_execution(
         revision=inventory["revision"],
         runtime_id=inventory["runtime_id"],
         manifest=tmp_path / "manifest.json",
-        plan=None,
-        shard=1,
         output=tmp_path,
         timeout=600,
         group_timeout=7200,
@@ -785,8 +676,6 @@ def test_lost_group_reports_still_account_for_every_planned_case(
         revision=inventory["revision"],
         runtime_id=inventory["runtime_id"],
         manifest=tmp_path / "manifest.json",
-        plan=None,
-        shard=1,
         output=tmp_path,
         timeout=600,
         group_timeout=7200,
@@ -982,170 +871,12 @@ def test_lit_build_paths_work_with_separate_execution_root(tmp_path):
 
 
 @pytest.mark.parametrize("where", ["root", "group"])
-def test_private_manifest_fields_cannot_be_exported(where):
+def test_manifest_rejects_unexpected_fields(where):
     inventory = manifest()
     target = inventory if where == "root" else inventory["groups"][0]
-    target["private_diagnostic"] = "must not be uploaded"
+    target["private_diagnostic"] = "must not be accepted"
     with pytest.raises(ValueError, match="unexpected.*fields"):
-        benchmark.balance(inventory, results(inventory), 3)
-
-
-def test_balance_exports_only_plan_without_private_parameters(tmp_path):
-    inventory = manifest()
-    sentinel = "PRIVATE_RUNTIME_PARAMETER"
-    group(inventory, "pytest:python/test_add.py")["cases"][
-        0
-    ] = f"python/test_add.py::test_add[{sentinel}]"
-    benchmark.write_json(tmp_path / "input.json", inventory)
-    benchmark.write_json(tmp_path / "results.json", results(inventory))
-    result = subprocess.run(
-        [
-            sys.executable,
-            str(SCRIPT_DIR / "benchmark.py"),
-            "balance",
-            "--manifest",
-            str(tmp_path / "input.json"),
-            "--results",
-            str(tmp_path / "results.json"),
-            "--output",
-            str(tmp_path / "plan.json"),
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert result.returncode == 0, result.stdout + result.stderr
-    exported = benchmark.read_json(tmp_path / "plan.json")
-    assert set(exported) == {"manifest_digest", "shards", "estimated_seconds"}
-    assert exported["manifest_digest"] == benchmark.digest(inventory)
-    assert sentinel not in json.dumps(exported) + result.stdout + result.stderr
-    assert "test_add[" not in json.dumps(exported)
-    assert sorted(key for shard in exported["shards"] for key in shard) == sorted(
-        group["id"] for group in inventory["groups"]
-    )
-    assert set(path.name for path in tmp_path.iterdir()) == {
-        "input.json",
-        "results.json",
-        "plan.json",
-    }
-
-
-def test_balance_refuses_obsolete_public_manifest_export(tmp_path):
-    inventory = manifest()
-    benchmark.write_json(tmp_path / "input.json", inventory)
-    benchmark.write_json(tmp_path / "results.json", results(inventory))
-    result = subprocess.run(
-        [
-            sys.executable,
-            str(SCRIPT_DIR / "benchmark.py"),
-            "balance",
-            "--manifest",
-            str(tmp_path / "input.json"),
-            "--results",
-            str(tmp_path / "results.json"),
-            "--output",
-            str(tmp_path / "plan.json"),
-            "--public-manifest",
-            str(tmp_path / "public.json"),
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert result.returncode == 2
-    assert "unrecognized arguments: --public-manifest" in result.stderr
-    assert not (tmp_path / "public.json").exists()
-    assert not (tmp_path / "plan.json").exists()
-
-
-@pytest.mark.parametrize(
-    "problem",
-    [None, "revision", "dirty", "unknown", "untracked", "symlink", "gitlink"],
-)
-def test_public_plan_requires_clean_exact_source_and_tracked_regular_files(
-    tmp_path, monkeypatch, problem
-):
-    inventory = manifest()
-    source = tmp_path / "source"
-    source.mkdir()
-    tree = {}
-    for index, entry in enumerate(inventory["groups"]):
-        if entry["kind"] in benchmark.DIRECTORY_GROUPS:
-            # Directory suites are proven by their tracked member files.
-            member = entry["cases"][0].removeprefix("TTLang :: ").split("::", 1)[0]
-            tree["test/" + member] = ("100644", "blob")
-        else:
-            tree["test/" + entry["path"]] = (
-                "100755" if index == 3 else "100644",
-                "blob",
-            )
-    path = "test/" + group(inventory, "pytest:me2e/test_ops.py")["path"]
-    if problem in ("unknown", "untracked"):
-        del tree[path]
-        if problem == "untracked":
-            untracked = source / path
-            untracked.parent.mkdir(parents=True)
-            untracked.write_text("untracked source does not prove public provenance")
-    elif problem == "symlink":
-        tree[path] = ("120000", "blob")
-    elif problem == "gitlink":
-        tree[path] = ("160000", "commit")
-    tree_output = "".join(
-        f"{mode} {kind} {'d' * 40}\t{path}\0" for path, (mode, kind) in tree.items()
-    )
-    answers = iter(
-        [
-            "c" * 40 if problem == "revision" else inventory["revision"],
-            " M changed.py\n" if problem == "dirty" else "",
-            tree_output,
-        ]
-    )
-    calls = []
-
-    def git(command, **kwargs):
-        calls.append(command)
-        assert kwargs == {"capture_output": True, "text": True, "check": True}
-        return subprocess.CompletedProcess(command, 0, next(answers), "")
-
-    monkeypatch.setattr(benchmark.subprocess, "run", git)
-    benchmark.write_json(tmp_path / "input.json", inventory)
-    benchmark.write_json(tmp_path / "results.json", results(inventory))
-    output = tmp_path / "plan.json"
-    monkeypatch.setattr(
-        sys,
-        "argv",
-        [
-            "benchmark.py",
-            "balance",
-            "--manifest",
-            str(tmp_path / "input.json"),
-            "--results",
-            str(tmp_path / "results.json"),
-            "--output",
-            str(output),
-            "--public-source",
-            str(source),
-        ],
-    )
-    if problem:
-        with pytest.raises(SystemExit) as error:
-            benchmark.main()
-        assert error.value.code == 2
-        assert not output.exists()
-    else:
-        assert benchmark.main() == 0
-        assert benchmark.read_json(output) == benchmark.balance(
-            inventory, results(inventory), 3
-        )
-    if problem not in ("revision", "dirty"):
-        assert calls[-1][-6:] == [
-            "ls-tree",
-            "-r",
-            "-z",
-            inventory["revision"],
-            "--",
-            "test",
-        ]
+        benchmark.validate_manifest(inventory)
 
 
 @pytest.mark.parametrize("threads", ["1", "2", "3", "4"])

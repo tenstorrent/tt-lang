@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Collect, time, and shard the complete compiler test inventory on tt-emule.
+"""Collect and time the complete compiler test inventory on tt-emule.
 
 The inventory mirrors ``check-ttlang-all``: the MLIR, Python-binding and
 packaging suites run as compiler-only directory groups, every ``test/python``
@@ -17,7 +17,6 @@ import argparse
 from collections import Counter
 import hashlib
 import json
-import math
 import os
 from pathlib import Path, PurePosixPath
 import re
@@ -83,12 +82,6 @@ def digest(value):
 def unique(values):
     if len(values) != len(set(values)):
         raise ValueError("duplicate group or test IDs")
-
-
-def positive_seconds(value):
-    if type(value) not in (int, float) or not math.isfinite(value) or value <= 0:
-        raise ValueError("timings must be finite positive numbers")
-    return value
 
 
 def safe_relative_path(path):
@@ -480,59 +473,6 @@ def public_summary(results):
     }
 
 
-def balance(manifest, results, count):
-    validate_manifest(manifest)
-    if not 1 <= count <= len(manifest["groups"]):
-        raise ValueError("shard count must be between one and the group count")
-    if results.get("manifest_digest") != digest(manifest):
-        raise ValueError("timings belong to another manifest")
-    measured = results["groups"]
-    unique([group["id"] for group in measured])
-    durations = {}
-    for group in measured:
-        if group["complete"] is not True or group["status"] not in ("passed", "failed"):
-            raise ValueError("incomplete or infrastructure-failed timing baseline")
-        durations[group["id"]] = positive_seconds(group["wall_seconds"])
-    if not public_summary(results)["runtime_execution_observed"]:
-        raise ValueError(
-            "baseline did not observe compiler-generated runtime execution"
-        )
-    ids = [group["id"] for group in manifest["groups"]]
-    if set(durations) != set(ids):
-        raise ValueError("timings must cover every group exactly once")
-    shards, totals = [[] for _ in range(count)], [0.0] * count
-    for group in sorted(ids, key=lambda key: (-durations[key], key)):
-        index = min(range(count), key=lambda index: (totals[index], index))
-        shards[index].append(group)
-        totals[index] += durations[group]
-    order = {key: index for index, key in enumerate(ids)}
-    return {
-        "manifest_digest": digest(manifest),
-        "shards": [sorted(shard, key=order.__getitem__) for shard in shards],
-        "estimated_seconds": totals,
-    }
-
-
-def selected_groups(manifest, plan, shard):
-    if plan is None:
-        if shard != 1:
-            raise ValueError("serial execution has only shard 1")
-        return manifest["groups"]
-    if plan.get("manifest_digest") != digest(manifest):
-        raise ValueError("shard plan belongs to another manifest")
-    shards = plan["shards"]
-    flattened = [key for group in shards for key in group]
-    unique(flattened)
-    if (
-        not 1 <= shard <= len(shards)
-        or any(not group for group in shards)
-        or set(flattened) != {group["id"] for group in manifest["groups"]}
-    ):
-        raise ValueError("shards must cover every group exactly once")
-    wanted = set(shards[shard - 1])
-    return [group for group in manifest["groups"] if group["id"] in wanted]
-
-
 def run_command(command, output, limit, env, source):
     started = time.monotonic()
     result = {"command": command, "exit_code": None, "timed_out": False}
@@ -661,43 +601,6 @@ def validate_source(source, revision):
         raise ValueError("benchmark source must be a clean committed checkout")
 
 
-def validate_public_source(source, manifest):
-    validate_source(source, manifest["revision"])
-    tree = subprocess.run(
-        [
-            "git",
-            "-c",
-            "safe.directory=" + str(source),
-            "-C",
-            str(source),
-            "ls-tree",
-            "-r",
-            "-z",
-            manifest["revision"],
-            "--",
-            "test",
-        ],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    regular_files = set()
-    for entry in tree.stdout.split("\0"):
-        if entry:
-            metadata, path = entry.split("\t", 1)
-            mode, kind, _ = metadata.split()
-            if mode in ("100644", "100755") and kind == "blob":
-                regular_files.add(path)
-    for group in manifest["groups"]:
-        path = "test/" + group["path"]
-        if group["kind"] in DIRECTORY_GROUPS:
-            tracked = any(name.startswith(path + "/") for name in regular_files)
-        else:
-            tracked = path in regular_files
-        if not tracked:
-            raise ValueError("public plan paths must be tracked regular source files")
-
-
 def collect(args, env):
     processes = {}
     device_events = args.output / "collection.events.jsonl"
@@ -818,15 +721,14 @@ def run(args, env):
         manifest["runtime_id"],
     ):
         raise ValueError("source/runtime identity differs from collected inventory")
-    plan = read_json(args.plan) if args.plan else None
-    groups = selected_groups(manifest, plan, args.shard)
+    groups = manifest["groups"]
     planned = {suite: {"groups": 0, "cases": 0} for suite in SUITES}
     for group in groups:
         planned[suite_of(group["id"])]["groups"] += 1
         planned[suite_of(group["id"])]["cases"] += len(group["cases"])
     summary = {
         "manifest_digest": digest(manifest),
-        "shard": args.shard,
+        "shard": 1,
         "planned_group_count": len(groups),
         "planned_case_count": sum(len(group["cases"]) for group in groups),
         "planned_suite_counts": planned,
@@ -905,36 +807,18 @@ def main():
         command.add_argument("--lit", default="llvm-lit")
         if name == "run":
             command.add_argument("--manifest", type=Path, required=True)
-            command.add_argument("--plan", type=Path)
-            command.add_argument("--shard", type=int, default=1)
             command.add_argument("--timeout", type=int, default=600)
             command.add_argument("--group-timeout", type=int, default=7200)
-    command = commands.add_parser("balance")
-    command.add_argument("--manifest", type=Path, required=True)
-    command.add_argument("--results", type=Path, required=True)
-    command.add_argument("--shards", type=int, default=3)
-    command.add_argument("--output", type=Path, required=True)
-    command.add_argument("--public-source", type=Path)
     args = parser.parse_args()
     try:
-        if args.command == "balance":
-            if args.output.exists():
-                raise ValueError("choose a new output path")
-            manifest = read_json(args.manifest)
-            plan = balance(manifest, read_json(args.results), args.shards)
-            if args.public_source:
-                validate_public_source(args.public_source.resolve(), manifest)
-            write_json(args.output, plan)
-            return 0
         args.source, args.build, args.output = (
             args.source.resolve(),
             args.build.resolve(),
             args.output.resolve(),
         )
         validate_source(args.source, args.revision)
-        if args.command == "run":
-            positive_seconds(args.timeout)
-            positive_seconds(args.group_timeout)
+        if args.command == "run" and min(args.timeout, args.group_timeout) <= 0:
+            raise ValueError("timeouts must be positive")
         env = environment(args)
         args.output.mkdir(parents=True, exist_ok=False)
         if args.command == "collect":

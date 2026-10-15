@@ -636,10 +636,6 @@ def test_dry_run_does_not_query_docker_or_create_output(tmp_path, monkeypatch, c
         ["--memory-gib", "13"],
         ["--timeout-seconds", "18001"],
         ["--disk-floor-gib", "0"],
-        ["--plan", "plan.json"],
-        ["--shard", "1"],
-        ["--manifest", "manifest.json", "--plan", "plan.json"],
-        ["--manifest", "manifest.json", "--shard", "1"],
         ["--worker", "has spaces"],
     ],
 )
@@ -658,7 +654,7 @@ def instance(tmp_path, monkeypatch):
         ["--image", "local:runtime", "--output", str(tmp_path / "output")]
     )
     value = worker.Worker(args)
-    (value.private / "container/inputs").mkdir(parents=True)
+    (value.private / "container").mkdir(parents=True)
     report = value.private / "container/smoke/summary.json"
     report.parent.mkdir()
     report.write_text(json.dumps(summary()))
@@ -822,17 +818,11 @@ def test_smoke_without_runtime_evidence_stops_before_collection(instance, monkey
     assert calls == ["preflight", "install", "prepare", "smoke"]
 
 
-@pytest.mark.parametrize("supplied_manifest", [False, True])
-def test_test_tools_are_prepared_before_every_execution(
-    instance, monkeypatch, supplied_manifest
-):
+def test_test_tools_are_prepared_before_every_execution(instance, monkeypatch):
     def prepare():
         instance.revision = "a" * 40
         instance.environment["TTLANG_EMULE_IMAGE"] = IMAGE
 
-    if supplied_manifest:
-        instance.args.manifest = instance.output / "manifest.json"
-        instance.args.manifest.write_text("{}")
     calls = []
     monkeypatch.setattr(instance, "prepare", prepare)
     monkeypatch.setattr(instance, "sizes", lambda _: None)
@@ -845,69 +835,15 @@ def test_test_tools_are_prepared_before_every_execution(
         "install",
         "prepare",
         "smoke",
-        *([] if supplied_manifest else ["collect"]),
+        "collect",
         "test",
     ]
     assert calls[2][1][-2:] == ["scripts/emule-ci/worker.py", "--prepare-test-tools"]
-
-
-def test_plan_only_worker_recollects_before_running_shard(
-    instance, monkeypatch, capsys
-):
-    plan = instance.output / "plan.json"
-    plan.write_text('{"manifest_digest": "private-inventory-digest"}')
-    arguments = [
-        "--image",
-        "local:runtime",
-        "--output",
-        str(instance.output),
-        "--plan",
-        str(plan),
-        "--shard",
-        "2",
-    ]
-    instance.args = worker.arguments(arguments)
-    assert instance.args.manifest is None
-    assert worker.main([*arguments, "--dry-run"]) == 0
-    assert json.loads(capsys.readouterr().out)["stages"] == [
-        "preflight",
-        "install",
-        "prepare",
-        "smoke",
-        "collect",
-        "test",
-    ]
-
-    def prepare():
-        instance.revision = "a" * 40
-        instance.environment["TTLANG_EMULE_IMAGE"] = IMAGE
-
-    calls = []
-    monkeypatch.setattr(instance, "prepare", prepare)
-    monkeypatch.setattr(instance, "sizes", lambda _: None)
-    monkeypatch.setattr(
-        instance, "stage", lambda name, command: calls.append((name, command)) or 0
-    )
-    instance.execute()
-    assert [name for name, _ in calls] == [
-        "preflight",
-        "install",
-        "prepare",
-        "smoke",
-        "collect",
-        "test",
-    ]
     assert calls[4][1][-2:] == ["--output", "/emule-results/collection"]
     command = calls[5][1]
     assert command[command.index("--manifest") + 1] == (
         "/emule-results/collection/manifest.json"
     )
-    assert command[command.index("--plan") + 1] == "/emule-results/inputs/plan.json"
-    assert command[command.index("--shard") + 1] == "2"
-    assert (instance.private / "container/inputs/plan.json").read_text() == (
-        plan.read_text()
-    )
-    assert not (instance.private / "container/inputs/manifest.json").exists()
 
 
 def test_missing_test_tools_stop_before_collection(instance, monkeypatch):
@@ -1021,7 +957,6 @@ def test_private_parent_protects_container_writable_child(tmp_path, monkeypatch)
     assert output.stat().st_mode & 0o777 == 0o700
     assert (output / "private").stat().st_mode & 0o777 == 0o700
     assert (output / "private/container").stat().st_mode & 0o777 == 0o777
-    assert (output / "private/container/inputs").stat().st_mode & 0o777 == 0o755
 
 
 def test_unignored_build_mountpoint_is_never_created(instance, monkeypatch, tmp_path):

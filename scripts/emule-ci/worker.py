@@ -458,8 +458,6 @@ def runtime_smoke(revision, runtime_id):
         revision=revision,
         runtime_id=runtime_id,
         manifest=Path("/emule-results/smoke/manifest.json"),
-        plan=None,
-        shard=1,
         timeout=600,
         group_timeout=900,
     )
@@ -787,7 +785,6 @@ class Worker:
             "--runtime-id",
             self.environment["TTLANG_EMULE_IMAGE"],
         ]
-        manifest = "/emule-results/collection/manifest.json"
         self.summary["status"] = "failed"
         try:
             self.environment["TTLANG_CI_CONTAINER"] = self.token + "-preflight"
@@ -836,13 +833,7 @@ class Worker:
             )
             if not self.summary["smoke"]["runtime_execution_observed"]:
                 return 1
-            if self.args.manifest:
-                shutil.copyfile(
-                    self.args.manifest, self.private / "container/inputs/manifest.json"
-                )
-                (self.private / "container/inputs/manifest.json").chmod(0o644)
-                manifest = "/emule-results/inputs/manifest.json"
-            elif self.stage(
+            if self.stage(
                 "collect",
                 [
                     *launcher,
@@ -853,29 +844,18 @@ class Worker:
                 ],
             ):
                 return 1
-            command = [
-                *launcher,
-                "run",
-                *identity,
-                "--manifest",
-                manifest,
-                "--output",
-                "/emule-results/run",
-            ]
-            if self.args.plan:
-                shutil.copyfile(
-                    self.args.plan, self.private / "container/inputs/plan.json"
-                )
-                (self.private / "container/inputs/plan.json").chmod(0o644)
-                command.extend(
-                    [
-                        "--plan",
-                        "/emule-results/inputs/plan.json",
-                        "--shard",
-                        str(self.args.shard),
-                    ]
-                )
-            result = self.stage("test", command)
+            result = self.stage(
+                "test",
+                [
+                    *launcher,
+                    "run",
+                    *identity,
+                    "--manifest",
+                    "/emule-results/collection/manifest.json",
+                    "--output",
+                    "/emule-results/run",
+                ],
+            )
             report = self.private / "container/run/summary.json"
             if report.exists():
                 self.summary["tests"] = public_test_summary(
@@ -912,17 +892,12 @@ def arguments(argv):
     parser.add_argument(
         "--disk-floor-gib", type=int, choices=range(1, 1025), default=10
     )
-    parser.add_argument("--manifest", type=Path)
-    parser.add_argument("--plan", type=Path)
-    parser.add_argument("--shard", type=int, choices=(1, 2, 3))
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
     if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,15}", args.worker):
         parser.error("worker must be a short lowercase identifier")
     if not 1 <= args.timeout_seconds <= 18000:
         parser.error("timeout must be between 1 and 18000 seconds")
-    if bool(args.plan) != bool(args.shard):
-        parser.error("--plan and --shard require each other")
     if not args.image or args.image.startswith("-"):
         parser.error("invalid local image reference")
     return args
@@ -982,7 +957,7 @@ def main(argv=None):
                         "install",
                         "prepare",
                         "smoke",
-                        *([] if args.manifest else ["collect"]),
+                        "collect",
                         "test",
                     ],
                 }
@@ -994,21 +969,13 @@ def main(argv=None):
     if worker.output == worker.source or worker.source in worker.output.parents:
         print("emule CI: output must be outside the source checkout", file=sys.stderr)
         return 2
-    for path in (args.manifest, args.plan):
-        if path and not path.is_file():
-            print(
-                "emule CI: input manifest/plan must be an existing file",
-                file=sys.stderr,
-            )
-            return 2
     try:
         worker.output.mkdir(mode=0o700, parents=True, exist_ok=False)
-        (worker.private / "container/inputs").mkdir(mode=0o700, parents=True)
+        (worker.private / "container").mkdir(parents=True)
         # The host-private parent stays 0700. The bind-mounted child must allow
         # container root to write without CAP_DAC_OVERRIDE on native Linux;
         # only this child is visible inside the container.
         (worker.private / "container").chmod(0o777)
-        (worker.private / "container/inputs").chmod(0o755)
     except OSError:
         print("emule CI: output must be a new writable directory", file=sys.stderr)
         return 2
