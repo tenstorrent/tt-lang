@@ -1,9 +1,12 @@
-# Compiler/emulator CI measurement
+# Compiler test inventory on tt-emule
 
-The manual `tt-lang-emule-benchmark.yml` workflow builds the pinned emulator
-runtime on one GitHub-hosted runner, installs the compiler against it, and runs
-the complete compiler test inventory serially, with tt-emule executing the
-compiler-generated kernels. It does not replace normal compiler or hardware CI.
+`.github/workflows/tt-lang-emule-inventory.yml` builds the pinned emulator
+runtime from the private emulator repository on one GitHub-hosted runner
+(`ubuntu-24.04`, 4 CPUs, 16 GB), installs the compiler against it, and runs the
+complete compiler test inventory serially, with tt-emule executing the
+compiler-generated kernels. It does not replace normal compiler or hardware CI
+and is not a required check. The tt-lang simulator ("sim") area owns failures,
+the xfail list, and stack-pin bumps.
 
 | Suite | Collection | Execution |
 | --- | --- | --- |
@@ -16,30 +19,47 @@ compiler-generated kernels. It does not replace normal compiler or hardware CI.
 | `examples` | `pytest --collect-only test/examples` (the scripts and tags of `compile-and-run-examples.sh`) | one pytest group, emulator, run last |
 | `tutorial` | `pytest --collect-only test/tutorial` | one pytest group, emulator, run last |
 
-No case is excluded by marker. Every planned case ends in exactly one outcome:
-`passed`, `failed`, `skipped`, `xfail`, `unsupported`, `incomplete`, or
-`not_run`. `unsupported` is a `multi_device` pytest skip or a lit `UNSUPPORTED`
-that the collection-time `llvm-lit --no-execute` probe predicted; any other lit
-`UNSUPPORTED`, `UNRESOLVED`, `TIMEOUT`, or unknown code is `incomplete`, as is a
-pytest case that started without a verdict, such as when the emulator aborts
-mid-test. `not_run` counts planned cases that never started or lost their
-report, such as after a crash or at the worker deadline. The `examples` and
-`tutorial` cases run each script in a child process, so their verdicts come from
-exit codes without `generic_op` evidence. Each case is limited to 300 s and each
-group to 45 minutes. A group whose coverage is incomplete is an
-`infrastructure_error`, never a pass. The compiler-only suites prove nothing
-about emulation, so the job summary reports each suite separately. `test/sim`
-is outside this inventory.
+**When.** After every merge to `main`, and on manual dispatch from `main`. One
+run at a time: a newer merge waits, and only the newest pending run is kept. It
+never runs on pull requests, because only code already reviewed and merged to
+`main` may run next to the private source and its credential. A cold build plus
+the inventory is expected to take about 3.5 to 4 hours (not yet measured on
+hosted runners); the job limit is 6 hours. The job summary publishes per-suite
+counts only; build output, logs, and test IDs stay on the runner.
 
-`config/tt-lang-emule-xfail.json` lists known emulator failures by inventory
-case ID, each with a `reason` and `run`; only this job applies it, as
-non-strict pytest `xfail` marks or lit `--xfail`. A listed failure is `xfail`, a
-listed pass is `passed` and counted in `xpass_count`, and a `run: false` case (a
-crash or hang) is never executed and counts as `xfail`. A listed case that was
-not collected, for example after a rename, is counted in `stale_xfail_count`
-instead of failing the run; remove both kinds of entry. A malformed list fails,
-and a `reason` must be plain text of at most 160 characters without paths,
-issue references, URLs, or repository names.
+**Outcomes.** Every planned case ends in exactly one of `passed`, `failed`,
+`skipped`, `xfail`, `unsupported`, `incomplete`, or `not_run`. `unsupported` is
+a `multi_device` pytest skip or a lit `UNSUPPORTED` predicted at collection;
+any other unexpected lit code, or a pytest case that started without a verdict
+(for example after an emulator abort), is `incomplete`. `not_run` counts cases
+that never started, such as after a crash or at the worker deadline. Each case
+is limited to 300 s and each group to 45 minutes. A group with incomplete
+coverage is an `infrastructure_error`, never a pass. `test/sim` is outside this
+inventory.
+
+**xfail list.** `config/tt-lang-emule-xfail.json` lists known emulator failures
+by inventory case ID; only this job applies it. Each entry has a generic
+`reason` (plain text, at most 160 characters, no paths, issue references, URLs,
+or repository names) and `run`; use `run: false` for crashes and hangs, which
+are then never executed. Listed passes are counted as `xpass_count`, and listed
+cases that were not collected as `stale_xfail_count`; both are reported, not
+fatal, and should be pruned. Refresh the list on every stack-pin bump.
+
+**Admin setup.** Create the environment `tt-lang-emule`, restricted to the
+`main` branch, with "Allow administrators to bypass" off. Add a read-only deploy
+key to the private emulator repository, and store its private key and the
+repository's `owner/name` as the environment secrets
+`TTLANG_EMULE_SOURCE_SSH_KEY` and `TTLANG_EMULE_SOURCE_REPOSITORY`. Do not
+create repository- or organization-level copies. Revoke the deploy key to stop
+all access at once.
+
+**Recommended `main` ruleset hardening** (not enforced by this workflow):
+require approval of the most recent push, and require code-owner review for
+`.github/containers/**`, `scripts/emule-ci/**`, `config/tt-lang-emule-*.json`,
+and `requirements*.txt`.
+
+**Follow-ups.** Hash-locked Python and CMake dependencies for the image build;
+build parallelism; more runners if the run gets too slow.
 
 ## Reproduce locally
 
@@ -57,6 +77,4 @@ python3 scripts/emule-ci/worker.py --image ttlang-emule-ci:runner-local \
 ```
 
 `summary.json` holds the validated counts-only summary; detailed logs, test
-IDs, and manifests stay under `private/`. The owner-approval scope, required
-repository configuration, and limits are described in the PR that adds this
-workflow.
+IDs, and manifests stay under `private/`.

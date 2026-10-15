@@ -1,48 +1,26 @@
 # SPDX-FileCopyrightText: (c) 2026 Tenstorrent AI ULC
 # SPDX-License-Identifier: Apache-2.0
 
-name: Run the compiler test inventory on runner-local tt-emule
+name: tt-emule compiler test inventory
 
+# Only code already merged to main runs next to the private emulator source.
+# Never add pull_request, pull_request_target, workflow_call or merge_group.
 on:
-  workflow_dispatch:
-    inputs:
-      owner_approval_recorded:
-        description: Owner approval for runner-local builds and possible public logs is recorded
-        required: true
-        default: false
-        type: boolean
+  push:
+    branches: [main]
+  workflow_dispatch: {}
 
 permissions: {}
 
 concurrency:
-  group: emule-hosted-experiment
+  group: tt-lang-emule-inventory-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
-  authorize:
-    if: >-
-      inputs.owner_approval_recorded &&
-      github.repository == 'tenstorrent/tt-lang' &&
-      github.ref == 'refs/heads/kostas/tt-lang-emule-hosted-ci-experiment'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 2
-    permissions: {}
-    steps:
-      - name: Verify the reviewed candidate and configured source
-        env:
-          SELECTED_SHA: ${{ github.sha }}
-          APPROVED_SHA: ${{ vars.TTLANG_EMULE_APPROVED_SHA }}
-          SOURCE_REPOSITORY: ${{ vars.TTLANG_EMULE_SOURCE_REPOSITORY }}
-        run: |
-          if [[ ! "$SELECTED_SHA" =~ ^[0-9a-f]{40}$ ]] ||
-             [[ "$SELECTED_SHA" != "$APPROVED_SHA" ]] ||
-             [[ ! "$SOURCE_REPOSITORY" =~ ^tenstorrent/[A-Za-z0-9_.-]+$ ]]; then
-            echo 'No matching reviewed candidate/source configuration is available.' >&2
-            exit 2
-          fi
-
-  serial:
-    needs: authorize
+  inventory:
+    if: github.repository == 'tenstorrent/tt-lang' && github.ref == 'refs/heads/main'
+    # Admin-managed; restricted to main with admin bypass off. Holds the secrets.
+    environment: tt-lang-emule
     runs-on: ubuntu-24.04
     timeout-minutes: 360
     permissions:
@@ -54,7 +32,8 @@ jobs:
     env:
       TTLANG_EMULE_IMAGE: ttlang-emule-ci:runner-local
     steps:
-      - name: Checkout the reviewed compiler revision
+      - name: Checkout the compiler revision
+        timeout-minutes: 3
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           ref: ${{ github.sha }}
@@ -64,6 +43,7 @@ jobs:
 
       - name: Read the pinned emulator revision
         id: stack
+        timeout-minutes: 1
         run: |
           pin="$(python3 scripts/tt-lang-emule-stack.py \
             --manifest config/tt-lang-emule-stack.json emit |
@@ -71,12 +51,40 @@ jobs:
           [[ "$pin" =~ ^[0-9a-f]{40}$ ]]
           printf 'emulator_sha=%s\n' "$pin" >> "$GITHUB_OUTPUT"
 
+      - name: Free runner disk space
+        timeout-minutes: 3
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /opt/hostedtoolcache/CodeQL
+          df -Pk "$RUNNER_TEMP"
+
+      - name: Validate the emulator source configuration
+        timeout-minutes: 1
+        env:
+          SOURCE_SSH_KEY: ${{ secrets.TTLANG_EMULE_SOURCE_SSH_KEY }}
+          SOURCE_REPOSITORY: ${{ secrets.TTLANG_EMULE_SOURCE_REPOSITORY }}
+        run: |
+          if [[ -z "$SOURCE_SSH_KEY" ]] ||
+             [[ ! "$SOURCE_REPOSITORY" =~ ^tenstorrent/[A-Za-z0-9_.-]+$ ]]; then
+            echo 'The emulator source configuration is missing or invalid.' >&2
+            exit 2
+          fi
+
+      - name: Snapshot the runner temporary directory
+        timeout-minutes: 1
+        run: |
+          # Created first so that the listing always includes the snapshot itself.
+          : > "$RUNNER_TEMP/runner-temp.before"
+          find "$RUNNER_TEMP" -mindepth 1 -maxdepth 1 | LC_ALL=C sort \
+            > "$RUNNER_TEMP/runner-temp.before"
+
       - name: Checkout the pinned private source without retaining credentials
+        timeout-minutes: 2
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
-          repository: ${{ vars.TTLANG_EMULE_SOURCE_REPOSITORY }}
+          repository: ${{ secrets.TTLANG_EMULE_SOURCE_REPOSITORY }}
           ref: ${{ steps.stack.outputs.emulator_sha }}
-          token: ${{ secrets.TTLANG_EMULE_SOURCE_READ_TOKEN }}
+          ssh-key: ${{ secrets.TTLANG_EMULE_SOURCE_SSH_KEY }}
           path: private-runtime
           fetch-depth: 1
           persist-credentials: false
@@ -84,10 +92,11 @@ jobs:
           lfs: false
 
       - name: Verify sources and absence of retained checkout credentials
+        timeout-minutes: 2
         run: |
           for source in "$GITHUB_WORKSPACE/compiler" "$GITHUB_WORKSPACE/private-runtime"; do
             if git -C "$source" config --local --get-regexp \
-              '^(http\..*\.extraheader|credential\..*|core\.sshcommand|include\.path)$' \
+              '^(http\..*\.extraheader|credential\..*|core\.sshcommand|include\.path|includeif\..*\.path)$' \
               > /dev/null; then
               echo 'A checkout retains authentication configuration.' >&2
               exit 2
@@ -96,12 +105,19 @@ jobs:
               test "$status" -eq 1
             fi
           done
+          # A key, known_hosts or credentials file left behind by the checkout.
+          leftovers="$(find "$RUNNER_TEMP" -mindepth 1 -maxdepth 1 | LC_ALL=C sort |
+            LC_ALL=C comm -13 "$RUNNER_TEMP/runner-temp.before" -)"
+          if [[ -n "$leftovers" ]]; then
+            echo 'The private checkout left files in the runner temporary directory.' >&2
+            exit 2
+          fi
           python3 scripts/tt-lang-emule-stack.py \
             --manifest config/tt-lang-emule-stack.json validate \
             --compiler-source . --emulator-source "$GITHUB_WORKSPACE/private-runtime" --quiet
 
-      - name: Measure the cold runner-local runtime build
-        timeout-minutes: 120
+      - name: Build the runner-local runtime image
+        timeout-minutes: 117
         env:
           TTLANG_EMULE_BUILD_ONLY: "1"
           TTLANG_EMULE_REBUILD: "1"
@@ -109,25 +125,28 @@ jobs:
           DOCKER_BUILD_SUMMARY: "false"
           DOCKER_BUILD_RECORD_UPLOAD: "false"
         run: |
+          # The build output names private paths; it stays on the runner.
           # shellcheck disable=SC2034  # read by the EXIT trap below
           started=$SECONDS
           trap 'status=$?; printf "Runtime build: exit=%s seconds=%s\n" "$status" "$((SECONDS - started))"; df -Pk "$RUNNER_TEMP"' EXIT
           available_kib="$(df -Pk "$RUNNER_TEMP" | awk 'NR == 2 {print $4}')"
           test "$available_kib" -ge 2097152
           timeout --signal=TERM --kill-after=30s 6900 \
-            bash scripts/tt-lang-emule-container.sh
+            bash scripts/tt-lang-emule-container.sh \
+            > "$RUNNER_TEMP/runtime-build.log" 2>&1
 
-      - name: Run the complete compiler test inventory serially with fresh caches
-        timeout-minutes: 230
+      - name: Run the compiler test inventory
+        timeout-minutes: 225
         run: |
           python3 scripts/emule-ci/worker.py --image "$TTLANG_EMULE_IMAGE" \
-            --worker serial --output "$RUNNER_TEMP/emule-serial" \
+            --worker inventory --output "$RUNNER_TEMP/emule-inventory" \
             --cpus 4 --memory-gib 12 --disk-floor-gib 2 --timeout-seconds 13200
 
       - name: Report the public per-suite summary
         if: always()
+        timeout-minutes: 2
         run: |
-          summary="$RUNNER_TEMP/emule-serial/summary.json"
+          summary="$RUNNER_TEMP/emule-inventory/summary.json"
           if [[ -f "$summary" ]]; then
             python3 scripts/emule-ci/worker.py --report-summary "$summary" \
               | tee -a "$GITHUB_STEP_SUMMARY"

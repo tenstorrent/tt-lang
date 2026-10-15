@@ -16,59 +16,19 @@ import yaml
 ROOT = Path(__file__).resolve().parents[2]
 
 
+WORKFLOW = ".github/workflows/tt-lang-emule-inventory.yml"
+
+
 def workflow_definition():
-    return yaml.load(
-        (ROOT / ".github/workflows/tt-lang-emule-benchmark.yml").read_text(),
-        Loader=yaml.BaseLoader,
-    )
+    return yaml.load((ROOT / WORKFLOW).read_text(), Loader=yaml.BaseLoader)
 
 
 def workflow_step(name):
     return next(
         step
-        for step in workflow_definition()["jobs"]["serial"]["steps"]
+        for step in workflow_definition()["jobs"]["inventory"]["steps"]
         if step.get("name") == name
     )
-
-
-@pytest.mark.parametrize(
-    "overrides,allowed",
-    [
-        ({}, True),
-        ({"APPROVED_SHA": ""}, False),
-        ({"APPROVED_SHA": "c" * 40}, False),
-        ({"SELECTED_SHA": "main", "APPROVED_SHA": "main"}, False),
-        ({"SOURCE_REPOSITORY": ""}, False),
-        ({"SOURCE_REPOSITORY": "outsider/emulator"}, False),
-        ({"SOURCE_REPOSITORY": "tenstorrent/runtime\ninjected"}, False),
-        ({"SOURCE_REPOSITORY": "tenstorrent/runtime;id"}, False),
-        ({"SOURCE_REPOSITORY": "https://github.com/tenstorrent/runtime"}, False),
-    ],
-)
-def test_approval_gate_binds_reviewed_candidate_and_company_source(overrides, allowed):
-    authorize = workflow_definition()["jobs"]["authorize"]
-    assert authorize["permissions"] == {}
-    assert len(authorize["steps"]) == 1
-    step = authorize["steps"][0]
-    assert "uses" not in step
-    assert step["env"] == {
-        "SELECTED_SHA": "${{ github.sha }}",
-        "APPROVED_SHA": "${{ vars.TTLANG_EMULE_APPROVED_SHA }}",
-        "SOURCE_REPOSITORY": "${{ vars.TTLANG_EMULE_SOURCE_REPOSITORY }}",
-    }
-    result = subprocess.run(
-        ["bash", "-euo", "pipefail", "-c", step["run"]],
-        env={
-            **os.environ,
-            "SELECTED_SHA": "b" * 40,
-            "APPROVED_SHA": "b" * 40,
-            "SOURCE_REPOSITORY": "tenstorrent/runtime",
-            **overrides,
-        },
-        capture_output=True,
-        text=True,
-    )
-    assert (result.returncode == 0) is allowed
 
 
 @pytest.fixture(autouse=True)
@@ -86,76 +46,173 @@ def no_real_docker(tmp_path, monkeypatch):
     monkeypatch.setenv("PATH", str(tmp_path) + os.pathsep + os.environ["PATH"])
 
 
-def test_workflow_is_one_manual_trusted_runner_local_job():
+STEP_NAMES = [
+    "Checkout the compiler revision",
+    "Read the pinned emulator revision",
+    "Free runner disk space",
+    "Validate the emulator source configuration",
+    "Snapshot the runner temporary directory",
+    "Checkout the pinned private source without retaining credentials",
+    "Verify sources and absence of retained checkout credentials",
+    "Build the runner-local runtime image",
+    "Run the compiler test inventory",
+    "Report the public per-suite summary",
+]
+SECRET_STEPS = {
+    "Validate the emulator source configuration",
+    "Checkout the pinned private source without retaining credentials",
+}
+
+
+def test_workflow_runs_only_merged_main_code_in_one_job():
     workflow = workflow_definition()
-    assert list(workflow["on"]) == ["workflow_dispatch"]
-    inputs = workflow["on"]["workflow_dispatch"]["inputs"]
-    assert set(inputs) == {"owner_approval_recorded"}
-    assert inputs["owner_approval_recorded"]["default"] == "false"
+    assert workflow["on"] == {
+        "push": {"branches": ["main"]},
+        "workflow_dispatch": {},
+    }
+    # PR-authored code must never run next to the private source or credential.
+    assert not {
+        "pull_request",
+        "pull_request_target",
+        "workflow_call",
+        "workflow_run",
+        "merge_group",
+    } & set(workflow["on"])
     assert workflow["permissions"] == {}
-    assert workflow["concurrency"]["cancel-in-progress"] == "false"
-    assert set(workflow["jobs"]) == {"authorize", "serial"}
-    authorize = workflow["jobs"]["authorize"]
-    assert "inputs.owner_approval_recorded" in authorize["if"]
-    assert "github.repository == 'tenstorrent/tt-lang'" in authorize["if"]
-    assert "refs/heads/kostas/tt-lang-emule-hosted-ci-experiment" in authorize["if"]
-    job = workflow["jobs"]["serial"]
-    assert job["needs"] == "authorize"
+    assert workflow["concurrency"] == {
+        "group": "tt-lang-emule-inventory-${{ github.ref }}",
+        "cancel-in-progress": "false",
+    }
+    assert set(workflow["jobs"]) == {"inventory"}
+    job = workflow["jobs"]["inventory"]
+    assert job["if"] == (
+        "github.repository == 'tenstorrent/tt-lang' && "
+        "github.ref == 'refs/heads/main'"
+    )
+    # A literal environment: only it, restricted to main, holds the secrets.
+    assert job["environment"] == "tt-lang-emule"
     assert job["runs-on"] == "ubuntu-24.04"
     assert job["permissions"] == {"contents": "read"}
-    assert int(job["timeout-minutes"]) <= 360
     assert job["defaults"]["run"] == {"shell": "bash", "working-directory": "compiler"}
-    assert "strategy" not in job
+    assert not {"needs", "strategy", "continue-on-error", "services"} & set(job)
     steps = job["steps"]
-    checkouts = [step for step in steps if "uses" in step]
-    assert len(checkouts) == 2
-    public, private = checkouts
-    for step in checkouts:
+    assert [step["name"] for step in steps] == STEP_NAMES
+    assert steps[-1]["if"] == "always()"
+    assert all("continue-on-error" not in step for step in steps)
+    assert all("if" not in step for step in steps[:-1])
+    # Every step is bounded, and the bounds fit the job limit.
+    assert sum(int(step["timeout-minutes"]) for step in steps) <= int(
+        job["timeout-minutes"]
+    )
+    assert int(job["timeout-minutes"]) == 360
+
+
+def test_secrets_reach_only_validation_and_private_checkout():
+    raw = (ROOT / WORKFLOW).read_text()
+    secrets = {
+        "secrets.TTLANG_EMULE_SOURCE_REPOSITORY",
+        "secrets.TTLANG_EMULE_SOURCE_SSH_KEY",
+    }
+    found = re.findall(r"secrets\.[A-Za-z0-9_]+", raw)
+    assert set(found) == secrets and len(found) == 2 * len(secrets)
+    for step in workflow_definition()["jobs"]["inventory"]["steps"]:
+        mentions = "secrets." in yaml.safe_dump(step)
+        assert mentions == (step["name"] in SECRET_STEPS), step["name"]
+    for forbidden in (
+        "vars.",
+        "github.token",
+        "GITHUB_TOKEN",
+        "upload-artifact",
+        "download-artifact",
+        "actions/cache",
+        "cache-to",
+        "cache-from",
+        "docker push",
+        "docker login",
+        "docker/login",
+        "packages:",
+        "pull.sh",
+        "owner_approval_recorded",
+        "TTLANG_EMULE_APPROVED_SHA",
+        "TTLANG_EMULE_SOURCE_READ_TOKEN",
+        "TTLANG_EMULE_APPROVED_IMAGE",
+        "TTLANG_EMULE_APPROVED_SHARDS",
+    ):
+        assert forbidden not in raw, forbidden
+
+
+def test_checkouts_are_pinned_and_keep_no_credentials():
+    steps = workflow_definition()["jobs"]["inventory"]["steps"]
+    actions = [step for step in steps if "uses" in step]
+    assert len(actions) == 2
+    public, private = actions
+    for step in actions:
         assert re.fullmatch(r"actions/checkout@[0-9a-f]{40}", step["uses"])
         assert step["with"]["persist-credentials"] == "false"
-    assert public["with"]["ref"] == "${{ github.sha }}"
-    assert public["with"]["fetch-depth"] == "0"
-    assert public["with"]["path"] == "compiler"
+    assert public["with"] == {
+        "ref": "${{ github.sha }}",
+        "path": "compiler",
+        "fetch-depth": "0",
+        "persist-credentials": "false",
+    }
     assert private["with"] == {
-        "repository": "${{ vars.TTLANG_EMULE_SOURCE_REPOSITORY }}",
+        "repository": "${{ secrets.TTLANG_EMULE_SOURCE_REPOSITORY }}",
         "ref": "${{ steps.stack.outputs.emulator_sha }}",
-        "token": "${{ secrets.TTLANG_EMULE_SOURCE_READ_TOKEN }}",
+        "ssh-key": "${{ secrets.TTLANG_EMULE_SOURCE_SSH_KEY }}",
         "path": "private-runtime",
         "fetch-depth": "1",
         "persist-credentials": "false",
         "submodules": "false",
         "lfs": "false",
     }
-    verify = workflow_step(
-        "Verify sources and absence of retained checkout credentials"
+    validate = workflow_step("Validate the emulator source configuration")
+    assert validate["env"] == {
+        "SOURCE_SSH_KEY": "${{ secrets.TTLANG_EMULE_SOURCE_SSH_KEY }}",
+        "SOURCE_REPOSITORY": "${{ secrets.TTLANG_EMULE_SOURCE_REPOSITORY }}",
+    }
+
+
+@pytest.mark.parametrize(
+    "overrides,allowed",
+    [
+        ({}, True),
+        ({"SOURCE_SSH_KEY": ""}, False),
+        ({"SOURCE_REPOSITORY": ""}, False),
+        ({"SOURCE_REPOSITORY": "outsider/emulator"}, False),
+        ({"SOURCE_REPOSITORY": "tenstorrent/"}, False),
+        ({"SOURCE_REPOSITORY": "tenstorrent/runtime\ninjected"}, False),
+        ({"SOURCE_REPOSITORY": "tenstorrent/runtime\n"}, False),
+        ({"SOURCE_REPOSITORY": "tenstorrent/runtime;id"}, False),
+        ({"SOURCE_REPOSITORY": "https://github.com/tenstorrent/runtime"}, False),
+    ],
+)
+def test_source_configuration_is_validated_without_echoing_it(overrides, allowed):
+    env = {
+        "SOURCE_SSH_KEY": "KEY_SENTINEL",
+        "SOURCE_REPOSITORY": "tenstorrent/runtime",
+        **overrides,
+    }
+    result = subprocess.run(
+        [
+            "bash",
+            "-euo",
+            "pipefail",
+            "-c",
+            workflow_step("Validate the emulator source configuration")["run"],
+        ],
+        env={**os.environ, **env},
+        capture_output=True,
+        text=True,
     )
-    build = workflow_step("Measure the cold runner-local runtime build")
-    measure = workflow_step(
-        "Run the complete compiler test inventory serially with fresh caches"
-    )
-    report = workflow_step("Report the public per-suite summary")
-    assert (
-        steps.index(private)
-        < steps.index(verify)
-        < steps.index(build)
-        < steps.index(measure)
-        < steps.index(report)
-    )
-    assert report["if"] == "always()"
-    assert "private" not in report["run"]
-    assert build["env"]["TTLANG_EMULE_BUILD_ONLY"] == "1"
-    assert build["env"]["TTLANG_EMULE_REBUILD"] == "1"
-    assert (
-        build["env"]["TTLANG_EMULE_RUNTIME_SOURCE_DIR"]
-        == "${{ github.workspace }}/private-runtime"
-    )
-    assert build["env"]["DOCKER_BUILD_RECORD_UPLOAD"] == "false"
-    assert build["env"]["DOCKER_BUILD_SUMMARY"] == "false"
-    assert int(build["timeout-minutes"]) <= 120
-    assert "--kill-after=30s 6900" in build["run"]
-    assert "scripts/tt-lang-emule-container.sh" in build["run"]
-    # The worker must accept the exact hosted options before anything is dispatched.
-    command = shlex.split(measure["run"].replace("\\\n", " "))
+    assert (result.returncode == 0) is allowed
+    output = result.stdout + result.stderr
+    assert "KEY_SENTINEL" not in output
+    assert "runtime" not in output and "outsider" not in output
+
+
+def test_worker_accepts_the_hosted_invocation():
+    run = workflow_step("Run the compiler test inventory")["run"]
+    command = shlex.split(run.replace("\\\n", " "))
     assert command[:2] == ["python3", "scripts/emule-ci/worker.py"]
     spec = importlib.util.spec_from_file_location(
         "emule_ci_worker", ROOT / "scripts/emule-ci/worker.py"
@@ -163,25 +220,25 @@ def test_workflow_is_one_manual_trusted_runner_local_job():
     worker = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(worker)
     options = worker.arguments(command[2:])
+    assert options.image == "$TTLANG_EMULE_IMAGE"
+    assert options.worker == "inventory"
+    assert str(options.output) == "$RUNNER_TEMP/emule-inventory"
     assert (options.cpus, options.memory_gib, options.disk_floor_gib) == (4, 12, 2)
+    # The worker deadline ends before the step limit.
     assert options.timeout_seconds == 13200
-    assert "continue-on-error" not in measure
-    raw = (ROOT / ".github/workflows/tt-lang-emule-benchmark.yml").read_text()
-    assert raw.count("secrets.") == 1
-    for forbidden in (
-        "upload-artifact",
-        "download-artifact",
-        "actions/cache",
-        "cache-to",
-        "cache-from",
-        "docker push",
-        "docker/login",
-        "packages:",
-        "pull.sh",
-        "TTLANG_EMULE_APPROVED_IMAGE",
-        "TTLANG_EMULE_APPROVED_SHARDS",
-    ):
-        assert forbidden not in raw
+    assert options.timeout_seconds < 60 * int(
+        workflow_step("Run the compiler test inventory")["timeout-minutes"]
+    )
+    build = workflow_step("Build the runner-local runtime image")
+    assert build["env"] == {
+        "TTLANG_EMULE_BUILD_ONLY": "1",
+        "TTLANG_EMULE_REBUILD": "1",
+        "TTLANG_EMULE_RUNTIME_SOURCE_DIR": "${{ github.workspace }}/private-runtime",
+        "DOCKER_BUILD_SUMMARY": "false",
+        "DOCKER_BUILD_RECORD_UPLOAD": "false",
+    }
+    assert "--kill-after=30s 6900" in build["run"]
+    assert 6900 + 30 < 60 * int(build["timeout-minutes"])
 
 
 def test_stack_step_reads_exact_manifest_pin(tmp_path):
@@ -204,6 +261,15 @@ def test_stack_step_reads_exact_manifest_pin(tmp_path):
     assert output.read_text() == f"emulator_sha={manifest['emulator']['commit']}\n"
 
 
+def run_step(name, env):
+    return subprocess.run(
+        ["bash", "-euo", "pipefail", "-c", workflow_step(name)["run"]],
+        env={**os.environ, **env},
+        capture_output=True,
+        text=True,
+    )
+
+
 @pytest.mark.parametrize(
     "key",
     [
@@ -212,44 +278,56 @@ def test_stack_step_reads_exact_manifest_pin(tmp_path):
         "credential.helper",
         "core.sshCommand",
         "include.path",
+        "includeIf.gitdir:/runner/.path",
+        "runner-temp-leftover",
     ],
 )
 def test_retained_checkout_credentials_stop_before_source_execution(tmp_path, key):
+    workspace = tmp_path / "workspace"
+    runner_temp = tmp_path / "runner-temp"
+    (runner_temp / "_runner_file_commands").mkdir(parents=True)
     for name in ("compiler", "private-runtime"):
-        subprocess.run(["git", "init", "-q", str(tmp_path / name)], check=True)
-    if key:
+        subprocess.run(["git", "init", "-q", str(workspace / name)], check=True)
+    env = {"GITHUB_WORKSPACE": str(workspace), "RUNNER_TEMP": str(runner_temp)}
+    snapshot = run_step("Snapshot the runner temporary directory", env)
+    assert snapshot.returncode == 0, snapshot.stderr
+    # Files written after the snapshot inside existing directories are not leftovers.
+    (runner_temp / "_runner_file_commands/set_output_1").write_text("")
+    if key == "runner-temp-leftover":
+        (runner_temp / "0f1e2d3c_known_hosts").write_text("AUTH_SENTINEL")
+    elif key:
         subprocess.run(
-            [
-                "git",
-                "-C",
-                str(tmp_path / "private-runtime"),
-                "config",
-                key,
-                "AUTH_SENTINEL",
-            ],
+            ["git", "-C", str(workspace / "private-runtime"), "config", key]
+            + ["AUTH_SENTINEL"],
             check=True,
         )
     marker = tmp_path / "validated"
     python = tmp_path / "python3"
     python.write_text(f"#!/bin/sh\ntouch '{marker}'\n")
     python.chmod(0o755)
-    result = subprocess.run(
-        [
-            "bash",
-            "-euo",
-            "pipefail",
-            "-c",
-            workflow_step(
-                "Verify sources and absence of retained checkout credentials"
-            )["run"],
-        ],
-        env={**os.environ, "GITHUB_WORKSPACE": str(tmp_path)},
-        capture_output=True,
-        text=True,
+    result = run_step(
+        "Verify sources and absence of retained checkout credentials", env
     )
-    assert (result.returncode == 0) == (key is None)
+    assert (result.returncode == 0) == (key is None), result.stderr
     assert marker.exists() == (key is None)
-    assert "AUTH_SENTINEL" not in result.stdout + result.stderr
+    output = result.stdout + result.stderr
+    assert "AUTH_SENTINEL" not in output and "known_hosts" not in output
+
+
+def test_missing_runner_temp_snapshot_fails_closed(tmp_path):
+    workspace = tmp_path / "workspace"
+    for name in ("compiler", "private-runtime"):
+        subprocess.run(["git", "init", "-q", str(workspace / name)], check=True)
+    marker = tmp_path / "validated"
+    python = tmp_path / "python3"
+    python.write_text(f"#!/bin/sh\ntouch '{marker}'\n")
+    python.chmod(0o755)
+    result = run_step(
+        "Verify sources and absence of retained checkout credentials",
+        {"GITHUB_WORKSPACE": str(workspace), "RUNNER_TEMP": str(tmp_path)},
+    )
+    assert result.returncode != 0
+    assert not marker.exists()
 
 
 @pytest.mark.parametrize(
@@ -260,7 +338,11 @@ def test_build_preserves_failures_and_checks_disk_before_launch(
 ):
     marker = tmp_path / "build-started"
     timeout = tmp_path / "timeout"
-    timeout.write_text(f"#!/bin/sh\ntouch '{marker}'\nexit {exit_code}\n")
+    timeout.write_text(
+        f"#!/bin/sh\ntouch '{marker}'\n"
+        "echo BUILD_SENTINEL\necho BUILD_SENTINEL >&2\n"
+        f"exit {exit_code}\n"
+    )
     timeout.chmod(0o755)
     df = tmp_path / "df"
     df.write_text(
@@ -275,7 +357,7 @@ def test_build_preserves_failures_and_checks_disk_before_launch(
             "-euo",
             "pipefail",
             "-c",
-            workflow_step("Measure the cold runner-local runtime build")["run"],
+            workflow_step("Build the runner-local runtime image")["run"],
         ],
         env={**os.environ, "RUNNER_TEMP": str(tmp_path)},
         capture_output=True,
@@ -285,6 +367,12 @@ def test_build_preserves_failures_and_checks_disk_before_launch(
     assert result.returncode == expected
     assert marker.exists() == (available_kib >= 2097152)
     assert f"Runtime build: exit={expected} seconds=" in result.stdout
+    # The build output stays in a runner-local file.
+    assert "BUILD_SENTINEL" not in result.stdout + result.stderr
+    log = tmp_path / "runtime-build.log"
+    assert (log.exists() and log.read_text()) == (
+        available_kib >= 2097152 and "BUILD_SENTINEL\nBUILD_SENTINEL\n"
+    )
 
 
 PREFLIGHT_FAILURE = {
@@ -308,10 +396,10 @@ def test_report_step_publishes_only_the_validated_summary(
     tmp_path, summary, returncode
 ):
     runner_temp = tmp_path / "runner"
-    (runner_temp / "emule-serial").mkdir(parents=True)
+    (runner_temp / "emule-inventory").mkdir(parents=True)
     step_summary = tmp_path / "step-summary.md"
     if summary:
-        (runner_temp / "emule-serial/summary.json").write_text(json.dumps(summary))
+        (runner_temp / "emule-inventory/summary.json").write_text(json.dumps(summary))
     result = subprocess.run(
         [
             "bash",
