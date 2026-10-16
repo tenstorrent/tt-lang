@@ -246,6 +246,7 @@ install(DIRECTORY python/sim_stats DESTINATION python_packages
 install(PROGRAMS "${CMAKE_SOURCE_DIR}/bin/tt-lang-sim" DESTINATION bin)
 install(PROGRAMS "${CMAKE_SOURCE_DIR}/bin/tt-lang-sim-stats" DESTINATION bin)
 install(PROGRAMS "${CMAKE_SOURCE_DIR}/bin/tt-triage" DESTINATION bin)
+install(PROGRAMS "${CMAKE_SOURCE_DIR}/bin/tt-lang-sim-cycles" DESTINATION bin)
 
 # ---------------------------------------------------------------------------
 # Configuration summary
