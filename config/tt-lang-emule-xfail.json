@@ -414,288 +414,288 @@
       "run": false
     },
     "python/test_dfb_reconfiguration.py::test_conditional_reconfiguration_executes_with_post_boundary_dfbs[generic-cores-left-dram-bf16]": {
-      "reason": "tt-emule: kernel JIT compilation fails",
-      "run": true
+      "reason": "tt-emule: test fails and destabilizes the emulator for later cases; not run",
+      "run": false
     },
     "python/test_dfb_reconfiguration.py::test_conditional_reconfiguration_executes_with_post_boundary_dfbs[generic-cores-left-dram-f32]": {
-      "reason": "tt-emule: kernel JIT compilation fails",
-      "run": true
+      "reason": "tt-emule: test fails and destabilizes the emulator for later cases; not run",
+      "run": false
     },
     "python/test_dfb_reconfiguration.py::test_conditional_reconfiguration_executes_with_post_boundary_dfbs[generic-cores-left-l1-bf16]": {
-      "reason": "tt-emule: kernel JIT compilation fails",
-      "run": true
+      "reason": "tt-emule: test fails and destabilizes the emulator for later cases; not run",
+      "run": false
     },
     "python/test_dfb_reconfiguration.py::test_conditional_reconfiguration_executes_with_post_boundary_dfbs[generic-cores-left-l1-f32]": {
-      "reason": "tt-emule: kernel JIT compilation fails",
-      "run": true
+      "reason": "tt-emule: test fails and destabilizes the emulator for later cases; not run",
+      "run": false
     },
     "python/test_dfb_reconfiguration.py::test_conditional_reconfiguration_executes_with_post_boundary_dfbs[generic-cores-right-dram-bf16]": {
-      "reason": "tt-emule: kernel JIT compilation fails",
-      "run": true
+      "reason": "tt-emule: test fails and destabilizes the emulator for later cases; not run",
+      "run": false
     },
     "python/test_dfb_reconfiguration.py::test_conditional_reconfiguration_executes_with_post_boundary_dfbs[generic-cores-right-dram-f32]": {
-      "reason": "tt-emule: kernel JIT compilation fails",
-      "run": true
+      "reason": "tt-emule: test fails and destabilizes the emulator for later cases; not run",
+      "run": false
     },
     "python/test_dfb_reconfiguration.py::test_conditional_reconfiguration_executes_with_post_boundary_dfbs[generic-cores-right-l1-bf16]": {
-      "reason": "tt-emule: kernel JIT compilation fails",
-      "run": true
+      "reason": "tt-emule: test fails and destabilizes the emulator for later cases; not run",
+      "run": false
     },
     "python/test_dfb_reconfiguration.py::test_conditional_reconfiguration_executes_with_post_boundary_dfbs[generic-cores-right-l1-f32]": {
-      "reason": "tt-emule: kernel JIT compilation fails",
-      "run": true
+      "reason": "tt-emule: test fails and destabilizes the emulator for later cases; not run",
+      "run": false
     },
     "python/test_dfb_reconfiguration.py::test_conditional_reconfiguration_executes_with_post_boundary_dfbs[specialized-cores-left-dram-bf16]": {
-      "reason": "tt-emule: kernel JIT compilation fails",
-      "run": true
+      "reason": "tt-emule: test fails and destabilizes the emulator for later cases; not run",
+      "run": false
     },
     "python/test_dfb_reconfiguration.py::test_conditional_reconfiguration_executes_with_post_boundary_dfbs[specialized-cores-left-dram-f32]": {
-      "reason": "tt-emule: kernel JIT compilation fails",
-      "run": true
+      "reason": "tt-emule: test fails and destabilizes the emulator for later cases; not run",
+      "run": false
     },
     "python/test_dfb_reconfiguration.py::test_conditional_reconfiguration_executes_with_post_boundary_dfbs[specialized-cores-left-l1-bf16]": {
-      "reason": "tt-emule: kernel JIT compilation fails",
-      "run": true
+      "reason": "tt-emule: test fails and destabilizes the emulator for later cases; not run",
+      "run": false
     },
     "python/test_dfb_reconfiguration.py::test_conditional_reconfiguration_executes_with_post_boundary_dfbs[specialized-cores-left-l1-f32]": {
-      "reason": "tt-emule: kernel JIT compilation fails",
-      "run": true
+      "reason": "tt-emule: test fails and destabilizes the emulator for later cases; not run",
+      "run": false
     },
     "python/test_dfb_reconfiguration.py::test_conditional_reconfiguration_executes_with_post_boundary_dfbs[specialized-cores-right-dram-bf16]": {
-      "reason": "tt-emule: kernel JIT compilation fails",
-      "run": true
+      "reason": "tt-emule: test fails and destabilizes the emulator for later cases; not run",
+      "run": false
     },
     "python/test_dfb_reconfiguration.py::test_conditional_reconfiguration_executes_with_post_boundary_dfbs[specialized-cores-right-dram-f32]": {
-      "reason": "tt-emule: kernel JIT compilation fails",
-      "run": true
+      "reason": "tt-emule: test fails and destabilizes the emulator for later cases; not run",
+      "run": false
     },
     "python/test_dfb_reconfiguration.py::test_conditional_reconfiguration_executes_with_post_boundary_dfbs[specialized-cores-right-l1-bf16]": {
-      "reason": "tt-emule: kernel JIT compilation fails",
-      "run": true
+      "reason": "tt-emule: test fails and destabilizes the emulator for later cases; not run",
+      "run": false
     },
     "python/test_dfb_reconfiguration.py::test_conditional_reconfiguration_executes_with_post_boundary_dfbs[specialized-cores-right-l1-f32]": {
-      "reason": "tt-emule: kernel JIT compilation fails",
-      "run": true
+      "reason": "tt-emule: test fails and destabilizes the emulator for later cases; not run",
+      "run": false
     },
     "python/test_dfb_reconfiguration.py::test_live_payload_crosses_reconfiguration_and_cached_execution[dram-bf16]": {
-      "reason": "tt-emule: kernel JIT compilation fails",
-      "run": true
+      "reason": "tt-emule: test fails and destabilizes the emulator for later cases; not run",
+      "run": false
     },
     "python/test_dfb_reconfiguration.py::test_live_payload_crosses_reconfiguration_and_cached_execution[dram-f32]": {
-      "reason": "tt-emule: kernel JIT compilation fails",
-      "run": true
+      "reason": "tt-emule: test fails and destabilizes the emulator for later cases; not run",
+      "run": false
     },
     "python/test_dfb_reconfiguration.py::test_live_payload_crosses_reconfiguration_and_cached_execution[l1-bf16]": {
-      "reason": "tt-emule: kernel JIT compilation fails",
-      "run": true
+      "reason": "tt-emule: test fails and destabilizes the emulator for later cases; not run",
+      "run": false
     },
     "python/test_dfb_reconfiguration.py::test_live_payload_crosses_reconfiguration_and_cached_execution[l1-f32]": {
-      "reason": "tt-emule: kernel JIT compilation fails",
-      "run": true
+      "reason": "tt-emule: test fails and destabilizes the emulator for later cases; not run",
+      "run": false
     },
     "python/test_dfb_reconfiguration.py::test_reconfiguration_composes_varying_caller_runtime_args": {
-      "reason": "tt-emule: kernel JIT compilation fails",
-      "run": true
+      "reason": "tt-emule: test crashes the emulator; not run",
+      "run": false
     },
     "python/test_dfb_reconfiguration.py::test_reconfiguration_enables_later_tensor_backed_core[generic-cores]": {
-      "reason": "tt-emule: kernel JIT compilation fails",
-      "run": true
+      "reason": "tt-emule: test fails and destabilizes the emulator for later cases; not run",
+      "run": false
     },
     "python/test_dfb_reconfiguration.py::test_reconfiguration_enables_later_tensor_backed_core[specialized-cores]": {
-      "reason": "tt-emule: kernel JIT compilation fails",
-      "run": true
+      "reason": "tt-emule: test fails and destabilizes the emulator for later cases; not run",
+      "run": false
     },
     "python/test_dfb_reconfiguration.py::test_reconfiguration_executes_with_physical_indices_above_31[dram-bf16]": {
-      "reason": "tt-emule: kernel JIT compilation fails",
-      "run": true
+      "reason": "tt-emule: test fails and destabilizes the emulator for later cases; not run",
+      "run": false
     },
     "python/test_dfb_reconfiguration.py::test_reconfiguration_executes_with_physical_indices_above_31[dram-f32]": {
-      "reason": "tt-emule: kernel JIT compilation fails",
-      "run": true
+      "reason": "tt-emule: test fails and destabilizes the emulator for later cases; not run",
+      "run": false
     },
     "python/test_dfb_reconfiguration.py::test_reconfiguration_executes_with_physical_indices_above_31[l1-bf16]": {
-      "reason": "tt-emule: kernel JIT compilation fails",
-      "run": true
+      "reason": "tt-emule: test fails and destabilizes the emulator for later cases; not run",
+      "run": false
     },
     "python/test_dfb_reconfiguration.py::test_reconfiguration_executes_with_physical_indices_above_31[l1-f32]": {
-      "reason": "tt-emule: kernel JIT compilation fails",
-      "run": true
+      "reason": "tt-emule: test fails and destabilizes the emulator for later cases; not run",
+      "run": false
     },
     "python/test_dfb_reconfiguration.py::test_reconfiguration_reuses_ids_with_different_capacity_and_cached_execution[dram-one-core-bf16-generic-cores]": {
-      "reason": "tt-emule: kernel JIT compilation fails",
-      "run": true
+      "reason": "tt-emule: test fails and destabilizes the emulator for later cases; not run",
+      "run": false
     },
     "python/test_dfb_reconfiguration.py::test_reconfiguration_reuses_ids_with_different_capacity_and_cached_execution[dram-one-core-bf16-specialized-cores]": {
-      "reason": "tt-emule: kernel JIT compilation fails",
-      "run": true
+      "reason": "tt-emule: test hangs the emulator; not run",
+      "run": false
     },
     "python/test_dfb_reconfiguration.py::test_reconfiguration_reuses_ids_with_different_capacity_and_cached_execution[dram-one-core-f32-generic-cores]": {
-      "reason": "tt-emule: kernel JIT compilation fails",
-      "run": true
+      "reason": "tt-emule: test fails and destabilizes the emulator for later cases; not run",
+      "run": false
     },
     "python/test_dfb_reconfiguration.py::test_reconfiguration_reuses_ids_with_different_capacity_and_cached_execution[dram-one-core-f32-specialized-cores]": {
-      "reason": "tt-emule: kernel JIT compilation fails",
-      "run": true
+      "reason": "tt-emule: test crashes the emulator; not run",
+      "run": false
     },
     "python/test_dfb_reconfiguration.py::test_reconfiguration_reuses_ids_with_different_capacity_and_cached_execution[dram-two-core-bf16-generic-cores]": {
-      "reason": "tt-emule: kernel JIT compilation fails",
-      "run": true
+      "reason": "tt-emule: test fails and destabilizes the emulator for later cases; not run",
+      "run": false
     },
     "python/test_dfb_reconfiguration.py::test_reconfiguration_reuses_ids_with_different_capacity_and_cached_execution[dram-two-core-bf16-specialized-cores]": {
-      "reason": "tt-emule: kernel JIT compilation fails",
-      "run": true
+      "reason": "tt-emule: test hangs the emulator; not run",
+      "run": false
     },
     "python/test_dfb_reconfiguration.py::test_reconfiguration_reuses_ids_with_different_capacity_and_cached_execution[dram-two-core-f32-generic-cores]": {
-      "reason": "tt-emule: kernel JIT compilation fails",
-      "run": true
+      "reason": "tt-emule: test fails and destabilizes the emulator for later cases; not run",
+      "run": false
     },
     "python/test_dfb_reconfiguration.py::test_reconfiguration_reuses_ids_with_different_capacity_and_cached_execution[dram-two-core-f32-specialized-cores]": {
-      "reason": "tt-emule: kernel JIT compilation fails",
-      "run": true
+      "reason": "tt-emule: test crashes the emulator; not run",
+      "run": false
     },
     "python/test_dfb_reconfiguration.py::test_reconfiguration_reuses_ids_with_different_capacity_and_cached_execution[l1-one-core-bf16-generic-cores]": {
-      "reason": "tt-emule: kernel JIT compilation fails",
-      "run": true
+      "reason": "tt-emule: test fails and destabilizes the emulator for later cases; not run",
+      "run": false
     },
     "python/test_dfb_reconfiguration.py::test_reconfiguration_reuses_ids_with_different_capacity_and_cached_execution[l1-one-core-bf16-specialized-cores]": {
-      "reason": "tt-emule: kernel JIT compilation fails",
-      "run": true
+      "reason": "tt-emule: test hangs the emulator; not run",
+      "run": false
     },
     "python/test_dfb_reconfiguration.py::test_reconfiguration_reuses_ids_with_different_capacity_and_cached_execution[l1-one-core-f32-generic-cores]": {
-      "reason": "tt-emule: kernel JIT compilation fails",
-      "run": true
+      "reason": "tt-emule: test fails and destabilizes the emulator for later cases; not run",
+      "run": false
     },
     "python/test_dfb_reconfiguration.py::test_reconfiguration_reuses_ids_with_different_capacity_and_cached_execution[l1-one-core-f32-specialized-cores]": {
-      "reason": "tt-emule: kernel JIT compilation fails",
-      "run": true
+      "reason": "tt-emule: test hangs the emulator; not run",
+      "run": false
     },
     "python/test_dfb_reconfiguration.py::test_reconfiguration_reuses_ids_with_different_capacity_and_cached_execution[l1-two-core-bf16-generic-cores]": {
-      "reason": "tt-emule: kernel JIT compilation fails",
-      "run": true
+      "reason": "tt-emule: test fails and destabilizes the emulator for later cases; not run",
+      "run": false
     },
     "python/test_dfb_reconfiguration.py::test_reconfiguration_reuses_ids_with_different_capacity_and_cached_execution[l1-two-core-bf16-specialized-cores]": {
-      "reason": "tt-emule: kernel JIT compilation fails",
-      "run": true
+      "reason": "tt-emule: test fails and destabilizes the emulator for later cases; not run",
+      "run": false
     },
     "python/test_dfb_reconfiguration.py::test_reconfiguration_reuses_ids_with_different_capacity_and_cached_execution[l1-two-core-f32-generic-cores]": {
-      "reason": "tt-emule: kernel JIT compilation fails",
-      "run": true
+      "reason": "tt-emule: test fails and destabilizes the emulator for later cases; not run",
+      "run": false
     },
     "python/test_dfb_reconfiguration.py::test_reconfiguration_reuses_ids_with_different_capacity_and_cached_execution[l1-two-core-f32-specialized-cores]": {
-      "reason": "tt-emule: kernel JIT compilation fails",
-      "run": true
+      "reason": "tt-emule: test fails and destabilizes the emulator for later cases; not run",
+      "run": false
     },
     "python/test_dfb_reconfiguration.py::test_reconfiguration_supports_compute_dfb_formats[dram-bf16]": {
-      "reason": "tt-emule: test raises an error",
-      "run": true
+      "reason": "tt-emule: test fails and destabilizes the emulator for later cases; not run",
+      "run": false
     },
     "python/test_dfb_reconfiguration.py::test_reconfiguration_supports_compute_dfb_formats[dram-bfp4-b]": {
-      "reason": "tt-emule: kernel JIT compilation fails",
-      "run": true
+      "reason": "tt-emule: test fails and destabilizes the emulator for later cases; not run",
+      "run": false
     },
     "python/test_dfb_reconfiguration.py::test_reconfiguration_supports_compute_dfb_formats[dram-bfp8-b]": {
-      "reason": "tt-emule: kernel JIT compilation fails",
-      "run": true
+      "reason": "tt-emule: test fails and destabilizes the emulator for later cases; not run",
+      "run": false
     },
     "python/test_dfb_reconfiguration.py::test_reconfiguration_supports_compute_dfb_formats[dram-f32]": {
       "reason": "tt-emule: test crashes the emulator; not run",
       "run": false
     },
     "python/test_dfb_reconfiguration.py::test_reconfiguration_supports_compute_dfb_formats[dram-i32]": {
-      "reason": "tt-emule: kernel JIT compilation fails",
-      "run": true
+      "reason": "tt-emule: test crashes the emulator; not run",
+      "run": false
     },
     "python/test_dfb_reconfiguration.py::test_reconfiguration_supports_compute_dfb_formats[dram-u16]": {
-      "reason": "tt-emule: kernel JIT compilation fails",
-      "run": true
+      "reason": "tt-emule: test fails and destabilizes the emulator for later cases; not run",
+      "run": false
     },
     "python/test_dfb_reconfiguration.py::test_reconfiguration_supports_compute_dfb_formats[dram-u32]": {
-      "reason": "tt-emule: kernel JIT compilation fails",
-      "run": true
+      "reason": "tt-emule: test fails and destabilizes the emulator for later cases; not run",
+      "run": false
     },
     "python/test_dfb_reconfiguration.py::test_reconfiguration_supports_compute_dfb_formats[l1-bf16]": {
-      "reason": "tt-emule: kernel JIT compilation fails",
-      "run": true
+      "reason": "tt-emule: test fails and destabilizes the emulator for later cases; not run",
+      "run": false
     },
     "python/test_dfb_reconfiguration.py::test_reconfiguration_supports_compute_dfb_formats[l1-bfp4-b]": {
-      "reason": "tt-emule: kernel JIT compilation fails",
-      "run": true
+      "reason": "tt-emule: test fails and destabilizes the emulator for later cases; not run",
+      "run": false
     },
     "python/test_dfb_reconfiguration.py::test_reconfiguration_supports_compute_dfb_formats[l1-bfp8-b]": {
-      "reason": "tt-emule: kernel JIT compilation fails",
-      "run": true
+      "reason": "tt-emule: test crashes the emulator; not run",
+      "run": false
     },
     "python/test_dfb_reconfiguration.py::test_reconfiguration_supports_compute_dfb_formats[l1-f32]": {
-      "reason": "tt-emule: kernel JIT compilation fails",
-      "run": true
+      "reason": "tt-emule: test fails and destabilizes the emulator for later cases; not run",
+      "run": false
     },
     "python/test_dfb_reconfiguration.py::test_reconfiguration_supports_compute_dfb_formats[l1-i32]": {
-      "reason": "tt-emule: kernel JIT compilation fails",
-      "run": true
+      "reason": "tt-emule: test fails and destabilizes the emulator for later cases; not run",
+      "run": false
     },
     "python/test_dfb_reconfiguration.py::test_reconfiguration_supports_compute_dfb_formats[l1-u16]": {
-      "reason": "tt-emule: kernel JIT compilation fails",
-      "run": true
+      "reason": "tt-emule: test hangs the emulator; not run",
+      "run": false
     },
     "python/test_dfb_reconfiguration.py::test_reconfiguration_supports_compute_dfb_formats[l1-u32]": {
-      "reason": "tt-emule: kernel JIT compilation fails",
-      "run": true
+      "reason": "tt-emule: test crashes the emulator; not run",
+      "run": false
     },
     "python/test_dfb_reconfiguration.py::test_reconfiguration_supports_data_movement_u8[dram]": {
-      "reason": "tt-emule: kernel JIT compilation fails",
-      "run": true
+      "reason": "tt-emule: test fails and destabilizes the emulator for later cases; not run",
+      "run": false
     },
     "python/test_dfb_reconfiguration.py::test_reconfiguration_supports_data_movement_u8[l1]": {
-      "reason": "tt-emule: kernel JIT compilation fails",
-      "run": true
+      "reason": "tt-emule: test crashes the emulator; not run",
+      "run": false
     },
     "python/test_dfb_reconfiguration.py::test_reconfiguration_switches_tensor_backed_storage_and_cached_execution[dram-bf16]": {
-      "reason": "tt-emule: kernel JIT compilation fails",
-      "run": true
+      "reason": "tt-emule: test fails and destabilizes the emulator for later cases; not run",
+      "run": false
     },
     "python/test_dfb_reconfiguration.py::test_reconfiguration_switches_tensor_backed_storage_and_cached_execution[dram-f32]": {
-      "reason": "tt-emule: kernel JIT compilation fails",
-      "run": true
+      "reason": "tt-emule: test fails and destabilizes the emulator for later cases; not run",
+      "run": false
     },
     "python/test_dfb_reconfiguration.py::test_reconfiguration_switches_tensor_backed_storage_and_cached_execution[l1-bf16]": {
-      "reason": "tt-emule: kernel JIT compilation fails",
-      "run": true
+      "reason": "tt-emule: test fails and destabilizes the emulator for later cases; not run",
+      "run": false
     },
     "python/test_dfb_reconfiguration.py::test_reconfiguration_switches_tensor_backed_storage_and_cached_execution[l1-f32]": {
-      "reason": "tt-emule: kernel JIT compilation fails",
-      "run": true
+      "reason": "tt-emule: test fails and destabilizes the emulator for later cases; not run",
+      "run": false
     },
     "python/test_dfb_reconfiguration.py::test_repeated_reconfiguration_reuses_ids_preserves_live_payload_and_restores_initial_epoch[one-core-dram-bf16]": {
-      "reason": "tt-emule: kernel JIT compilation fails",
-      "run": true
+      "reason": "tt-emule: test fails and destabilizes the emulator for later cases; not run",
+      "run": false
     },
     "python/test_dfb_reconfiguration.py::test_repeated_reconfiguration_reuses_ids_preserves_live_payload_and_restores_initial_epoch[one-core-dram-f32]": {
-      "reason": "tt-emule: kernel JIT compilation fails",
-      "run": true
+      "reason": "tt-emule: test fails and destabilizes the emulator for later cases; not run",
+      "run": false
     },
     "python/test_dfb_reconfiguration.py::test_repeated_reconfiguration_reuses_ids_preserves_live_payload_and_restores_initial_epoch[one-core-l1-bf16]": {
-      "reason": "tt-emule: kernel JIT compilation fails",
-      "run": true
+      "reason": "tt-emule: test fails and destabilizes the emulator for later cases; not run",
+      "run": false
     },
     "python/test_dfb_reconfiguration.py::test_repeated_reconfiguration_reuses_ids_preserves_live_payload_and_restores_initial_epoch[one-core-l1-f32]": {
-      "reason": "tt-emule: kernel JIT compilation fails",
-      "run": true
+      "reason": "tt-emule: test fails and destabilizes the emulator for later cases; not run",
+      "run": false
     },
     "python/test_dfb_reconfiguration.py::test_repeated_reconfiguration_reuses_ids_preserves_live_payload_and_restores_initial_epoch[two-core-dram-bf16]": {
-      "reason": "tt-emule: kernel JIT compilation fails",
-      "run": true
+      "reason": "tt-emule: test fails and destabilizes the emulator for later cases; not run",
+      "run": false
     },
     "python/test_dfb_reconfiguration.py::test_repeated_reconfiguration_reuses_ids_preserves_live_payload_and_restores_initial_epoch[two-core-dram-f32]": {
-      "reason": "tt-emule: kernel JIT compilation fails",
-      "run": true
+      "reason": "tt-emule: test fails and destabilizes the emulator for later cases; not run",
+      "run": false
     },
     "python/test_dfb_reconfiguration.py::test_repeated_reconfiguration_reuses_ids_preserves_live_payload_and_restores_initial_epoch[two-core-l1-bf16]": {
-      "reason": "tt-emule: kernel JIT compilation fails",
-      "run": true
+      "reason": "tt-emule: test fails and destabilizes the emulator for later cases; not run",
+      "run": false
     },
     "python/test_dfb_reconfiguration.py::test_repeated_reconfiguration_reuses_ids_preserves_live_payload_and_restores_initial_epoch[two-core-l1-f32]": {
-      "reason": "tt-emule: kernel JIT compilation fails",
-      "run": true
+      "reason": "tt-emule: test fails and destabilizes the emulator for later cases; not run",
+      "run": false
     },
     "python/test_dfb_reconfiguration_discard.py::test_reconfiguration_discards_wait_state_before_reuse[dram-bf16]": {
       "reason": "tt-emule: kernel JIT compilation fails",
@@ -706,8 +706,8 @@
       "run": true
     },
     "python/test_dfb_reconfiguration_discard.py::test_reconfiguration_discards_wait_state_before_reuse[l1-bf16]": {
-      "reason": "tt-emule: kernel JIT compilation fails",
-      "run": true
+      "reason": "tt-emule: test hangs the emulator; not run",
+      "run": false
     },
     "python/test_dfb_reconfiguration_discard.py::test_reconfiguration_discards_wait_state_before_reuse[l1-f32]": {
       "reason": "tt-emule: kernel JIT compilation fails",
@@ -774,8 +774,8 @@
       "run": true
     },
     "python/test_external_dfb_reuse.py::test_external_protocol_state_reset_allows_group_reuse[l1-bf16]": {
-      "reason": "tt-emule: kernel JIT compilation fails",
-      "run": true
+      "reason": "tt-emule: test hangs the emulator; not run",
+      "run": false
     },
     "python/test_external_dfb_reuse.py::test_external_protocol_state_reset_allows_group_reuse[l1-f32]": {
       "reason": "tt-emule: kernel JIT compilation fails",
