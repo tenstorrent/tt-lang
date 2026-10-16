@@ -40,6 +40,9 @@ def TTL_BindCBOp : TTL_Op<"bind_cb", [Pure]> {
       buffer.
     - `allocation_group`, when present, requests one compiler-verified physical
       allocation for all logical DFBs carrying the same group identity.
+    - `address_scope` is `local` when nodes may use different L1 addresses and
+      `remote_uniform` when every node that uses the DFB requires one address.
+      Omitting the attribute is equivalent to `local`.
     - `tensor_backing`, when present, binds the complete dataflow buffer
       capacity to the specified byte range of an operation tensor argument.
       The range is relative to the local shard on each launch node. Tensor
@@ -56,7 +59,8 @@ def TTL_BindCBOp : TTL_Op<"bind_cb", [Pure]> {
     DefaultValuedAttr<I64Attr, "2">:$block_count,
     OptionalAttr<IndexAttr>:$dfb_id,
     OptionalAttr<TTL_TensorBackingAttr>:$tensor_backing,
-    OptionalAttr<TTL_DFBAllocationGroupAttr>:$allocation_group
+    OptionalAttr<TTL_DFBAllocationGroupAttr>:$allocation_group,
+    OptionalAttr<StrAttr>:$address_scope
   );
   let results = (outs TTL_CircularBuffer:$result);
   let assemblyFormat = "`{` `cb_index` `=` $cb_index `,` `block_count` `=` $block_count `}` attr-dict `:` type($result)";
@@ -135,17 +139,22 @@ def TTL_TensorSliceOp : TTL_Op<"tensor_slice", [Pure]> {
 def TTL_CopyOp : TTL_Op<"copy", [MemoryEffects<[MemRead, MemWrite]>]> {
   let summary = "Asynchronous copy involving a tensor, DFB, or pipe";
   let description = [{
-    `ttl.copy` initiates an asynchronous transfer. Pipe-to-DFB receives return
+    `ttl.copy` initiates an asynchronous transfer. Pipe receives return
     `!ttl.receive_request`; other copies return `!ttl.transfer_handle`.
 
     This operation is non-blocking. The destination is not safe to use until a
     corresponding `ttl.wait` has completed.
 
-    A tensor transfer has exactly one DFB (`!ttl.cb`) operand and one ranked
-    tensor operand with TTL layout encoding. A pipe send has a DFB source and a
-    pipe destination. A pipe receive has a pipe source and a destination block
-    reserved from a DFB. The copy transfers the complete payload in row-major
-    tile order.
+    A non-pipe tensor transfer has one DFB endpoint and one ranked tensor
+    operand with TTL layout encoding. The DFB endpoint is either a `!ttl.cb` or
+    a statically shaped, unit-stride `tensor.extract_slice` view of an acquired
+    block. Reads require a reserved destination; writes require a waited source.
+    A pipe send has an acquired DFB block or a statically shaped,
+    row-major-contiguous subview of a waited block as its source and a pipe
+    destination. A pipe receive has a pipe source and either a destination block
+    reserved from a DFB or, for an inter-device point-to-point transfer, a
+    statically shaped DRAM tensor slice. The copy transfers the complete
+    endpoint payload in row-major tile order.
 
     The tensor shape normally equals one dataflow buffer block. A copy may span
     consecutive blocks by extending the tensor's innermost dimension by an
@@ -162,11 +171,11 @@ def TTL_CopyOp : TTL_Op<"copy", [MemoryEffects<[MemRead, MemWrite]>]> {
     destination bytes remain unchanged.
 
     Pipe copies may also specify `byte_count` to transfer exactly that many
-    consecutive bytes starting at byte offset zero of one source block.
+    consecutive bytes starting at the source or destination view.
     Byte-counted pipe transfers require a one-block transfer span. The sender
     and every receiver must specify the same count, and the count must fit both
-    endpoint blocks and the unsigned 32-bit NoC transfer size. Omitting
-    `byte_count` transfers the entire block.
+    endpoint views and the unsigned 32-bit NoC transfer size. Omitting
+    `byte_count` transfers the complete block or subview.
 
     TODO(ttl): Add an optional TRID attribute (range 0..15) when TRID-specific
     TTKernel NOC ops are available. Issue: #87.
@@ -1023,13 +1032,15 @@ def TTL_PipeTransferPostOp : TTL_Op<"pipe_transfer.post",
     [MemoryEffects<[MemRead, MemWrite]>]> {
   let summary = "Post a pipe receive destination";
   let description = [{
-    Registers the receiver-owned destination DFB slot for a pipe transfer and
-    returns the token that represents receiver-side completion. The selected
-    address and synchronization protocols determine whether lowering publishes
-    the address or signals sender readiness. When `byte_count` is present, the
-    matching sender writes exactly that many consecutive bytes starting at byte
-    offset zero of the reserved destination block. Later bytes remain
-    unchanged.
+    Registers receiver-owned destination storage for a pipe transfer and
+    returns the token that represents receiver-side completion. The destination
+    is either a reserved DFB block or a statically shaped DRAM tensor slice.
+    The selected address and synchronization protocols determine whether
+    lowering publishes or computes the destination addresses and how it signals
+    sender readiness. When `byte_count` is present, the matching sender writes
+    exactly that many consecutive bytes starting at byte offset zero of the
+    reserved destination block. Later bytes remain unchanged. Tensor-slice
+    destinations always transfer complete tiles and do not accept `byte_count`.
   }];
   let arguments = (ins
     TTL_PipeTransfer:$transfer,
@@ -1047,14 +1058,15 @@ def TTL_PipeTransferSendOp : TTL_Op<"pipe_transfer.send",
   let description = [{
     Waits until the selected synchronization condition is satisfied, then
     writes the source DFB payload to the receiver-owned destination storage and
-    signals receiver completion. The returned write handle preserves the
-    existing `ttl.wait` ordering contract for send-side code. When `byte_count`
-    is present, the send reads exactly that many consecutive bytes starting at
-    byte offset zero of each source block.
+    signals receiver completion. The source is a DFB, an acquired DFB block, or
+    a statically shaped, row-major-contiguous subview of a waited block. The
+    returned write handle preserves the existing `ttl.wait` ordering contract
+    for send-side code. The send starts at the subview offset and reads either
+    its complete static extent or the explicit `byte_count`.
   }];
   let arguments = (ins
     TTL_PipeTransfer:$transfer,
-    TTL_CircularBuffer:$src,
+    AnyType:$src,
     ConfinedAttr<OptionalAttr<I64Attr>,
                  [IntPositive, IntMaxValue<4294967295>]>:$byte_count
   );
@@ -1068,7 +1080,7 @@ def TTL_PipeTransferWaitOp : TTL_Op<"pipe_transfer.wait",
   let summary = "Wait for pipe receive completion";
   let description = [{
     Blocks until the posted receive represented by the pipe token has completed.
-    The receiver-owned destination DFB slot is safe to consume after this
+    The receiver-owned destination storage is safe to consume after this
     operation completes.
   }];
   let arguments = (ins
@@ -2303,7 +2315,9 @@ def TTL_ResetDFBsOp : TTL_Op<"reset_dfbs", [MemoryEffects<[MemWrite]>]> {
     instance per iteration of an equivalent immutable sequential loop nest.
     Before any participant returns, the operation completes prior DFB-interface
     work and restores the listed DFBs to canonical empty protocol state without
-    changing descriptor configuration or payload storage.
+    changing descriptor configuration or payload storage. Listing one member of
+    a DFB allocation group resets every member because the group shares one L1
+    allocation.
 
     The operation resets read and write pointers, the packer write-tile
     pointer, initialization state, and stream occupancy counters. It does not
@@ -2328,11 +2342,16 @@ def TTL_ResetAllDFBsOp
   let description = [{
     `ttl.reset_all_dfbs` has the synchronization and state-reset semantics of
     `ttl.reset_dfbs`, applied to every worker-local DFB allocated by the
-    program. It does not take DFB operands because the complete allocation set
-    is resolved after physical DFB indices are finalized.
+    program except the DFBs listed in `preserved_dfbs`. Preserving one member
+    of a DFB allocation group preserves every member because the group shares
+    one L1 allocation.
   }];
-  let arguments = (ins TTL_SynchronizedDFBResetAttr:$reset);
-  let assemblyFormat = "$reset attr-dict";
+  let arguments = (ins
+    TTL_SynchronizedDFBResetAttr:$reset,
+    Variadic<TTL_CircularBuffer>:$preserved_dfbs
+  );
+  let assemblyFormat = "$reset (`preserve` $preserved_dfbs^ `:` type($preserved_dfbs))? attr-dict";
+  let hasVerifier = 1;
 }
 
 //===----------------------------------------------------------------------===//

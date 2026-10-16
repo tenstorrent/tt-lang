@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Iterable, Mapping, Optional
 
-from .kernel import Kernel
+from .kernel import Kernel, KernelKind, KernelSelector, _selector_kind
 
 
 class FabricManagerEffectKind(Enum):
@@ -41,10 +41,14 @@ class _FabricManagerClaimBinding:
 
 @dataclass(frozen=True, eq=False)
 class FabricManagerClaim:
-    """Operation-local identity for one external fabric manager lifetime."""
+    """Operation-local identity for one external fabric manager lifetime.
+
+    The selector must identify the kernel that creates the manager. A
+    ``KernelKind`` selects its canonical backend kernel.
+    """
 
     name: str
-    kernel: Kernel
+    kernel: KernelSelector
     _binding: _FabricManagerClaimBinding = field(
         default_factory=_FabricManagerClaimBinding,
         init=False,
@@ -54,9 +58,9 @@ class FabricManagerClaim:
     def __post_init__(self) -> None:
         if not isinstance(self.name, str) or not self.name:
             raise ValueError("FabricManagerClaim name must be a nonempty string")
-        if not isinstance(self.kernel, Kernel):
+        if not isinstance(self.kernel, (Kernel, KernelKind)):
             raise TypeError(
-                "FabricManagerClaim kernel must be a Kernel, got "
+                "FabricManagerClaim kernel must be a KernelKind or Kernel, got "
                 f"{type(self.kernel).__name__}"
             )
 
@@ -78,6 +82,9 @@ class FabricManagerClaim:
         operation_identity: str,
         logical_kernels: Optional[Iterable[Kernel]] = None,
     ) -> None:
+        if isinstance(self.kernel, KernelKind):
+            self._binding.bind(operation_identity, self.name)
+            return
         kernel_belongs_to_operation = (
             self.kernel._operation_identity == operation_identity
             if logical_kernels is None
@@ -92,7 +99,7 @@ class FabricManagerClaim:
         self._binding.bind(operation_identity, self.name)
 
     def _operation_identity_capture(self) -> tuple:
-        return ("fabric-manager-claim", self.name, self.kernel.kind.value)
+        return ("fabric-manager-claim", self.name, _selector_kind(self.kernel).value)
 
     def _effect(self, kind: FabricManagerEffectKind) -> FabricManagerEffect:
         return FabricManagerEffect(self, kind)

@@ -46,6 +46,42 @@ def _kernel_specs(compiled):
     ]
 
 
+def test_aliased_tensor_arguments_use_first_global_index(monkeypatch):
+    """A later alias must not replace the index used by the first parameter."""
+    monkeypatch.setenv("TTLANG_COMPILE_ONLY", "1")
+
+    @ttl.operation(grid=(1, 1))
+    def copy_aliased_input(input_tensor, unused_alias, output_tensor):
+        transfer_dfb = ttl.make_dataflow_buffer_like(
+            input_tensor, shape=(1, 1), block_count=1
+        )
+        with transfer_dfb.reserve() as destination:
+            ttl.copy(input_tensor[0, 0], destination).wait()
+        with transfer_dfb.wait() as source:
+            ttl.copy(source, output_tensor[0, 0]).wait()
+
+    input_tensor = ttnn.from_torch(
+        torch.zeros((32, 32), dtype=torch.bfloat16),
+        dtype=ttnn.bfloat16,
+        layout=ttnn.TILE_LAYOUT,
+    )
+    output_tensor = ttnn.from_torch(
+        torch.zeros((32, 32), dtype=torch.bfloat16),
+        dtype=ttnn.bfloat16,
+        layout=ttnn.TILE_LAYOUT,
+    )
+
+    copy_aliased_input(input_tensor, input_tensor, output_tensor)
+
+    tensor_indices = {
+        tensor_index
+        for kernel_indices in _compiled_kernel(copy_aliased_input).kernel_tensor_indices
+        for tensor_index in kernel_indices
+    }
+    assert 0 in tensor_indices
+    assert 1 not in tensor_indices
+
+
 def test_every_emitted_kernel_spec_has_a_logical_identity(monkeypatch):
     """One explicit selector still leaves every other slot identifiable."""
     monkeypatch.setenv("TTLANG_COMPILE_ONLY", "1")
@@ -147,6 +183,40 @@ def test_external_fabric_manager_can_select_pipe_source_kernel(monkeypatch):
     interval = selected_spec.fabric_manager_intervals[0]
     assert interval.kind is FabricManagerIntervalKind.EXTERNAL
     assert interval.claim == manager.identity
+
+
+def test_external_fabric_manager_can_select_canonical_data_movement(monkeypatch):
+    """A claim on the canonical data-movement kernel reaches NCRISC."""
+    monkeypatch.setenv("TTLANG_COMPILE_ONLY", "1")
+    manager = ttl.FabricManagerClaim(
+        "external_ncrisc", kernel=ttl.KernelKind.DATA_MOVEMENT
+    )
+
+    @ttl.operation(grid=(1, 1))
+    def external_ncrisc_manager(inp):
+        ttl.call_extern_func(
+            HEADER,
+            "open_and_close",
+            kernel=ttl.KernelKind.DATA_MOVEMENT,
+            fabric_manager_effects=(manager.scoped(),),
+        )
+
+    external_ncrisc_manager(
+        ttnn.from_torch(
+            torch.zeros((32, 32), dtype=torch.bfloat16),
+            dtype=ttnn.bfloat16,
+            layout=ttnn.TILE_LAYOUT,
+        )
+    )
+
+    selected_spec = next(
+        spec
+        for spec in _kernel_specs(_compiled_kernel(external_ncrisc_manager))
+        if spec.logical_kernel == ttl.KernelKind.DATA_MOVEMENT
+    )
+    assert "__ncrisc_" in selected_spec.path
+    assert len(selected_spec.fabric_manager_intervals) == 1
+    assert selected_spec.fabric_manager_intervals[0].claim == manager.identity
 
 
 def test_scoped_external_managers_retain_conditional_launch_domain(monkeypatch):

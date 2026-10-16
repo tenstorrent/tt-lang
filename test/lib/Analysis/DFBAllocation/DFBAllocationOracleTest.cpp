@@ -517,6 +517,13 @@ static bool verifyWeightedColoringAcrossComponents() {
     llvm::errs() << "weighted coloring witness mismatch\n";
     return false;
   }
+  // An inconclusive minimum-weight search still returns a valid coloring.
+  if (!verifyColoring(graph, minimumLimited.colors,
+                      minimumLimited.colorCount) ||
+      minimumLimited.colorCount == 0) {
+    llvm::errs() << "search-limited weighted coloring is not valid\n";
+    return false;
+  }
   return true;
 }
 

@@ -252,6 +252,55 @@ def _make_point_to_point_operation(
     return point_to_point
 
 
+def _make_parallel_point_to_point_operation(
+    mesh_shape: tuple[int, ...],
+    source_device: tuple[int, ...],
+    destination_device: tuple[int, ...],
+    worker_count: int,
+):
+    device_domain = ttl.DeviceDomain(mesh_shape)
+    point_to_point_net = ttl.PipeNet(
+        graph=ttl.TransferGraph.edges(
+            device_domain, edges=[(source_device, destination_device)]
+        )
+    )
+
+    @ttl.operation(grid=(worker_count, 1), device_domain=device_domain)
+    def parallel_point_to_point(inp, out):
+        send_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+        receive_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+
+        @ttl.compute()
+        def idle_compute():
+            pass
+
+        @ttl.datamovement()
+        def sender_node():
+            node_x, _node_y = ttl.node(dims=2)
+
+            def send(pipe):
+                with send_dfb.reserve() as send_block:
+                    ttl.copy(inp[node_x, 0], send_block).wait()
+                with send_dfb.wait() as send_block:
+                    ttl.copy(send_block, pipe).wait()
+
+            point_to_point_net.if_src(send)
+
+        @ttl.datamovement()
+        def receiver_node():
+            node_x, _node_y = ttl.node(dims=2)
+
+            def receive(pipe):
+                with receive_dfb.reserve() as receive_block:
+                    ttl.copy(pipe, receive_block).wait()
+                with receive_dfb.wait() as receive_block:
+                    ttl.copy(receive_block, out[node_x, 0]).wait()
+
+            point_to_point_net.if_dst(receive)
+
+    return parallel_point_to_point
+
+
 def _make_graph_destination_count_operation(mesh_shape: tuple[int, ...]):
     """Build a gather whose root consumes every expanded destination record."""
     device_count = prod(mesh_shape)
@@ -936,6 +985,48 @@ def test_point_to_point(
     assert_allclose(result.float(), expected.float(), rtol=rtol, atol=atol)
 
 
+@requires_forwarding_link_indices(ttnn)
+@pytest.mark.parametrize("torch_dtype,ttnn_dtype,rtol,atol", FABRIC_DTYPES)
+def test_parallel_point_to_point_uses_fabric_mux(
+    fabric_mesh_shape,
+    torch_dtype,
+    ttnn_dtype,
+    rtol,
+    atol,
+):
+    worker_count = 8
+    device_count = prod(fabric_mesh_shape)
+    source_device = tuple(0 for _extent in fabric_mesh_shape)
+    destination_device = tuple(extent - 1 for extent in fabric_mesh_shape)
+    parallel_point_to_point = _make_parallel_point_to_point_operation(
+        fabric_mesh_shape,
+        source_device,
+        destination_device,
+        worker_count,
+    )
+    shard_rows = worker_count * TILE_SIZE
+    logical_shape = (device_count * shard_rows, TILE_SIZE)
+    inp_torch = torch.randn(logical_shape, dtype=torch_dtype)
+    out_torch = torch.zeros(logical_shape, dtype=torch_dtype)
+
+    with _open_collective_mesh(fabric_mesh_shape) as mesh:
+        inp = _mesh_tensor(mesh, inp_torch, ttnn_dtype)
+        out = _mesh_tensor(mesh, out_torch, ttnn_dtype)
+
+        parallel_point_to_point(inp, out)
+
+        result = _compose(mesh, out)
+
+    expected = torch.zeros_like(inp_torch)
+    destination_start = (
+        _flatten_device_index(destination_device, fabric_mesh_shape) * shard_rows
+    )
+    expected[destination_start : destination_start + shard_rows, :] = inp_torch[
+        :shard_rows, :
+    ]
+    assert_allclose(result.float(), expected.float(), rtol=rtol, atol=atol)
+
+
 # Graph counts must select every record received by the gather root.
 @pytest.mark.parametrize("torch_dtype,ttnn_dtype,rtol,atol", FABRIC_DTYPES)
 def test_graph_destination_count(
@@ -1233,6 +1324,94 @@ def test_one_dimensional_route(
 
     expected = torch.zeros_like(inp_torch)
     expected[:TILE_SIZE, :] = inp_torch[-TILE_SIZE:, :]
+    assert_allclose(result.float(), expected.float(), rtol=rtol, atol=atol)
+
+
+# Verify that the 1D ring fabric routes between the ends of a device line over
+# the ring's closing link. Reshaping a 2x2 mesh to a line always places the
+# line ends on linked devices.
+@pytest.mark.parametrize("torch_dtype,ttnn_dtype,rtol,atol", FABRIC_DTYPES)
+def test_one_dimensional_ring_closing_link(torch_dtype, ttnn_dtype, rtol, atol):
+    fabric_config = ttnn.FabricConfig.FABRIC_1D_RING
+    route_mesh_shape = _get_route_mesh_shape(fabric_config)
+    if tuple(route_mesh_shape) != (2, 2):
+        pytest.skip("requires a 2x2 mesh whose line ends are physical neighbors")
+    line_shape = (4, 1)
+    source_device = (3, 0)
+    destination_device = (0, 0)
+    point_to_point = _make_point_to_point_operation(
+        line_shape, source_device, destination_device
+    )
+    logical_shape = (4 * TILE_SIZE, TILE_SIZE)
+    inp_torch = torch.randn(logical_shape, dtype=torch_dtype)
+    out_torch = torch.zeros(logical_shape, dtype=torch_dtype)
+
+    with _open_route_mesh(route_mesh_shape, fabric_config) as mesh:
+        mesh.reshape(ttnn.MeshShape(line_shape))
+        inp = _mesh_tensor(mesh, inp_torch, ttnn_dtype)
+        out = _mesh_tensor(mesh, out_torch, ttnn_dtype)
+
+        point_to_point(inp, out)
+
+        result = _compose(mesh, out)
+
+    expected = torch.zeros_like(inp_torch)
+    expected[:TILE_SIZE, :] = inp_torch[-TILE_SIZE:, :]
+    assert_allclose(result.float(), expected.float(), rtol=rtol, atol=atol)
+
+
+# Verify 1D ring routes that cross the closing link after and before another
+# hop. On a torus axis of at least five devices, the route between coordinates
+# 1 and extent - 1 passes through coordinate 0 and the closing link.
+@pytest.mark.parametrize("torch_dtype,ttnn_dtype,rtol,atol", FABRIC_DTYPES)
+@pytest.mark.parametrize("toward_axis_end", [True, False], ids=["to-end", "to-start"])
+def test_one_dimensional_ring_route_crosses_closing_link(
+    toward_axis_end, torch_dtype, ttnn_dtype, rtol, atol
+):
+    fabric_config = ttnn.FabricConfig.FABRIC_1D_RING
+    route_mesh_shape = _get_route_mesh_shape(fabric_config)
+    line_axis = max(
+        range(len(route_mesh_shape)), key=lambda axis: route_mesh_shape[axis]
+    )
+    line_extent = route_mesh_shape[line_axis]
+    if line_extent < 5:
+        pytest.skip("requires a device line of at least five devices")
+    line_shape = tuple(
+        line_extent if axis == line_axis else 1 for axis in range(len(route_mesh_shape))
+    )
+
+    def line_device(line_coordinate):
+        return tuple(
+            line_coordinate if axis == line_axis else 0
+            for axis in range(len(line_shape))
+        )
+
+    source_index, destination_index = 1, line_extent - 1
+    if not toward_axis_end:
+        source_index, destination_index = destination_index, source_index
+    point_to_point = _make_point_to_point_operation(
+        line_shape, line_device(source_index), line_device(destination_index)
+    )
+    logical_shape = (line_extent * TILE_SIZE, TILE_SIZE)
+    inp_torch = torch.randn(logical_shape, dtype=torch_dtype)
+    out_torch = torch.zeros(logical_shape, dtype=torch_dtype)
+
+    with _open_route_mesh(route_mesh_shape, fabric_config) as parent_mesh:
+        mesh = parent_mesh.create_submesh(ttnn.MeshShape(line_shape))
+        try:
+            inp = _mesh_tensor(mesh, inp_torch, ttnn_dtype)
+            out = _mesh_tensor(mesh, out_torch, ttnn_dtype)
+
+            point_to_point(inp, out)
+
+            result = _compose(mesh, out)
+        finally:
+            ttnn.close_mesh_device(mesh)
+
+    expected = torch.zeros_like(inp_torch)
+    expected[destination_index * TILE_SIZE : (destination_index + 1) * TILE_SIZE, :] = (
+        inp_torch[source_index * TILE_SIZE : (source_index + 1) * TILE_SIZE, :]
+    )
     assert_allclose(result.float(), expected.float(), rtol=rtol, atol=atol)
 
 

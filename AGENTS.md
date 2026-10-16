@@ -131,6 +131,22 @@ itself cannot carry the information.
 - Document the algorithm, correctness argument, assumptions, conservative
   behavior, limitations, and upstream reuse in a design document.
 
+### Analysis Complexity
+
+- Analyses that enumerate occurrences (loop iterations, PipeNet records,
+  logical devices, schedule events) must stay near-linear in the enumerated
+  count. Do not compare occurrences pairwise; index them (for example by grid
+  cell or hash) so each occurrence is checked against a bounded neighborhood.
+  The neighborhood must not grow with an unbounded quantity such as tensor rank.
+- Repeated identical occurrences, such as one region received in every
+  iteration, share one index bucket; deduplicate them before comparing
+  occurrences within a bucket.
+- When a count follows user input without a natural bound, such as a trip count
+  or a device-domain extent, bound it with a named constant and emit a
+  diagnostic before materializing the enumeration.
+- State the complexity contract in the comment of a shared analysis helper,
+  and measure compile time at two or more sizes when changing an enumeration.
+
 ### Op Creation API
 - Use the static `OpTy::create(builder, loc, ...)` form, **not** the deprecated
   `builder.create<OpTy>(loc, ...)`. The latter is deprecated in current LLVM and

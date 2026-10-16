@@ -46,8 +46,10 @@ module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blac
 
 // -----
 
+// A reset under a dispatch condition executes a runtime-dependent number of
+// times, so the DFB state across it cannot be checked.
 module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blackhole>} {
-  func.func @condition_mismatch_compute()
+  func.func @runtime_condition_reset_compute()
       attributes {ttl.kernel_thread = #ttkernel.thread<compute>,
                   ttl.logical_kernel = #ttl.logical_kernel<kind = compute, identity = "compute", operation = "reset_test">} {
     %dfb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
@@ -55,12 +57,13 @@ module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blac
     %value = ttl.opaque_call "compute_active" () {condition_result = #ttl.dispatch_condition<0, i64>, header = "condition.hpp"} : () -> i64
     %active = arith.cmpi ne, %value, %zero : i64
     scf.if %active {
+      // expected-error @below {{'ttl.reset_dfbs' op synchronized DFB reset must execute a compile-time-known number of times on each launch node; it may depend on the launch node but not on runtime values}}
       ttl.reset_dfbs <0, participants[<kind = compute, identity = "compute", operation = "reset_test">, <kind = data_movement, identity = "reader", operation = "reset_test">, <kind = data_movement, identity = "writer", operation = "reset_test">]>(%dfb : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>)
     }
     return
   }
 
-  func.func @condition_mismatch_reader()
+  func.func @runtime_condition_reset_reader()
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
                   ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement, identity = "reader", operation = "reset_test">,
                   ttl.noc_index = 0 : i32} {
@@ -69,13 +72,12 @@ module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blac
     %value = ttl.opaque_call "reader_active" () {condition_result = #ttl.dispatch_condition<1, i64>, header = "condition.hpp"} : () -> i64
     %active = arith.cmpi ne, %value, %zero : i64
     scf.if %active {
-      // expected-error @below {{'ttl.reset_dfbs' op synchronized DFB reset participants execute under different structured conditions}}
       ttl.reset_dfbs <0, participants[<kind = compute, identity = "compute", operation = "reset_test">, <kind = data_movement, identity = "reader", operation = "reset_test">, <kind = data_movement, identity = "writer", operation = "reset_test">]>(%dfb : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>)
     }
     return
   }
 
-  func.func @condition_mismatch_writer()
+  func.func @runtime_condition_reset_writer()
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
                   ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement, identity = "writer", operation = "reset_test">,
                   ttl.noc_index = 1 : i32} {
@@ -156,7 +158,7 @@ module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blac
       %value = ttl.opaque_call "compute_active" () {condition_result = #ttl.dispatch_condition<0, i64>, header = "condition.hpp"} : () -> i64
       %active = arith.cmpi ne, %value, %zero : i64
       scf.if %active {
-        // expected-error @below {{'ttl.reset_dfbs' op synchronized DFB reset must execute at most once per dispatch and launch node or once per iteration of an immutable sequential structured loop nest}}
+        // expected-error @below {{'ttl.reset_dfbs' op synchronized DFB reset must execute a compile-time-known number of times on each launch node; it may depend on the launch node but not on runtime values}}
         ttl.reset_dfbs <0, participants[<kind = compute, identity = "compute", operation = "conditional_repeated_reset">, <kind = data_movement, identity = "reader", operation = "conditional_repeated_reset">, <kind = data_movement, identity = "writer", operation = "conditional_repeated_reset">]>(%dfb : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>)
       }
     }
@@ -292,7 +294,7 @@ module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blac
     %step = arith.constant 1 : index
     scf.for %outer = %lower to %upper step %step {
       scf.for %inner = %lower to %upper step %step {
-        // expected-error @below {{'ttl.reset_all_dfbs' op synchronized DFB reset participants must execute in the same structured iteration sequence}}
+        // expected-error @below {{'ttl.reset_all_dfbs' op repeated synchronized DFB reset must execute in one loop, not in nested loops}}
         ttl.reset_all_dfbs <0, participants[<kind = compute, identity = "compute", operation = "sequence_mismatch">, <kind = data_movement, identity = "reader", operation = "sequence_mismatch">, <kind = data_movement, identity = "writer", operation = "sequence_mismatch">]>
       }
     }
@@ -313,7 +315,7 @@ module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blac
     %upper = arith.constant 2 : index
     %step = arith.constant 1 : index
     scf.parallel (%iteration) = (%lower) to (%upper) step (%step) {
-      // expected-error @below {{'ttl.reset_all_dfbs' op synchronized DFB reset must execute at most once per dispatch and launch node or once per iteration of an immutable sequential structured loop nest}}
+      // expected-error @below {{'ttl.reset_all_dfbs' op synchronized DFB reset must execute a compile-time-known number of times on each launch node; it may depend on the launch node but not on runtime values}}
       ttl.reset_all_dfbs <0, participants[<kind = compute, identity = "compute", operation = "parallel_reset">, <kind = data_movement, identity = "reader", operation = "parallel_reset">, <kind = data_movement, identity = "writer", operation = "parallel_reset">]>
     }
     return

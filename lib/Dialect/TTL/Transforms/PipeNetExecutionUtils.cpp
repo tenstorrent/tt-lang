@@ -5,11 +5,21 @@
 #include "ttlang/Dialect/TTL/Transforms/PipeNetExecutionUtils.h"
 
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
+#include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/ScopeExit.h"
 #include "llvm/Support/CheckedArithmetic.h"
 
 namespace mlir::tt::ttl {
+
+FailureOr<SmallVector<DeviceRefAttr>>
+enumerateDeviceDomain(DeviceDomainAttr deviceDomain) {
+  FailureOr<std::uint64_t> deviceCount = getDomainDeviceCount(deviceDomain);
+  if (failed(deviceCount) || *deviceCount > kMaxEnumeratedDeviceDomainSize) {
+    return failure();
+  }
+  return enumerateDomainDevices(deviceDomain);
+}
 
 std::optional<std::uint64_t>
 getPipeNetRecordLoopInductionValue(const PipeNetRecordLoop &recordLoop,
@@ -66,6 +76,11 @@ getPipeNetRecordLoopInductionValue(const PipeNetRecordLoop &recordLoop,
   }
   auto iteration =
       recordLoop.indirectInductionValues.find({location, recordIndex});
+  if (iteration == recordLoop.indirectInductionValues.end() &&
+      location.device) {
+    iteration = recordLoop.indirectInductionValues.find(
+        {LaunchExecutionLocation(location.node), recordIndex});
+  }
   return iteration == recordLoop.indirectInductionValues.end()
              ? std::nullopt
              : std::optional<std::uint64_t>(iteration->second);

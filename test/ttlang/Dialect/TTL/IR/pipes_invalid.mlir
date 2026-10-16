@@ -15,7 +15,7 @@ func.func @pipe_to_pipe_copy() {
 // Test: pipe receive without a reserved destination DFB slot.
 func.func @pipe_receive_without_reserve(%t: tensor<32x32xf32>) {
   %p = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0 : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
-  // expected-error @+1 {{'ttl.copy' op pipe receive requires a cb_reserve destination}}
+  // expected-error @+1 {{'ttl.copy' op pipe receive requires a cb_reserve or tensor_slice destination}}
   %xf = ttl.copy %p, %t : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>, tensor<32x32xf32>) -> !ttl.receive_request
   ttl.wait %xf : !ttl.receive_request
   func.return
@@ -272,3 +272,47 @@ func.func @pipe_transfer_wait_any_requires_distinct_tokens(
 // Test: explicit point-to-point metadata cannot contradict a multi-receiver pipe.
 // expected-error @+1 {{'ttl.create_pipe' op isCollective=false is invalid for a multi-receiver pipe}}
 %p = ttl.create_pipe src(0, 0) dst(1, 0) to(2, 0) net 0 {isCollective = false} : !ttl.pipe<src(0, 0) dst(1, 0) to(2, 0) net 0>
+
+// -----
+
+#l1_layout = #ttl.layout<
+  shape = [32, 32], element_type = !ttcore.tile<32x32, bf16>,
+  buffer = l1, grid = [1, 1], memory = interleaved>
+
+func.func @pipe_receive_tensor_requires_dram(
+    %tensor: tensor<1x1x!ttcore.tile<32x32, bf16>, #l1_layout>) {
+  %zero = arith.constant 0 : index
+  %slice = ttl.tensor_slice %tensor[%zero, %zero]
+      : tensor<1x1x!ttcore.tile<32x32, bf16>, #l1_layout>
+      -> tensor<1x1x!ttcore.tile<32x32, bf16>, #l1_layout>
+  %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
+      : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+  // expected-error @below {{pipe receive tensor_slice destination requires interleaved DRAM storage}}
+  %receive = ttl.copy %pipe, %slice
+      : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
+         tensor<1x1x!ttcore.tile<32x32, bf16>, #l1_layout>)
+      -> !ttl.receive_request
+  return
+}
+
+// -----
+
+#dram_layout = #ttl.layout<
+  shape = [32, 32], element_type = !ttcore.tile<32x32, bf16>,
+  buffer = dram, grid = [1, 1], memory = interleaved>
+
+func.func @pipe_receive_tensor_rejects_byte_count(
+    %tensor: tensor<1x1x!ttcore.tile<32x32, bf16>, #dram_layout>) {
+  %zero = arith.constant 0 : index
+  %slice = ttl.tensor_slice %tensor[%zero, %zero]
+      : tensor<1x1x!ttcore.tile<32x32, bf16>, #dram_layout>
+      -> tensor<1x1x!ttcore.tile<32x32, bf16>, #dram_layout>
+  %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
+      : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+  // expected-error @below {{pipe receive tensor_slice destination does not support byte_count}}
+  %receive = ttl.copy %pipe, %slice {byte_count = 2048 : i64}
+      : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
+         tensor<1x1x!ttcore.tile<32x32, bf16>, #dram_layout>)
+      -> !ttl.receive_request
+  return
+}

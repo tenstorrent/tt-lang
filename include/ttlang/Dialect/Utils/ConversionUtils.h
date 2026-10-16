@@ -29,6 +29,12 @@ inline FailureOr<CircularBufferType> getTTLCircularBufferType(Value value) {
   if (auto dfbType = mlir::dyn_cast<CircularBufferType>(value.getType())) {
     return dfbType;
   }
+  if (auto slice = value.getDefiningOp<mlir::tensor::ExtractSliceOp>()) {
+    return getTTLCircularBufferType(slice.getSource());
+  }
+  if (auto attach = value.getDefiningOp<AttachCBOp>()) {
+    return getTTLCircularBufferType(attach.getCb());
+  }
   if (auto castOp = value.getDefiningOp<UnrealizedConversionCastOp>()) {
     if (castOp.getInputs().size() == 1 && castOp.getOutputs().size() == 1) {
       if (auto dfbType = mlir::dyn_cast<CircularBufferType>(
@@ -97,6 +103,17 @@ inline Value addSliceOffset(Value operand, Value localIndex, OpBuilder &builder,
   // Nested subblocks have offsets relative to their immediate source, not the
   // root DFB. Compose each slice mapping before reaching that root.
   return addSliceOffset(slice.getSource(), sourceIndex, builder, loc);
+}
+
+/// Returns the DFB tile index of the tile at `indices` of `tensor`, a DFB
+/// block or a subblock view of one: `indices` are linearized in `tensor`'s own
+/// shape, then every enclosing slice offset is added.
+inline Value computeDFBTileIndex(Value tensor, ValueRange indices,
+                                 OpBuilder &builder, Location loc) {
+  Value localIndex = affine::AffineLinearizeIndexOp::create(
+      builder, loc, indices,
+      mlir::cast<RankedTensorType>(tensor.getType()).getShape());
+  return addSliceOffset(tensor, localIndex, builder, loc);
 }
 
 /// Convert a TTL CircularBufferType value to a TTKernel CBType, or return

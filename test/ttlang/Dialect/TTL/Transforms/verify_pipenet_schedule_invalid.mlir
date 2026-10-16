@@ -1043,7 +1043,6 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
       %recv_reserve = ttl.cb_reserve %recv_cb
           : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
           -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-      // expected-note @below {{matching receiver post occurrence is here}}
       %recv = ttl.copy %pipe, %recv_reserve
           : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
              tensor<1x1x!ttcore.tile<32x32, bf16>>)
@@ -1055,7 +1054,8 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
     %step = arith.constant 1 : index
     scf.for %iteration = %lower to %upper step %step {
       ttl.if_src %pipe : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
-        // expected-error @below {{cannot prove a one-to-one synchronization schedule on PipeNet net_0 for receiver core_x=1, core_y=0; receiver post and send occurrences do not have matching proven execution counts and conditions}}
+        // expected-error @below {{PipeNet net_0 requires one static receiver post definition for each static send definition at receiver core_x=1, core_y=0; found 1 static receiver post definition(s) and 2 static send definition(s)}}
+        // expected-note @below {{this send has no corresponding receiver post}}
         %send = ttl.copy %send_cb, %pipe
             : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,
                !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>)
@@ -1293,7 +1293,6 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
       %is_first = arith.cmpi eq, %iteration, %c0 : index
       scf.if %is_first {
         ttl.if_src %pipe : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
-          // expected-error @below {{cannot prove a one-to-one synchronization schedule on PipeNet net_0 for receiver core_x=1, core_y=0; receiver post and send occurrences do not have matching proven execution counts and conditions}}
           %send = ttl.copy %send_cb, %pipe
               : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,
                  !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>)
@@ -1305,7 +1304,8 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
         %recv_reserve = ttl.cb_reserve %recv_cb
             : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
             -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-        // expected-note @below {{matching receiver post occurrence is here}}
+        // expected-error @below {{PipeNet net_0 requires one static receiver post definition for each static send definition at receiver core_x=1, core_y=0; found 2 static receiver post definition(s) and 1 static send definition(s)}}
+        // expected-note @below {{this receiver post has no corresponding send}}
         %recv = ttl.copy %pipe, %recv_reserve
             : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
                tensor<1x1x!ttcore.tile<32x32, bf16>>)
@@ -1317,6 +1317,111 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
   }
 }
 
+// -----
+
+// Iteration-dependent pipe control requires concrete schedule occurrences. A
+// loop that exceeds the bounded event graph must be rejected.
+
+module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
+  func.func @large_iteration_dependent_schedule()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c4097 = arith.constant 4097 : index
+    %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+    %send_dfb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    // expected-error @below {{cannot expand the PipeNet schedule beyond 4096 pipe copies and 65536 cloned operations}}
+    scf.for %iteration = %c0 to %c4097 step %c1 {
+      %is_first = arith.cmpi eq, %iteration, %c0 : index
+      scf.if %is_first {
+        ttl.if_src %pipe : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
+          %send = ttl.copy %send_dfb, %pipe
+              : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,
+                 !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>)
+              -> !ttl.transfer_handle<write>
+          ttl.wait %send : !ttl.transfer_handle<write>
+        }
+      }
+    }
+    func.return
+  }
+}
+
+
+// -----
+
+// Expansion clones every operation of the loop body. Iteration-dependent pipe
+// control in a loop whose clones would exceed the operation bound is rejected
+// although its pipe copies fit.
+
+module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
+  func.func @large_body_iteration_dependent_schedule()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c2048 = arith.constant 2048 : index
+    %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+    %send_dfb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    // expected-error @below {{cannot expand the PipeNet schedule beyond 4096 pipe copies and 65536 cloned operations}}
+    scf.for %iteration = %c0 to %c2048 step %c1 {
+      %v0 = arith.addi %iteration, %c1 : index
+      %v1 = arith.addi %v0, %c1 : index
+      %v2 = arith.addi %v1, %c1 : index
+      %v3 = arith.addi %v2, %c1 : index
+      %v4 = arith.addi %v3, %c1 : index
+      %v5 = arith.addi %v4, %c1 : index
+      %v6 = arith.addi %v5, %c1 : index
+      %v7 = arith.addi %v6, %c1 : index
+      %v8 = arith.addi %v7, %c1 : index
+      %v9 = arith.addi %v8, %c1 : index
+      %v10 = arith.addi %v9, %c1 : index
+      %v11 = arith.addi %v10, %c1 : index
+      %v12 = arith.addi %v11, %c1 : index
+      %v13 = arith.addi %v12, %c1 : index
+      %v14 = arith.addi %v13, %c1 : index
+      %v15 = arith.addi %v14, %c1 : index
+      %v16 = arith.addi %v15, %c1 : index
+      %v17 = arith.addi %v16, %c1 : index
+      %v18 = arith.addi %v17, %c1 : index
+      %v19 = arith.addi %v18, %c1 : index
+      %v20 = arith.addi %v19, %c1 : index
+      %v21 = arith.addi %v20, %c1 : index
+      %v22 = arith.addi %v21, %c1 : index
+      %v23 = arith.addi %v22, %c1 : index
+      %v24 = arith.addi %v23, %c1 : index
+      %v25 = arith.addi %v24, %c1 : index
+      %v26 = arith.addi %v25, %c1 : index
+      %v27 = arith.addi %v26, %c1 : index
+      %v28 = arith.addi %v27, %c1 : index
+      %v29 = arith.addi %v28, %c1 : index
+      %v30 = arith.addi %v29, %c1 : index
+      %v31 = arith.addi %v30, %c1 : index
+      %v32 = arith.addi %v31, %c1 : index
+      %v33 = arith.addi %v32, %c1 : index
+      %v34 = arith.addi %v33, %c1 : index
+      %v35 = arith.addi %v34, %c1 : index
+      %v36 = arith.addi %v35, %c1 : index
+      %v37 = arith.addi %v36, %c1 : index
+      %v38 = arith.addi %v37, %c1 : index
+      %v39 = arith.addi %v38, %c1 : index
+      %is_first = arith.cmpi eq, %v39, %c0 : index
+      scf.if %is_first {
+        ttl.if_src %pipe : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
+          %send = ttl.copy %send_dfb, %pipe
+              : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,
+                 !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>)
+              -> !ttl.transfer_handle<write>
+          ttl.wait %send : !ttl.transfer_handle<write>
+        }
+      }
+    }
+    func.return
+  }
+}
 // -----
 
 // A send can be separated from the matching receiver post by other pipe
@@ -1670,7 +1775,8 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
         %reserve = ttl.cb_reserve %recv_cb
             : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
             -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-        // expected-error @below {{cannot prove that each repeated receiver post is consumed before the next post on PipeNet net_0 at core_x=1, core_y=0}}
+        // expected-error @below {{receiver post may overwrite an outstanding posted address on PipeNet net_0 at core_x=1, core_y=0; receiver-published addressing supports one outstanding post per pipe}}
+        // expected-note @below {{the preceding receiver post is not proven consumed before this post}}
         %receive = ttl.copy %pipe, %reserve
             : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
                tensor<1x1x!ttcore.tile<32x32, bf16>>)
@@ -1743,6 +1849,148 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
              !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>)
           -> !ttl.transfer_handle<write>
       ttl.wait %send1 : !ttl.transfer_handle<write>
+    }
+    func.return
+  }
+}
+
+// -----
+
+// Core (1,0) waits in iteration 0 for X, which core (0,0) sends only in
+// iteration 1 after its iteration-0 wait for Y, which core (1,0) sends only
+// after that wait for X: a deadlock that spans loop iterations.
+module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
+  func.func @cross_iteration_deadlock()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %cn = arith.constant 2 : index
+    %x = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+    %y = ttl.create_pipe src(1, 0) dst(0, 0) to(0, 0) net 1
+        : !ttl.pipe<src(1, 0) dst(0, 0) to(0, 0) net 1>
+    %send_dfb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %receive_dfb = ttl.bind_cb {cb_index = 1, block_count = 2} {dfb_id = 1 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    scf.for %iteration = %c0 to %cn step %c1 {
+      %is_first = arith.cmpi eq, %iteration, %c0 : index
+      %is_second = arith.cmpi eq, %iteration, %c1 : index
+      ttl.if_src %x : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
+        scf.if %is_second {
+          // expected-note @below {{program order requires send at core_x=0, core_y=0 after receive completion at core_x=0, core_y=0}}
+          %send = ttl.copy %send_dfb, %x
+              : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,
+                 !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>)
+              -> !ttl.transfer_handle<write>
+          ttl.wait %send : !ttl.transfer_handle<write>
+        }
+        %reserved = ttl.cb_reserve %receive_dfb
+            : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+            -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+        %receive = ttl.copy %y, %reserved
+            : (!ttl.pipe<src(1, 0) dst(0, 0) to(0, 0) net 1>,
+               tensor<1x1x!ttcore.tile<32x32, bf16>>)
+            -> !ttl.receive_request
+        // expected-error @below {{pipe schedule contains a wait-for cycle on PipeNet net_1}}
+        // expected-note @below {{receive completion at core_x=0, core_y=0 waits for send at core_x=1, core_y=0 to transfer data}}
+        ttl.wait %receive : !ttl.receive_request
+      }
+      ttl.if_dst %x : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
+        scf.if %is_first {
+          %reserved = ttl.cb_reserve %receive_dfb
+              : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+              -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+          %receive = ttl.copy %x, %reserved
+              : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
+                 tensor<1x1x!ttcore.tile<32x32, bf16>>)
+              -> !ttl.receive_request
+          // expected-note @below {{receive completion at core_x=1, core_y=0 waits for send at core_x=0, core_y=0 to transfer data}}
+          ttl.wait %receive : !ttl.receive_request
+        }
+        // expected-note @below {{program order requires send at core_x=1, core_y=0 after receive completion at core_x=1, core_y=0}}
+        %send = ttl.copy %send_dfb, %y
+            : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,
+               !ttl.pipe<src(1, 0) dst(0, 0) to(0, 0) net 1>)
+            -> !ttl.transfer_handle<write>
+        ttl.wait %send : !ttl.transfer_handle<write>
+      }
+    }
+    func.return
+  }
+}
+
+// -----
+
+// Node (1, 0) receives record 0 from node (0, 0) and record 1 from node (0, 1)
+// through one callback, then sends Q to node (0, 1), which sends record 1 only
+// after receiving Q. The cycle is visible only when the record-1 wait pairs
+// with the record-1 post.
+#records = #ttl.pipenet_records<net 0 name "shared_receiver" pipes [
+  #ttl.pipe_record<
+      srcX = 0, srcY = 0, dstStartX = 1, dstStartY = 0,
+      dstEndX = 1, dstEndY = 0>,
+  #ttl.pipe_record<
+      srcX = 0, srcY = 1, dstStartX = 1, dstStartY = 0,
+      dstEndX = 1, dstEndY = 0>
+]>
+
+module attributes {ttl.launch_grid = array<i64: 2, 2>} {
+  func.func @worker() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %source = ttl.bind_cb {cb_index = 0, block_count = 1}
+        {dfb_id = 0 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
+    %destination = ttl.bind_cb {cb_index = 1, block_count = 2}
+        {dfb_id = 1 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+    %back_dfb = ttl.bind_cb {cb_index = 2, block_count = 1}
+        {dfb_id = 2 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
+    %back = ttl.create_pipe src(1, 0) dst(0, 1) to(0, 1) net 1
+        : !ttl.pipe<src(1, 0) dst(0, 1) to(0, 1) net 1>
+    ttl.if_dst %back : !ttl.pipe<src(1, 0) dst(0, 1) to(0, 1) net 1> {
+      %reserved = ttl.cb_reserve %back_dfb
+          : <[1, 1], !ttcore.tile<32x32, f32>, 1>
+          -> tensor<1x1x!ttcore.tile<32x32, f32>>
+      %post = ttl.copy %back, %reserved
+          : (!ttl.pipe<src(1, 0) dst(0, 1) to(0, 1) net 1>,
+             tensor<1x1x!ttcore.tile<32x32, f32>>)
+          -> !ttl.receive_request
+      // expected-note @below {{receive completion at core_x=0, core_y=1 waits for send at core_x=1, core_y=0 to transfer data}}
+      ttl.wait %post : !ttl.receive_request
+      ttl.cb_push %back_dfb : <[1, 1], !ttcore.tile<32x32, f32>, 1>
+    }
+    ttl.pipenet_foreach_src attributes {records = #records} {
+    ^bb0(%pipe: !ttl.selected_pipe_src):
+      // expected-note @below {{program order requires send at core_x=0, core_y=1 after receive completion at core_x=0, core_y=1}}
+      %send = ttl.copy %source, %pipe
+          : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>,
+             !ttl.selected_pipe_src) -> !ttl.transfer_handle<write>
+      ttl.wait %send : !ttl.transfer_handle<write>
+      ttl.yield
+    }
+    ttl.pipenet_foreach_dst attributes {records = #records} {
+    ^bb0(%pipe: !ttl.selected_pipe_dst):
+      %reserved = ttl.cb_reserve %destination
+          : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+          -> tensor<1x1x!ttcore.tile<32x32, f32>>
+      %post = ttl.copy %pipe, %reserved
+          : (!ttl.selected_pipe_dst,
+             tensor<1x1x!ttcore.tile<32x32, f32>>)
+          -> !ttl.receive_request
+      // expected-error @below {{pipe schedule contains a wait-for cycle on PipeNet shared_receiver}}
+      // expected-note @below {{receive completion at core_x=1, core_y=0 waits for send at core_x=0, core_y=1 to transfer data}}
+      ttl.wait %post : !ttl.receive_request
+      ttl.cb_push %destination : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+      ttl.yield
+    }
+    ttl.if_src %back : !ttl.pipe<src(1, 0) dst(0, 1) to(0, 1) net 1> {
+      // expected-note @below {{program order requires send at core_x=1, core_y=0 after receive completion at core_x=1, core_y=0}}
+      %send = ttl.copy %source, %back
+          : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>,
+             !ttl.pipe<src(1, 0) dst(0, 1) to(0, 1) net 1>)
+          -> !ttl.transfer_handle<write>
+      ttl.wait %send : !ttl.transfer_handle<write>
     }
     func.return
   }

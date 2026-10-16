@@ -22,9 +22,12 @@ class DFBReconfiguration:
     kind. A ``Kernel`` handle names a specific logical kernel captured by the
     enclosing operation. Every participant executes the same reconfiguration
     calls in the same order. A call may execute at most once per dispatch and
-    launch node, or once in every iteration of nested sequential loops with
-    compile-time-known trip counts. Repeated execution requires at least two
-    calls in equivalent loop nests and in the same order in every participant.
+    launch node, or once in every iteration of one sequential loop with a
+    compile-time-known trip count. Whether it executes may depend on the launch
+    node but not on runtime values; a call under a condition on a runtime value
+    or in nested loops is a compilation error. Repeated execution requires at
+    least two calls in equivalent loops and in the same order in every
+    participant.
     At each call, the runtime waits for prior DFB-interface work to complete,
     installs the next compiler-derived descriptors, and then allows following
     DFB-interface work to begin. When ``discard_dfb_state`` is true, unread

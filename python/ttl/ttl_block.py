@@ -14,12 +14,13 @@ Only the operations the compiler implements appear here. ``mask``,
 absent rather than bound to a stub.
 """
 
-from .operators import broadcast, fill, squeeze, transpose, unsqueeze
+from .operators import broadcast, fill, squeeze, subview, transpose, unsqueeze
 
 __all__ = [
     "broadcast",
     "fill",
     "squeeze",
+    "subview",
     "transpose",
     "unsqueeze",
 ]

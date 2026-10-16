@@ -299,8 +299,15 @@ static FailureOr<PipeTransportLoopCandidate> buildLoopCandidate(
       return failure();
     }
     auto send = cast<PipeTransferSendOp>(transfer->sendOp);
+    Value sourceDFB = isa<CircularBufferType>(send.getSrc().getType())
+                          ? send.getSrc()
+                          : getAttachedCB(send.getSrc());
+    if (!sourceDFB || sourceDFB != send.getSrc()) {
+      reason = "grouped scratch storage requires a complete source DFB block";
+      return failure();
+    }
     FailureOr<PipeTransportDFBUse *> source =
-        getOrAddDFBUse(candidate, send.getSrc(), PipeTransportDFBRole::Source,
+        getOrAddDFBUse(candidate, sourceDFB, PipeTransportDFBRole::Source,
                        transfer->id, reason);
     if (failed(source)) {
       return failure();
@@ -373,7 +380,13 @@ getTransportScratchBytes(const PipeTransportLoopCandidate &candidate,
   uint64_t totalBytes = 0;
   for (const PipeTransferNode *transfer : candidate.transfers) {
     auto sendOp = cast<PipeTransferSendOp>(transfer->sendOp);
-    auto sourceType = cast<CircularBufferType>(sendOp.getSrc().getType());
+    Value sourceDFB = isa<CircularBufferType>(sendOp.getSrc().getType())
+                          ? sendOp.getSrc()
+                          : getAttachedCB(sendOp.getSrc());
+    if (!sourceDFB) {
+      return std::nullopt;
+    }
+    auto sourceType = cast<CircularBufferType>(sourceDFB.getType());
     std::string failureReason;
     FailureOr<uint64_t> sourceBlockBytes = getDFBAllocationSizeBytes(
         CircularBufferType::get(sourceType.getContext(), sourceType.getShape(),

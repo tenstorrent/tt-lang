@@ -38,6 +38,16 @@
 
 namespace mlir::tt::ttl {
 
+StringRef getDFBAddressScopeName(DFBAddressScope scope) {
+  switch (scope) {
+  case DFBAddressScope::Local:
+    return "local";
+  case DFBAddressScope::RemoteUniform:
+    return "remote_uniform";
+  }
+  llvm_unreachable("unknown DFB address scope");
+}
+
 StringRef getDFBConflictReasonName(DFBConflictReason reason) {
   switch (reason) {
   case DFBConflictReason::DescriptorMismatch:
@@ -84,6 +94,27 @@ StringRef getDFBAllocationGroupAssumptionReasonName(
 }
 
 namespace {
+
+static DFBAddressScope
+getDFBAddressScope(const DFBLogicalLifecycle &logicalDFB) {
+  BindCBOp declaration = logicalDFB.declarations.front();
+  StringAttr addressScope = declaration.getAddressScopeAttr();
+  if (!addressScope) {
+    return DFBAddressScope::Local;
+  }
+  return addressScope.getValue() == "remote_uniform"
+             ? DFBAddressScope::RemoteUniform
+             : DFBAddressScope::Local;
+}
+
+static DFBAddressScope joinDFBAddressScopes(DFBAddressScope lhs,
+                                            DFBAddressScope rhs) {
+  if (lhs == DFBAddressScope::RemoteUniform ||
+      rhs == DFBAddressScope::RemoteUniform) {
+    return DFBAddressScope::RemoteUniform;
+  }
+  return DFBAddressScope::Local;
+}
 
 // Preserves failed-proof evidence before using the caller-selected fallback.
 static Operation *getLifetimeEvidence(const DFBPerNodeLifetime *lifetime,
@@ -377,23 +408,6 @@ canReconfigureDescriptorAcrossEpochs(const DFBLogicalLifecycle &lhs,
          haveDisjointConfigurationEpochs(lhs, rhs);
 }
 
-static bool
-requiresReconfigurationStorage(const DFBLogicalLifecycle &logicalDFB) {
-  // The runtime gives changed descriptors hidden tensor backing, which cannot
-  // also provide static storage for a distinct physical descriptor.
-  auto lifetimeRequiresStorage = [](const DFBPerNodeLifetime &lifetime) {
-    return llvm::any_of(lifetime.epochs, [](const DFBLifecycleEpoch &epoch) {
-      return llvm::any_of(getDescriptorInstallationEpochs(epoch),
-                          [](std::optional<int64_t> configurationEpoch) {
-                            return configurationEpoch.has_value();
-                          });
-    });
-  };
-  return llvm::any_of(logicalDFB.nodeLifetimes, lifetimeRequiresStorage) ||
-         llvm::any_of(logicalDFB.possibleNodeLifetimes,
-                      lifetimeRequiresStorage);
-}
-
 } // namespace
 
 struct DFBPairConflictRequirements {
@@ -403,7 +417,7 @@ struct DFBPairConflictRequirements {
   bool requireMatchingPointerOwners = true;
   bool useAllocationGroupEpochs = false;
   bool allowCapacityEnvelope = false;
-  bool requireStaticStorageOwnership = false;
+  bool allowEpochSeparatedScratchStorage = false;
 };
 
 class DFBPhysicalConflictModelBuilder {
@@ -494,7 +508,7 @@ public:
         requirements.requireMatchingElementType = false;
         requirements.requireMatchingTransactions = false;
         requirements.requireMatchingPointerOwners = false;
-        requirements.requireStaticStorageOwnership = true;
+        requirements.allowEpochSeparatedScratchStorage = true;
         addPairConflicts(model, liveness, lhsIndex, rhsIndex, requirements);
       }
     }
@@ -569,6 +583,34 @@ private:
                   lhs.declarations.front(), rhs.declarations.front());
       return;
     }
+    // A shared physical index takes the stricter address scope, which local
+    // tensor backing cannot provide.
+    auto isLocalTensorBacked = [](const DFBLogicalLifecycle &logicalDFB) {
+      return logicalDFB.tensorBacking &&
+             getDFBAddressScope(logicalDFB) == DFBAddressScope::Local;
+    };
+    auto isRemoteUniform = [](const DFBLogicalLifecycle &logicalDFB) {
+      return getDFBAddressScope(logicalDFB) == DFBAddressScope::RemoteUniform;
+    };
+    if ((isLocalTensorBacked(lhs) && isRemoteUniform(rhs)) ||
+        (isLocalTensorBacked(rhs) && isRemoteUniform(lhs))) {
+      addEvidence(model, lhs, rhs, lhsIndex, rhsIndex,
+                  DFBConflictReason::StorageMismatch, std::nullopt,
+                  lhs.declarations.front(), rhs.declarations.front());
+      return;
+    }
+    // A remote_uniform physical index has one descriptor over all of its
+    // nodes, so nodes cannot use different storage sources.
+    if (joinDFBAddressScopes(getDFBAddressScope(lhs),
+                             getDFBAddressScope(rhs)) ==
+            DFBAddressScope::RemoteUniform &&
+        lhs.tensorBacking != rhs.tensorBacking &&
+        !(lhs.launchDomain.known && lhs.launchDomain == rhs.launchDomain)) {
+      addEvidence(model, lhs, rhs, lhsIndex, rhsIndex,
+                  DFBConflictReason::StorageMismatch, std::nullopt,
+                  lhs.declarations.front(), rhs.declarations.front());
+      return;
+    }
     std::uint64_t physicalTileCount =
         cast<CircularBufferType>(lhs.type).getTotalElements();
     bool lhsInactive = lhs.launchDomain.known && lhs.launchDomain.nodes.empty();
@@ -579,6 +621,13 @@ private:
                     DFBConflictReason::StorageMismatch, std::nullopt,
                     lhs.declarations.front(), rhs.declarations.front());
       }
+      return;
+    }
+    if (requirements.allowEpochSeparatedScratchStorage && !lhs.tensorBacking &&
+        !rhs.tensorBacking && lhs.accessCompletionProven &&
+        rhs.accessCompletionProven && lhs.lifecycleCompletionProven &&
+        rhs.lifecycleCompletionProven &&
+        haveDisjointConfigurationEpochs(lhs, rhs)) {
       return;
     }
     bool useConditionalProof =
@@ -601,14 +650,6 @@ private:
       llvm::append_range(sharedNodes, exactSharedNodes.nodes);
     }
     if (sharedNodes.empty()) {
-      return;
-    }
-    if (requirements.requireStaticStorageOwnership &&
-        (requiresReconfigurationStorage(lhs) ||
-         requiresReconfigurationStorage(rhs))) {
-      addEvidence(model, lhs, rhs, lhsIndex, rhsIndex,
-                  DFBConflictReason::StorageMismatch, sharedNodes.front(),
-                  lhs.declarations.front(), rhs.declarations.front());
       return;
     }
     if (!lhs.accessCompletionProven || !rhs.accessCompletionProven) {
@@ -1547,13 +1588,15 @@ static FailureOr<ConcurrentAssignmentResult> computeConcurrentAssignments(
               interferenceGraph, vertexWeights, availableIndices,
               selectedColors, remainingSearchStates);
       exactSearchStateCount += minimum.exploredStateCount;
-      if (minimum.isOptimal()) {
+      if (minimum.status !=
+          ExactInterferenceGraphWeightStatus::AllocationWeightOverflow) {
         selectedColors = std::move(minimum.colors);
         colorCount = minimum.colorCount;
         minimumProven = false;
-      } else if (minimum.status ==
-                 ExactInterferenceGraphWeightStatus::SearchLimitReached) {
-        if (allocationByteLimit && allocationBytes > *allocationByteLimit) {
+        if (minimum.status ==
+                ExactInterferenceGraphWeightStatus::SearchLimitReached &&
+            allocationByteLimit &&
+            minimum.allocationWeight > *allocationByteLimit) {
           exactSearchLimitReached = true;
         }
       } else {
@@ -1815,7 +1858,8 @@ static FailureOr<PhysicalAllocationCandidate> computeDistinctUserAllocation(
     allocation.assignments.push_back(
         {logicalDFB.logicalId, physicalIndex, physicalIndex, logicalDFB.type,
          logicalDFB.tensorBacking, logicalDFB.allocationGroup,
-         logicalDFB.launchDomain, logicalDFB.declarations,
+         getDFBAddressScope(logicalDFB), logicalDFB.launchDomain,
+         logicalDFB.declarations,
          logicalDFB.bounded || logicalDFB.conditionallyBounded});
     allocation.physicalDFBCount =
         std::max(allocation.physicalDFBCount, physicalIndex + 1);
@@ -1914,7 +1958,8 @@ computeReuseAllocation(ModuleOp moduleOp,
     allocation.assignments.push_back(
         {logicalDFB.logicalId, physicalIndex, physicalIndex, logicalDFB.type,
          logicalDFB.tensorBacking, logicalDFB.allocationGroup,
-         logicalDFB.launchDomain, logicalDFB.declarations,
+         getDFBAddressScope(logicalDFB), logicalDFB.launchDomain,
+         logicalDFB.declarations,
          logicalDFB.bounded || logicalDFB.conditionallyBounded});
   }
 
@@ -2014,6 +2059,8 @@ static LogicalResult assignPhysicalStorageIndices(
   SmallVector<uint64_t> pageSizeByPhysicalIndex(allocation.physicalDFBCount, 1);
   SmallVector<LaunchNodeDomain> domainByPhysicalIndex(
       allocation.physicalDFBCount);
+  SmallVector<DFBAddressScope> addressScopeByPhysicalIndex(
+      allocation.physicalDFBCount, DFBAddressScope::Local);
   llvm::BitVector tensorBacked(allocation.physicalDFBCount);
   for (auto indexedAssignment : llvm::enumerate(allocation.assignments)) {
     const DFBPhysicalIndexAssignment &assignment = indexedAssignment.value();
@@ -2022,6 +2069,10 @@ static LogicalResult assignPhysicalStorageIndices(
     domainByPhysicalIndex[assignment.physicalIndex] =
         domainByPhysicalIndex[assignment.physicalIndex].unionWith(
             assignment.launchDomain);
+    addressScopeByPhysicalIndex[assignment.physicalIndex] =
+        joinDFBAddressScopes(
+            addressScopeByPhysicalIndex[assignment.physicalIndex],
+            assignment.addressScope);
     if (assignment.tensorBacking) {
       tensorBacked.set(assignment.physicalIndex);
       continue;
@@ -2084,7 +2135,11 @@ static LogicalResult assignPhysicalStorageIndices(
     for (int32_t rhsPhysicalIndex = lhsPhysicalIndex + 1;
          rhsPhysicalIndex < allocation.physicalDFBCount; ++rhsPhysicalIndex) {
       bool conflicts = tensorBacked.test(lhsPhysicalIndex) ||
-                       tensorBacked.test(rhsPhysicalIndex);
+                       tensorBacked.test(rhsPhysicalIndex) ||
+                       addressScopeByPhysicalIndex[lhsPhysicalIndex] !=
+                           DFBAddressScope::Local ||
+                       addressScopeByPhysicalIndex[rhsPhysicalIndex] !=
+                           DFBAddressScope::Local;
       for (unsigned lhsLogicalIndex :
            logicalIndicesByPhysicalIndex[lhsPhysicalIndex]) {
         for (unsigned rhsLogicalIndex :
@@ -2412,6 +2467,7 @@ buildDescriptors(ArrayRef<DFBPhysicalIndexAssignment> assignments,
   }
   llvm::DenseMap<int32_t, const DFBPhysicalIndexAssignment *> uniqueByIndex;
   llvm::DenseMap<int32_t, LaunchNodeDomain> allocationDomainByIndex;
+  llvm::DenseMap<int32_t, DFBAddressScope> addressScopeByIndex;
   llvm::DenseMap<int32_t, SmallVector<const DFBPhysicalIndexAssignment *, 0>>
       assignmentsByIndex;
   auto getRuntimeAllocationDomain = [&](const LaunchNodeDomain &domain) {
@@ -2423,6 +2479,13 @@ buildDescriptors(ArrayRef<DFBPhysicalIndexAssignment> assignments,
         allocationDomainByIndex[assignment.physicalIndex];
     allocationDomain = allocationDomain.unionWith(
         getRuntimeAllocationDomain(assignment.launchDomain));
+    auto [addressScopeIt, insertedAddressScope] =
+        addressScopeByIndex.try_emplace(assignment.physicalIndex,
+                                        assignment.addressScope);
+    if (!insertedAddressScope) {
+      addressScopeIt->second =
+          joinDFBAddressScopes(addressScopeIt->second, assignment.addressScope);
+    }
     auto [existingIt, inserted] =
         uniqueByIndex.try_emplace(assignment.physicalIndex, &assignment);
     if (inserted || existingIt->second->type == assignment.type) {
@@ -2491,6 +2554,7 @@ buildDescriptors(ArrayRef<DFBPhysicalIndexAssignment> assignments,
     DFBPhysicalAllocationDescriptor descriptor;
     descriptor.physicalIndex = physicalIndex;
     descriptor.storageIndex = assignment->storageIndex;
+    descriptor.addressScope = addressScopeByIndex.lookup(physicalIndex);
     descriptor.allocationDomain = allocationDomainByIndex.lookup(physicalIndex);
     SmallVector<const DFBPhysicalIndexAssignment *>
         configurationRepresentatives;
@@ -2554,9 +2618,21 @@ buildDescriptors(ArrayRef<DFBPhysicalIndexAssignment> assignments,
                "every assignment must have a logical lifecycle");
         if (!canUseCapacityEnvelope(*representativeLifecycle,
                                     *candidateLifecycle)) {
-          analysisFailure.set(
-              candidate.declarations.front(),
-              "one physical DFB has inconsistent configurations in one epoch");
+          std::string message;
+          llvm::raw_string_ostream messageStream(message);
+          messageStream
+              << "one physical DFB has inconsistent configurations in one "
+                 "epoch (physical index "
+              << physicalIndex << ", logical DFB " << representative->logicalId
+              << " and " << candidate.logicalId << ", configuration ";
+          if (entryReconfigurationOrdinal) {
+            messageStream << *entryReconfigurationOrdinal;
+          } else {
+            messageStream << "initial";
+          }
+          messageStream << ')';
+          analysisFailure.set(candidate.declarations.front(),
+                              messageStream.str());
           return failure();
         }
         std::string failureReason;
@@ -2604,6 +2680,22 @@ buildDescriptors(ArrayRef<DFBPhysicalIndexAssignment> assignments,
     auto assignmentsIt = assignmentsByIndex.find(physicalIndex);
     assert(assignmentsIt != assignmentsByIndex.end() &&
            "every physical index must have an assignment");
+    bool hasSelectedEpoch = llvm::any_of(
+        assignmentsIt->second,
+        [&](const DFBPhysicalIndexAssignment *indexedCandidate) {
+          const DFBLogicalLifecycle *lifecycle =
+              lifecycleByLogicalId.lookup(indexedCandidate->logicalId);
+          assert(lifecycle && "every assignment must have a logical lifecycle");
+          return llvm::any_of(lifecycle->nodeLifetimes,
+                              [](const DFBPerNodeLifetime &lifetime) {
+                                return !lifetime.epochs.empty();
+                              }) ||
+                 llvm::any_of(lifecycle->possibleNodeLifetimes,
+                              [](const DFBPerNodeLifetime &lifetime) {
+                                return lifetime.mayBeActive &&
+                                       !lifetime.epochs.empty();
+                              });
+        });
     for (const DFBPhysicalIndexAssignment *indexedCandidate :
          assignmentsIt->second) {
       const DFBPhysicalIndexAssignment &candidate = *indexedCandidate;
@@ -2635,6 +2727,60 @@ buildDescriptors(ArrayRef<DFBPhysicalIndexAssignment> assignments,
            lifecycle->possibleNodeLifetimes) {
         if (!lifetime.mayBeActive || failed(addLifetimeEpochs(lifetime))) {
           if (lifetime.mayBeActive) {
+            return failure();
+          }
+        }
+      }
+      // Selected epochs suppress the full-domain fallback. Unproved nodes
+      // retain their descriptor in every configuration where state may remain.
+      if (hasSelectedEpoch) {
+        auto addConservativeNodeConfigurations =
+            [&](const DFBPerNodeLifetime &lifetime) -> LogicalResult {
+          if (!lifetime.mayBeActive ||
+              (lifetime.completionProof.proven() && !lifetime.epochs.empty())) {
+            return success();
+          }
+          if (!liveness.hasExactLaunchGrid()) {
+            BindCBOp declaration = candidate.declarations.front();
+            analysisFailure.set(
+                lifetime.completionProof.evidence
+                    ? lifetime.completionProof.evidence
+                    : declaration.getOperation(),
+                "unproved per-node DFB lifetime requires an exact launch "
+                "grid for conservative configuration coverage");
+            return failure();
+          }
+          LaunchNodeDomain nodeDomain;
+          nodeDomain.nodes.insert(lifetime.node);
+          if (lifetime.conservativeConfigurationEpochsClassified) {
+            for (std::optional<int64_t> ordinal :
+                 lifetime.conservativeConfigurationEpochs) {
+              if (failed(addConfiguration(candidate, ordinal, nodeDomain))) {
+                return failure();
+              }
+            }
+          } else {
+            if (failed(addConfiguration(candidate, std::nullopt, nodeDomain))) {
+              return failure();
+            }
+            for (int64_t ordinal :
+                 liveness.getReconfigurationBoundaryOrdinals()) {
+              if (failed(addConfiguration(candidate, ordinal, nodeDomain))) {
+                return failure();
+              }
+            }
+          }
+          addedConfigurationEpoch = true;
+          return success();
+        };
+        for (const DFBPerNodeLifetime &lifetime : lifecycle->nodeLifetimes) {
+          if (failed(addConservativeNodeConfigurations(lifetime))) {
+            return failure();
+          }
+        }
+        for (const DFBPerNodeLifetime &lifetime :
+             lifecycle->possibleNodeLifetimes) {
+          if (failed(addConservativeNodeConfigurations(lifetime))) {
             return failure();
           }
         }

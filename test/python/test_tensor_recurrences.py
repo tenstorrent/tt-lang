@@ -1041,17 +1041,19 @@ def _make_aug_assign_non_block_kernel():
 
         @ttl.compute()
         def compute():
+            # The seed block is released before the loop acquires delta_cb
+            # again; `acc` is a computed value, not a view of the block.
             with a_cb.wait() as a, delta_cb.wait() as d_init:
                 # `acc` is the result of ttl.add, not an attach -> not a
                 # block. `acc += d` inside the loop must therefore rewrite
                 # to `acc = acc + d` (loop-carried recurrence), not invoke
                 # __iadd__.
                 acc = a + d_init
-                for _ in range(N_ITERS):
-                    with delta_cb.wait() as d:
-                        acc += d
-                with out_cb.reserve() as o:
-                    o.store(acc)
+            for _ in range(N_ITERS):
+                with delta_cb.wait() as d:
+                    acc += d
+            with out_cb.reserve() as o:
+                o.store(acc)
 
         @ttl.datamovement()
         def reader():
@@ -1111,14 +1113,14 @@ def _make_multi_target_aug_kernel():
             with a_cb.wait() as a, b_cb.wait() as b, delta_cb.wait() as d0:
                 acc1 = a + d0
                 acc2 = b + d0
-                for _ in range(N_ITERS):
-                    with delta_cb.wait() as d:
-                        acc1 += d
-                        acc2 += d
-                with out_a_cb.reserve() as o:
-                    o.store(acc1)
-                with out_b_cb.reserve() as o:
-                    o.store(acc2)
+            for _ in range(N_ITERS):
+                with delta_cb.wait() as d:
+                    acc1 += d
+                    acc2 += d
+            with out_a_cb.reserve() as o:
+                o.store(acc1)
+            with out_b_cb.reserve() as o:
+                o.store(acc2)
 
         @ttl.datamovement()
         def reader():
@@ -1236,11 +1238,11 @@ def _make_sub_aug_kernel():
         def compute():
             with a_cb.wait() as a, delta_cb.wait() as d_init:
                 acc = a - d_init
-                for _ in range(N_ITERS):
-                    with delta_cb.wait() as d:
-                        acc -= d
-                with out_cb.reserve() as o:
-                    o.store(acc)
+            for _ in range(N_ITERS):
+                with delta_cb.wait() as d:
+                    acc -= d
+            with out_cb.reserve() as o:
+                o.store(acc)
 
         @ttl.datamovement()
         def reader():

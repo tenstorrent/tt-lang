@@ -20,21 +20,8 @@
 #include <optional>
 
 namespace mlir::tt::ttl {
-namespace {
 
-enum class PipeTransferExpansionMode {
-  All,
-  StaticPipesOnly,
-};
-
-/// Convert a semantic transfer contract to its explicit IR enum.
-static PipeTransferKind getPipeTransferKind(PipeTransferContract contract) {
-  return isCollectiveTransfer(contract) ? PipeTransferKind::Collective
-                                        : PipeTransferKind::PointToPoint;
-}
-
-// Return the common transfer contract guaranteed by a verified record set.
-static FailureOr<PipeTransferContract>
+FailureOr<PipeTransferContract>
 getPipeTransferContractForRecords(PipeNetRecordsAttr records) {
   FailureOr<PipeRecordAttr> firstRecord = getFirstNodePipeRecord(records);
   if (failed(firstRecord)) {
@@ -43,12 +30,7 @@ getPipeTransferContractForRecords(PipeNetRecordsAttr records) {
   return getPipeTransferContract(*firstRecord);
 }
 
-/// Return the contract shared by every possible value of a pipe operand.
-///
-/// Create and selected-pipe operations preserve an explicit collective
-/// contract. A block argument has no defining pipe op, so its type supplies
-/// the contract.
-static FailureOr<PipeTransferContract>
+FailureOr<PipeTransferContract>
 getPipeTransferContractForPipeValue(ValueOriginAnalysis &analysis, Value pipe) {
   return analysis.getOrigins(pipe).uniqueMapped<PipeTransferContract>(
       [](Value origin) -> FailureOr<PipeTransferContract> {
@@ -68,6 +50,19 @@ getPipeTransferContractForPipeValue(ValueOriginAnalysis &analysis, Value pipe) {
         }
         return failure();
       });
+}
+
+namespace {
+
+enum class PipeTransferExpansionMode {
+  All,
+  StaticPipesOnly,
+};
+
+/// Convert a semantic transfer contract to its explicit IR enum.
+static PipeTransferKind getPipeTransferKind(PipeTransferContract contract) {
+  return isCollectiveTransfer(contract) ? PipeTransferKind::Collective
+                                        : PipeTransferKind::PointToPoint;
 }
 
 /// Create one scalar transfer reference for `pipe`.

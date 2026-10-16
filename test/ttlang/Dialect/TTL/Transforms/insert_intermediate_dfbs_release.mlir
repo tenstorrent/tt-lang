@@ -121,6 +121,8 @@ func.func @preserve_inside_nested_region(%condition: i1)
     %result = ttl.add %intermediate, %negative : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
     %output = ttl.cb_reserve %output_dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
     ttl.store %result, %output : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>
+  } else {
+    ttl.cb_pop %delta_dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
   }
   return
 }
