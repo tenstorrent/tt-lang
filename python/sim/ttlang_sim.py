@@ -268,6 +268,11 @@ def main() -> None:
             "a source checkout through ./bin/tt-lang-sim."
         ),
     )
+    parser.add_argument(
+        "--target",
+        dest="emule_target",
+        help="Emulated hardware profile (emule backend from a source checkout only).",
+    )
 
     parser.add_argument(
         "--grid",
@@ -392,6 +397,10 @@ def main() -> None:
         parser.error(
             "the emule backend requires a TT-Lang source checkout; "
             "from the checkout root, run ./bin/tt-lang-sim SCRIPT.py --backend emule"
+        )
+    if args.emule_target is not None:
+        parser.error(
+            "--target requires the emule backend from a TT-Lang source checkout"
         )
 
     # Set up simulator imports before running any code
