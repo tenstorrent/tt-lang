@@ -943,8 +943,13 @@ def TTLVerifyPipeNetGuards
     point's domain is contained in the pipe's source or destination domain;
     out-of-domain uses, scopes broader than their declared role, unmatched
     `ttl.cb_wait`s, and unanalyzable coord-dependent predicates are reported.
-    Each diagnostic includes an example offending coordinate, the contributing
-    PipeNet(s), and a suggested guard.
+    Each out-of-domain diagnostic includes an example offending coordinate, the
+    contributing PipeNet(s), and a suggested guard. An unanalyzable-predicate
+    diagnostic names the operation and, when the analysis identifies it, the
+    predicate. A diagnostic that names its predicate is reported once per
+    operation location, operation name, and predicate location when both
+    locations are file locations, so the copies of an operation that composition
+    repeats share one diagnostic.
 
     The pass expects one module per `@ttl.operation`, a well-formed
     `ttl.launch_grid` (i64 array of length 2 with positive entries), static
