@@ -30,8 +30,8 @@ def __add(
     b_dfb = ttl.make_dataflow_buffer_like(b, shape=(1, 1), block_count=2)
     out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
 
-    # One body: the compiler places the copies on the data movement threads
-    # and the addition on the compute thread.
+    # Copies execute on data movement threads; addition executes on a compute
+    # thread.
     a_dst_blk = a_dfb.reserve()
     b_dst_blk = b_dfb.reserve()
     ttl.copy(a[0:1, 0:1], a_dst_blk).wait()

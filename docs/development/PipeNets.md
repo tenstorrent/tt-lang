@@ -6,8 +6,9 @@ compiler and the simulator consume the same operation-level PipeNet
 collection described in [Operation PipeNets](#operation-pipenets).
 
 A node is a Tensix unit identified by one coordinate in the operation's launch
-grid. A dataflow buffer (DFB) is the user-visible payload buffer used by
-producer, consumer, and pipe transfer code. A pipe-coupled operation is
+grid. A dataflow buffer (DFB) is the user-visible L1 payload buffer used by
+producer, consumer, and pipe transfer code. Fabric receives may also target
+an interleaved DRAM tensor region. A pipe-coupled operation is
 an operation whose legality depends on a PipeNet role, such as a
 pipe-typed `ttl.copy` or a DFB wait whose producer is PipeNet-routed.
 NoC refers to TT-Metal network-on-chip operations used for remote SRAM
@@ -240,9 +241,9 @@ TTKernel conversion uses three representations:
 The immutable tables become bit-packed C++ template arguments stored outside
 the kernel stack. Inside a callback loop, `ttl.select_pipe_src` or
 `ttl.select_pipe_dst` represents the current transfer and the endpoint role
-that selected it. Copying from a DFB to that value sends data; copying from that
-value to a DFB receives data. Launch-domain verification proves that the
-callback executes on the required endpoint.
+that selected it. Copying from a DFB to that value sends data; copying from
+that value to a receiver destination receives data. Launch-domain
+verification proves that the callback executes on the required endpoint.
 
 PipeGraph enumerates transfers while proving protocol schedules. It retains
 one compiler-only transfer node for each combination of device edge and node
@@ -258,6 +259,10 @@ distinct transfer node, so each record retains its own address-sequence proof
 and runtime resources.
 
 ## Semantics
+
+The `RA/RP`, `CA/RP`, and `CA/CC` modes below describe L1 DFB destinations.
+Fabric transfers to DRAM tensor regions are specified under
+[Fabric integration](#fabric-integration).
 
 Lowering selects the destination-address mechanism independently from
 the sender synchronization mechanism:
@@ -632,6 +637,10 @@ receiver post from `ttl.copy(pipe, dst_blk)`, and
 that can complete the receive.
 
 ## Pipe transfer resource model and TTKernel lowering
+
+The DFB resource model in this section applies to L1 destinations. The DRAM
+destination protocol and address computation are specified under
+[Fabric integration](#fabric-integration).
 
 Pipe lowering first expands high-level pipe operations to Pipe Transfer IR:
 
@@ -1138,14 +1147,14 @@ pipe in isolation. A producer reservation contributes its span once even when
 multiple receive posts share it. Its matching push commits that span to the DFB
 ring. Consumer waits and pops do not participate in address-sequence
 construction because only the reserve/push sequence determines the write
-addresses. For local `RP`, a reserve does not complete until the DFB has
-enough free blocks, and the sender does not transfer data until that reserve
-posts readiness. After an advance reaches the physical DFB end, the next
-reserve may select the first block safely even when the consumer is in another
-kernel thread. Fabric
-transport does not use receiver-post admission and requires a separate capacity
-proof; an address sequence alone does not prove that a fabric destination slot
-is available.
+addresses. For an L1 DFB destination under `RP`, a reserve does not complete
+until the DFB has enough free blocks, and the sender does not transfer data
+until that reserve posts readiness. After an advance reaches the physical DFB
+end, the next reserve may select the first block safely even when the consumer
+is in another kernel thread. Fabric `CLA/RP` implements this admission relation
+with cumulative global readiness counters. The computed address sequence identifies the
+reserved slot; the receiver post confirms that the reservation completed
+before the sender uses that address.
 
 Current recurrence construction requires every post to one receiver DFB to
 share one data-movement function and the same enclosing runtime-selected
@@ -1215,8 +1224,8 @@ DFB geometry, one sender function, one send with its corresponding posts, and
 supported 32-bit address arithmetic. For a collective, `RA/RP` is available
 only after the independent one-class address proof succeeds.
 
-Protocol selection consumes these graph facts without adding another address
-proof:
+For L1 DFB destinations, protocol selection consumes these graph facts
+without adding another address proof:
 
 ```text
 for T in pipe_graph.transfer_nodes:
@@ -1237,7 +1246,7 @@ for T in pipe_graph.transfer_nodes:
         address_mode(T) = RA
 
     if fabric_transport(T):
-        synchronization_mode(T) = FABRIC_FLOW_CONTROL
+        synchronization_mode(T) = FABRIC
     else if address_mode(T) == CA
        and capacity_sync_enabled
        and capacity_proof(T):
@@ -1247,10 +1256,12 @@ for T in pipe_graph.transfer_nodes:
 ```
 
 The current capacity proof restricts `CC` to intra-device point-to-point NoC
-transfers, so intra-device collectives select `CA/RP` or `RA/RP`. Fabric
-transfers use `CA`, routing-plane flow control, and a receiver-completion
-counter. They use neither receiver-post sender readiness nor the `CC` capacity
-protocol.
+transfers, so intra-device collectives select `CA/RP` or `RA/RP`. For an L1 DFB,
+`FABRIC` implements `CLA/RP`: the receiver increments a cumulative
+sender-readiness counter after reserving its DFB block, and the sender
+increments a cumulative receiver-completion counter after the payload write.
+DRAM destinations use the separate `CDA/RP` or `CDA/NR` rules below. See the
+[fabric synchronization protocol](PipesOnFabric.md#fabric-pipenet-synchronization-protocol).
 
 ##### Partial-overlap example
 
@@ -2014,7 +2025,7 @@ queries.
 
 ### Pipe transfer and receiver-address graph
 
-`PipeGraph` is the source of truth for logical pipe connectivity, transfer
+For L1 destinations, `PipeGraph` records logical pipe connectivity, transfer
 definitions, receiver DFB ownership, and receiver address sequences. Its
 relationships are:
 
@@ -2627,10 +2638,14 @@ The shared graph and proof must preserve these fabric invariants:
 * fabric receiver posts publish readiness with a reverse-route atomic increment,
   and senders wait for the corresponding cumulative ready count before writing,
   unless every transfer occurrence has a statically disjoint DRAM region;
-* receiver pops do not return capacity for reuse by another fabric transfer in
+* L1 DFB pops do not return capacity for reuse by another fabric transfer in
   the same invocation;
 * fabric completion uses remotely addressable synchronization storage;
 * `CC` capacity counters are not selected for fabric transfers.
+
+For the receiver post, payload completion, and generated C++ calls for each
+fabric protocol, see the
+[fabric PipeNet synchronization protocol](PipesOnFabric.md#fabric-pipenet-synchronization-protocol).
 
 ### Computed DRAM tensor destinations
 
