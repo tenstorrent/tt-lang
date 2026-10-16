@@ -156,6 +156,46 @@ def validate_sources(values, compiler_source, emulator_source):
             )
 
 
+def validate_image(values, inspection, arguments):
+    if not isinstance(inspection, list) or len(inspection) != 1:
+        raise StackError("image inspection must contain exactly one image")
+    image = require_mapping(inspection[0], "image")
+    config = require_mapping(image.get("Config"), "image.Config")
+    labels = require_mapping(config.get("Labels"), "image.Config.Labels")
+    expected = {
+        "org.opencontainers.image.source": values["TTLANG_COMPILER_REPOSITORY"],
+        "io.tenstorrent.tt-lang.compiler.commit": values["TTLANG_COMPILER_BASE_COMMIT"],
+        "io.tenstorrent.tt-lang.emule.commit": arguments.emulator_commit
+        or values["TTLANG_EMULE_COMMIT"],
+        "io.tenstorrent.tt-lang.metal.repository": arguments.metal_repository
+        or values["TTLANG_METAL_REPOSITORY"],
+        "io.tenstorrent.tt-lang.metal.commit": arguments.metal_commit
+        or values["TTLANG_METAL_COMMIT"],
+        "io.tenstorrent.tt-lang.runtime.base-image": arguments.base_image
+        or values["TTLANG_EMULE_BASE_IMAGE"],
+        "io.tenstorrent.tt-lang.runtime.manifest-sha256": values[
+            "TTLANG_EMULE_STACK_MANIFEST_SHA256"
+        ],
+        "io.tenstorrent.tt-lang.runtime.platform": arguments.platform,
+        "io.tenstorrent.tt-lang.target.name": values["TTLANG_EMULE_TARGET"],
+        "io.tenstorrent.tt-lang.target.cluster-descriptor": values[
+            "TTLANG_EMULE_CLUSTER_DESCRIPTOR"
+        ],
+        "io.tenstorrent.tt-lang.target.mesh-device": values["TTLANG_EMULE_MESH_DEVICE"],
+    }
+    mismatches = [
+        f"{key}: expected {value!r}, found {labels.get(key)!r}"
+        for key, value in expected.items()
+        if labels.get(key) != value
+    ]
+    if mismatches:
+        raise StackError("image provenance mismatch:\n  " + "\n  ".join(mismatches))
+    image_id = require_string(image, "Id", "image")
+    if re.fullmatch(r"(?:sha256:)?[0-9a-f]{64}", image_id) is None:
+        raise StackError("image.Id must be a full SHA-256 image ID")
+    return image_id
+
+
 def parse_args():
     parser = argparse.ArgumentParser(
         description="Validate and inspect the compiler-backed emulator stack"
@@ -169,6 +209,15 @@ def parse_args():
     validate.add_argument("--compiler-source", type=Path)
     validate.add_argument("--emulator-source", type=Path)
     validate.add_argument("--quiet", action="store_true")
+    image = subparsers.add_parser(
+        "validate-image",
+        help="validate Docker image inspection JSON from stdin and emit its image ID",
+    )
+    image.add_argument("--emulator-commit")
+    image.add_argument("--metal-commit")
+    image.add_argument("--metal-repository")
+    image.add_argument("--base-image")
+    image.add_argument("--platform", default="linux/amd64")
     return parser.parse_args()
 
 
@@ -179,6 +228,14 @@ def main():
         if arguments.command == "emit":
             for key, value in values.items():
                 print(f"{key}\t{value}")
+            return 0
+
+        if arguments.command == "validate-image":
+            try:
+                inspection = json.load(sys.stdin)
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+                raise StackError(f"cannot read image inspection: {error}") from error
+            print(validate_image(values, inspection, arguments))
             return 0
 
         validate_sources(values, arguments.compiler_source, arguments.emulator_source)

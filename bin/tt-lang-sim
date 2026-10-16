@@ -7,8 +7,6 @@
 # Runs tt-lang kernels on a simulator backend without code changes.
 # Usage: tt-lang-sim <file.py|module> [args...] [--backend python|emule]
 
-PYTHON="${PYTHON:-python}"
-
 # Resolve the repo/toolchain root from the script's own location so this works
 # when invoked as ./bin/tt-lang-sim or from an arbitrary working directory.
 _SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -109,6 +107,18 @@ fi
 if [ "$_BACKEND" != "python" ]; then
     echo "tt-lang-sim: unknown backend '${_BACKEND}'; expected python or emule." >&2
     exit 2
+fi
+
+if [ -z "${PYTHON:-}" ]; then
+    if command -v python >/dev/null 2>&1; then
+        PYTHON=python
+    elif command -v python3 >/dev/null 2>&1; then
+        PYTHON=python3
+    else
+        echo "tt-lang-sim: cannot find python or python3 on PATH." >&2
+        echo "  Set PYTHON to the Python interpreter to use." >&2
+        exit 1
+    fi
 fi
 
 # Sources: python/sim; installed ttlang: python_packages/ttl/sim.

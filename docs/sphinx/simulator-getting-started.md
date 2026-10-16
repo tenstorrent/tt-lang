@@ -66,6 +66,10 @@ The URL supplies the source for the manifest's pinned emulator commit. The
 installer uses the recorded emulator, tt-metal, and base image together in a
 Linux/x86-64 environment and verifies their source revisions before building.
 
+Maintainers can evaluate other combinations with the candidate manifests and
+runtime overrides described in
+[Updating the supported stack](simulator.md#updating-the-supported-stack).
+
 Installation builds the pinned tt-emule/tt-metal Docker image and compiles this
 TT-Lang checkout into a persistent Docker volume. It can take substantial time,
 CPU, memory, and disk space on its first run. The installer prints the runtime
@@ -155,7 +159,9 @@ and report locations. Apply the installed environment's paths:
 
 A separate native Linux build uses its own build directory. Compiler-only
 tests exercise compiler behavior; device execution tests exercise tt-emule in
-the installed Linux environment.
+the installed Linux environment. [Compiler suite on tt-emule](compiler-emule-test-status.md)
+records a historical full-suite result and failure triage at the recorded
+revisions. Validate later revisions with a fresh test run.
 
 ## Validate and inspect the environment
 
@@ -174,8 +180,15 @@ Every built image records its resolved inputs as OCI labels and in
 `/opt/tt-emule-runtime/stack.json`. The original supported-stack manifest is
 stored beside it as `source-manifest.json`, and its SHA-256 is verified while
 the image is built. These records identify the supported manifest and exact
-runtime inputs used to build the image. Inspect an artifact without running a
-workload with:
+runtime inputs used to build the image. Before installation, program execution,
+or shell access, the launcher checks the image's provenance labels against the
+selected manifest and runtime inputs. This check also applies to images selected
+with `TTLANG_EMULE_IMAGE`. The container runs by its verified immutable image ID,
+so changing an image tag after validation does not select a different runtime.
+An image with missing or mismatched provenance requires a matching image or a
+rebuild with `TTLANG_EMULE_REBUILD=1 ./scripts/install-tt-lang-emule.sh`.
+
+Inspect an artifact without running a workload with:
 
 ```bash
 docker image inspect tt-lang-emule:TAG \

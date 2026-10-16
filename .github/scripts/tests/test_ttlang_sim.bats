@@ -24,6 +24,14 @@ EOF
     chmod +x "$target"
 }
 
+make_isolated_path() {
+    mkdir -p "$ROOT/path"
+    local tool
+    for tool in bash cat dirname; do
+        ln -s "$(command -v "$tool")" "$ROOT/path/$tool"
+    done
+}
+
 # Build a synthetic root containing bin/tt-lang-sim plus optional layout
 # markers. Args after $1 are one or more of: "source", "installed".
 make_layout() {
@@ -114,17 +122,81 @@ EOF
     assert_line --index 0 "PYTHONPATH=$ROOT/python_packages:/preexisting/path"
 }
 
-@test "PYTHON env override is honored over a PATH-resolved python" {
+@test "python3-only PATH dispatches the Python backend" {
     make_layout "$ROOT" installed
-    # PATH shim that would exit 99 if used.
-    mkdir -p "$ROOT/path-shim"
-    cat > "$ROOT/path-shim/python" <<'EOF'
-#!/usr/bin/env bash
-exit 99
-EOF
-    chmod +x "$ROOT/path-shim/python"
+    make_isolated_path
+    make_mock_python "$ROOT/path/python3"
+    run -0 env -u PYTHON PATH="$ROOT/path" PYTHONPATH="" \
+        "$ROOT/bin/tt-lang-sim" --backend=python program.py
+    assert_line --index 0 "PYTHONPATH=$ROOT/python_packages"
+    assert_line --index 2 "argv=ttl.sim.ttlang_sim"
+    assert_line --index 3 "argv=program.py"
+}
+
+@test "empty PYTHON uses python3 from PATH in a source checkout" {
+    make_layout "$ROOT" source
+    make_isolated_path
+    make_mock_python "$ROOT/path/python3"
+    run -0 env PATH="$ROOT/path" PYTHON="" PYTHONPATH="" \
+        "$ROOT/bin/tt-lang-sim" program.py
+    assert_line --index 0 "PYTHONPATH=$ROOT/python"
+    assert_line --index 2 "argv=sim.ttlang_sim"
+    assert_line --index 3 "argv=program.py"
+}
+
+@test "PATH python is preferred over python3 for activated environments" {
+    make_layout "$ROOT" source
+    make_isolated_path
+    make_mock_python "$ROOT/path/python"
+    ln -s /bin/false "$ROOT/path/python3"
+    run -0 env -u PYTHON PATH="$ROOT/path" PYTHONPATH="" \
+        "$ROOT/bin/tt-lang-sim" program.py
+    assert_line --index 2 "argv=sim.ttlang_sim"
+}
+
+@test "PYTHON env override is honored over PATH-resolved interpreters" {
+    make_layout "$ROOT" installed
+    make_isolated_path
+    ln -s /bin/false "$ROOT/path/python"
+    ln -s /bin/false "$ROOT/path/python3"
+    MOCK_PY="$ROOT/custom python"
     make_mock_python "$MOCK_PY"
-    PATH="$ROOT/path-shim:$PATH" PYTHON="$MOCK_PY" PYTHONPATH="" run -0 "$ROOT/bin/tt-lang-sim"
+    run -0 env PATH="$ROOT/path" PYTHON="$MOCK_PY" PYTHONPATH="" \
+        "$ROOT/bin/tt-lang-sim"
+    assert_line --index 2 "argv=ttl.sim.ttlang_sim"
+}
+
+@test "missing PYTHON override does not fall back to PATH interpreters" {
+    make_layout "$ROOT" source
+    make_isolated_path
+    make_mock_python "$ROOT/path/python3"
+    run ! env PATH="$ROOT/path" PYTHON="$ROOT/missing-python" \
+        "$ROOT/bin/tt-lang-sim" program.py
+    assert_output --partial "$ROOT/missing-python"
+}
+
+@test "missing Python interpreters report how to set an override" {
+    make_layout "$ROOT" source
+    make_isolated_path
+    run -1 env -u PYTHON PATH="$ROOT/path" "$ROOT/bin/tt-lang-sim" program.py
+    assert_line "tt-lang-sim: cannot find python or python3 on PATH."
+    assert_line "  Set PYTHON to the Python interpreter to use."
+}
+
+@test "emule dispatch, help and version work without Python interpreters on PATH" {
+    make_layout "$ROOT" source
+    make_isolated_path
+    local runner="$ROOT/emule-runner"
+    make_mock_emule_runner "$runner"
+    run -0 env -u PYTHON PATH="$ROOT/path" TTLANG_EMULE_RUNNER="$runner" \
+        "$ROOT/bin/tt-lang-sim" --backend=emule program.py
+    assert_output "argv=program.py"
+    run -0 env -u PYTHON PATH="$ROOT/path" \
+        "$ROOT/bin/tt-lang-sim" --backend=emule --help
+    assert_output --partial "Usage: tt-lang-sim --backend=emule SCRIPT.py"
+    run -0 env -u PYTHON PATH="$ROOT/path" \
+        "$ROOT/bin/tt-lang-sim" --backend=emule --version
+    assert_output "tt-lang-sim emule (checkout unknown)"
 }
 
 @test "child python exit code is propagated" {
@@ -241,7 +313,9 @@ EOF
 
 @test "unknown backend is rejected before dispatch" {
     make_layout "$ROOT" source
-    run -2 "$ROOT/bin/tt-lang-sim" program.py --backend unknown
+    make_isolated_path
+    run -2 env -u PYTHON PATH="$ROOT/path" \
+        "$ROOT/bin/tt-lang-sim" program.py --backend unknown
     assert_output --partial "unknown backend 'unknown'"
 }
 
