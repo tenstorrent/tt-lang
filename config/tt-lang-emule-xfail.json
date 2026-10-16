@@ -1,0 +1,1209 @@
+{
+  "schema_version": 1,
+  "tests": {
+    "TTLang :: python/dprint/cb_metadata.py": {
+      "reason": "tt-emule: lit test fails",
+      "run": true
+    },
+    "TTLang :: python/dprint/runtime.py": {
+      "reason": "tt-emule: lit test fails",
+      "run": true
+    },
+    "TTLang :: python/dprint/tensor_accessor_page_print.py": {
+      "reason": "tt-emule: lit test fails",
+      "run": true
+    },
+    "TTLang :: python/dprint/tile_after_store.py": {
+      "reason": "tt-emule: lit test fails",
+      "run": true
+    },
+    "TTLang :: python/pipe/pipenet_resource_allocation.py": {
+      "reason": "tt-emule: lit test fails",
+      "run": true
+    },
+    "TTLang :: python/pipe/receiver_published_address_protocol.py": {
+      "reason": "tt-emule: lit test fails",
+      "run": true
+    },
+    "python/pipe/test_dfb_spsc_domains.py::test_shared_dfb_disjoint_consumers": {
+      "reason": "tt-emule: kernel JIT compilation fails",
+      "run": true
+    },
+    "python/pipe/test_mcast_matmul.py::test_balanced_matmul": {
+      "reason": "tt-emule: test is killed for exceeding container memory; not run",
+      "run": false
+    },
+    "python/pipe/test_mcast_matmul.py::test_balanced_matmul_relu": {
+      "reason": "tt-emule: test is killed for exceeding container memory; not run",
+      "run": false
+    },
+    "python/pipe/test_mcast_matmul.py::test_mcast_matmul": {
+      "reason": "tt-emule: test is killed for exceeding container memory; not run",
+      "run": false
+    },
+    "python/pipe/test_minimal_matmul_pipes.py::test_minimal_matmul_pipes": {
+      "reason": "tt-emule: kernel JIT compilation fails",
+      "run": true
+    },
+    "python/pipe/test_pipe_patterns.py::test_row_rings_full": {
+      "reason": "tt-emule: kernel JIT compilation fails",
+      "run": true
+    },
+    "python/pipe/test_pipe_protocols.py::test_branch_order_uses_published_addresses[bf16]": {
+      "reason": "tt-emule: test crashes the emulator; not run",
+      "run": false
+    },
+    "python/pipe/test_pipe_protocols.py::test_branch_order_uses_published_addresses[fp32]": {
+      "reason": "tt-emule: test crashes the emulator; not run",
+      "run": false
+    },
+    "python/pipe/test_pipe_protocols.py::test_loop_multiplicity_uses_published_addresses[bf16]": {
+      "reason": "tt-emule: test crashes the emulator; not run",
+      "run": false
+    },
+    "python/pipe/test_pipe_protocols.py::test_loop_multiplicity_uses_published_addresses[fp32]": {
+      "reason": "tt-emule: test crashes the emulator; not run",
+      "run": false
+    },
+    "python/pipe/test_pipe_protocols.py::test_loopback_collective_published_address[bf16]": {
+      "reason": "tt-emule: test crashes the emulator; not run",
+      "run": false
+    },
+    "python/pipe/test_pipe_protocols.py::test_loopback_collective_published_address[fp32]": {
+      "reason": "tt-emule: test crashes the emulator; not run",
+      "run": false
+    },
+    "python/pipe/test_pipe_protocols.py::test_pipe_protocols_match[bf16-bc1]": {
+      "reason": "tt-emule: test crashes the emulator; not run",
+      "run": false
+    },
+    "python/pipe/test_pipe_protocols.py::test_pipe_protocols_match[bf16-bc2]": {
+      "reason": "tt-emule: test crashes the emulator; not run",
+      "run": false
+    },
+    "python/pipe/test_pipe_protocols.py::test_pipe_protocols_match[fp32-bc1]": {
+      "reason": "tt-emule: test crashes the emulator; not run",
+      "run": false
+    },
+    "python/pipe/test_pipe_protocols.py::test_pipe_protocols_match[fp32-bc2]": {
+      "reason": "tt-emule: test crashes the emulator; not run",
+      "run": false
+    },
+    "python/pipe/test_pipe_protocols.py::test_pipe_resources_coexist_with_reset[computed-address-dram-bf16]": {
+      "reason": "tt-emule: kernel JIT compilation fails",
+      "run": true
+    },
+    "python/pipe/test_pipe_protocols.py::test_pipe_resources_coexist_with_reset[computed-address-dram-fp32]": {
+      "reason": "tt-emule: kernel JIT compilation fails",
+      "run": true
+    },
+    "python/pipe/test_pipe_protocols.py::test_pipe_resources_coexist_with_reset[computed-address-l1-bf16]": {
+      "reason": "tt-emule: kernel JIT compilation fails",
+      "run": true
+    },
+    "python/pipe/test_pipe_protocols.py::test_pipe_resources_coexist_with_reset[computed-address-l1-fp32]": {
+      "reason": "tt-emule: kernel JIT compilation fails",
+      "run": true
+    },
+    "python/pipe/test_pipe_protocols.py::test_pipe_resources_coexist_with_reset[published-address-dram-bf16]": {
+      "reason": "tt-emule: kernel JIT compilation fails",
+      "run": true
+    },
+    "python/pipe/test_pipe_protocols.py::test_pipe_resources_coexist_with_reset[published-address-dram-fp32]": {
+      "reason": "tt-emule: kernel JIT compilation fails",
+      "run": true
+    },
+    "python/pipe/test_pipe_protocols.py::test_pipe_resources_coexist_with_reset[published-address-l1-bf16]": {
+      "reason": "tt-emule: kernel JIT compilation fails",
+      "run": true
+    },
+    "python/pipe/test_pipe_protocols.py::test_pipe_resources_coexist_with_reset[published-address-l1-fp32]": {
+      "reason": "tt-emule: kernel JIT compilation fails",
+      "run": true
+    },
+    "python/pipe/test_pipenet_active_guard.py::test_pipenet_active_guard_under_full_grid[2x2]": {
+      "reason": "tt-emule: kernel JIT compilation fails",
+      "run": true
+    },
+    "python/pipe/test_pipenet_active_guard.py::test_pipenet_active_guard_under_full_grid[4x3]": {
+      "reason": "tt-emule: kernel JIT compilation fails",
+      "run": true
+    },
+    "python/pipe/test_pipenet_collectives.py::test_loopback_multicast": {
+      "reason": "tt-emule: kernel JIT compilation fails",
+      "run": true
+    },
+    "python/pipe/test_pipenet_collectives.py::test_nested_if_callbacks": {
+      "reason": "tt-emule: kernel JIT compilation fails",
+      "run": true
+    },
+    "python/pipe/test_pipenet_collectives.py::test_overlapping_pipenets": {
+      "reason": "tt-emule: kernel JIT compilation fails",
+      "run": true
+    },
+    "python/pipe/test_pipenet_collectives.py::test_per_row_scatter": {
+      "reason": "tt-emule: kernel JIT compilation fails",
+      "run": true
+    },
+    "python/pipe/test_pipenet_collectives.py::test_scatter_subgrid": {
+      "reason": "tt-emule: kernel JIT compilation fails",
+      "run": true
+    },
+    "python/pipe/test_pipenet_sync.py::test_full_grid_fanout_uses_sram_address_table[few-recipients]": {
+      "reason": "tt-emule: kernel JIT compilation fails",
+      "run": true
+    },
+    "python/pipe/test_pipenet_sync.py::test_full_grid_fanout_uses_sram_address_table[full-minus-source]": {
+      "reason": "tt-emule: kernel JIT compilation fails",
+      "run": true
+    },
+    "python/pipe/test_pipenet_sync.py::test_full_grid_fanout_uses_sram_address_table[one-recipient]": {
+      "reason": "tt-emule: kernel JIT compilation fails",
+      "run": true
+    },
+    "python/pipe/test_pipenet_sync.py::test_full_grid_unicast_fanout_uses_global_ready_counters[threshold-plus-one]": {
+      "reason": "tt-emule: kernel JIT compilation fails",
+      "run": true
+    },
+    "python/pipe/test_pipenet_sync.py::test_interleaved_pipenets_use_global_ready_counters": {
+      "reason": "tt-emule: kernel JIT compilation fails",
+      "run": true
+    },
+    "python/pipe/test_pipenet_sync.py::test_many_to_one_global_counters_work_with_all_protocols[ra-rp-bf16]": {
+      "reason": "tt-emule: test crashes the emulator; not run",
+      "run": false
+    },
+    "python/pipe/test_pipenet_sync.py::test_many_to_one_global_counters_work_with_all_protocols[ra-rp-fp32]": {
+      "reason": "tt-emule: test crashes the emulator; not run",
+      "run": false
+    },
+    "python/pipe/test_pipenet_sync.py::test_posted_gather_uses_distinct_receiver_slots": {
+      "reason": "tt-emule: test crashes the emulator; not run",
+      "run": false
+    },
+    "python/pipe/test_pipenet_tree_reduce.py::test_tree_reduce[default-dram-bf16]": {
+      "reason": "tt-emule: kernel JIT compilation fails",
+      "run": true
+    },
+    "python/pipe/test_pipenet_tree_reduce.py::test_tree_reduce[default-dram-fp32]": {
+      "reason": "tt-emule: kernel JIT compilation fails",
+      "run": true
+    },
+    "python/pipe/test_pipenet_tree_reduce.py::test_tree_reduce[default-l1-bf16]": {
+      "reason": "tt-emule: kernel JIT compilation fails",
+      "run": true
+    },
+    "python/pipe/test_pipenet_tree_reduce.py::test_tree_reduce[default-l1-fp32]": {
+      "reason": "tt-emule: kernel JIT compilation fails",
+      "run": true
+    },
+    "python/pipe/test_receive_auto_wait.py::test_receive_wait_inserted_outside_runtime_guard[bf16]": {
+      "reason": "tt-emule: test crashes the emulator; not run",
+      "run": false
+    },
+    "python/pipe/test_receive_auto_wait.py::test_receive_wait_inserted_outside_runtime_guard[fp32]": {
+      "reason": "tt-emule: test crashes the emulator; not run",
+      "run": false
+    },
+    "python/pipe/test_reconfigured_computed_address.py::test_reconfigured_receiver_uses_published_address[dram-bf16]": {
+      "reason": "tt-emule: test raises an error",
+      "run": true
+    },
+    "python/pipe/test_reconfigured_computed_address.py::test_reconfigured_receiver_uses_published_address[dram-f32]": {
+      "reason": "tt-emule: test crashes the emulator; not run",
+      "run": false
+    },
+    "python/pipe/test_reconfigured_computed_address.py::test_reconfigured_receiver_uses_published_address[l1-bf16]": {
+      "reason": "tt-emule: kernel JIT compilation fails",
+      "run": true
+    },
+    "python/pipe/test_reconfigured_computed_address.py::test_reconfigured_receiver_uses_published_address[l1-f32]": {
+      "reason": "tt-emule: kernel JIT compilation fails",
+      "run": true
+    },
+    "python/pipe/test_tensor_backed_computed_address.py::test_tensor_backed_receiver_address[published-base-dram-block-bf16]": {
+      "reason": "tt-emule: test crashes the emulator; not run",
+      "run": false
+    },
+    "python/pipe/test_tensor_backed_computed_address.py::test_tensor_backed_receiver_address[published-base-dram-block-bfp4]": {
+      "reason": "tt-emule: test crashes the emulator; not run",
+      "run": false
+    },
+    "python/pipe/test_tensor_backed_computed_address.py::test_tensor_backed_receiver_address[published-base-dram-block-bfp8]": {
+      "reason": "tt-emule: test crashes the emulator; not run",
+      "run": false
+    },
+    "python/pipe/test_tensor_backed_computed_address.py::test_tensor_backed_receiver_address[published-base-dram-block-fp32]": {
+      "reason": "tt-emule: test crashes the emulator; not run",
+      "run": false
+    },
+    "python/pipe/test_tensor_backed_computed_address.py::test_tensor_backed_receiver_address[published-base-dram-height-bf16]": {
+      "reason": "tt-emule: test crashes the emulator; not run",
+      "run": false
+    },
+    "python/pipe/test_tensor_backed_computed_address.py::test_tensor_backed_receiver_address[published-base-dram-height-bfp4]": {
+      "reason": "tt-emule: test crashes the emulator; not run",
+      "run": false
+    },
+    "python/pipe/test_tensor_backed_computed_address.py::test_tensor_backed_receiver_address[published-base-dram-height-bfp8]": {
+      "reason": "tt-emule: test crashes the emulator; not run",
+      "run": false
+    },
+    "python/pipe/test_tensor_backed_computed_address.py::test_tensor_backed_receiver_address[published-base-dram-height-fp32]": {
+      "reason": "tt-emule: test crashes the emulator; not run",
+      "run": false
+    },
+    "python/pipe/test_tensor_backed_computed_address.py::test_tensor_backed_receiver_address[published-base-dram-width-bf16]": {
+      "reason": "tt-emule: test crashes the emulator; not run",
+      "run": false
+    },
+    "python/pipe/test_tensor_backed_computed_address.py::test_tensor_backed_receiver_address[published-base-dram-width-bfp4]": {
+      "reason": "tt-emule: test crashes the emulator; not run",
+      "run": false
+    },
+    "python/pipe/test_tensor_backed_computed_address.py::test_tensor_backed_receiver_address[published-base-dram-width-bfp8]": {
+      "reason": "tt-emule: test crashes the emulator; not run",
+      "run": false
+    },
+    "python/pipe/test_tensor_backed_computed_address.py::test_tensor_backed_receiver_address[published-base-dram-width-fp32]": {
+      "reason": "tt-emule: test crashes the emulator; not run",
+      "run": false
+    },
+    "python/pipe/test_tensor_backed_computed_address.py::test_tensor_backed_receiver_address[published-base-l1-block-bf16]": {
+      "reason": "tt-emule: test crashes the emulator; not run",
+      "run": false
+    },
+    "python/pipe/test_tensor_backed_computed_address.py::test_tensor_backed_receiver_address[published-base-l1-block-bfp4]": {
+      "reason": "tt-emule: test crashes the emulator; not run",
+      "run": false
+    },
+    "python/pipe/test_tensor_backed_computed_address.py::test_tensor_backed_receiver_address[published-base-l1-block-bfp8]": {
+      "reason": "tt-emule: test crashes the emulator; not run",
+      "run": false
+    },
+    "python/pipe/test_tensor_backed_computed_address.py::test_tensor_backed_receiver_address[published-base-l1-block-fp32]": {
+      "reason": "tt-emule: test crashes the emulator; not run",
+      "run": false
+    },
+    "python/pipe/test_tensor_backed_computed_address.py::test_tensor_backed_receiver_address[published-base-l1-height-bf16]": {
+      "reason": "tt-emule: test crashes the emulator; not run",
+      "run": false
+    },
+    "python/pipe/test_tensor_backed_computed_address.py::test_tensor_backed_receiver_address[published-base-l1-height-bfp4]": {
+      "reason": "tt-emule: test crashes the emulator; not run",
+      "run": false
+    },
+    "python/pipe/test_tensor_backed_computed_address.py::test_tensor_backed_receiver_address[published-base-l1-height-bfp8]": {
+      "reason": "tt-emule: test crashes the emulator; not run",
+      "run": false
+    },
+    "python/pipe/test_tensor_backed_computed_address.py::test_tensor_backed_receiver_address[published-base-l1-height-fp32]": {
+      "reason": "tt-emule: test crashes the emulator; not run",
+      "run": false
+    },
+    "python/pipe/test_tensor_backed_computed_address.py::test_tensor_backed_receiver_address[published-base-l1-width-bf16]": {
+      "reason": "tt-emule: test crashes the emulator; not run",
+      "run": false
+    },
+    "python/pipe/test_tensor_backed_computed_address.py::test_tensor_backed_receiver_address[published-base-l1-width-bfp4]": {
+      "reason": "tt-emule: test crashes the emulator; not run",
+      "run": false
+    },
+    "python/pipe/test_tensor_backed_computed_address.py::test_tensor_backed_receiver_address[published-base-l1-width-bfp8]": {
+      "reason": "tt-emule: test crashes the emulator; not run",
+      "run": false
+    },
+    "python/pipe/test_tensor_backed_computed_address.py::test_tensor_backed_receiver_address[published-base-l1-width-fp32]": {
+      "reason": "tt-emule: test crashes the emulator; not run",
+      "run": false
+    },
+    "python/pipe/test_tensor_backed_computed_address.py::test_tensor_backed_receiver_address[published-offset-dram-block-bf16]": {
+      "reason": "tt-emule: test crashes the emulator; not run",
+      "run": false
+    },
+    "python/pipe/test_tensor_backed_computed_address.py::test_tensor_backed_receiver_address[published-offset-dram-block-bfp4]": {
+      "reason": "tt-emule: test crashes the emulator; not run",
+      "run": false
+    },
+    "python/pipe/test_tensor_backed_computed_address.py::test_tensor_backed_receiver_address[published-offset-dram-block-bfp8]": {
+      "reason": "tt-emule: test crashes the emulator; not run",
+      "run": false
+    },
+    "python/pipe/test_tensor_backed_computed_address.py::test_tensor_backed_receiver_address[published-offset-dram-block-fp32]": {
+      "reason": "tt-emule: test crashes the emulator; not run",
+      "run": false
+    },
+    "python/pipe/test_tensor_backed_computed_address.py::test_tensor_backed_receiver_address[published-offset-dram-height-bf16]": {
+      "reason": "tt-emule: test crashes the emulator; not run",
+      "run": false
+    },
+    "python/pipe/test_tensor_backed_computed_address.py::test_tensor_backed_receiver_address[published-offset-dram-height-bfp4]": {
+      "reason": "tt-emule: test crashes the emulator; not run",
+      "run": false
+    },
+    "python/pipe/test_tensor_backed_computed_address.py::test_tensor_backed_receiver_address[published-offset-dram-height-bfp8]": {
+      "reason": "tt-emule: test crashes the emulator; not run",
+      "run": false
+    },
+    "python/pipe/test_tensor_backed_computed_address.py::test_tensor_backed_receiver_address[published-offset-dram-height-fp32]": {
+      "reason": "tt-emule: test crashes the emulator; not run",
+      "run": false
+    },
+    "python/pipe/test_tensor_backed_computed_address.py::test_tensor_backed_receiver_address[published-offset-dram-width-bf16]": {
+      "reason": "tt-emule: test crashes the emulator; not run",
+      "run": false
+    },
+    "python/pipe/test_tensor_backed_computed_address.py::test_tensor_backed_receiver_address[published-offset-dram-width-bfp4]": {
+      "reason": "tt-emule: test crashes the emulator; not run",
+      "run": false
+    },
+    "python/pipe/test_tensor_backed_computed_address.py::test_tensor_backed_receiver_address[published-offset-dram-width-bfp8]": {
+      "reason": "tt-emule: test crashes the emulator; not run",
+      "run": false
+    },
+    "python/pipe/test_tensor_backed_computed_address.py::test_tensor_backed_receiver_address[published-offset-dram-width-fp32]": {
+      "reason": "tt-emule: test crashes the emulator; not run",
+      "run": false
+    },
+    "python/pipe/test_tensor_backed_computed_address.py::test_tensor_backed_receiver_address[published-offset-l1-block-bf16]": {
+      "reason": "tt-emule: test crashes the emulator; not run",
+      "run": false
+    },
+    "python/pipe/test_tensor_backed_computed_address.py::test_tensor_backed_receiver_address[published-offset-l1-block-bfp4]": {
+      "reason": "tt-emule: test crashes the emulator; not run",
+      "run": false
+    },
+    "python/pipe/test_tensor_backed_computed_address.py::test_tensor_backed_receiver_address[published-offset-l1-block-bfp8]": {
+      "reason": "tt-emule: test crashes the emulator; not run",
+      "run": false
+    },
+    "python/pipe/test_tensor_backed_computed_address.py::test_tensor_backed_receiver_address[published-offset-l1-block-fp32]": {
+      "reason": "tt-emule: test crashes the emulator; not run",
+      "run": false
+    },
+    "python/pipe/test_tensor_backed_computed_address.py::test_tensor_backed_receiver_address[published-offset-l1-height-bf16]": {
+      "reason": "tt-emule: test crashes the emulator; not run",
+      "run": false
+    },
+    "python/pipe/test_tensor_backed_computed_address.py::test_tensor_backed_receiver_address[published-offset-l1-height-bfp4]": {
+      "reason": "tt-emule: test crashes the emulator; not run",
+      "run": false
+    },
+    "python/pipe/test_tensor_backed_computed_address.py::test_tensor_backed_receiver_address[published-offset-l1-height-bfp8]": {
+      "reason": "tt-emule: test crashes the emulator; not run",
+      "run": false
+    },
+    "python/pipe/test_tensor_backed_computed_address.py::test_tensor_backed_receiver_address[published-offset-l1-height-fp32]": {
+      "reason": "tt-emule: test crashes the emulator; not run",
+      "run": false
+    },
+    "python/pipe/test_tensor_backed_computed_address.py::test_tensor_backed_receiver_address[published-offset-l1-width-bf16]": {
+      "reason": "tt-emule: test crashes the emulator; not run",
+      "run": false
+    },
+    "python/pipe/test_tensor_backed_computed_address.py::test_tensor_backed_receiver_address[published-offset-l1-width-bfp4]": {
+      "reason": "tt-emule: test crashes the emulator; not run",
+      "run": false
+    },
+    "python/pipe/test_tensor_backed_computed_address.py::test_tensor_backed_receiver_address[published-offset-l1-width-bfp8]": {
+      "reason": "tt-emule: test crashes the emulator; not run",
+      "run": false
+    },
+    "python/pipe/test_tensor_backed_computed_address.py::test_tensor_backed_receiver_address[published-offset-l1-width-fp32]": {
+      "reason": "tt-emule: test crashes the emulator; not run",
+      "run": false
+    },
+    "python/test_dfb_reconfiguration.py::test_conditional_reconfiguration_executes_with_post_boundary_dfbs[generic-cores-left-dram-bf16]": {
+      "reason": "tt-emule: test fails and destabilizes the emulator for later cases; not run",
+      "run": false
+    },
+    "python/test_dfb_reconfiguration.py::test_conditional_reconfiguration_executes_with_post_boundary_dfbs[generic-cores-left-dram-f32]": {
+      "reason": "tt-emule: test fails and destabilizes the emulator for later cases; not run",
+      "run": false
+    },
+    "python/test_dfb_reconfiguration.py::test_conditional_reconfiguration_executes_with_post_boundary_dfbs[generic-cores-left-l1-bf16]": {
+      "reason": "tt-emule: test fails and destabilizes the emulator for later cases; not run",
+      "run": false
+    },
+    "python/test_dfb_reconfiguration.py::test_conditional_reconfiguration_executes_with_post_boundary_dfbs[generic-cores-left-l1-f32]": {
+      "reason": "tt-emule: test fails and destabilizes the emulator for later cases; not run",
+      "run": false
+    },
+    "python/test_dfb_reconfiguration.py::test_conditional_reconfiguration_executes_with_post_boundary_dfbs[generic-cores-right-dram-bf16]": {
+      "reason": "tt-emule: test fails and destabilizes the emulator for later cases; not run",
+      "run": false
+    },
+    "python/test_dfb_reconfiguration.py::test_conditional_reconfiguration_executes_with_post_boundary_dfbs[generic-cores-right-dram-f32]": {
+      "reason": "tt-emule: test fails and destabilizes the emulator for later cases; not run",
+      "run": false
+    },
+    "python/test_dfb_reconfiguration.py::test_conditional_reconfiguration_executes_with_post_boundary_dfbs[generic-cores-right-l1-bf16]": {
+      "reason": "tt-emule: test fails and destabilizes the emulator for later cases; not run",
+      "run": false
+    },
+    "python/test_dfb_reconfiguration.py::test_conditional_reconfiguration_executes_with_post_boundary_dfbs[generic-cores-right-l1-f32]": {
+      "reason": "tt-emule: test fails and destabilizes the emulator for later cases; not run",
+      "run": false
+    },
+    "python/test_dfb_reconfiguration.py::test_conditional_reconfiguration_executes_with_post_boundary_dfbs[specialized-cores-left-dram-bf16]": {
+      "reason": "tt-emule: test fails and destabilizes the emulator for later cases; not run",
+      "run": false
+    },
+    "python/test_dfb_reconfiguration.py::test_conditional_reconfiguration_executes_with_post_boundary_dfbs[specialized-cores-left-dram-f32]": {
+      "reason": "tt-emule: test fails and destabilizes the emulator for later cases; not run",
+      "run": false
+    },
+    "python/test_dfb_reconfiguration.py::test_conditional_reconfiguration_executes_with_post_boundary_dfbs[specialized-cores-left-l1-bf16]": {
+      "reason": "tt-emule: test fails and destabilizes the emulator for later cases; not run",
+      "run": false
+    },
+    "python/test_dfb_reconfiguration.py::test_conditional_reconfiguration_executes_with_post_boundary_dfbs[specialized-cores-left-l1-f32]": {
+      "reason": "tt-emule: test fails and destabilizes the emulator for later cases; not run",
+      "run": false
+    },
+    "python/test_dfb_reconfiguration.py::test_conditional_reconfiguration_executes_with_post_boundary_dfbs[specialized-cores-right-dram-bf16]": {
+      "reason": "tt-emule: test fails and destabilizes the emulator for later cases; not run",
+      "run": false
+    },
+    "python/test_dfb_reconfiguration.py::test_conditional_reconfiguration_executes_with_post_boundary_dfbs[specialized-cores-right-dram-f32]": {
+      "reason": "tt-emule: test fails and destabilizes the emulator for later cases; not run",
+      "run": false
+    },
+    "python/test_dfb_reconfiguration.py::test_conditional_reconfiguration_executes_with_post_boundary_dfbs[specialized-cores-right-l1-bf16]": {
+      "reason": "tt-emule: test fails and destabilizes the emulator for later cases; not run",
+      "run": false
+    },
+    "python/test_dfb_reconfiguration.py::test_conditional_reconfiguration_executes_with_post_boundary_dfbs[specialized-cores-right-l1-f32]": {
+      "reason": "tt-emule: test fails and destabilizes the emulator for later cases; not run",
+      "run": false
+    },
+    "python/test_dfb_reconfiguration.py::test_live_payload_crosses_reconfiguration_and_cached_execution[dram-bf16]": {
+      "reason": "tt-emule: test fails and destabilizes the emulator for later cases; not run",
+      "run": false
+    },
+    "python/test_dfb_reconfiguration.py::test_live_payload_crosses_reconfiguration_and_cached_execution[dram-f32]": {
+      "reason": "tt-emule: test fails and destabilizes the emulator for later cases; not run",
+      "run": false
+    },
+    "python/test_dfb_reconfiguration.py::test_live_payload_crosses_reconfiguration_and_cached_execution[l1-bf16]": {
+      "reason": "tt-emule: test fails and destabilizes the emulator for later cases; not run",
+      "run": false
+    },
+    "python/test_dfb_reconfiguration.py::test_live_payload_crosses_reconfiguration_and_cached_execution[l1-f32]": {
+      "reason": "tt-emule: test fails and destabilizes the emulator for later cases; not run",
+      "run": false
+    },
+    "python/test_dfb_reconfiguration.py::test_reconfiguration_composes_varying_caller_runtime_args": {
+      "reason": "tt-emule: test crashes the emulator; not run",
+      "run": false
+    },
+    "python/test_dfb_reconfiguration.py::test_reconfiguration_enables_later_tensor_backed_core[generic-cores]": {
+      "reason": "tt-emule: test fails and destabilizes the emulator for later cases; not run",
+      "run": false
+    },
+    "python/test_dfb_reconfiguration.py::test_reconfiguration_enables_later_tensor_backed_core[specialized-cores]": {
+      "reason": "tt-emule: test fails and destabilizes the emulator for later cases; not run",
+      "run": false
+    },
+    "python/test_dfb_reconfiguration.py::test_reconfiguration_executes_with_physical_indices_above_31[dram-bf16]": {
+      "reason": "tt-emule: test fails and destabilizes the emulator for later cases; not run",
+      "run": false
+    },
+    "python/test_dfb_reconfiguration.py::test_reconfiguration_executes_with_physical_indices_above_31[dram-f32]": {
+      "reason": "tt-emule: test fails and destabilizes the emulator for later cases; not run",
+      "run": false
+    },
+    "python/test_dfb_reconfiguration.py::test_reconfiguration_executes_with_physical_indices_above_31[l1-bf16]": {
+      "reason": "tt-emule: test fails and destabilizes the emulator for later cases; not run",
+      "run": false
+    },
+    "python/test_dfb_reconfiguration.py::test_reconfiguration_executes_with_physical_indices_above_31[l1-f32]": {
+      "reason": "tt-emule: test fails and destabilizes the emulator for later cases; not run",
+      "run": false
+    },
+    "python/test_dfb_reconfiguration.py::test_reconfiguration_reuses_ids_with_different_capacity_and_cached_execution[dram-one-core-bf16-generic-cores]": {
+      "reason": "tt-emule: test fails and destabilizes the emulator for later cases; not run",
+      "run": false
+    },
+    "python/test_dfb_reconfiguration.py::test_reconfiguration_reuses_ids_with_different_capacity_and_cached_execution[dram-one-core-bf16-specialized-cores]": {
+      "reason": "tt-emule: test hangs the emulator; not run",
+      "run": false
+    },
+    "python/test_dfb_reconfiguration.py::test_reconfiguration_reuses_ids_with_different_capacity_and_cached_execution[dram-one-core-f32-generic-cores]": {
+      "reason": "tt-emule: test fails and destabilizes the emulator for later cases; not run",
+      "run": false
+    },
+    "python/test_dfb_reconfiguration.py::test_reconfiguration_reuses_ids_with_different_capacity_and_cached_execution[dram-one-core-f32-specialized-cores]": {
+      "reason": "tt-emule: test crashes the emulator; not run",
+      "run": false
+    },
+    "python/test_dfb_reconfiguration.py::test_reconfiguration_reuses_ids_with_different_capacity_and_cached_execution[dram-two-core-bf16-generic-cores]": {
+      "reason": "tt-emule: test fails and destabilizes the emulator for later cases; not run",
+      "run": false
+    },
+    "python/test_dfb_reconfiguration.py::test_reconfiguration_reuses_ids_with_different_capacity_and_cached_execution[dram-two-core-bf16-specialized-cores]": {
+      "reason": "tt-emule: test hangs the emulator; not run",
+      "run": false
+    },
+    "python/test_dfb_reconfiguration.py::test_reconfiguration_reuses_ids_with_different_capacity_and_cached_execution[dram-two-core-f32-generic-cores]": {
+      "reason": "tt-emule: test fails and destabilizes the emulator for later cases; not run",
+      "run": false
+    },
+    "python/test_dfb_reconfiguration.py::test_reconfiguration_reuses_ids_with_different_capacity_and_cached_execution[dram-two-core-f32-specialized-cores]": {
+      "reason": "tt-emule: test crashes the emulator; not run",
+      "run": false
+    },
+    "python/test_dfb_reconfiguration.py::test_reconfiguration_reuses_ids_with_different_capacity_and_cached_execution[l1-one-core-bf16-generic-cores]": {
+      "reason": "tt-emule: test fails and destabilizes the emulator for later cases; not run",
+      "run": false
+    },
+    "python/test_dfb_reconfiguration.py::test_reconfiguration_reuses_ids_with_different_capacity_and_cached_execution[l1-one-core-bf16-specialized-cores]": {
+      "reason": "tt-emule: test hangs the emulator; not run",
+      "run": false
+    },
+    "python/test_dfb_reconfiguration.py::test_reconfiguration_reuses_ids_with_different_capacity_and_cached_execution[l1-one-core-f32-generic-cores]": {
+      "reason": "tt-emule: test fails and destabilizes the emulator for later cases; not run",
+      "run": false
+    },
+    "python/test_dfb_reconfiguration.py::test_reconfiguration_reuses_ids_with_different_capacity_and_cached_execution[l1-one-core-f32-specialized-cores]": {
+      "reason": "tt-emule: test hangs the emulator; not run",
+      "run": false
+    },
+    "python/test_dfb_reconfiguration.py::test_reconfiguration_reuses_ids_with_different_capacity_and_cached_execution[l1-two-core-bf16-generic-cores]": {
+      "reason": "tt-emule: test fails and destabilizes the emulator for later cases; not run",
+      "run": false
+    },
+    "python/test_dfb_reconfiguration.py::test_reconfiguration_reuses_ids_with_different_capacity_and_cached_execution[l1-two-core-bf16-specialized-cores]": {
+      "reason": "tt-emule: test fails and destabilizes the emulator for later cases; not run",
+      "run": false
+    },
+    "python/test_dfb_reconfiguration.py::test_reconfiguration_reuses_ids_with_different_capacity_and_cached_execution[l1-two-core-f32-generic-cores]": {
+      "reason": "tt-emule: test fails and destabilizes the emulator for later cases; not run",
+      "run": false
+    },
+    "python/test_dfb_reconfiguration.py::test_reconfiguration_reuses_ids_with_different_capacity_and_cached_execution[l1-two-core-f32-specialized-cores]": {
+      "reason": "tt-emule: test fails and destabilizes the emulator for later cases; not run",
+      "run": false
+    },
+    "python/test_dfb_reconfiguration.py::test_reconfiguration_supports_compute_dfb_formats[dram-bf16]": {
+      "reason": "tt-emule: test fails and destabilizes the emulator for later cases; not run",
+      "run": false
+    },
+    "python/test_dfb_reconfiguration.py::test_reconfiguration_supports_compute_dfb_formats[dram-bfp4-b]": {
+      "reason": "tt-emule: test fails and destabilizes the emulator for later cases; not run",
+      "run": false
+    },
+    "python/test_dfb_reconfiguration.py::test_reconfiguration_supports_compute_dfb_formats[dram-bfp8-b]": {
+      "reason": "tt-emule: test fails and destabilizes the emulator for later cases; not run",
+      "run": false
+    },
+    "python/test_dfb_reconfiguration.py::test_reconfiguration_supports_compute_dfb_formats[dram-f32]": {
+      "reason": "tt-emule: test crashes the emulator; not run",
+      "run": false
+    },
+    "python/test_dfb_reconfiguration.py::test_reconfiguration_supports_compute_dfb_formats[dram-i32]": {
+      "reason": "tt-emule: test crashes the emulator; not run",
+      "run": false
+    },
+    "python/test_dfb_reconfiguration.py::test_reconfiguration_supports_compute_dfb_formats[dram-u16]": {
+      "reason": "tt-emule: test fails and destabilizes the emulator for later cases; not run",
+      "run": false
+    },
+    "python/test_dfb_reconfiguration.py::test_reconfiguration_supports_compute_dfb_formats[dram-u32]": {
+      "reason": "tt-emule: test fails and destabilizes the emulator for later cases; not run",
+      "run": false
+    },
+    "python/test_dfb_reconfiguration.py::test_reconfiguration_supports_compute_dfb_formats[l1-bf16]": {
+      "reason": "tt-emule: test fails and destabilizes the emulator for later cases; not run",
+      "run": false
+    },
+    "python/test_dfb_reconfiguration.py::test_reconfiguration_supports_compute_dfb_formats[l1-bfp4-b]": {
+      "reason": "tt-emule: test fails and destabilizes the emulator for later cases; not run",
+      "run": false
+    },
+    "python/test_dfb_reconfiguration.py::test_reconfiguration_supports_compute_dfb_formats[l1-bfp8-b]": {
+      "reason": "tt-emule: test crashes the emulator; not run",
+      "run": false
+    },
+    "python/test_dfb_reconfiguration.py::test_reconfiguration_supports_compute_dfb_formats[l1-f32]": {
+      "reason": "tt-emule: test fails and destabilizes the emulator for later cases; not run",
+      "run": false
+    },
+    "python/test_dfb_reconfiguration.py::test_reconfiguration_supports_compute_dfb_formats[l1-i32]": {
+      "reason": "tt-emule: test fails and destabilizes the emulator for later cases; not run",
+      "run": false
+    },
+    "python/test_dfb_reconfiguration.py::test_reconfiguration_supports_compute_dfb_formats[l1-u16]": {
+      "reason": "tt-emule: test hangs the emulator; not run",
+      "run": false
+    },
+    "python/test_dfb_reconfiguration.py::test_reconfiguration_supports_compute_dfb_formats[l1-u32]": {
+      "reason": "tt-emule: test crashes the emulator; not run",
+      "run": false
+    },
+    "python/test_dfb_reconfiguration.py::test_reconfiguration_supports_data_movement_u8[dram]": {
+      "reason": "tt-emule: test fails and destabilizes the emulator for later cases; not run",
+      "run": false
+    },
+    "python/test_dfb_reconfiguration.py::test_reconfiguration_supports_data_movement_u8[l1]": {
+      "reason": "tt-emule: test crashes the emulator; not run",
+      "run": false
+    },
+    "python/test_dfb_reconfiguration.py::test_reconfiguration_switches_tensor_backed_storage_and_cached_execution[dram-bf16]": {
+      "reason": "tt-emule: test fails and destabilizes the emulator for later cases; not run",
+      "run": false
+    },
+    "python/test_dfb_reconfiguration.py::test_reconfiguration_switches_tensor_backed_storage_and_cached_execution[dram-f32]": {
+      "reason": "tt-emule: test fails and destabilizes the emulator for later cases; not run",
+      "run": false
+    },
+    "python/test_dfb_reconfiguration.py::test_reconfiguration_switches_tensor_backed_storage_and_cached_execution[l1-bf16]": {
+      "reason": "tt-emule: test fails and destabilizes the emulator for later cases; not run",
+      "run": false
+    },
+    "python/test_dfb_reconfiguration.py::test_reconfiguration_switches_tensor_backed_storage_and_cached_execution[l1-f32]": {
+      "reason": "tt-emule: test fails and destabilizes the emulator for later cases; not run",
+      "run": false
+    },
+    "python/test_dfb_reconfiguration.py::test_repeated_reconfiguration_reuses_ids_preserves_live_payload_and_restores_initial_epoch[one-core-dram-bf16]": {
+      "reason": "tt-emule: test fails and destabilizes the emulator for later cases; not run",
+      "run": false
+    },
+    "python/test_dfb_reconfiguration.py::test_repeated_reconfiguration_reuses_ids_preserves_live_payload_and_restores_initial_epoch[one-core-dram-f32]": {
+      "reason": "tt-emule: test fails and destabilizes the emulator for later cases; not run",
+      "run": false
+    },
+    "python/test_dfb_reconfiguration.py::test_repeated_reconfiguration_reuses_ids_preserves_live_payload_and_restores_initial_epoch[one-core-l1-bf16]": {
+      "reason": "tt-emule: test fails and destabilizes the emulator for later cases; not run",
+      "run": false
+    },
+    "python/test_dfb_reconfiguration.py::test_repeated_reconfiguration_reuses_ids_preserves_live_payload_and_restores_initial_epoch[one-core-l1-f32]": {
+      "reason": "tt-emule: test fails and destabilizes the emulator for later cases; not run",
+      "run": false
+    },
+    "python/test_dfb_reconfiguration.py::test_repeated_reconfiguration_reuses_ids_preserves_live_payload_and_restores_initial_epoch[two-core-dram-bf16]": {
+      "reason": "tt-emule: test fails and destabilizes the emulator for later cases; not run",
+      "run": false
+    },
+    "python/test_dfb_reconfiguration.py::test_repeated_reconfiguration_reuses_ids_preserves_live_payload_and_restores_initial_epoch[two-core-dram-f32]": {
+      "reason": "tt-emule: test fails and destabilizes the emulator for later cases; not run",
+      "run": false
+    },
+    "python/test_dfb_reconfiguration.py::test_repeated_reconfiguration_reuses_ids_preserves_live_payload_and_restores_initial_epoch[two-core-l1-bf16]": {
+      "reason": "tt-emule: test fails and destabilizes the emulator for later cases; not run",
+      "run": false
+    },
+    "python/test_dfb_reconfiguration.py::test_repeated_reconfiguration_reuses_ids_preserves_live_payload_and_restores_initial_epoch[two-core-l1-f32]": {
+      "reason": "tt-emule: test fails and destabilizes the emulator for later cases; not run",
+      "run": false
+    },
+    "python/test_dfb_reconfiguration_discard.py::test_reconfiguration_discards_wait_state_before_reuse[dram-bf16]": {
+      "reason": "tt-emule: kernel JIT compilation fails",
+      "run": true
+    },
+    "python/test_dfb_reconfiguration_discard.py::test_reconfiguration_discards_wait_state_before_reuse[dram-f32]": {
+      "reason": "tt-emule: kernel JIT compilation fails",
+      "run": true
+    },
+    "python/test_dfb_reconfiguration_discard.py::test_reconfiguration_discards_wait_state_before_reuse[l1-bf16]": {
+      "reason": "tt-emule: test hangs the emulator; not run",
+      "run": false
+    },
+    "python/test_dfb_reconfiguration_discard.py::test_reconfiguration_discards_wait_state_before_reuse[l1-f32]": {
+      "reason": "tt-emule: kernel JIT compilation fails",
+      "run": true
+    },
+    "python/test_dfb_reconfiguration_discard.py::test_repeated_reconfiguration_discards_opaque_state_before_reuse[dram-bf16]": {
+      "reason": "tt-emule: test raises an error",
+      "run": true
+    },
+    "python/test_dfb_reconfiguration_discard.py::test_repeated_reconfiguration_discards_opaque_state_before_reuse[dram-f32]": {
+      "reason": "tt-emule: test crashes the emulator; not run",
+      "run": false
+    },
+    "python/test_dfb_reconfiguration_discard.py::test_repeated_reconfiguration_discards_opaque_state_before_reuse[l1-bf16]": {
+      "reason": "tt-emule: kernel JIT compilation fails",
+      "run": true
+    },
+    "python/test_dfb_reconfiguration_discard.py::test_repeated_reconfiguration_discards_opaque_state_before_reuse[l1-f32]": {
+      "reason": "tt-emule: kernel JIT compilation fails",
+      "run": true
+    },
+    "python/test_external_descriptor_reset.py::test_external_descriptor_survives_specialization_and_synchronized_reset[dram-bf16]": {
+      "reason": "tt-emule: kernel JIT compilation fails",
+      "run": true
+    },
+    "python/test_external_descriptor_reset.py::test_external_descriptor_survives_specialization_and_synchronized_reset[dram-f32]": {
+      "reason": "tt-emule: kernel JIT compilation fails",
+      "run": true
+    },
+    "python/test_external_descriptor_reset.py::test_external_descriptor_survives_specialization_and_synchronized_reset[l1-bf16]": {
+      "reason": "tt-emule: kernel JIT compilation fails",
+      "run": true
+    },
+    "python/test_external_descriptor_reset.py::test_external_descriptor_survives_specialization_and_synchronized_reset[l1-f32]": {
+      "reason": "tt-emule: kernel JIT compilation fails",
+      "run": true
+    },
+    "python/test_external_dfb_reuse.py::test_conditional_external_dfb_reuse_across_reconfiguration[dram-bf16]": {
+      "reason": "tt-emule: test raises an error",
+      "run": true
+    },
+    "python/test_external_dfb_reuse.py::test_conditional_external_dfb_reuse_across_reconfiguration[dram-f32]": {
+      "reason": "tt-emule: test raises an error",
+      "run": true
+    },
+    "python/test_external_dfb_reuse.py::test_conditional_external_dfb_reuse_across_reconfiguration[l1-bf16]": {
+      "reason": "tt-emule: test raises an error",
+      "run": true
+    },
+    "python/test_external_dfb_reuse.py::test_conditional_external_dfb_reuse_across_reconfiguration[l1-f32]": {
+      "reason": "tt-emule: test raises an error",
+      "run": true
+    },
+    "python/test_external_dfb_reuse.py::test_external_multiply_with_dfb_allocation[generic-cores-distinct-dram-f32]": {
+      "reason": "tt-emule: test hangs the emulator intermittently; not run",
+      "run": false
+    },
+    "python/test_external_dfb_reuse.py::test_external_protocol_state_reset_allows_group_reuse[dram-bf16]": {
+      "reason": "tt-emule: kernel JIT compilation fails",
+      "run": true
+    },
+    "python/test_external_dfb_reuse.py::test_external_protocol_state_reset_allows_group_reuse[dram-f32]": {
+      "reason": "tt-emule: kernel JIT compilation fails",
+      "run": true
+    },
+    "python/test_external_dfb_reuse.py::test_external_protocol_state_reset_allows_group_reuse[l1-bf16]": {
+      "reason": "tt-emule: test hangs the emulator; not run",
+      "run": false
+    },
+    "python/test_external_dfb_reuse.py::test_external_protocol_state_reset_allows_group_reuse[l1-f32]": {
+      "reason": "tt-emule: kernel JIT compilation fails",
+      "run": true
+    },
+    "python/test_external_dfb_reuse.py::test_external_protocol_state_reset_drains_compute_interfaces[dram-bf16]": {
+      "reason": "tt-emule: test raises an error",
+      "run": true
+    },
+    "python/test_external_dfb_reuse.py::test_external_protocol_state_reset_drains_compute_interfaces[dram-f32]": {
+      "reason": "tt-emule: test raises an error",
+      "run": true
+    },
+    "python/test_external_dfb_reuse.py::test_external_protocol_state_reset_drains_compute_interfaces[l1-bf16]": {
+      "reason": "tt-emule: test raises an error",
+      "run": true
+    },
+    "python/test_external_dfb_reuse.py::test_external_protocol_state_reset_drains_compute_interfaces[l1-f32]": {
+      "reason": "tt-emule: test raises an error",
+      "run": true
+    },
+    "python/test_flash_chain_8node.py::test_flash_chain_8node": {
+      "reason": "tt-emule: kernel JIT compilation fails",
+      "run": true
+    },
+    "python/test_raw_element.py::test_bf16_argmax_row": {
+      "reason": "tt-emule: test crashes the emulator; not run",
+      "run": false
+    },
+    "python/test_raw_element.py::test_bf16_argmax_vs_ttnn_max": {
+      "reason": "tt-emule: test crashes the emulator; not run",
+      "run": false
+    },
+    "python/test_raw_element.py::test_bf16_compute_then_read": {
+      "reason": "tt-emule: test crashes the emulator; not run",
+      "run": false
+    },
+    "python/test_raw_element.py::test_bf16_element_copy": {
+      "reason": "tt-emule: test crashes the emulator; not run",
+      "run": false
+    },
+    "python/test_raw_element.py::test_bf16_min_pair": {
+      "reason": "tt-emule: test crashes the emulator; not run",
+      "run": false
+    },
+    "python/test_raw_element.py::test_bf16_sort_pair_no_swap": {
+      "reason": "tt-emule: test crashes the emulator; not run",
+      "run": false
+    },
+    "python/test_raw_element.py::test_bf16_sort_pair_signed[both-negative]": {
+      "reason": "tt-emule: test crashes the emulator; not run",
+      "run": false
+    },
+    "python/test_raw_element.py::test_bf16_sort_pair_signed[mixed-neg-pos]": {
+      "reason": "tt-emule: test crashes the emulator; not run",
+      "run": false
+    },
+    "python/test_raw_element.py::test_bf16_sort_pair_signed[mixed-pos-neg]": {
+      "reason": "tt-emule: test crashes the emulator; not run",
+      "run": false
+    },
+    "python/test_raw_element.py::test_bf16_sort_pair_swap": {
+      "reason": "tt-emule: test crashes the emulator; not run",
+      "run": false
+    },
+    "python/test_raw_element.py::test_f32_argmax_row": {
+      "reason": "tt-emule: test crashes the emulator; not run",
+      "run": false
+    },
+    "python/test_raw_element.py::test_f32_argmax_vs_ttnn_max": {
+      "reason": "tt-emule: test crashes the emulator; not run",
+      "run": false
+    },
+    "python/test_raw_element.py::test_f32_compute_then_read": {
+      "reason": "tt-emule: test crashes the emulator; not run",
+      "run": false
+    },
+    "python/test_raw_element.py::test_f32_element_copy": {
+      "reason": "tt-emule: test crashes the emulator; not run",
+      "run": false
+    },
+    "python/test_raw_element.py::test_f32_min_pair": {
+      "reason": "tt-emule: test crashes the emulator; not run",
+      "run": false
+    },
+    "python/test_raw_element.py::test_f32_sort_pair_no_swap": {
+      "reason": "tt-emule: test crashes the emulator; not run",
+      "run": false
+    },
+    "python/test_raw_element.py::test_f32_sort_pair_signed[both-negative]": {
+      "reason": "tt-emule: test crashes the emulator; not run",
+      "run": false
+    },
+    "python/test_raw_element.py::test_f32_sort_pair_signed[mixed-neg-pos]": {
+      "reason": "tt-emule: test crashes the emulator; not run",
+      "run": false
+    },
+    "python/test_raw_element.py::test_f32_sort_pair_signed[mixed-pos-neg]": {
+      "reason": "tt-emule: test crashes the emulator; not run",
+      "run": false
+    },
+    "python/test_raw_element.py::test_f32_sort_pair_swap": {
+      "reason": "tt-emule: test crashes the emulator; not run",
+      "run": false
+    },
+    "python/test_read_index.py::test_read_index_selects_dram_slice[bf16-below-one]": {
+      "reason": "tt-emule: test crashes the emulator; not run",
+      "run": false
+    },
+    "python/test_read_index.py::test_read_index_selects_dram_slice[bf16-left-shift]": {
+      "reason": "tt-emule: test crashes the emulator; not run",
+      "run": false
+    },
+    "python/test_read_index.py::test_read_index_selects_dram_slice[bf16-right-shift]": {
+      "reason": "tt-emule: test crashes the emulator; not run",
+      "run": false
+    },
+    "python/test_read_index.py::test_read_index_selects_dram_slice[fp32-below-one]": {
+      "reason": "tt-emule: test crashes the emulator; not run",
+      "run": false
+    },
+    "python/test_read_index.py::test_read_index_selects_dram_slice[fp32-left-shift]": {
+      "reason": "tt-emule: test crashes the emulator; not run",
+      "run": false
+    },
+    "python/test_read_index.py::test_read_index_selects_dram_slice[fp32-right-shift]": {
+      "reason": "tt-emule: test crashes the emulator; not run",
+      "run": false
+    },
+    "python/test_rmsnorm.py::test_rmsnorm[dram-full-1536]": {
+      "reason": "tt-emule: kernel JIT compilation fails",
+      "run": true
+    },
+    "python/test_rmsnorm.py::test_rmsnorm[dram-full-512]": {
+      "reason": "tt-emule: kernel JIT compilation fails",
+      "run": true
+    },
+    "python/test_rmsnorm.py::test_rmsnorm[dram-full-7168]": {
+      "reason": "tt-emule: kernel JIT compilation fails",
+      "run": true
+    },
+    "python/test_rmsnorm.py::test_rmsnorm[dram-none-1536]": {
+      "reason": "tt-emule: kernel JIT compilation fails",
+      "run": true
+    },
+    "python/test_rmsnorm.py::test_rmsnorm[dram-none-512]": {
+      "reason": "tt-emule: kernel JIT compilation fails",
+      "run": true
+    },
+    "python/test_rmsnorm.py::test_rmsnorm[dram-none-7168]": {
+      "reason": "tt-emule: kernel JIT compilation fails",
+      "run": true
+    },
+    "python/test_rmsnorm.py::test_rmsnorm[l1-full-1536]": {
+      "reason": "tt-emule: kernel JIT compilation fails",
+      "run": true
+    },
+    "python/test_rmsnorm.py::test_rmsnorm[l1-full-512]": {
+      "reason": "tt-emule: kernel JIT compilation fails",
+      "run": true
+    },
+    "python/test_rmsnorm.py::test_rmsnorm[l1-full-7168]": {
+      "reason": "tt-emule: kernel JIT compilation fails",
+      "run": true
+    },
+    "python/test_rmsnorm.py::test_rmsnorm[l1-none-1536]": {
+      "reason": "tt-emule: kernel JIT compilation fails",
+      "run": true
+    },
+    "python/test_rmsnorm.py::test_rmsnorm[l1-none-512]": {
+      "reason": "tt-emule: kernel JIT compilation fails",
+      "run": true
+    },
+    "python/test_rmsnorm.py::test_rmsnorm[l1-none-7168]": {
+      "reason": "tt-emule: kernel JIT compilation fails",
+      "run": true
+    },
+    "python/test_rmsnorm.py::test_rmsnorm_five_tile_fp32_dest[dram]": {
+      "reason": "tt-emule: kernel JIT compilation fails",
+      "run": true
+    },
+    "python/test_rmsnorm.py::test_rmsnorm_five_tile_fp32_dest[l1]": {
+      "reason": "tt-emule: kernel JIT compilation fails",
+      "run": true
+    },
+    "python/test_rmsnorm.py::test_rmsnorm_kernel_config[dram-bf16-full]": {
+      "reason": "tt-emule: kernel JIT compilation fails",
+      "run": true
+    },
+    "python/test_rmsnorm.py::test_rmsnorm_kernel_config[dram-bf16-half]": {
+      "reason": "tt-emule: kernel JIT compilation fails",
+      "run": true
+    },
+    "python/test_rmsnorm.py::test_rmsnorm_kernel_config[dram-fp32-full]": {
+      "reason": "tt-emule: kernel JIT compilation fails",
+      "run": true
+    },
+    "python/test_rmsnorm.py::test_rmsnorm_kernel_config[dram-fp32-half]": {
+      "reason": "tt-emule: kernel JIT compilation fails",
+      "run": true
+    },
+    "python/test_rmsnorm.py::test_rmsnorm_kernel_config[l1-bf16-full]": {
+      "reason": "tt-emule: kernel JIT compilation fails",
+      "run": true
+    },
+    "python/test_rmsnorm.py::test_rmsnorm_kernel_config[l1-bf16-half]": {
+      "reason": "tt-emule: kernel JIT compilation fails",
+      "run": true
+    },
+    "python/test_rmsnorm.py::test_rmsnorm_kernel_config[l1-fp32-full]": {
+      "reason": "tt-emule: kernel JIT compilation fails",
+      "run": true
+    },
+    "python/test_rmsnorm.py::test_rmsnorm_kernel_config[l1-fp32-half]": {
+      "reason": "tt-emule: kernel JIT compilation fails",
+      "run": true
+    },
+    "python/test_rmsnorm.py::test_rmsnorm_matches_materialized[dram]": {
+      "reason": "tt-emule: kernel JIT compilation fails",
+      "run": true
+    },
+    "python/test_rmsnorm.py::test_rmsnorm_matches_materialized[l1]": {
+      "reason": "tt-emule: kernel JIT compilation fails",
+      "run": true
+    },
+    "python/test_ssa_cond_assignment.py::test_dm_cond_reassign_f32": {
+      "reason": "tt-emule: test crashes the emulator; not run",
+      "run": false
+    },
+    "python/test_ssa_cond_assignment.py::test_dm_if_else_new_var_f32": {
+      "reason": "tt-emule: test crashes the emulator; not run",
+      "run": false
+    },
+    "python/test_ssa_cond_assignment.py::test_dm_if_else_reassign_false_branch_f32": {
+      "reason": "tt-emule: test crashes the emulator; not run",
+      "run": false
+    },
+    "python/test_ssa_cond_assignment.py::test_dm_if_else_reassign_true_branch_f32": {
+      "reason": "tt-emule: test crashes the emulator; not run",
+      "run": false
+    },
+    "python/test_user_dfb_reuse.py::test_allocation_group_reuses_interleaved_reset_epochs[dram-bf16]": {
+      "reason": "tt-emule: kernel JIT compilation fails",
+      "run": true
+    },
+    "python/test_user_dfb_reuse.py::test_allocation_group_reuses_interleaved_reset_epochs[dram-f32]": {
+      "reason": "tt-emule: kernel JIT compilation fails",
+      "run": true
+    },
+    "python/test_user_dfb_reuse.py::test_allocation_group_reuses_interleaved_reset_epochs[l1-bf16]": {
+      "reason": "tt-emule: kernel JIT compilation fails",
+      "run": true
+    },
+    "python/test_user_dfb_reuse.py::test_allocation_group_reuses_interleaved_reset_epochs[l1-f32]": {
+      "reason": "tt-emule: kernel JIT compilation fails",
+      "run": true
+    },
+    "python/test_user_dfb_reuse.py::test_nested_unknown_reset_target_does_not_reverse_reset_order[dram-bf16]": {
+      "reason": "tt-emule: kernel JIT compilation fails",
+      "run": true
+    },
+    "python/test_user_dfb_reuse.py::test_nested_unknown_reset_target_does_not_reverse_reset_order[dram-f32]": {
+      "reason": "tt-emule: kernel JIT compilation fails",
+      "run": true
+    },
+    "python/test_user_dfb_reuse.py::test_nested_unknown_reset_target_does_not_reverse_reset_order[l1-bf16]": {
+      "reason": "tt-emule: kernel JIT compilation fails",
+      "run": true
+    },
+    "python/test_user_dfb_reuse.py::test_nested_unknown_reset_target_does_not_reverse_reset_order[l1-f32]": {
+      "reason": "tt-emule: kernel JIT compilation fails",
+      "run": true
+    },
+    "python/test_user_dfb_reuse.py::test_repeated_synchronized_reset_run[dram-all-bf16]": {
+      "reason": "tt-emule: kernel JIT compilation fails",
+      "run": true
+    },
+    "python/test_user_dfb_reuse.py::test_repeated_synchronized_reset_run[dram-all-f32]": {
+      "reason": "tt-emule: kernel JIT compilation fails",
+      "run": true
+    },
+    "python/test_user_dfb_reuse.py::test_repeated_synchronized_reset_run[dram-selected-bf16]": {
+      "reason": "tt-emule: kernel JIT compilation fails",
+      "run": true
+    },
+    "python/test_user_dfb_reuse.py::test_repeated_synchronized_reset_run[dram-selected-f32]": {
+      "reason": "tt-emule: kernel JIT compilation fails",
+      "run": true
+    },
+    "python/test_user_dfb_reuse.py::test_repeated_synchronized_reset_run[l1-all-bf16]": {
+      "reason": "tt-emule: kernel JIT compilation fails",
+      "run": true
+    },
+    "python/test_user_dfb_reuse.py::test_repeated_synchronized_reset_run[l1-all-f32]": {
+      "reason": "tt-emule: kernel JIT compilation fails",
+      "run": true
+    },
+    "python/test_user_dfb_reuse.py::test_repeated_synchronized_reset_run[l1-selected-bf16]": {
+      "reason": "tt-emule: kernel JIT compilation fails",
+      "run": true
+    },
+    "python/test_user_dfb_reuse.py::test_repeated_synchronized_reset_run[l1-selected-f32]": {
+      "reason": "tt-emule: kernel JIT compilation fails",
+      "run": true
+    },
+    "python/test_user_dfb_reuse.py::test_reset_all_dfbs_preserves_listed_interface[dram-bf16]": {
+      "reason": "tt-emule: kernel JIT compilation fails",
+      "run": true
+    },
+    "python/test_user_dfb_reuse.py::test_reset_all_dfbs_preserves_listed_interface[dram-f32]": {
+      "reason": "tt-emule: kernel JIT compilation fails",
+      "run": true
+    },
+    "python/test_user_dfb_reuse.py::test_reset_all_dfbs_preserves_listed_interface[l1-bf16]": {
+      "reason": "tt-emule: kernel JIT compilation fails",
+      "run": true
+    },
+    "python/test_user_dfb_reuse.py::test_reset_all_dfbs_preserves_listed_interface[l1-f32]": {
+      "reason": "tt-emule: kernel JIT compilation fails",
+      "run": true
+    },
+    "python/test_user_dfb_reuse.py::test_selected_reset_preserves_non_target_live_aliases": {
+      "reason": "tt-emule: kernel JIT compilation fails",
+      "run": true
+    },
+    "python/test_user_dfb_reuse.py::test_synchronized_reset_executes_above_physical_index_31": {
+      "reason": "tt-emule: kernel JIT compilation fails",
+      "run": true
+    },
+    "python/test_user_dfb_reuse.py::test_synchronized_reset_supports_packed_and_integer_subtiles[dram-bfp4-32x32-compute]": {
+      "reason": "tt-emule: kernel JIT compilation fails",
+      "run": true
+    },
+    "python/test_user_dfb_reuse.py::test_synchronized_reset_supports_packed_and_integer_subtiles[dram-bfp4-8x32-dm]": {
+      "reason": "tt-emule: kernel JIT compilation fails",
+      "run": true
+    },
+    "python/test_user_dfb_reuse.py::test_synchronized_reset_supports_packed_and_integer_subtiles[dram-uint16-16x32-compute]": {
+      "reason": "tt-emule: kernel JIT compilation fails",
+      "run": true
+    },
+    "python/test_user_dfb_reuse.py::test_synchronized_reset_supports_packed_and_integer_subtiles[dram-uint8-1x16-dm]": {
+      "reason": "tt-emule: kernel JIT compilation fails",
+      "run": true
+    },
+    "python/test_user_dfb_reuse.py::test_synchronized_reset_supports_packed_and_integer_subtiles[l1-bfp4-32x32-compute]": {
+      "reason": "tt-emule: kernel JIT compilation fails",
+      "run": true
+    },
+    "python/test_user_dfb_reuse.py::test_synchronized_reset_supports_packed_and_integer_subtiles[l1-bfp4-8x32-dm]": {
+      "reason": "tt-emule: kernel JIT compilation fails",
+      "run": true
+    },
+    "python/test_user_dfb_reuse.py::test_synchronized_reset_supports_packed_and_integer_subtiles[l1-uint16-16x32-compute]": {
+      "reason": "tt-emule: kernel JIT compilation fails",
+      "run": true
+    },
+    "python/test_user_dfb_reuse.py::test_synchronized_reset_supports_packed_and_integer_subtiles[l1-uint8-1x16-dm]": {
+      "reason": "tt-emule: kernel JIT compilation fails",
+      "run": true
+    },
+    "python/test_user_dfb_reuse.py::test_synchronized_reset_terminates_producer_epoch[dram-one-core-all-bf16]": {
+      "reason": "tt-emule: kernel JIT compilation fails",
+      "run": true
+    },
+    "python/test_user_dfb_reuse.py::test_synchronized_reset_terminates_producer_epoch[dram-one-core-all-f32]": {
+      "reason": "tt-emule: kernel JIT compilation fails",
+      "run": true
+    },
+    "python/test_user_dfb_reuse.py::test_synchronized_reset_terminates_producer_epoch[dram-one-core-selected-bf16]": {
+      "reason": "tt-emule: kernel JIT compilation fails",
+      "run": true
+    },
+    "python/test_user_dfb_reuse.py::test_synchronized_reset_terminates_producer_epoch[dram-one-core-selected-f32]": {
+      "reason": "tt-emule: kernel JIT compilation fails",
+      "run": true
+    },
+    "python/test_user_dfb_reuse.py::test_synchronized_reset_terminates_producer_epoch[dram-two-core-all-bf16]": {
+      "reason": "tt-emule: kernel JIT compilation fails",
+      "run": true
+    },
+    "python/test_user_dfb_reuse.py::test_synchronized_reset_terminates_producer_epoch[dram-two-core-all-f32]": {
+      "reason": "tt-emule: kernel JIT compilation fails",
+      "run": true
+    },
+    "python/test_user_dfb_reuse.py::test_synchronized_reset_terminates_producer_epoch[dram-two-core-selected-bf16]": {
+      "reason": "tt-emule: kernel JIT compilation fails",
+      "run": true
+    },
+    "python/test_user_dfb_reuse.py::test_synchronized_reset_terminates_producer_epoch[dram-two-core-selected-f32]": {
+      "reason": "tt-emule: kernel JIT compilation fails",
+      "run": true
+    },
+    "python/test_user_dfb_reuse.py::test_synchronized_reset_terminates_producer_epoch[l1-one-core-all-bf16]": {
+      "reason": "tt-emule: kernel JIT compilation fails",
+      "run": true
+    },
+    "python/test_user_dfb_reuse.py::test_synchronized_reset_terminates_producer_epoch[l1-one-core-all-f32]": {
+      "reason": "tt-emule: kernel JIT compilation fails",
+      "run": true
+    },
+    "python/test_user_dfb_reuse.py::test_synchronized_reset_terminates_producer_epoch[l1-one-core-selected-bf16]": {
+      "reason": "tt-emule: kernel JIT compilation fails",
+      "run": true
+    },
+    "python/test_user_dfb_reuse.py::test_synchronized_reset_terminates_producer_epoch[l1-one-core-selected-f32]": {
+      "reason": "tt-emule: kernel JIT compilation fails",
+      "run": true
+    },
+    "python/test_user_dfb_reuse.py::test_synchronized_reset_terminates_producer_epoch[l1-two-core-all-bf16]": {
+      "reason": "tt-emule: kernel JIT compilation fails",
+      "run": true
+    },
+    "python/test_user_dfb_reuse.py::test_synchronized_reset_terminates_producer_epoch[l1-two-core-all-f32]": {
+      "reason": "tt-emule: kernel JIT compilation fails",
+      "run": true
+    },
+    "python/test_user_dfb_reuse.py::test_synchronized_reset_terminates_producer_epoch[l1-two-core-selected-bf16]": {
+      "reason": "tt-emule: kernel JIT compilation fails",
+      "run": true
+    },
+    "python/test_user_dfb_reuse.py::test_synchronized_reset_terminates_producer_epoch[l1-two-core-selected-f32]": {
+      "reason": "tt-emule: kernel JIT compilation fails",
+      "run": true
+    },
+    "tutorial/test_tutorials.py::test_tutorial[matmul-tutorial/step_1_single_node_single_tile_block.py]": {
+      "reason": "tt-emule: result does not match the reference",
+      "run": true
+    }
+  }
+}

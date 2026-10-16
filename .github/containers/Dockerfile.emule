@@ -47,6 +47,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         gcc-13 \
         git \
         ninja-build \
+        python3.12-venv \
     && rm -rf /var/lib/apt/lists/* \
     && command -v clang-20 >/dev/null \
     && command -v clang++-20 >/dev/null \
@@ -125,14 +126,20 @@ RUN cmake -S "$TT_METAL_SOURCE_DIR" -B "$TT_METAL_BUILD_DIR" -G Ninja \
 COPY package-emule-runtime.sh trim-emule-venv.sh /tmp/
 COPY --from=tt-lang-stack requirements.txt requirements-runtime.txt requirements-test.txt \
     /runtime/requirements/
-RUN mkdir -p /runtime \
+RUN --mount=type=bind,source=prepare-toolchain-venv.sh,target=/tmp/prepare-toolchain-venv.sh \
+    --mount=type=bind,source=check-cpu-torch.py,target=/tmp/check-cpu-torch.py \
+    mkdir -p /runtime \
     && bash /tmp/package-emule-runtime.sh "$TT_METAL_SOURCE_DIR" /runtime/tt-metal \
     && cp "$TT_EMULE_RUNTIME_ROOT/stack.json" \
           "$TT_EMULE_RUNTIME_ROOT/source-manifest.json" /runtime/ \
-    && bash /tmp/trim-emule-venv.sh /opt/ttlang-toolchain/venv/bin/python \
+    && /opt/ttlang-toolchain/venv/bin/python -c \
+        'import sys; sys.exit(0 if sys.version_info[:2] == (3, 12) else "Expected Python 3.12 for the native runtime ABI")' \
+    && rm -rf /opt/ttlang-toolchain/venv \
+    && bash /tmp/prepare-toolchain-venv.sh /opt/ttlang-toolchain \
     && /opt/ttlang-toolchain/venv/bin/python -m pip install --no-cache-dir \
         -r /runtime/requirements/requirements-test.txt \
-    && /opt/ttlang-toolchain/venv/bin/python -m pip check \
+    && /opt/ttlang-toolchain/venv/bin/python /tmp/check-cpu-torch.py \
+    && bash /tmp/trim-emule-venv.sh /opt/ttlang-toolchain/venv/bin/python \
     && rm -f /opt/ttlang-toolchain/bin/tt-triage \
     && rm -f /opt/ttlang-toolchain/venv/bin/python \
         /opt/ttlang-toolchain/venv/bin/python3 \
@@ -221,11 +228,13 @@ COPY --from=build /runtime/ /opt/tt-emule-runtime/
 COPY --from=build /opt/tt-emule /opt/tt-emule/
 
 # Refresh the copied venv's base-interpreter paths for the final OS.
-RUN ldconfig \
+RUN --mount=type=bind,source=check-cpu-torch.py,target=/tmp/check-cpu-torch.py \
+    ldconfig \
     && clang-20 --version && ld.lld-20 --version \
     && python3 -m venv --upgrade --without-pip --symlinks --prompt ttlang \
         /opt/ttlang-toolchain/venv \
     && /opt/ttlang-toolchain/venv/bin/python -m pip check \
+    && /opt/ttlang-toolchain/venv/bin/python /tmp/check-cpu-torch.py \
     && TT_METAL_HOME="$TT_METAL_SOURCE_DIR" \
        TT_METAL_RUNTIME_ROOT="$TT_METAL_SOURCE_DIR" \
        PYTHONPATH="$TT_METAL_SOURCE_DIR/ttnn:$TT_METAL_SOURCE_DIR/tools" \

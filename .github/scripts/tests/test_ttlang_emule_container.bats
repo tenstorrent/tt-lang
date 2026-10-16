@@ -27,6 +27,8 @@ make_runner_fixture() {
     cp "$SOURCE_REPO_ROOT/.github/containers/Dockerfile.emule" \
         "$SOURCE_REPO_ROOT/.github/containers/package-emule-runtime.sh" \
         "$SOURCE_REPO_ROOT/.github/containers/trim-emule-venv.sh" \
+        "$SOURCE_REPO_ROOT/.github/containers/prepare-toolchain-venv.sh" \
+        "$SOURCE_REPO_ROOT/.github/containers/check-cpu-torch.py" \
         "$root/.github/containers/"
     cp "$SOURCE_REPO_ROOT/scripts/tt-lang-emule-entrypoint.sh" \
         "$SOURCE_REPO_ROOT/scripts/tt-lang-emule-container.sh" \
@@ -67,6 +69,23 @@ stack["emulator"]["commit"] = sys.argv[2]
 stack["metal"]["commit"] = sys.argv[3]
 manifest.write_text(json.dumps(stack, indent=2) + "\n")
 PY
+}
+
+make_emulator_fixture() {
+    local source="$1"
+    mkdir -p "$source/cluster_descriptors"
+    git -C "$source" init -q
+    touch "$source/tracked-source" \
+        "$source/cluster_descriptors/blackhole_P150_unharvested.yaml"
+    printf '%s\n' bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb > \
+        "$source/tt-metal-pin.txt"
+    git -C "$source" add .
+    git -C "$source" \
+        -c user.name=test -c user.email=test@example.com \
+        commit -q -m "Pinned source"
+    touch "$source/untracked-secret"
+    pin_emulator_runtime "$(git -C "$source" rev-parse HEAD)" \
+        bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 }
 
 make_mock_docker() {
@@ -134,10 +153,12 @@ case "${1:-}" in
             done
             [ -f "$context/package-emule-runtime.sh" ] || exit 95
             [ -f "$context/trim-emule-venv.sh" ] || exit 94
+            [ -f "$context/prepare-toolchain-venv.sh" ] || exit 90
+            [ -f "$context/check-cpu-torch.py" ] || exit 89
             [ ! -e "$context/third-party" ] || exit 93
             [ ! -e "$context/.git" ] || exit 92
         fi
-        exit 0
+        exit "${MOCK_DOCKER_BUILD_STATUS:-0}"
         ;;
     run)
         exit "${MOCK_DOCKER_RUN_STATUS:-0}"
@@ -233,6 +254,7 @@ make_entrypoint_fixture() {
     program="$BATS_TEST_TMPDIR/program.py"
     llvm_revision_header="$BATS_TEST_TMPDIR/toolchain/include/llvm/Support/VCSRevision.h"
     memory_max_file="$BATS_TEST_TMPDIR/memory.max"
+    meminfo_file="$BATS_TEST_TMPDIR/meminfo"
     test_entrypoint="$BATS_TEST_TMPDIR/entrypoint.sh"
     expected_llvm_sha=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
     source_fingerprint=source-fingerprint
@@ -247,6 +269,9 @@ make_entrypoint_fixture() {
         "$build_dir/.ttlang-emule-source-fingerprint"
     printf '#define LLVM_REVISION "%s"\n' "$expected_llvm_sha" > "$llvm_revision_header"
     printf '%s\n' "$((6 * 1024 * 1024 * 1024))" > "$memory_max_file"
+    # The host's real MemTotal must not decide the expected job count: the
+    # entrypoint takes the smaller of the cgroup limit and MemTotal.
+    printf 'MemTotal:       %s kB\n' "$((16 * 1024 * 1024))" > "$meminfo_file"
     sed -e "s|/opt/ttlang-toolchain|$BATS_TEST_TMPDIR/toolchain|g" \
         -e "s|/opt/tt-emule-runtime/requirements|$image_requirements|g" \
         "$ENTRYPOINT" > "$test_entrypoint"
@@ -330,7 +355,7 @@ EOF
     assert_log_line "/workspace/scripts/tt-lang-emule-entrypoint.sh"
     assert_log_line \
         "TTLANG_EMULE_EXPECTED_LLVM_SHA=$(git -C "$TTLANG_REPO_ROOT" rev-parse HEAD:third-party/llvm-project)"
-    [[ "$runtime_id" == 7292395c-b6c508c4-r* ]]
+    [[ "$runtime_id" == 447830f6-e592d14d-r* ]]
     assert_log_line \
         "type=volume,src=tt-lang-emule-build-${runtime_id}-${source_id},dst=/ttlang-build"
     assert_log_line \
@@ -427,6 +452,16 @@ EOF
     [ ! -e "$MOCK_DOCKER_LOG" ]
 }
 
+@test "build-only mode rejects installation shell and script arguments before Docker" {
+    TTLANG_EMULE_BUILD_ONLY=1 TTLANG_EMULE_INSTALL=1 run -2 "$RUNNER"
+    assert_output --partial "mutually exclusive"
+    TTLANG_EMULE_BUILD_ONLY=1 TTLANG_EMULE_SHELL=1 run -2 "$RUNNER"
+    assert_output --partial "mutually exclusive"
+    TTLANG_EMULE_BUILD_ONLY=1 run -2 "$RUNNER" unexpected
+    assert_output --partial "do not accept script arguments"
+    [ ! -e "$MOCK_DOCKER_LOG" ]
+}
+
 @test "workload edits and outputs preserve the installed compiler identity" {
     local synthetic_root="$BATS_TEST_TMPDIR/synthetic-repo"
     local synthetic_runner="$synthetic_root/scripts/tt-lang-emule-container.sh"
@@ -517,7 +552,8 @@ EOF
     local first_image
     local first_fingerprint
     local recipe_input
-    for recipe_input in package-emule-runtime.sh trim-emule-venv.sh; do
+    for recipe_input in package-emule-runtime.sh trim-emule-venv.sh \
+        prepare-toolchain-venv.sh check-cpu-torch.py; do
         : > "$MOCK_DOCKER_LOG"
         TTLANG_EMULE_DOCKER="$MOCK_DOCKER" run -0 "$RUNNER" \
             "$TTLANG_REPO_ROOT/examples/program.py"
@@ -658,25 +694,10 @@ PY
     local source_url
     local rebuild
     local inspect_status
-    mkdir -p "$emule_source"
     mkdir -p "$runtime_tmp"
-    git -C "$emule_source" init -q
-    mkdir -p "$emule_source/cluster_descriptors"
-    touch "$emule_source/tracked-source"
-    touch \
-        "$emule_source/cluster_descriptors/blackhole_P150_unharvested.yaml"
-    printf '%s\n' bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb > \
-        "$emule_source/tt-metal-pin.txt"
-    git -C "$emule_source" add \
-        tracked-source cluster_descriptors/blackhole_P150_unharvested.yaml \
-        tt-metal-pin.txt
-    git -C "$emule_source" \
-        -c user.name=test -c user.email=test@example.com \
-        commit -q -m "Pinned source"
-    touch "$emule_source/untracked-secret"
+    make_emulator_fixture "$emule_source"
     emule_commit="$(git -C "$emule_source" rev-parse HEAD)"
     emule_source="$(cd "$emule_source" && pwd -P)"
-    pin_emulator_runtime "$emule_commit" bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
     cd "$TTLANG_REPO_ROOT"
     for source_mode in directory url rebuild; do
         source_dir=""
@@ -736,6 +757,54 @@ PY
         [ "${#retained_runtime_dirs[@]}" -eq 0 ]
         [ -f "$emule_source/tracked-source" ]
         [ -f "$emule_source/untracked-secret" ]
+    done
+}
+
+@test "build-only mode builds the pinned source and never runs a container" {
+    local emule_source="$BATS_TEST_TMPDIR/external-emule"
+    local runtime_tmp="$BATS_TEST_TMPDIR/runtime-tmp"
+    local rebuild build_status
+    make_emulator_fixture "$emule_source"
+    mkdir -p "$runtime_tmp"
+    # The workflow rebuilds; rebuild=0 covers a missing image. A failed build
+    # must propagate, print no image, and still remove the exported sources.
+    for rebuild in 0 1; do
+        for build_status in 0 42; do
+            : > "$MOCK_DOCKER_LOG"
+            TMPDIR="$runtime_tmp" \
+                MOCK_DOCKER_IMAGE_STATUS=1 \
+                MOCK_DOCKER_BUILD_STATUS="$build_status" \
+                MOCK_DOCKER_REQUIRE_SANITIZED_CONTEXT=1 \
+                TTLANG_EMULE_DOCKER="$MOCK_DOCKER" \
+                TTLANG_EMULE_BUILD_ONLY=1 \
+                TTLANG_EMULE_REBUILD="$rebuild" \
+                TTLANG_EMULE_RUNTIME_SOURCE_DIR="$emule_source" \
+                TTLANG_EMULE_IMAGE=local-runtime:pilot \
+                run -"$build_status" "$RUNNER"
+            if [ "$build_status" -eq 0 ]; then
+                assert_output --partial "Runtime image: local-runtime:pilot"
+            else
+                refute_output --partial "Runtime image:"
+            fi
+            refute_output --partial "Compiler build volume:"
+            assert_log_line build
+            assert_log_line local-runtime:pilot
+            assert_log_line "TT_EMULE_COMMIT=$(git -C "$emule_source" rev-parse HEAD)"
+            refute_log_line run
+            if [ "$rebuild" -eq 1 ]; then
+                refute_log_line image
+            else
+                assert_log_line image
+            fi
+            shopt -s nullglob
+            local retained_runtime_dirs=(
+                "$runtime_tmp"/tt-lang-emule.*
+                "$runtime_tmp"/tt-lang-emule-context.*
+                "$runtime_tmp"/tt-lang-stack-context.*
+            )
+            shopt -u nullglob
+            [ "${#retained_runtime_dirs[@]}" -eq 0 ]
+        done
     done
 }
 
@@ -1024,6 +1093,7 @@ PY
     PATH="$mock_bin:$PATH" \
         TT_METAL_MOCK_CLUSTER_DESC_PATH="$cluster" \
         _TTLANG_EMULE_CGROUP_MEMORY_MAX_PATH="$memory_max_file" \
+        _TTLANG_EMULE_MEMINFO_PATH="$meminfo_file" \
         TTLANG_EMULE_EXPECTED_LLVM_SHA="$expected_llvm_sha" \
         TTLANG_EMULE_INSTALL=1 \
         TTLANG_EMULE_COMPILER_SHA=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
