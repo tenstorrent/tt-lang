@@ -210,13 +210,28 @@ def TTKernel_PackReconfigDataFormatOp : TTKernel_Op<"pack_reconfig_data_format">
     let description = [{
       Reconfigures the packer data format to match the output circular buffer.
       Must be called before pack_reconfig_l1_acc to ensure format consistency
-      during L1 accumulation.
+      during L1 accumulation. With tile_dim_reconfig, also configures tile
+      geometry while preserving packer address modes and DST synchronization.
     }];
 
-    let arguments = (ins TTKernel_CB:$out_cb);
+    let arguments = (ins TTKernel_CB:$out_cb,
+                         DefaultValuedAttr<BoolAttr, "false">:$tile_dim_reconfig);
 
     let assemblyFormat = [{
       `(` $out_cb `)` attr-dict `:` functional-type(operands, results)
+    }];
+}
+
+def TTKernel_ReconfigDataFormatOp : TTKernel_InitOp<"reconfig_data_format"> {
+    let summary = "Reconfigure the UNPACK and MATH input formats";
+    let description = [{
+      Configures SrcA and SrcB formats and tile geometry without resetting
+      DST synchronization or PACK state. Hardware startup must precede this op.
+      Lowers to `reconfig_data_format<SrcOrder::Regular, true>(in0_cb, in1_cb)`.
+    }];
+    let arguments = (ins TTKernel_CB:$in0_cb, TTKernel_CB:$in1_cb);
+    let assemblyFormat = [{
+      `(` $in0_cb `,` $in1_cb `)` attr-dict `:` functional-type(operands, results)
     }];
 }
 
@@ -666,16 +681,17 @@ def TTKernel_ExperimentalRowNormalizationBlockOp :
 def TTKernel_UnaryBcastInitOp : TTKernel_InitOp<"unary_bcast_init"> {
     let summary = "Init function";
     let description = [{
-      Must be run before bcast_tile.
+      Configures the UNPACK and MATH broadcast pipelines before unary_bcast.
+      Hardware startup and input format configuration must precede this op.
+      Preserves live DST values and the current synchronization bank.
     }];
 
     let arguments = (ins TTKernel_CB:$in_cb,
-                         TTKernel_CB:$out_cb,
                          TTKernel_BcastTypeAttr:$bcast_type
                         );
 
     let assemblyFormat = [{
-      `(` $in_cb `,` $out_cb `,` $bcast_type `)` attr-dict `:` functional-type(operands, results)
+      `(` $in_cb `,` $bcast_type `)` attr-dict `:` functional-type(operands, results)
     }];
 }
 
@@ -698,6 +714,59 @@ def TTKernel_UnaryBcastTileOp : TTKernel_FPUOp<"unary_bcast", [TTKernel_UnaryOpT
 
     let assemblyFormat = [{
       `(` $in_cb `,` $in_tile_index `,` $dst_tile_index `,` $bcast_type `)` attr-dict `:` functional-type(operands, results)
+    }];
+}
+
+def TTKernel_BinaryBcastInitOp : TTKernel_InitOp<"binary_bcast_init"> {
+    let summary = "Init function for the fused binary broadcast op";
+    let description = [{
+      Must be run before binary_bcast. Configures the MATH pipeline for the
+      requested elementwise binary operation and broadcast dimension, and the
+      UNPACK pipeline for both input CBs. Hardware startup and input format
+      configuration must precede this op. Preserves live DST values and the
+      current synchronization bank.
+      Lowers to the metal `bcast_init<EltwiseBinaryType, BroadcastType>` API.
+    }];
+
+    let arguments = (ins TTKernel_CB:$in0_cb,
+                         TTKernel_CB:$in1_cb,
+                         TTKernel_EltwiseBinaryTypeAttr:$eltwise_binary_type,
+                         TTKernel_BcastTypeAttr:$bcast_type
+                        );
+
+    let assemblyFormat = [{
+      `(` $in0_cb `,` $in1_cb `,` $eltwise_binary_type `,` $bcast_type `)` attr-dict `:` functional-type(operands, results)
+    }];
+}
+
+def TTKernel_BinaryBcastTileOp : TTKernel_FPUOp<"binary_bcast", [TTKernel_BinaryOpTrait]> {
+    let summary = "Fused elementwise binary operation with a broadcast operand";
+    let description = [{
+      Performs *DST[dst_tile_index] = A op broadcast(B)* in a single FPU pass,
+      where A is the tile at *in0_tile_index* in *in0_cb* and B is the tile at
+      *in1_tile_index* in *in1_cb*. The broadcast is applied to the second
+      operand along `bcast_type` (`row`, `col` or `scalar`) as the tile is
+      unpacked, so B is never materialized into DST.
+
+      Because the broadcast is fixed to the second operand, commutative
+      operations (add, mul) may swap their operands to place the broadcast
+      source in *in1_cb*, while sub only supports *A - broadcast(B)*.
+
+      The DST register buffer must be in acquired state via *tile_regs_acquire*
+      call. This call is blocking and is only available on the compute engine.
+    }];
+
+    let arguments = (ins TTKernel_CB:$in0_cb,
+                         TTKernel_CB:$in1_cb,
+                         IndexLike:$in0_tile_index,
+                         IndexLike:$in1_tile_index,
+                         IndexLike:$dst_tile_index,
+                         TTKernel_EltwiseBinaryTypeAttr:$eltwise_binary_type,
+                         TTKernel_BcastTypeAttr:$bcast_type
+    );
+
+    let assemblyFormat = [{
+      `(` $in0_cb `,` $in1_cb `,` $in0_tile_index `,` $in1_tile_index `,` $dst_tile_index `,` $eltwise_binary_type `,` $bcast_type `)` attr-dict `:` functional-type(operands, results)
     }];
 }
 
@@ -3519,19 +3588,19 @@ def TTKernel_UntilizeUninitOp : TTKernel_Op<"untilize_uninit", [TTKernel_LayoutO
     }];
 }
 
-def TTKernel_TransposeInitOp : TTKernel_Op<"transpose_wh_init"> {
+def TTKernel_TransposeInitOp : TTKernel_InitOp<"transpose_init"> {
     let summary = "TransposeInitOp call.";
     let description = [{
-      Initialize the transpose operation. To be called once at beginning of a
-      kernel before transpose operations.
+      Configures the transpose UNPACK and MATH pipelines after hardware startup
+      and input reconfiguration. Preserves PACK state and DST synchronization.
     }];
 
-    let arguments = (ins TTKernel_CB:$cbIn, TTKernel_CB:$cbOut);
+    let arguments = (ins TTKernel_CB:$cbIn);
 
     let hasVerifier = 1;
 
     let assemblyFormat = [{
-      `(` $cbIn `,` $cbOut `)` attr-dict `:` functional-type(operands, results)
+      `(` $cbIn `)` attr-dict `:` functional-type(operands, results)
     }];
 }
 
