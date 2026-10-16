@@ -10,6 +10,29 @@ endif()
 
 project(tt-lang LANGUAGES CXX C)
 
+# An unset build type compiles the compiler itself without optimization, which
+# costs roughly an order of magnitude in kernel compile time. Release with
+# debug info keeps the toolchain debuggable; assertions stay on below because
+# they are this compiler's first check on malformed IR.
+get_property(_ttlang_multi_config GLOBAL PROPERTY GENERATOR_IS_MULTI_CONFIG)
+if(NOT _ttlang_multi_config AND NOT CMAKE_BUILD_TYPE)
+  set(CMAKE_BUILD_TYPE RelWithDebInfo CACHE STRING
+      "Build type (Debug, Release, RelWithDebInfo, MinSizeRel)" FORCE)
+  message(STATUS "CMAKE_BUILD_TYPE not set; defaulting to RelWithDebInfo")
+endif()
+set_property(CACHE CMAKE_BUILD_TYPE PROPERTY STRINGS
+             Debug Release RelWithDebInfo MinSizeRel)
+
+option(TTLANG_ENABLE_ASSERTIONS "Keep assert() enabled in optimized builds" ON)
+if(TTLANG_ENABLE_ASSERTIONS)
+  foreach(_ttlang_config RELEASE RELWITHDEBINFO MINSIZEREL)
+    string(REPLACE "-DNDEBUG" "" CMAKE_CXX_FLAGS_${_ttlang_config}
+           "${CMAKE_CXX_FLAGS_${_ttlang_config}}")
+    string(REPLACE "-DNDEBUG" "" CMAKE_C_FLAGS_${_ttlang_config}
+           "${CMAKE_C_FLAGS_${_ttlang_config}}")
+  endforeach()
+endif()
+
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_LIST_DIR}/cmake/modules")
 include(TTLangUtils)
 
@@ -254,6 +277,7 @@ message(STATUS "")
 message(STATUS "=== tt-lang configuration summary ===")
 message(STATUS "  Version:          ${TTLANG_VERSION}")
 message(STATUS "  Build type:       ${CMAKE_BUILD_TYPE}")
+message(STATUS "  Assertions:       ${TTLANG_ENABLE_ASSERTIONS}")
 message(STATUS "  Build dir:        ${CMAKE_BINARY_DIR}")
 if(DEFINED TTLANG_TOOLCHAIN_DIR)
   message(STATUS "  Toolchain dir:    ${TTLANG_TOOLCHAIN_DIR}")
