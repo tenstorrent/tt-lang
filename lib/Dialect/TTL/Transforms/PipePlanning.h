@@ -41,8 +41,8 @@ class PipeTransferIndex;
 
 /// Options that control PipeNet protocol and resource planning.
 struct PipePlanningOptions {
-  /// Compute receiver DFB addresses instead of publishing them at runtime.
-  bool enableComputedAddresses = false;
+  /// Transfers whose receiver DFB addresses can be computed by the sender.
+  PipeTransferNodeSet computedAddressTransfers;
 
   /// Use sender-local capacity counters for transfers proven safe.
   bool enableCapacitySynchronization = false;
