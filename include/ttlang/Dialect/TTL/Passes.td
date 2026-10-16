@@ -1802,7 +1802,7 @@ def TTKernelSpecializeDFBReconfiguration
     : Pass<"ttkernel-specialize-dfb-reconfiguration", "::mlir::ModuleOp"> {
   let summary = "Specialize DFB reconfiguration descriptor fields";
   let description = [{
-    Rewrites every `experimental::reconfigure_dfb_interfaces` call carrying
+    Rewrites every `::experimental::reconfigure_dfb_interfaces` call carrying
     `ttl.dfb_reconfiguration_ordinal` and removes that attribute.
 
     `ttl.dfb_reconfiguration_plan` determines which physical DFBs a boundary

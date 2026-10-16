@@ -349,7 +349,7 @@ def make_ksplit_resource_allocation_kernel(grid_dim):
 # CHECK-CPP: size_t [[SELECTED_READY:v[0-9]+]] = ::experimental::constant_table_lookup_word<2>
 # CHECK-CPP-NEXT: int32_t {{v[0-9]+}} = get_semaphore([[SELECTED_READY]]);
 # CHECK-CPP: reinterpret_cast<tt_l1_ptr uint32_t*>
-# CHECK-CPP: experimental::semaphore_wait
+# CHECK-CPP: ::experimental::semaphore_wait
 # CHECK-CPP: noc0.async_write(
 # CHECK-CPP: noc0.async_write_multicast
 # CHECK-CPP: noc_semaphore_inc
