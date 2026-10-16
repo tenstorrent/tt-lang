@@ -45,6 +45,17 @@ struct TTLExpandDFBNetworksPass
       }
       return signalPassFailure();
     }
+
+    // Nothing applies a plan yet, so an admitted network is still reported.
+    ArrayRef<DFBNetworkExpansion> expansions = result.getPlan().getNetworks();
+    for (const DFBNetworkExpansion &expansion : expansions) {
+      DFBNetworkOp network = expansion.network;
+      network.emitOpError() << "@" << network.getSymName()
+                            << ": DFB networks are not supported yet";
+    }
+    if (!expansions.empty()) {
+      signalPassFailure();
+    }
   }
 };
 

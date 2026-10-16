@@ -112,14 +112,29 @@ ttl.dfb.network @cycle {
 
 Checks that compare records with the kernel functions of the module, such as
 whether each DFB id has a `ttl.bind_cb` or whether a handle belongs to two
-networks, are not part of the verifier.
+networks, are not part of the verifier. The expansion pass makes them.
 
 ## Expansion at pipeline entry
 
 `ttl-expand-dfb-networks` is a module pass that plans the expansion of every
-`ttl.dfb.network` in the module before it changes any IR. No network is
-supported yet, so the pass emits an error for each network, naming it, and
-fails:
+`ttl.dfb.network` in the module before it changes any IR. Planning resolves
+the bindings and kernel ops of each DFB that a record names, then checks the
+module-level rules. A network that breaks one is invalid, and the pass reports
+the first such error:
+
+- Every DFB a record names has a `ttl.bind_cb` in some kernel.
+- A DFB is named by records of at most one network.
+- No kernel waits on or pops a fork or split source or a merge input, and no
+  kernel reserves or pushes a fork or split output. The record holds that end
+  of the DFB, so a kernel holding it too would make a second consumer or
+  producer.
+
+A valid network can still use a feature that this compiler cannot expand yet.
+The pass reports every such feature, each with the alternative when there is
+one: more than one record in a network, a merge, fork storage other than
+`replicated`, an allocation group on a network DFB, and a native call that
+takes a network DFB. Nothing expands an admitted network yet either, so the
+pass emits an error for each network, naming it, and fails:
 
 ```
 error: 'ttl.dfb.network' op @copy_and_exp: DFB networks are not supported yet
@@ -139,6 +154,10 @@ without applying it or failing on unsupported networks. Tests use it to check
 planning decisions directly:
 
 ```
-DFB network plan: rejected
-  @copy_and_exp: DFB networks are not supported yet
+DFB network plan: planned
+  network @copy_and_exp
+    ttl.dfb.fork @fork
+      DFB 0 source: bindings=[@read_and_copy] kernel-ops=[@read_and_copy ttl.cb_reserve, @read_and_copy ttl.cb_push]
+      DFB 1 output: bindings=[@read_and_copy] kernel-ops=[@read_and_copy ttl.cb_wait, @read_and_copy ttl.cb_pop]
+      DFB 2 output: bindings=[@compute_exp] kernel-ops=[@compute_exp ttl.cb_wait, @compute_exp ttl.cb_pop]
 ```

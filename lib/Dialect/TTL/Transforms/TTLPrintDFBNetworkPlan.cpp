@@ -4,8 +4,12 @@
 
 #include "DFBNetworkPlanning.h"
 
+#include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/TTL/Passes.h"
 
+#include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/IR/SymbolTable.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/raw_ostream.h"
 
 namespace mlir::tt::ttl {
@@ -14,6 +18,12 @@ namespace mlir::tt::ttl {
 #include "ttlang/Dialect/TTL/Passes.h.inc"
 
 namespace {
+
+/// Prints the function that contains `op`, e.g. "@reader".
+static void printEnclosingFunction(Operation *op, raw_ostream &output) {
+  auto function = op->getParentOfType<func::FuncOp>();
+  output << "@" << (function ? function.getSymName() : "<none>");
+}
 
 struct TTLPrintDFBNetworkPlanPass
     : public impl::TTLPrintDFBNetworkPlanBase<TTLPrintDFBNetworkPlanPass> {
@@ -35,6 +45,29 @@ struct TTLPrintDFBNetworkPlanPass
       return;
     }
     output << "DFB network plan: planned\n";
+    for (const DFBNetworkExpansion &expansion :
+         result.getPlan().getNetworks()) {
+      DFBNetworkOp network = expansion.network;
+      output << "  network @" << network.getSymName() << "\n";
+      for (const DFBNetworkRecordPlan &record : expansion.records) {
+        output << "    " << record.record->getName() << " @"
+               << cast<SymbolOpInterface>(record.record).getName() << "\n";
+        for (const DFBNetworkEndpoint &endpoint : record.endpoints) {
+          output << "      DFB " << endpoint.dfbId << " "
+                 << stringifyDFBNetworkRole(endpoint.role) << ": bindings=[";
+          llvm::interleaveComma(endpoint.bindings, output,
+                                [&](BindCBOp binding) {
+                                  printEnclosingFunction(binding, output);
+                                });
+          output << "] kernel-ops=[";
+          llvm::interleaveComma(endpoint.kernelOps, output, [&](Operation *op) {
+            printEnclosingFunction(op, output);
+            output << " " << op->getName();
+          });
+          output << "]\n";
+        }
+      }
+    }
   }
 };
 

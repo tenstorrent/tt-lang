@@ -20,8 +20,12 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/Operation.h"
 #include "ttlang/Analysis/PlanningResult.h"
+#include "ttlang/Dialect/TTL/IR/TTLOps.h"
+#include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/StringRef.h"
 
+#include <cstdint>
 #include <string>
 
 namespace mlir::tt::ttl {
@@ -35,15 +39,65 @@ struct DFBNetworkRejection {
   std::string reason;
 };
 
+/// The end of a DFB that a network record takes over from kernels.
+enum class DFBNetworkRole {
+  /// Fork or split source: the record consumes it.
+  Source,
+  /// Merge input: the record consumes it.
+  Input,
+  /// Fork or split output: the record produces it.
+  Output,
+};
+
+/// Returns the name of `role` used in debug output, e.g. "source".
+StringRef stringifyDFBNetworkRole(DFBNetworkRole role);
+
+/// One DFB that a record names, with the kernel side of it.
+struct DFBNetworkEndpoint {
+  int64_t dfbId = 0;
+
+  /// End of the DFB that the record holds.
+  DFBNetworkRole role = DFBNetworkRole::Source;
+
+  /// `ttl.bind_cb` declarations of the DFB, in module order.
+  SmallVector<BindCBOp> bindings;
+
+  /// Kernel ops on the end the kernels keep, in module order: the reserves
+  /// and pushes of a source or input, or the waits and pops of an output.
+  SmallVector<Operation *> kernelOps;
+};
+
+/// Resolved endpoints of one record.
+struct DFBNetworkRecordPlan {
+  Operation *record = nullptr;
+
+  /// DFBs the record names, in operand order.
+  SmallVector<DFBNetworkEndpoint> endpoints;
+};
+
+/// Resolved endpoints of one network that planning admitted.
+struct DFBNetworkExpansion {
+  DFBNetworkOp network;
+
+  /// Records in network body order.
+  SmallVector<DFBNetworkRecordPlan> records;
+};
+
 /// Immutable expansion decisions for every network in one module.
 ///
 /// Operation and value handles remain valid only while the analyzed module is
 /// unchanged. The expansion pass applies the complete plan after planning
 /// succeeds for every network.
 class DFBNetworkPlan {
+public:
+  /// Admitted networks in module order.
+  ArrayRef<DFBNetworkExpansion> getNetworks() const { return networks; }
+
 private:
   friend class DFBNetworkPlanner;
   DFBNetworkPlan() = default;
+
+  SmallVector<DFBNetworkExpansion> networks;
 };
 
 using DFBNetworkPlanningResult =
@@ -51,8 +105,10 @@ using DFBNetworkPlanningResult =
 
 /// Computes DFB network expansion decisions without modifying IR.
 ///
-/// A rejected result lists every network that cannot be expanded yet, so one
-/// compilation reports all of them.
+/// Planning resolves the bindings, producers, and consumers of every DFB that
+/// a record names. A network that breaks a module-level rule is invalid IR. A
+/// rejected result lists every feature of a valid network that cannot be
+/// expanded yet, so one compilation reports all of them.
 class DFBNetworkPlanner {
 public:
   explicit DFBNetworkPlanner(ModuleOp module) : module(module) {}
