@@ -11,20 +11,30 @@
 // HEADER: TTI_STALLWAIT(p_stall::STALL_TDMA, waitResources);
 // HEADER-NEXT: TTI_SETDMAREG(0, completionMarker, 0, LO_16(completionGpr));
 // HEADER-NEXT: sync_regfile_write(completionGpr);
-// HEADER: FORCE_INLINE void enter(volatile uint32_t tt_l1_ptr *synchronizationState) {
-// HEADER: storeSynchronizationWord(&synchronizationState[arrivalWord], entryComplete);
+// HEADER: TTI_STALLWAIT(p_stall::STALL_TDMA, waitResources);
+// HEADER-NEXT: TTI_SETDMAREG(0, completionMarker, 0, LO_16(completionGpr));
+// HEADER-NEXT: sync_regfile_write(completionGpr);
+// HEADER: publishState(volatile uint32_t tt_l1_ptr *synchronizationState,
+// HEADER: storeSynchronizationWord(&synchronizationState[dm0StateWord], state);
+// HEADER: storeSynchronizationWord(&synchronizationState[unpackStateWord], state);
+// HEADER: storeSynchronizationWord(&synchronizationState[packStateWord], state);
+// HEADER: FORCE_INLINE void enter(volatile uint32_t tt_l1_ptr *synchronizationState,
+// HEADER-NEXT: uint32_t tt_l1_ptr *configuration) {
+// HEADER: publishState(synchronizationState, entryComplete);
 // HEADER: while (!participantsHaveState(synchronizationState, entryComplete)) {
+// HEADER: Configurations::rebindSharedGeometry(configuration);
+// HEADER-NEXT: #endif
+// HEADER-NEXT: storeSynchronizationWord(&synchronizationState[releaseWord], entryComplete);
 // HEADER: FORCE_INLINE void exit(volatile uint32_t tt_l1_ptr *synchronizationState) {
-// HEADER-NOT: storeSynchronizationWord(&synchronizationState[arrivalWord], 0);
-// HEADER: storeSynchronizationWord(&synchronizationState[arrivalWord], exitComplete);
+// HEADER: publishState(synchronizationState, exitComplete);
 // HEADER-NEXT: while (loadSynchronizationWord(&synchronizationState[releaseWord]) !=
 // HEADER-NEXT: exitComplete) {
 // HEADER-NEXT: }
 // HEADER-NEXT: #elif defined(TTL_DFB_RECONFIGURATION_DM1)
-// HEADER-NEXT: while (!participantsHaveState(synchronizationState, exitComplete)) {
+// HEADER: while (!participantsHaveState(synchronizationState, exitComplete)) {
 // HEADER-NOT: participantsHaveState(synchronizationState, 0)
 // HEADER-NOT: storeSynchronizationWord(&synchronizationState[releaseWord], 0);
-// HEADER: enter(synchronizationState);
+// HEADER: enter<Configurations>(synchronizationState, configuration);
 // HEADER: exit(synchronizationState);
 // CHECK: #include "api/compute/common.h"
 // CHECK: #include "ttlang/Target/TTKernel/LLKs/experimental_dfb_reconfiguration.h"

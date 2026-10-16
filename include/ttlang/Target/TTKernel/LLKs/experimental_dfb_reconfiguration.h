@@ -98,28 +98,75 @@ participantsHaveState(volatile uint32_t tt_l1_ptr *synchronizationState,
 // prevents arrival before retirement; TMP0 is temporary across LLK calls.
 FORCE_INLINE void drainComputeEngine() {
 #if defined(TTL_DFB_RECONFIGURATION_UNPACK)
-  constexpr uint32_t waitResources = p_stall::UNPACK;
-  constexpr uint32_t completionGpr = p_gpr_unpack::TMP0;
-#elif defined(TTL_DFB_RECONFIGURATION_PACK)
-  constexpr uint32_t waitResources = p_stall::PACK;
-  constexpr uint32_t completionGpr = p_gpr_pack::TMP0;
+  {
+    constexpr uint32_t waitResources = p_stall::UNPACK;
+    constexpr uint32_t completionGpr = p_gpr_unpack::TMP0;
+    TTI_STALLWAIT(p_stall::STALL_TDMA, waitResources);
+    TTI_SETDMAREG(0, completionMarker, 0, LO_16(completionGpr));
+    sync_regfile_write(completionGpr);
+  }
 #endif
-#if defined(TTL_DFB_RECONFIGURATION_UNPACK) ||                                 \
-    defined(TTL_DFB_RECONFIGURATION_PACK)
-  TTI_STALLWAIT(p_stall::STALL_TDMA, waitResources);
-  TTI_SETDMAREG(0, completionMarker, 0, LO_16(completionGpr));
-  sync_regfile_write(completionGpr);
+#if defined(TTL_DFB_RECONFIGURATION_PACK)
+  {
+    constexpr uint32_t waitResources = p_stall::PACK;
+    constexpr uint32_t completionGpr = p_gpr_pack::TMP0;
+    TTI_STALLWAIT(p_stall::STALL_TDMA, waitResources);
+    TTI_SETDMAREG(0, completionMarker, 0, LO_16(completionGpr));
+    sync_regfile_write(completionGpr);
+  }
 #endif
 }
 
-FORCE_INLINE void enter(volatile uint32_t tt_l1_ptr *synchronizationState) {
+// A combined compute kernel owns both arrival words.
+FORCE_INLINE void
+publishState(volatile uint32_t tt_l1_ptr *synchronizationState,
+             uint32_t state) {
 #if defined(TTL_DFB_RECONFIGURATION_DM0)
-  constexpr uint32_t arrivalWord = dm0StateWord;
-#elif defined(TTL_DFB_RECONFIGURATION_UNPACK)
-  constexpr uint32_t arrivalWord = unpackStateWord;
-#elif defined(TTL_DFB_RECONFIGURATION_PACK)
-  constexpr uint32_t arrivalWord = packStateWord;
+  storeSynchronizationWord(&synchronizationState[dm0StateWord], state);
 #endif
+#if defined(TTL_DFB_RECONFIGURATION_UNPACK)
+  storeSynchronizationWord(&synchronizationState[unpackStateWord], state);
+#endif
+#if defined(TTL_DFB_RECONFIGURATION_PACK)
+  storeSynchronizationWord(&synchronizationState[packStateWord], state);
+#endif
+}
+
+// A record address of preserveFifoAddress keeps the allocation the interface
+// already holds; only compiler-managed storage encodes that request.
+FORCE_INLINE uint32_t resolveFifoAddress(uint32_t dfbIndex,
+                                         uint32_t configuredAddress) {
+  if (configuredAddress != preserveFifoAddress) {
+    return configuredAddress >> cb_addr_shift;
+  }
+  LocalCBInterface &interface = get_local_cb_interface(dfbIndex);
+  return interface.fifo_limit - interface.fifo_size;
+}
+
+#if defined(TT_EMULE_USE_L1_POOL) && defined(TTL_DFB_RECONFIGURATION_DM1)
+// The emulator keeps shared geometry separately from each RISC's interface.
+FORCE_INLINE void rebindSharedGeometry(uint32_t tt_l1_ptr *configuration,
+                                       uint32_t activeMask,
+                                       uint32_t firstDfbIndex) {
+  uint32_t dfbIndex = firstDfbIndex;
+  while (activeMask != 0) {
+    if ((activeMask & 1U) != 0) {
+      uint32_t offset = dfbIndex * configurationWordsPerDFB;
+      uint32_t fifoAddress =
+          resolveFifoAddress(dfbIndex, configuration[offset]);
+      ::__emule_cb_rebind_geometry(dfbIndex, fifoAddress << cb_addr_shift,
+                                   configuration[offset + 3],
+                                   configuration[offset + 2]);
+    }
+    activeMask >>= 1;
+    ++dfbIndex;
+  }
+}
+#endif
+
+template <typename Configurations>
+FORCE_INLINE void enter(volatile uint32_t tt_l1_ptr *synchronizationState,
+                        uint32_t tt_l1_ptr *configuration) {
 #if defined(TTL_DFB_RECONFIGURATION_DM0)
   noc_async_full_barrier();
 #elif defined(TTL_DFB_RECONFIGURATION_UNPACK) ||                               \
@@ -129,7 +176,7 @@ FORCE_INLINE void enter(volatile uint32_t tt_l1_ptr *synchronizationState) {
 #if defined(TTL_DFB_RECONFIGURATION_DM0) ||                                    \
     defined(TTL_DFB_RECONFIGURATION_UNPACK) ||                                 \
     defined(TTL_DFB_RECONFIGURATION_PACK)
-  storeSynchronizationWord(&synchronizationState[arrivalWord], entryComplete);
+  publishState(synchronizationState, entryComplete);
   while (loadSynchronizationWord(&synchronizationState[releaseWord]) !=
          entryComplete) {
   }
@@ -137,6 +184,10 @@ FORCE_INLINE void enter(volatile uint32_t tt_l1_ptr *synchronizationState) {
   noc_async_full_barrier();
   while (!participantsHaveState(synchronizationState, entryComplete)) {
   }
+#if defined(TT_EMULE_USE_L1_POOL)
+  // Peers must remain at entry while shared geometry changes.
+  Configurations::rebindSharedGeometry(configuration);
+#endif
   storeSynchronizationWord(&synchronizationState[releaseWord], entryComplete);
 #endif
 }
@@ -144,17 +195,10 @@ FORCE_INLINE void enter(volatile uint32_t tt_l1_ptr *synchronizationState) {
 // DM1 cannot begin next-epoch work until every other RISC has completed its
 // interface updates.
 FORCE_INLINE void exit(volatile uint32_t tt_l1_ptr *synchronizationState) {
-#if defined(TTL_DFB_RECONFIGURATION_DM0)
-  constexpr uint32_t arrivalWord = dm0StateWord;
-#elif defined(TTL_DFB_RECONFIGURATION_UNPACK)
-  constexpr uint32_t arrivalWord = unpackStateWord;
-#elif defined(TTL_DFB_RECONFIGURATION_PACK)
-  constexpr uint32_t arrivalWord = packStateWord;
-#endif
 #if defined(TTL_DFB_RECONFIGURATION_DM0) ||                                    \
     defined(TTL_DFB_RECONFIGURATION_UNPACK) ||                                 \
     defined(TTL_DFB_RECONFIGURATION_PACK)
-  storeSynchronizationWord(&synchronizationState[arrivalWord], exitComplete);
+  publishState(synchronizationState, exitComplete);
   while (loadSynchronizationWord(&synchronizationState[releaseWord]) !=
          exitComplete) {
   }
@@ -193,17 +237,6 @@ applyInterfaceConfiguration(uint32_t dfbIndex, uint32_t fifoAddress,
   }
 }
 
-// A record address of preserveFifoAddress keeps the allocation the interface
-// already holds; only compiler-managed storage encodes that request.
-FORCE_INLINE uint32_t resolveFifoAddress(uint32_t dfbIndex,
-                                         uint32_t configuredAddress) {
-  if (configuredAddress != preserveFifoAddress) {
-    return configuredAddress >> cb_addr_shift;
-  }
-  LocalCBInterface &interface = get_local_cb_interface(dfbIndex);
-  return interface.fifo_limit - interface.fifo_size;
-}
-
 template <bool updateReadPointer, bool updateWritePointer,
           bool updateWriteTilePointer, bool resetStreamCounters>
 FORCE_INLINE void applyMask(uint32_t tt_l1_ptr *configuration,
@@ -239,6 +272,9 @@ template <bool updateReadPointer, bool updateWritePointer,
 struct ApplyStaticConfigurations<updateReadPointer, updateWritePointer,
                                  updateWriteTilePointer, resetStreamCounters> {
   static FORCE_INLINE void run(uint32_t tt_l1_ptr *) {}
+#if defined(TT_EMULE_USE_L1_POOL) && defined(TTL_DFB_RECONFIGURATION_DM1)
+  static FORCE_INLINE void rebindSharedGeometry(uint32_t tt_l1_ptr *) {}
+#endif
 };
 
 template <bool updateReadPointer, bool updateWritePointer,
@@ -260,9 +296,30 @@ struct ApplyStaticConfigurations<updateReadPointer, updateWritePointer,
                               updateWriteTilePointer, resetStreamCounters,
                               remaining...>::run(configuration);
   }
+#if defined(TT_EMULE_USE_L1_POOL) && defined(TTL_DFB_RECONFIGURATION_DM1)
+  static FORCE_INLINE void
+  rebindSharedGeometry(uint32_t tt_l1_ptr *configuration) {
+    uint32_t fifoAddress = resolveFifoAddress(
+        dfbIndex, configuration[dfbIndex * configurationWordsPerDFB]);
+    ::__emule_cb_rebind_geometry(dfbIndex, fifoAddress << cb_addr_shift,
+                                 pageBytes, numPages);
+    ApplyStaticConfigurations<
+        updateReadPointer, updateWritePointer, updateWriteTilePointer,
+        resetStreamCounters, remaining...>::rebindSharedGeometry(configuration);
+  }
+#endif
 };
 
 struct RuntimeConfigurations {
+#if defined(TT_EMULE_USE_L1_POOL) && defined(TTL_DFB_RECONFIGURATION_DM1)
+  static FORCE_INLINE void
+  rebindSharedGeometry(uint32_t tt_l1_ptr *configuration) {
+    dfb_reconfiguration_detail::rebindSharedGeometry(
+        configuration, configuration[lowMaskWord], 0);
+    dfb_reconfiguration_detail::rebindSharedGeometry(
+        configuration, configuration[highMaskWord], 32);
+  }
+#endif
   template <bool updateReadPointer, bool updateWritePointer,
             bool updateWriteTilePointer, bool resetStreamCounters>
   static FORCE_INLINE void run(uint32_t tt_l1_ptr *configuration) {
@@ -277,6 +334,13 @@ struct RuntimeConfigurations {
 
 template <uint32_t... configuration>
 struct StaticConfigurations {
+#if defined(TT_EMULE_USE_L1_POOL) && defined(TTL_DFB_RECONFIGURATION_DM1)
+  static FORCE_INLINE void
+  rebindSharedGeometry(uint32_t tt_l1_ptr *runtimeConfiguration) {
+    ApplyStaticConfigurations<false, false, false, false, configuration...>::
+        rebindSharedGeometry(runtimeConfiguration);
+  }
+#endif
   template <bool updateReadPointer, bool updateWritePointer,
             bool updateWriteTilePointer, bool resetStreamCounters>
   static FORCE_INLINE void run(uint32_t tt_l1_ptr *runtimeConfiguration) {
@@ -302,6 +366,12 @@ FORCE_INLINE void applyReconfiguration(uint32_t configurationAddress) {
   constexpr bool updateWritePointer = true;
   constexpr bool updateWriteTilePointer = false;
   constexpr bool resetStreamCounters = false;
+#elif defined(TTL_DFB_RECONFIGURATION_UNPACK) &&                               \
+    defined(TTL_DFB_RECONFIGURATION_PACK)
+  constexpr bool updateReadPointer = true;
+  constexpr bool updateWritePointer = true;
+  constexpr bool updateWriteTilePointer = true;
+  constexpr bool resetStreamCounters = false;
 #elif defined(TTL_DFB_RECONFIGURATION_UNPACK)
   constexpr bool updateReadPointer = true;
   constexpr bool updateWritePointer = false;
@@ -318,7 +388,7 @@ FORCE_INLINE void applyReconfiguration(uint32_t configurationAddress) {
       reinterpret_cast<uint32_t tt_l1_ptr *>(configurationAddress);
   auto *synchronizationState = reinterpret_cast<volatile uint32_t tt_l1_ptr *>(
       &configuration[synchronizationWord]);
-  enter(synchronizationState);
+  enter<Configurations>(synchronizationState, configuration);
   Configurations::template run<updateReadPointer, updateWritePointer,
                                updateWriteTilePointer, resetStreamCounters>(
       configuration);
