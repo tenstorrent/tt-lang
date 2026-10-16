@@ -234,7 +234,7 @@ def TTKernel_CopyTileInitOp : TTKernel_InitOp<"copy_tile_init"> {
 
 }
 
-def TTKernel_CopyTileOp : TTKernel_Op<"copy_tile"> {
+def TTKernel_CopyTileOp : TTKernel_Op<"copy_tile", [TTKernel_HardwareConfigEffects]> {
     let summary = "Copy tile from specified CB to DST.";
     let description = [{
       Copies a single tile from the specified input CB and writes the result to
@@ -3519,7 +3519,7 @@ def TTKernel_UntilizeUninitOp : TTKernel_Op<"untilize_uninit", [TTKernel_LayoutO
     }];
 }
 
-def TTKernel_TransposeInitOp : TTKernel_Op<"transpose_wh_init"> {
+def TTKernel_TransposeInitOp : TTKernel_Op<"transpose_wh_init", [TTKernel_HardwareConfigEffects]> {
     let summary = "TransposeInitOp call.";
     let description = [{
       Initialize the transpose operation. To be called once at beginning of a
@@ -3535,7 +3535,7 @@ def TTKernel_TransposeInitOp : TTKernel_Op<"transpose_wh_init"> {
     }];
 }
 
-def TTKernel_TransposeTileOp : TTKernel_Op<"transpose_wh_tile"> {
+def TTKernel_TransposeTileOp : TTKernel_Op<"transpose_wh_tile", [TTKernel_HardwareConfigEffects]> {
     let summary = "Transpose WH tile operation";
     let description = [{
       Performs a 32x32 transpose operation on a tile in the CB
