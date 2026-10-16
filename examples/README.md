@@ -64,6 +64,12 @@ environment before running examples.
 | `single_node_matmul.py` | Single-node matrix multiplication | ✓ | ✓ |
 | `multinode_matmul.py` | Multi-node matmul with work distribution | ✓ | ✓ |
 
+### Selection
+
+| Example | Description | Sim | HW |
+|---------|-------------|:---:|:--:|
+| `topk.py` | Row-wise `ttl.math.topk` with an identity index tensor and host-side `k` slicing | ✗ | ✓ |
+
 ### Demo/Tutorial
 
 | Example | Description | Sim | HW |

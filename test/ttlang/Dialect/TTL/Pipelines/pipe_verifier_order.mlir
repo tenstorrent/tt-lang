@@ -29,6 +29,12 @@
 // CHECK-NEXT: func.func(
 // CHECK-NEXT:   ttl-coalesce-dfb-acquires
 // CHECK-NEXT: ),
+// CHECK-NEXT: func.func(
+// CHECK-NEXT:   ttl-lower-topk
+// CHECK-NEXT: ),
+// CHECK-NEXT: func.func(
+// CHECK-NEXT:   ttl-verify-topk-epoch
+// CHECK-NEXT: ),
 // CHECK-NEXT: ttl-finalize-dfb-indices{exact-coloring-search-limit=1000000 l1-budget-override=0 reuse-user-dfbs=true unsafe-assume-allocation-groups=false},
 // CHECK-NEXT: ttl-set-compute-kernel-config{{.*}},
 // CHECK-NEXT: func.func(
