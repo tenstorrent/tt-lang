@@ -483,7 +483,8 @@ def progress_marks(paths):
     for path in paths:
         try:
             stat = path.stat()
-        except FileNotFoundError:
+        except OSError:
+            # An unreadable file counts as no progress; the limits still apply.
             marks.append(None)
         else:
             marks.append((stat.st_size, stat.st_mtime_ns))

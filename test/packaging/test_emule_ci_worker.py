@@ -354,7 +354,7 @@ def test_smoke_requires_numerical_pass_and_observed_execution(
     monkeypatch.setattr(smoke_harness, "run", run)
     assert worker.runtime_smoke("a" * 40, IMAGE) == expected
     args, env = calls[0]
-    assert (args.timeout, args.group_timeout, args.stall_timeout) == (600, 900, 600)
+    assert (args.timeout, args.group_timeout, args.stall_timeout) == (600, 900, 800)
     assert env["TT_METAL_CACHE"] == str(tmp_path / "cache/smoke")
     assert env["TT_EMULE_JIT_CACHE_DIR"] == str(tmp_path / "cache/smoke/emule-jit")
 

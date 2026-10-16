@@ -533,23 +533,31 @@ def test_command_that_keeps_reporting_progress_is_not_stopped(tmp_path, channel)
         if channel == "events"
         else "print('.', flush=True)"
     )
-    # Ten writes 0.2 s apart outlast the 0.6 s stall timeout several times over.
+    # Fifteen writes 0.2 s apart outlast the 1.5 s stall timeout twice over, and
+    # the margin tolerates a slow interpreter start before the first write.
     result = emule_inventory.run_command(
         [
             sys.executable,
             "-c",
-            f"import time\nfor _ in range(10):\n    {write}\n    time.sleep(0.2)",
+            f"import time\nfor _ in range(15):\n    {write}\n    time.sleep(0.2)",
         ],
         tmp_path / "progress.log",
         60,
         os.environ,
         tmp_path,
-        stall=0.6,
+        stall=1.5,
         progress=(events,),
     )
     assert result["exit_code"] == 0
     assert not result["stalled"] and not result["timed_out"]
-    assert result["wall_seconds"] >= 1.8
+    assert result["wall_seconds"] >= 2.8
+
+
+def test_an_unreadable_progress_file_counts_as_no_progress(tmp_path):
+    blocker = tmp_path / "file"
+    blocker.write_text("x")
+    # A path below a regular file fails with an OSError other than not found.
+    assert emule_inventory.progress_marks([blocker / "events.jsonl"]) == [None]
 
 
 @pytest.mark.parametrize("stall", ["0", "-1"])

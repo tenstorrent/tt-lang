@@ -227,8 +227,8 @@ SUITES = (
 # compiler-only directory; the largest measured file took under 10 minutes of
 # test time and the tutorial file is expected to take 15-40, so 45 minutes
 # bounds a stall that escapes the per-case limit without cutting off either.
-# Every case reports progress, so a group silent for 10 minutes has outlived
-# its case limit and is stopped long before the group limit.
+# Every case reports progress, so an inventory group silent for 10 minutes has
+# outlived its case limit and is stopped long before the group limit.
 CASE_TIMEOUT_SECONDS = 300
 GROUP_TIMEOUT_SECONDS = 2700
 STALL_TIMEOUT_SECONDS = 600
@@ -472,9 +472,11 @@ def runtime_smoke(revision, runtime_id):
         revision=revision,
         runtime_id=runtime_id,
         manifest=Path("/emule-results/smoke/manifest.json"),
+        # The stall limit stays above this case limit, so a slow smoke case
+        # fails as a case timeout rather than racing the stall watchdog.
         timeout=600,
         group_timeout=900,
-        stall_timeout=STALL_TIMEOUT_SECONDS,
+        stall_timeout=800,
     )
     path = "python/pipe/test_broadcast_2d.py"
     manifest = {
