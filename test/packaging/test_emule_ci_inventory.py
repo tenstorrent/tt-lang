@@ -506,8 +506,67 @@ def test_command_records_launch_failure_and_timeout(tmp_path):
         os.environ,
         tmp_path,
     )
-    assert timeout["timed_out"]
+    assert timeout["timed_out"] and not timeout["stalled"]
     assert timeout["exit_code"] < 0
+
+
+def test_silent_command_is_stopped_after_the_stall_timeout(tmp_path):
+    result = emule_inventory.run_command(
+        [sys.executable, "-c", "import time; time.sleep(60)"],
+        tmp_path / "silent.log",
+        60,
+        os.environ,
+        tmp_path,
+        stall=0.5,
+        progress=(tmp_path / "events.jsonl",),
+    )
+    assert result["stalled"] and not result["timed_out"]
+    assert result["exit_code"] < 0
+    assert result["wall_seconds"] < 30
+
+
+@pytest.mark.parametrize("channel", ["events", "log"])
+def test_command_that_keeps_reporting_progress_is_not_stopped(tmp_path, channel):
+    events = tmp_path / "events.jsonl"
+    write = (
+        f"open({str(events)!r}, 'a').write('{{}}\\n')"
+        if channel == "events"
+        else "print('.', flush=True)"
+    )
+    # Ten writes 0.2 s apart outlast the 0.6 s stall timeout several times over.
+    result = emule_inventory.run_command(
+        [
+            sys.executable,
+            "-c",
+            f"import time\nfor _ in range(10):\n    {write}\n    time.sleep(0.2)",
+        ],
+        tmp_path / "progress.log",
+        60,
+        os.environ,
+        tmp_path,
+        stall=0.6,
+        progress=(events,),
+    )
+    assert result["exit_code"] == 0
+    assert not result["stalled"] and not result["timed_out"]
+    assert result["wall_seconds"] >= 1.8
+
+
+@pytest.mark.parametrize("stall", ["0", "-1"])
+def test_run_rejects_a_non_positive_stall_timeout(tmp_path, stall):
+    options = ["--source", str(tmp_path), "--build", str(tmp_path)]
+    options += ["--revision", "a" * 40, "--runtime-id", "runtime"]
+    options += ["--output", str(tmp_path / "out"), "--manifest", str(tmp_path)]
+    result = subprocess.run(
+        [sys.executable, str(SCRIPT_DIR / "inventory.py"), "run", *options]
+        + ["--stall-timeout", stall],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 2
+    assert "timeouts must be positive" in result.stderr
+    assert not (tmp_path / "out").exists()
 
 
 def run_observer(tmp_path, source, *options, observe=None, xfail=None):
@@ -697,6 +756,7 @@ def run_args(tmp_path, inventory):
         output=tmp_path,
         timeout=600,
         group_timeout=7200,
+        stall_timeout=600,
         lit="llvm-lit",
     )
 
@@ -747,9 +807,11 @@ def test_run_requires_coverage_and_runtime_execution(
     commands = []
     observe_flags = []
     script_timeouts = set()
+    watchdogs = []
 
-    def fake_run(command, output, limit, env, source):
+    def fake_run(command, output, limit, env, source, **watchdog):
         commands.append(command)
+        watchdogs.append(watchdog)
         observe_flags.append(env.get("TTLANG_EMULE_CI_OBSERVE_RUNTIME"))
         script_timeouts.add(env.get("TUTORIAL_TIMEOUT_SECONDS"))
         script_timeouts.add(env.get("TTLANG_EXAMPLE_TIMEOUT_SECONDS"))
@@ -804,6 +866,14 @@ def test_run_requires_coverage_and_runtime_execution(
         if selected["kind"] in ("pytest", "packaging")
     ] == ["0", "1", "1", "1", "1", "0", "0", "0"]
     assert script_timeouts - {None} == {"600"}
+    # Every group is watched for silence through its log and observer events.
+    assert watchdogs == [
+        {
+            "stall": 600,
+            "progress": (tmp_path / f"group-{index:04d}.events.jsonl",),
+        }
+        for index in range(len(inventory["groups"]))
+    ]
 
 
 @pytest.mark.parametrize("failure", ["timeout", "malformed", "events_missing"])
@@ -813,7 +883,7 @@ def test_lost_group_reports_still_account_for_every_planned_case(
     inventory = manifest()
     args = run_args(tmp_path, inventory)
 
-    def fake_run(command, output, limit, env, source):
+    def fake_run(command, output, limit, env, source, **watchdog):
         selected = selected_group(tmp_path, inventory, command)
         timed_out = False
         if selected["kind"] == "mlir":
@@ -851,6 +921,68 @@ def test_lost_group_reports_still_account_for_every_planned_case(
     assert "private" not in json.dumps(summary)
 
 
+def test_stalled_group_attributes_its_hung_case_and_stops_only_that_group(
+    monkeypatch, tmp_path
+):
+    inventory = manifest()
+    args = run_args(tmp_path, inventory)
+    args.stall_timeout = 0.5
+    real_run = emule_inventory.run_command
+    hung = "pytest:me2e/test_ops.py"
+    cases = group(inventory, hung)["cases"]
+    # Like an emulator hang holding the GIL: the first case passes, the second
+    # starts and then nothing more is written, so pytest-timeout never fires.
+    events = [{"kind": "collection", "nodes": cases}]
+    events += [
+        {
+            "kind": "report",
+            "nodeid": cases[0],
+            "phase": "call",
+            "outcome": "passed",
+            "expected_failure": False,
+        },
+        {"kind": "finish", "nodeid": cases[0]},
+        {"kind": "start", "nodeid": cases[1]},
+    ]
+    script = (
+        "import json, os, time\n"
+        f"with open(os.environ['TTLANG_EMULE_CI_EVENTS'], 'a') as output:\n"
+        f"    for event in {events!r}:\n"
+        "        output.write(json.dumps(event) + '\\n')\n"
+        "time.sleep(60)\n"
+    )
+
+    def fake_run(command, output, limit, env, source, **watchdog):
+        selected = selected_group(tmp_path, inventory, command)
+        if selected["id"] != hung:
+            write_passing_report(selected, command, env, runtime=True)
+            return {"exit_code": 0, "timed_out": False, "wall_seconds": 1.0}
+        return real_run(
+            [sys.executable, "-c", script], output, limit, env, source, **watchdog
+        )
+
+    monkeypatch.setattr(emule_inventory, "run_command", fake_run)
+    assert emule_inventory.run(args, dict(os.environ)) == 1
+    results = emule_inventory.read_json(tmp_path / "results.json")
+    index = [entry["id"] for entry in results["groups"]].index(hung)
+    entry = results["groups"][index]
+    assert entry["stalled"] and not entry["timed_out"] and entry["exit_code"] < 0
+    assert entry["status"] == "infrastructure_error" and not entry["complete"]
+    recorded = emule_inventory.read_events(tmp_path / f"group-{index:04d}.events.jsonl")
+    assert emule_inventory.pytest_case_outcomes(group(inventory, hung), recorded) == {
+        cases[0]: "passed",
+        cases[1]: "incomplete",
+        cases[2]: "not_run",
+    }
+    assert entry["outcomes"] == {"passed": 1, "incomplete": 1, "not_run": 1}
+    assert {other["status"] for other in results["groups"] if other["id"] != hung} == {
+        "passed"
+    }
+    summary = emule_inventory.read_json(tmp_path / "summary.json")
+    assert summary["planned_case_count"] == sum(summary["case_outcome_counts"].values())
+    assert summary["group_status_counts"] == {"passed": 10, "infrastructure_error": 1}
+
+
 @pytest.mark.parametrize("listed", [True, False, None])
 def test_run_applies_the_xfail_list_to_lit_groups(monkeypatch, tmp_path, listed):
     inventory = {**manifest(), "stale_xfail_count": 2}
@@ -860,7 +992,7 @@ def test_run_applies_the_xfail_list_to_lit_groups(monkeypatch, tmp_path, listed)
         write_xfail(tmp_path, {case: {"reason": "emulator gap", "run": listed}})
     commands = []
 
-    def fake_run(command, output, limit, env, source):
+    def fake_run(command, output, limit, env, source, **watchdog):
         selected = selected_group(tmp_path, inventory, command)
         if selected["id"] != "lit:python/add.py":
             write_passing_report(selected, command, env, runtime=True)

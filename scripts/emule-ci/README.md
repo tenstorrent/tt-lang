@@ -35,8 +35,10 @@ a `multi_device` pytest skip or a lit `UNSUPPORTED` predicted at collection;
 any other unexpected lit code, or a pytest case that started without a verdict
 (for example after an emulator abort), is `incomplete`. `not_run` counts cases
 that never started, such as after a crash or at the worker deadline. Each case
-is limited to 300 s and each group to 45 minutes. A group with incomplete
-coverage is an `infrastructure_error`, never a pass. `test/sim` is outside this
+is limited to 300 s and each group to 45 minutes; a group that writes no
+output or case event for 10 minutes is stopped early. A group with incomplete
+coverage, or one stopped by either limit, is an `infrastructure_error`, never a
+pass. `test/sim` is outside this
 inventory.
 
 **xfail list.** `config/tt-lang-emule-xfail.json` lists known emulator failures

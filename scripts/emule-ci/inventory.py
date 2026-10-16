@@ -477,9 +477,34 @@ def public_summary(results):
     }
 
 
-def run_command(command, output, limit, env, source):
+def progress_marks(paths):
+    """The size and modification time of each file a running group writes."""
+    marks = []
+    for path in paths:
+        try:
+            stat = path.stat()
+        except FileNotFoundError:
+            marks.append(None)
+        else:
+            marks.append((stat.st_size, stat.st_mtime_ns))
+    return marks
+
+
+def run_command(command, output, limit, env, source, stall=None, progress=()):
+    """Run one command into ``output``, killing its process group at ``limit``.
+
+    With ``stall``, it is also killed once neither ``output`` nor a
+    ``progress`` file has changed for that many seconds: a hang holding the GIL
+    defeats pytest-timeout's thread method, and the observer's events file
+    records every case even when pytest's own output is block-buffered.
+    """
     started = time.monotonic()
-    result = {"command": command, "exit_code": None, "timed_out": False}
+    result = {
+        "command": command,
+        "exit_code": None,
+        "timed_out": False,
+        "stalled": False,
+    }
     with output.open("w", encoding="utf-8") as log:
         try:
             process = subprocess.Popen(
@@ -493,10 +518,27 @@ def run_command(command, output, limit, env, source):
         except OSError as error:
             result["error"] = str(error)
         else:
+            watched = [output, *progress]
+            marks, active = progress_marks(watched), started
+            poll = min(5, stall / 4) if stall else limit
             try:
-                process.wait(timeout=limit)
-            except subprocess.TimeoutExpired:
-                result["timed_out"] = True
+                while True:
+                    try:
+                        process.wait(
+                            timeout=min(poll, started + limit - time.monotonic())
+                        )
+                        break
+                    except subprocess.TimeoutExpired:
+                        now = time.monotonic()
+                        if now >= started + limit:
+                            result["timed_out"] = True
+                            break
+                        current = progress_marks(watched)
+                        if current != marks:
+                            marks, active = current, now
+                        elif stall and now - active >= stall:
+                            result["stalled"] = True
+                            break
             finally:
                 # Thread timeouts or native crashes can leave JIT children alive.
                 try:
@@ -780,6 +822,8 @@ def run(args, env):
             args.group_timeout,
             env,
             args.source,
+            stall=args.stall_timeout,
+            progress=(events_path,),
         )
         result.update(id=group["id"], suite=suite_of(group["id"]), complete=False)
         failed = result["exit_code"] == 1
@@ -816,6 +860,7 @@ def run(args, env):
             "infrastructure_error"
             if not result["complete"]
             or result["timed_out"]
+            or result.get("stalled")
             or result["exit_code"] not in (0, 1)
             else "failed" if failed else "passed"
         )
@@ -851,6 +896,7 @@ def main():
             command.add_argument("--manifest", type=Path, required=True)
             command.add_argument("--timeout", type=int, default=600)
             command.add_argument("--group-timeout", type=int, default=7200)
+            command.add_argument("--stall-timeout", type=int, default=600)
     args = parser.parse_args()
     try:
         args.source, args.build, args.output = (
@@ -858,9 +904,12 @@ def main():
             args.build.resolve(),
             args.output.resolve(),
         )
-        validate_source(args.source, args.revision)
-        if args.command == "run" and min(args.timeout, args.group_timeout) <= 0:
+        if (
+            args.command == "run"
+            and min(args.timeout, args.group_timeout, args.stall_timeout) <= 0
+        ):
             raise ValueError("timeouts must be positive")
+        validate_source(args.source, args.revision)
         env = environment(args)
         args.output.mkdir(parents=True, exist_ok=False)
         if args.command == "collect":

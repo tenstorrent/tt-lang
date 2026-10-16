@@ -354,6 +354,7 @@ def test_smoke_requires_numerical_pass_and_observed_execution(
     monkeypatch.setattr(smoke_harness, "run", run)
     assert worker.runtime_smoke("a" * 40, IMAGE) == expected
     args, env = calls[0]
+    assert (args.timeout, args.group_timeout, args.stall_timeout) == (600, 900, 600)
     assert env["TT_METAL_CACHE"] == str(tmp_path / "cache/smoke")
     assert env["TT_EMULE_JIT_CACHE_DIR"] == str(tmp_path / "cache/smoke/emule-jit")
 
@@ -719,7 +720,14 @@ def test_test_tools_are_prepared_before_every_execution(instance, monkeypatch):
     assert command[command.index("--manifest") + 1] == (
         "/emule-results/collection/manifest.json"
     )
-    assert command[-4:] == ["--timeout", "300", "--group-timeout", "2700"]
+    assert command[-6:] == [
+        "--timeout",
+        "300",
+        "--group-timeout",
+        "2700",
+        "--stall-timeout",
+        "600",
+    ]
 
 
 def test_prepare_uses_existing_cmake_test_tools_target():
