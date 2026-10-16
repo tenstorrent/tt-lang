@@ -44,11 +44,20 @@ readonly _TT_METAL_SOURCE_URL="$_MANIFEST_METAL_REPOSITORY"
 readonly _BASE_IMAGE="$_MANIFEST_BASE_IMAGE"
 readonly _REQUIRED_EMULE_FILE="$_MANIFEST_CLUSTER_DESCRIPTOR"
 readonly _PLATFORM="linux/amd64"
+readonly _REQUIREMENT_INPUTS=(
+    requirements.txt requirements-runtime.txt requirements-test.txt
+)
+readonly _IMAGE_INPUTS=(
+    .github/containers/Dockerfile.emule
+    .github/containers/package-emule-runtime.sh
+    .github/containers/trim-emule-venv.sh
+    "${_REQUIREMENT_INPUTS[@]}"
+)
 
 _IMAGE_INPUT_ID="$(
     {
-        cksum "$_STACK_MANIFEST" \
-            "${_REPO_ROOT}/.github/containers/Dockerfile.emule" |
+        cd "$_REPO_ROOT"
+        cksum "$_STACK_MANIFEST" "${_IMAGE_INPUTS[@]}" |
             awk '{print $1, $2}'
         printf '%s\n' "$_BASE_IMAGE" "$_PLATFORM"
     } |
@@ -78,7 +87,7 @@ _COMPILER_INPUTS=(
     setup.py pyproject.toml packaging
     requirements.txt requirements-runtime.txt dev-requirements.txt
     docs/requirements.txt scripts config
-    .github/containers/Dockerfile.emule
+    "${_IMAGE_INPUTS[@]}"
     test/CMakeLists.txt test/lib test/pytest.ini.in
     test/lit.cfg.py test/lit.site.cfg.py.in
 )
@@ -370,6 +379,9 @@ if [ "$_BUILD_IMAGE" -eq 1 ]; then
     _TEMP_STACK_CONTEXT="$(mktemp -d "${TMPDIR:-/tmp}/tt-lang-stack-context.XXXXXX")"
     cp -- "$_STACK_MANIFEST" \
         "${_TEMP_STACK_CONTEXT}/tt-lang-emule-stack.json"
+    for _REQUIREMENT in "${_REQUIREMENT_INPUTS[@]}"; do
+        cp -- "${_REPO_ROOT}/${_REQUIREMENT}" "$_TEMP_STACK_CONTEXT/"
+    done
     echo "tt-lang-sim: building compiler + tt-emule image ${_IMAGE}" >&2
     "$_DOCKER" build \
         --platform "$_PLATFORM" \
@@ -388,7 +400,7 @@ if [ "$_BUILD_IMAGE" -eq 1 ]; then
         --build-arg "TARGET_CLUSTER_DESCRIPTOR=${_MANIFEST_CLUSTER_DESCRIPTOR}" \
         --build-arg "TARGET_MESH_DEVICE=${_MANIFEST_MESH_DEVICE}" \
         --tag "$_IMAGE" \
-        "${_REPO_ROOT}/scripts"
+        "${_REPO_ROOT}/.github/containers"
 fi
 
 cleanup

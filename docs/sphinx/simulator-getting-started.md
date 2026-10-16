@@ -80,6 +80,39 @@ environment. The launcher checks the installation before executing a program
 and reports when reinstallation is needed. The compiler build and the tt-metal
 and tt-emule JIT caches live in named Docker volumes.
 
+### Image contents and disk usage
+
+The image uses a separate build stage to prepare tt-metal and tt-emule. Its
+final stage contains one toolchain Python environment, the LLVM SDK, Clang,
+and the emulator runtime's shared libraries, headers, JIT sources, and firmware.
+The LLVM development libraries support compiling the current TT-Lang checkout;
+pytest and lit support the existing compiler test commands. Documentation,
+lint, and hardware-management tools remain available in the development images.
+
+Image builds install the compiler and test dependencies from
+`requirements-test.txt`, including its nested build/runtime requirements.
+The image retains those requirement files under
+`/opt/tt-emule-runtime/requirements`. Installation and program execution verify
+that they match the checkout, so the compiler uses the image's prepared Python
+environment. Requirement changes select a new runtime image identity.
+
+The toolchain's `src/python` directory supplies installed MLIR Python resources
+referenced by its CMake package exports. These files support building TT-Lang's
+Python bindings. The virtual environment links to the final image's system
+Python interpreter. Both Ninja and make support the existing tests, including
+packaging probes that use CMake's default Makefiles generator.
+
+The Docker build context is limited to `.github/containers`; the pinned
+emulator sources, stack manifest, and Python requirement files use separate
+named contexts. Local compiler and dependency source checkouts remain outside
+the image build context.
+
+Disk budgeting includes the final image, compiler build volume, and JIT cache
+volume. Building the image locally also requires space for the larger build
+stage and Docker's build cache. CI workers can consume a prebuilt image to avoid
+that build-stage cost. Docker's compressed download size and unpacked image
+size measure different parts of this budget.
+
 ## Run a program
 
 After installation:
@@ -226,6 +259,19 @@ The installed compiler is tied to the exact TT-Lang source used during
 installation. Re-run the installer after switching branches, pulling new
 commits, or changing compiler/build inputs. The installed compiler can be reused
 while editing workload scripts and generating output files.
+
+### The image's Python requirements differ from the checkout
+
+Run the installer to build an image for the checkout's current requirements.
+For an explicitly selected image tag, request a rebuild:
+
+```bash
+TTLANG_EMULE_REBUILD=1 ./scripts/install-tt-lang-emule.sh
+```
+
+The rebuild installs the matching compiler/test dependencies into the image
+and prepares the compiler volume. The configured emulator source location is
+used again for the rebuild.
 
 ### Emulator source access fails
 
