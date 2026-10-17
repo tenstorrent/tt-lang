@@ -7,7 +7,8 @@
 #include "api/dataflow/circular_buffer.h"
 #include "api/dataflow/dataflow_api.h"
 
-inline void write_operation_runtime_value(uint32_t outputDfb) {
+template <typename OutputDFB>
+inline void write_operation_runtime_value() {
   uint32_t outputValue = get_arg_val<uint32_t>(0);
   const uint32_t semaphoreId = get_arg_val<uint32_t>(1);
   const uint32_t generation = get_arg_val<uint32_t>(2);
@@ -30,7 +31,7 @@ inline void write_operation_runtime_value(uint32_t outputDfb) {
 #endif
 #endif
 
-  CircularBuffer output(outputDfb);
+  auto output = OutputDFB::bind();
   output.reserve_back(1);
   auto *outputWords =
       reinterpret_cast<volatile tt_l1_ptr uint32_t *>(output.get_write_ptr());
