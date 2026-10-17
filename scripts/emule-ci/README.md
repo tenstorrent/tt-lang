@@ -29,6 +29,19 @@ counts only. Build output, logs, and test IDs stay on the runner and are deleted
 when the job ends; to investigate a failure, check out that `main` commit and
 follow "Reproduce locally" below.
 
+**Image build downloads.** Nothing is downloaded once the private source is
+present. tt-metal and its submodules (at their pinned commits), tt-metal's CPM
+dependencies and SFPI toolchain, and the Python environment are downloaded in
+Docker stages that never receive the private source, and the final stage
+installs its apt packages before it copies anything from the build stage. Every
+command after the private source arrives runs with `--network=none`. Python
+wheels are pinned by URL and SHA-256 hash in
+`.github/containers/emule-requirements.lock`, and the CPM dependencies and SFPI
+toolchain by Git commit or content digest in
+`.github/containers/emule-metal-deps.lock`; a download that differs fails the
+build. `scripts/update-tt-lang-emule-locks.sh`
+regenerates both lock files without the private source.
+
 **Outcomes.** Every planned case ends in exactly one of `passed`, `failed`,
 `skipped`, `xfail`, `unsupported`, `incomplete`, or `not_run`. `unsupported` is
 a `multi_device` pytest skip or a lit `UNSUPPORTED` predicted at collection;
@@ -48,8 +61,8 @@ so no paths, URLs, or `#N` references; review and the public-content check keep
 issue and repository names out) and `run`; use `run: false` for crashes and
 hangs, which are then never executed. Listed passes are counted as
 `xpass_count`, and listed cases that were not collected as `stale_xfail_count`;
-both are reported, not fatal, and should be pruned. Refresh the list on every
-stack-pin bump.
+both are reported, not fatal, and should be pruned. Refresh the list, and the
+image lock files, on every stack-pin bump.
 
 **Admin setup.** Create the environment `tt-lang-emule`, restricted to the
 `main` branch, with "Allow administrators to bypass" off. Add a deploy key with
@@ -67,8 +80,7 @@ recent reviewable push", and add `.github/CODEOWNERS` entries that route
 `.github/containers/`, `scripts/emule-ci/`, `config/tt-lang-emule-*.json`, and
 `requirements*.txt` to the sim area's owner group.
 
-**Follow-ups.** Hash-locked Python and CMake dependencies for the image build;
-build parallelism; more runners if the run gets too slow.
+**Follow-ups.** Build parallelism; more runners if the run gets too slow.
 
 ## Reproduce locally
 

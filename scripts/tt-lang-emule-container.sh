@@ -49,9 +49,12 @@ readonly _REQUIREMENT_INPUTS=(
 )
 readonly _IMAGE_INPUTS=(
     .github/containers/Dockerfile.emule
+    .github/containers/configure-emule-metal.sh
+    .github/containers/emule-lock.py
+    .github/containers/emule-metal-deps.lock
+    .github/containers/emule-requirements.lock
     .github/containers/package-emule-runtime.sh
     .github/containers/trim-emule-venv.sh
-    .github/containers/prepare-toolchain-venv.sh
     .github/containers/check-cpu-torch.py
     "${_REQUIREMENT_INPUTS[@]}"
 )

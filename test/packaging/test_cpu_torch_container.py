@@ -132,80 +132,91 @@ def test_container_build_uses_and_checks_cpu_torch():
         assert f".github/containers/{helper}" in uplift_paths
 
 
-def test_emule_image_replaces_donor_venv_after_native_build_and_rechecks_cpu():
+def emule_stage(name):
     dockerfile = (CONTAINERS / "Dockerfile.emule").read_text()
-    build, runtime = dockerfile.split(" AS runtime\n", 1)
-    prepare = "bash /tmp/prepare-toolchain-venv.sh /opt/ttlang-toolchain"
+    return dockerfile.split(f" AS {name}\n", 1)[1].split("\nFROM ", 1)[0]
+
+
+def test_emule_image_replaces_donor_venv_with_locked_cpu_torch():
+    venv = emule_stage("venv")
+    resolve = emule_stage("venv-resolve")
+    runtime = emule_stage("runtime")
     cpu_check = "/opt/ttlang-toolchain/venv/bin/python /tmp/check-cpu-torch.py"
-    assert build.index("--target precompile-fw") < build.index(prepare)
-    assert build.index("rm -rf /opt/ttlang-toolchain/venv") < build.index(prepare)
-    assert build.index(prepare) < build.index(
-        "-r /runtime/requirements/requirements-test.txt"
+    steps = [
+        "rm -rf /opt/ttlang-toolchain/venv",
+        "python3.12 -m venv /opt/ttlang-toolchain/venv",
+        "-r /tmp/emule-requirements.lock",
+        "--find-links /tmp/wheels torch",
+        "-r /tmp/requirements/requirements-test.txt",
+        "check-venv",
+        cpu_check,
+        "bash /tmp/trim-emule-venv.sh",
+    ]
+    assert [venv.index(step) for step in steps] == sorted(
+        venv.index(step) for step in steps
     )
-    assert build.index("-r /runtime/requirements/requirements-test.txt") < build.index(
-        cpu_check
-    )
-    assert build.index(cpu_check) < build.index("bash /tmp/trim-emule-venv.sh")
+    prepare = "bash /tmp/prepare-toolchain-venv.sh /opt/ttlang-toolchain"
     assert (
-        "source=prepare-toolchain-venv.sh,target=/tmp/prepare-toolchain-venv.sh"
-        in build
+        resolve.index(prepare)
+        < resolve.index("-r /tmp/requirements/requirements-test.txt")
+        < resolve.index(cpu_check)
     )
-    for stage in (build, runtime):
+    # The native build keeps the donor venv it was configured with.
+    for stage in ("toolchain", "metal-fetch", "metal-source", "build"):
+        assert "rm -rf /opt/ttlang-toolchain/venv" not in emule_stage(stage)
+    assert "COPY --from=venv /opt/ttlang-toolchain/venv " in runtime
+    for stage in (venv, resolve, runtime):
         assert "source=check-cpu-torch.py,target=/tmp/check-cpu-torch.py" in stage
         assert "download.pytorch.org" not in stage
     assert runtime.index("--without-pip --symlinks") < runtime.index(cpu_check)
     assert runtime.index("-m pip check") < runtime.index(cpu_check)
 
 
-@pytest.mark.parametrize("failure", ["", "abi", "prepare", "install", "check", "trim"])
-def test_emule_packaging_cpu_transition_stops_on_failures(tmp_path, failure):
-    dockerfile = (CONTAINERS / "Dockerfile.emule").read_text()
-    section = dockerfile.split(
-        "RUN --mount=type=bind,source=prepare-toolchain-venv.sh", 1
-    )[1]
+@pytest.mark.parametrize(
+    "failure", ["", "venv", "download", "torch", "install", "verify", "check", "trim"]
+)
+def test_emule_locked_venv_stops_on_failures(tmp_path, failure):
+    section = emule_stage("venv")
     command = (
-        "mkdir -p /runtime"
-        + section.split("mkdir -p /runtime", 1)[1].split("\n\n", 1)[0]
+        "rm -rf /opt/ttlang-toolchain/venv"
+        + section.split("rm -rf /opt/ttlang-toolchain/venv", 1)[1].split("\n\n", 1)[0]
     )
     toolchain = tmp_path / "toolchain"
     helpers = tmp_path / "helpers"
-    runtime = tmp_path / "runtime"
-    source = tmp_path / "native"
     log = tmp_path / "calls.jsonl"
-    for directory in (toolchain / "venv/bin", helpers, source):
-        directory.mkdir(parents=True)
-    for name in ("stack.json", "source-manifest.json"):
-        (source / name).write_text("{}\n")
-    python_stub = f"""#!{sys.executable}
+    helpers.mkdir()
+    (toolchain / "venv").mkdir(parents=True)
+    (toolchain / "venv/donor").write_text("donor\n")
+    venv_python = f"""#!{sys.executable}
 import json, os, sys
-step = 'abi' if '-c' in sys.argv else 'install' if 'install' in sys.argv else 'check'
+step = (
+    'download' if 'download' in sys.argv
+    else 'torch' if sys.argv[-1] == 'torch'
+    else 'install' if 'install' in sys.argv
+    else 'verify' if 'check-venv' in sys.argv
+    else 'check'
+)
 with open(os.environ['CALL_LOG'], 'a') as stream:
     stream.write(json.dumps(step) + '\\n')
 sys.exit(23 if step == os.environ['FAIL_STEP'] else 0)
 """
-    interpreter = toolchain / "venv/bin/python"
-    interpreter.write_text(python_stub)
-    interpreter.chmod(0o755)
-    template = helpers / "python-template"
-    template.write_text(python_stub)
-    (helpers / "package-emule-runtime.sh").write_text("exit 0\n")
-    (helpers / "prepare-toolchain-venv.sh").write_text(
-        'set -eu\n[ ! -e "$1/venv" ]\n'
-        'printf \'"prepare"\\n\' >> "$CALL_LOG"\n'
-        '[ "$FAIL_STEP" != prepare ] || exit 23\n'
-        'mkdir -p "$1/venv/bin"\n'
-        f'cp "{template}" "$1/venv/bin/python"\n'
-        'chmod +x "$1/venv/bin/python"\n'
+    (helpers / "python3.12").write_text(
+        '#!/usr/bin/env bash\nset -eu\n[ "$1 $2" = "-m venv" ] && [ ! -e "$3" ]\n'
+        'printf \'"venv"\\n\' >> "$CALL_LOG"\n'
+        '[ "$FAIL_STEP" != venv ] || exit 23\n'
+        'mkdir -p "$3/bin"\n'
+        f'cp "{helpers}/venv-python" "$3/bin/python"\n'
+        'chmod +x "$3/bin/python"\n'
+        'ln -s python "$3/bin/python3"\n'
+        'ln -s python "$3/bin/python3.12"\n'
     )
+    (helpers / "python3.12").chmod(0o755)
+    (helpers / "venv-python").write_text(venv_python)
     (helpers / "trim-emule-venv.sh").write_text(
         'printf \'"trim"\\n\' >> "$CALL_LOG"\n' '[ "$FAIL_STEP" != trim ] || exit 23\n'
     )
     # One pass, so a tmp_path under /tmp cannot be rewritten a second time.
-    paths = {
-        "/opt/ttlang-toolchain": str(toolchain),
-        "/tmp/": f"{helpers}/",
-        "/runtime": str(runtime),
-    }
+    paths = {"/opt/ttlang-toolchain": str(toolchain), "/tmp/": f"{helpers}/"}
     command = re.sub(
         "|".join(map(re.escape, paths)), lambda match: paths[match[0]], command
     )
@@ -213,19 +224,21 @@ sys.exit(23 if step == os.environ['FAIL_STEP'] else 0)
         ["bash", "-e", "-c", command],
         env={
             **os.environ,
-            "TT_METAL_SOURCE_DIR": str(source),
-            "TT_EMULE_RUNTIME_ROOT": str(source),
+            "PATH": f"{helpers}{os.pathsep}{os.environ['PATH']}",
             "CALL_LOG": str(log),
             "FAIL_STEP": failure,
         },
         capture_output=True,
         text=True,
     )
-    expected = ["abi", "prepare", "install", "check", "trim"]
+    expected = ["venv", "download", "torch", "install", "verify", "check", "trim"]
     if failure:
         expected = expected[: expected.index(failure) + 1]
     assert [json.loads(line) for line in log.read_text().splitlines()] == expected
     assert result.returncode == (23 if failure else 0), result.stderr
+    assert not (toolchain / "venv/donor").exists()
+    if not failure:
+        assert not any((toolchain / "venv/bin").iterdir())
 
 
 @pytest.mark.parametrize(

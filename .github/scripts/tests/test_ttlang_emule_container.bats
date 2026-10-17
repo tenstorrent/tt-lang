@@ -25,16 +25,20 @@ make_runner_fixture() {
     mkdir -p "$root/.github/containers" "$root/config" \
         "$root/examples" "$root/scripts" "$root/lib" "$root/cmake/modules"
     cp "$SOURCE_REPO_ROOT/.github/containers/Dockerfile.emule" \
+        "$SOURCE_REPO_ROOT/.github/containers/configure-emule-metal.sh" \
+        "$SOURCE_REPO_ROOT/.github/containers/emule-lock.py" \
+        "$SOURCE_REPO_ROOT/.github/containers/emule-metal-deps.lock" \
+        "$SOURCE_REPO_ROOT/.github/containers/emule-requirements.lock" \
         "$SOURCE_REPO_ROOT/.github/containers/package-emule-runtime.sh" \
         "$SOURCE_REPO_ROOT/.github/containers/trim-emule-venv.sh" \
-        "$SOURCE_REPO_ROOT/.github/containers/prepare-toolchain-venv.sh" \
         "$SOURCE_REPO_ROOT/.github/containers/check-cpu-torch.py" \
         "$root/.github/containers/"
     cp "$SOURCE_REPO_ROOT/scripts/tt-lang-emule-entrypoint.sh" \
         "$SOURCE_REPO_ROOT/scripts/tt-lang-emule-container.sh" \
         "$SOURCE_REPO_ROOT/scripts/tt-lang-emule-stack.py" \
         "$SOURCE_REPO_ROOT/scripts/shell-tt-lang-emule.sh" \
-        "$SOURCE_REPO_ROOT/scripts/install-tt-lang-emule.sh" "$root/scripts/"
+        "$SOURCE_REPO_ROOT/scripts/install-tt-lang-emule.sh" \
+        "$SOURCE_REPO_ROOT/scripts/update-tt-lang-emule-locks.sh" "$root/scripts/"
     cp "$SOURCE_REPO_ROOT/cmake/modules/TTLangUtils.cmake" "$root/cmake/modules/"
     cp "$SOURCE_REPO_ROOT/requirements.txt" \
         "$SOURCE_REPO_ROOT/requirements-runtime.txt" \
@@ -151,13 +155,30 @@ case "${1:-}" in
             for requirement in requirements.txt requirements-runtime.txt requirements-test.txt; do
                 cmp -s "$stack_context/$requirement" "$context/../../$requirement" || exit 91
             done
-            [ -f "$context/package-emule-runtime.sh" ] || exit 95
-            [ -f "$context/trim-emule-venv.sh" ] || exit 94
-            [ -f "$context/prepare-toolchain-venv.sh" ] || exit 90
-            [ -f "$context/check-cpu-torch.py" ] || exit 89
+            for input in package-emule-runtime.sh trim-emule-venv.sh \
+                check-cpu-torch.py configure-emule-metal.sh emule-lock.py \
+                emule-metal-deps.lock emule-requirements.lock; do
+                [ -f "$context/$input" ] || exit 95
+            done
             [ ! -e "$context/third-party" ] || exit 93
             [ ! -e "$context/.git" ] || exit 92
         fi
+        for argument in "$@"; do
+            case "$argument" in
+                tt-lang-stack=*)
+                    stack_context="${argument#tt-lang-stack=}"
+                    ;;
+                type=local,dest=*)
+                    for requirement in requirements.txt requirements-runtime.txt \
+                        requirements-test.txt; do
+                        [ -f "$stack_context/$requirement" ] || exit 88
+                    done
+                    for lock in ${MOCK_DOCKER_LOCKS:-}; do
+                        printf 'generated %s\n' "$lock" > "${argument#type=local,dest=}/$lock"
+                    done
+                    ;;
+            esac
+        done
         exit "${MOCK_DOCKER_BUILD_STATUS:-0}"
         ;;
     run)
@@ -321,6 +342,60 @@ make_entrypoint_fixture() {
 @test "emule image verifies that the built ttnn binding is importable" {
     run -0 grep -F -- \
         "/opt/ttlang-toolchain/venv/bin/python -c 'import ttnn'" "$DOCKERFILE"
+}
+
+@test "lock updates rebuild only the public lock stages" {
+    local updater="$TTLANG_REPO_ROOT/scripts/update-tt-lang-emule-locks.sh"
+    local work_tmp="$BATS_TEST_TMPDIR/lock-tmp"
+    local manifest="$TTLANG_REPO_ROOT/config/tt-lang-emule-stack.json"
+    local lock
+    mkdir -p "$work_tmp"
+    TMPDIR="$work_tmp" \
+        MOCK_DOCKER_LOCKS="emule-requirements.lock emule-metal-deps.lock" \
+        TTLANG_EMULE_DOCKER="$MOCK_DOCKER" \
+        run -0 "$updater"
+    for lock in emule-requirements.lock emule-metal-deps.lock; do
+        assert_output --partial "Updated .github/containers/$lock"
+        [ "$(cat "$TTLANG_REPO_ROOT/.github/containers/$lock")" = "generated $lock" ]
+    done
+
+    assert_log_line build
+    assert_log_line emule-locks
+    assert_log_line metal-fetch
+    assert_log_line venv-resolve
+    assert_log_line "BASE_IMAGE=$(python3 -c \
+        'import json, sys; print(json.load(open(sys.argv[1]))["runtime"]["base_image"])' \
+        "$manifest")"
+    assert_log_line "TT_METAL_COMMIT=$(python3 -c \
+        'import json, sys; print(json.load(open(sys.argv[1]))["metal"]["commit"])' \
+        "$manifest")"
+    assert_log_contains "tt-lang-stack=$work_tmp/tt-lang-emule-locks."
+    assert_log_line "$TTLANG_REPO_ROOT/.github/containers"
+    refute_log_contains "tt-emule-source"
+    refute_log_contains "TT_EMULE_COMMIT"
+    run -0 find "$work_tmp" -mindepth 1
+    assert_output ""
+}
+
+@test "lock updates keep the committed locks unless both are produced" {
+    local updater="$TTLANG_REPO_ROOT/scripts/update-tt-lang-emule-locks.sh"
+    local containers="$TTLANG_REPO_ROOT/.github/containers"
+    local before="$BATS_TEST_TMPDIR/locks-before"
+    mkdir -p "$before"
+    cp "$containers/emule-requirements.lock" "$containers/emule-metal-deps.lock" \
+        "$before/"
+
+    MOCK_DOCKER_BUILD_STATUS=42 \
+        MOCK_DOCKER_LOCKS="emule-requirements.lock emule-metal-deps.lock" \
+        TTLANG_EMULE_DOCKER="$MOCK_DOCKER" \
+        run -42 "$updater"
+    MOCK_DOCKER_LOCKS="emule-requirements.lock" \
+        TTLANG_EMULE_DOCKER="$MOCK_DOCKER" \
+        run -1 "$updater"
+    assert_output --partial "the build produced no emule-metal-deps.lock"
+
+    cmp "$before/emule-requirements.lock" "$containers/emule-requirements.lock"
+    cmp "$before/emule-metal-deps.lock" "$containers/emule-metal-deps.lock"
 }
 
 @test "CMake device detection recognizes emule mode" {
@@ -553,7 +628,8 @@ EOF
     local first_fingerprint
     local recipe_input
     for recipe_input in package-emule-runtime.sh trim-emule-venv.sh \
-        prepare-toolchain-venv.sh check-cpu-torch.py; do
+        check-cpu-torch.py configure-emule-metal.sh emule-lock.py \
+        emule-metal-deps.lock emule-requirements.lock; do
         : > "$MOCK_DOCKER_LOG"
         TTLANG_EMULE_DOCKER="$MOCK_DOCKER" run -0 "$RUNNER" \
             "$TTLANG_REPO_ROOT/examples/program.py"
