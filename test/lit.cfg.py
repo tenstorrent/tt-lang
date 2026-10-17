@@ -120,6 +120,7 @@ if llvm_config is not None:
 tools = [
     "ttlang-execution-count-test",
     "ttlang-dfb-allocation-oracle-test",
+    "ttlang-sram-allocator-contract-test",
     "ttlang-launch-node-domain-test",
     "ttlang-op-stats",
     "ttlang-transfer-graph-test",

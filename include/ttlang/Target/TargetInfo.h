@@ -54,7 +54,8 @@ struct TargetDFBIndexCapacity {
   }
 };
 
-/// Maximum L1 allocation quantum selected by any supported tt-metal allocator.
+/// DFB payload alignment for DRAM-to-L1 NoC reads on supported 1xx targets.
+/// Quasar uses a conservative allocation quantum.
 inline uint64_t getTargetL1AllocationQuantumBytes(ttcore::Arch targetArch) {
   switch (targetArch) {
   case ttcore::Arch::WormholeB0:
@@ -68,6 +69,13 @@ inline uint64_t getTargetL1AllocationQuantumBytes(ttcore::Arch targetArch) {
 
 /// Preserve safety when compilation has no target metadata.
 inline uint64_t getConservativeL1AllocationQuantumBytes() { return 64; }
+
+/// Return whether the compiler-managed SRAM device interface supports the
+/// target.
+inline bool supportsCompilerSRAM(ttcore::Arch targetArch) {
+  return targetArch == ttcore::Arch::WormholeB0 ||
+         targetArch == ttcore::Arch::Blackhole;
+}
 
 namespace target_info_detail {
 

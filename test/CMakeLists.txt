@@ -29,6 +29,7 @@ configure_lit_site_cfg(
 set(TTLANG_TEST_DEPENDS
   ttlang-execution-count-test
   ttlang-dfb-allocation-oracle-test
+  ttlang-sram-allocator-contract-test
   ttlang-launch-node-domain-test
   ttlang-op-stats
   ttlang-transfer-graph-test
