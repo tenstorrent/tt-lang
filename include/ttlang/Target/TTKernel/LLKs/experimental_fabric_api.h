@@ -35,9 +35,9 @@ FORCE_INLINE uint16_t get_my_device_id() {
   return routing_table->my_device_id;
 }
 
-FORCE_INLINE int
-get_connection_index_by_tag(RoutingPlaneConnectionManager &fabric_connections,
-                            uint32_t tag) {
+FORCE_INLINE int get_connection_index_by_tag(
+    tt::tt_fabric::RoutingPlaneConnectionManager &fabric_connections,
+    uint32_t tag) {
   for (uint32_t i = 0; i < fabric_connections.active_count(); ++i) {
     if (fabric_connections.get(i).tag == tag) {
       return i;
@@ -76,7 +76,8 @@ struct FabricConnectionManager {
     return {connection, packet_header};
   }
 
-  FORCE_INLINE RoutingPlaneConnectionManager &get_fabric_connections() {
+  FORCE_INLINE tt::tt_fabric::RoutingPlaneConnectionManager &
+  get_fabric_connections() {
     WAYPOINT("DA17");
     ASSERT(initialized);
     return fabric_connections;

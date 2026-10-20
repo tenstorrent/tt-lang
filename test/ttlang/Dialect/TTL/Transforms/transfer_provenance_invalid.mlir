@@ -28,7 +28,7 @@ func.func @post_requires_reserved_destination() {
       : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
       -> !ttl.pipe_transfer
   %dst = tensor.empty() : tensor<1x1x!ttcore.tile<32x32, f32>>
-  // expected-error @below {{'ttl.pipe_transfer.post' op requires a cb_reserve destination}}
+  // expected-error @below {{'ttl.pipe_transfer.post' op requires a cb_reserve or tensor_slice destination}}
   %token = ttl.pipe_transfer.post %transfer, %dst
       : (!ttl.pipe_transfer, tensor<1x1x!ttcore.tile<32x32, f32>>)
       -> !ttl.pipe_token<net 0>

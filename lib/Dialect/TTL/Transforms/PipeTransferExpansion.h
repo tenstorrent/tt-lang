@@ -14,6 +14,8 @@
 #ifndef TTLANG_DIALECT_TTL_TRANSFORMS_PIPETRANSFEREXPANSION_H
 #define TTLANG_DIALECT_TTL_TRANSFORMS_PIPETRANSFEREXPANSION_H
 
+#include "PipeGraph.h"
+
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Support/LogicalResult.h"
 
@@ -22,6 +24,19 @@ class ValueOriginAnalysis;
 }
 
 namespace mlir::tt::ttl {
+
+/// Return the transfer contract shared by every record of a verified record
+/// set.
+FailureOr<PipeTransferContract>
+getPipeTransferContractForRecords(PipeNetRecordsAttr records);
+
+/// Return the contract shared by every possible value of a pipe operand.
+///
+/// Create and selected-pipe operations preserve an explicit collective
+/// contract. A block argument has no defining pipe op, so its type supplies
+/// the contract.
+FailureOr<PipeTransferContract>
+getPipeTransferContractForPipeValue(ValueOriginAnalysis &analysis, Value pipe);
 
 /// Replace high-level pipe copies and waits with explicit pipe transfer IR.
 LogicalResult expandPipeTransfers(ModuleOp module,

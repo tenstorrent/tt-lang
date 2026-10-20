@@ -9,8 +9,6 @@
 #include "ttlang/Target/TTKernel/DFBDescriptorPrelude_generated.h"
 #include "ttlang/Target/TTKernel/LLKs/experimental_constant_table_generated.h"
 #include "ttlang/Target/TTKernel/LLKs/experimental_coord_translation_generated.h"
-#include "ttlang/Target/TTKernel/LLKs/experimental_dfb_reconfiguration_generated.h"
-#include "ttlang/Target/TTKernel/LLKs/experimental_dfb_reset_generated.h"
 #include "ttlang/Target/TTKernel/LLKs/experimental_fabric_1d_routing_generated.h"
 #include "ttlang/Target/TTKernel/LLKs/experimental_fabric_2d_routing_generated.h"
 #include "ttlang/Target/TTKernel/LLKs/experimental_fabric_api_generated.h"
@@ -21,6 +19,8 @@
 #include "ttlang/Target/TTKernel/LLKs/experimental_padding_llks_generated.h"
 #include "ttlang/Target/TTKernel/LLKs/experimental_reg_api_generated.h"
 #include "ttlang/Target/TTKernel/LLKs/experimental_routing_plane_generated.h"
+#include "ttlang/Target/TTKernel/LLKs/experimental_routing_plane_scatter_write_generated.h"
+#include "ttlang/Target/TTKernel/LLKs/experimental_routing_plane_write_generated.h"
 #include "ttlang/Target/TTKernel/LLKs/experimental_row_normalization_generated.h"
 #include "ttlang/Target/TTKernel/LLKs/experimental_semaphore_generated.h"
 #include "ttlang/Target/TTKernel/LLKs/experimental_tilize_llks_generated.h"
@@ -56,6 +56,14 @@ public:
   ScopedModuleHelper(OpBuilder *builder, Location loc, Region *region,
                      ThreadType threadType) {
     std::set<llvm::StringRef> headers;
+    // Every routing-plane helper and connection-manager declaration uses the
+    // connection-manager adapter.
+    auto emitRoutingPlaneManager = [&] {
+      emitLlk(experimental_routing_plane_generated,
+              experimental_routing_plane_generated_len);
+      headers.insert("tt_metal/fabric/fabric_edm_packet_header.hpp");
+      headers.insert("tt_metal/fabric/hw/inc/fabric_config.h");
+    };
 
     // Baseline, always required.
     switch (threadType) {
@@ -146,19 +154,18 @@ public:
                 experimental_constant_table_generated_len);
       }
       if (callee == "experimental::routing_plane_atomic_inc" ||
-          callee == "experimental::routing_plane_fused_write_atomic_inc") {
-        emitLlk(experimental_routing_plane_generated,
-                experimental_routing_plane_generated_len);
-        headers.insert("tt_metal/fabric/fabric_edm_packet_header.hpp");
-        headers.insert("tt_metal/fabric/hw/inc/fabric_config.h");
+          callee == "experimental::routing_plane_fused_write_atomic_inc" ||
+          callee == "experimental::routing_plane_scatter_write" ||
+          callee == "experimental::routing_plane_write") {
+        emitRoutingPlaneManager();
       }
-      if (callee == "experimental::reset_dfb_interfaces") {
-        emitLlk(experimental_dfb_reset_generated,
-                experimental_dfb_reset_generated_len);
+      if (callee == "experimental::routing_plane_scatter_write") {
+        emitLlk(experimental_routing_plane_scatter_write_generated,
+                experimental_routing_plane_scatter_write_generated_len);
       }
-      if (callee == "experimental::reconfigure_dfb_interfaces") {
-        emitLlk(experimental_dfb_reconfiguration_generated,
-                experimental_dfb_reconfiguration_generated_len);
+      if (callee == "experimental::routing_plane_write") {
+        emitLlk(experimental_routing_plane_write_generated,
+                experimental_routing_plane_write_generated_len);
       }
       if (callee == "experimental::close_fabric_connections" ||
           callee == "experimental::setup_fabric_connections" ||
@@ -216,15 +223,15 @@ public:
         headers.insert("api/dataflow/noc.h");
       }
 
-      if (value.starts_with("tt::tt_fabric::RoutingPlaneConnectionManager")) {
-        headers.insert("tt_metal/fabric/hw/inc/linear/api.h");
-      }
-
       // Some callees are embedded in VerbatimOps.
       for (const auto &[callee, reqs] : headerMap) {
         if (value.starts_with(callee)) {
           insertHeaders(reqs);
         }
+      }
+
+      if (value.starts_with("experimental::RoutingPlaneConnectionManager")) {
+        emitRoutingPlaneManager();
       }
 
       if (value.starts_with("experimental::invoke_sfpi")) {

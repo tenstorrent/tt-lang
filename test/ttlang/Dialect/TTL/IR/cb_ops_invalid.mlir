@@ -136,11 +136,11 @@ module {
 
 // -----
 
-// cb_push with num_tiles exceeding CB capacity (across all blocks).
+// One push transaction cannot advance by multiple complete DFB capacities.
 module {
-  func.func @cb_push_num_tiles_exceeds_capacity(%cb: !ttl.cb<[3, 3], !ttcore.tile<32x32, bf16>, 2>) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-    // expected-error @below {{'ttl.cb_push' op num_tiles (24) exceeds DFB capacity (18)}}
-    ttl.cb_push %cb {num_tiles = 24 : i64} : <[3, 3], !ttcore.tile<32x32, bf16>, 2>
+  func.func @cb_push_multiple_capacities(%cb: !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    // expected-error @below {{'ttl.cb_push' op num_tiles (4) exceeds DFB capacity (2)}}
+    ttl.cb_push %cb {num_tiles = 4 : i64} : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
     func.return
   }
 }
@@ -243,6 +243,43 @@ module {
   func.func @cb_pop_non_positive_num_tiles(%cb: !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     // expected-error @below {{attribute 'num_tiles' failed to satisfy constraint: 64-bit signless integer attribute whose value is positive}}
     ttl.cb_pop %cb {num_tiles = 0 : i64} : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    func.return
+  }
+}
+
+// -----
+
+// bind_cb: cb_index must be non-negative (BindCBOp::verify).
+module {
+  func.func @bind_cb_negative_cb_index() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    // expected-error @below {{cb_index must be non-negative}}
+    %cb = ttl.bind_cb {cb_index = -1, block_count = 2}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    func.return
+  }
+}
+
+// -----
+
+// bind_cb: block_count must be strictly positive (BindCBOp::verify).
+module {
+  func.func @bind_cb_non_positive_block_count() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    // expected-error @below {{block_count must be > 0}}
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 0}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    func.return
+  }
+}
+
+// -----
+
+// bind_cb: block_count attribute must match the result type's block count
+// (BindCBOp::verify). The attribute is 3 but the !ttl.cb type carries 2.
+module {
+  func.func @bind_cb_block_count_type_mismatch() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    // expected-error @below {{block_count must match result type block count (2)}}
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 3}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     func.return
   }
 }

@@ -22,7 +22,10 @@
 // CHECK: ttkernel.noc_async_write_one_packet_with_state(%arg0, %arg1, {{.*}}) posted true
 // CHECK-NOT: ttkernel.noc_async_write %
 // CHECK: return
-module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
+module attributes {
+  ttl.dfb_allocations = [],
+  ttl.launch_grid = [2 : i64, 1 : i64]
+} {
   func.func @record_sends(%src: i32, %dst: i32) {
     %zero = arith.constant 0 : index
     %one = arith.constant 1 : index

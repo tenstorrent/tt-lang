@@ -5,6 +5,7 @@
 #ifndef TTLANG_ANALYSIS_PLANNINGRESULT_H
 #define TTLANG_ANALYSIS_PLANNINGRESULT_H
 
+#include "mlir/IR/Diagnostics.h"
 #include "mlir/IR/Operation.h"
 
 #include <cassert>
@@ -16,11 +17,15 @@ namespace mlir::tt {
 
 /// Diagnostic returned by read-only planning for malformed input IR.
 struct PlanningDiagnostic {
-  PlanningDiagnostic(Operation *operation, std::string message)
-      : operation(operation), message(std::move(message)) {
+  PlanningDiagnostic(Operation *operation, std::string message,
+                     Operation *noteOperation = nullptr, std::string note = {})
+      : operation(operation), message(std::move(message)),
+        noteOperation(noteOperation), note(std::move(note)) {
     assert(operation && "invalid IR requires a diagnostic anchor");
     assert(!this->message.empty() &&
            "invalid IR requires a diagnostic message");
+    assert((noteOperation == nullptr) == this->note.empty() &&
+           "a note requires an anchor and text");
   }
 
   PlanningDiagnostic() = delete;
@@ -30,7 +35,22 @@ struct PlanningDiagnostic {
 
   /// Diagnostic text without an operation-name prefix.
   std::string message;
+
+  /// Optional second operation the diagnostic refers to, with its note text.
+  Operation *noteOperation;
+  std::string note;
 };
+
+/// Emits `diagnostic` as an error on its operation, with its note when set.
+inline InFlightDiagnostic
+emitPlanningDiagnostic(const PlanningDiagnostic &diagnostic) {
+  InFlightDiagnostic error =
+      diagnostic.operation->emitError(diagnostic.message);
+  if (diagnostic.noteOperation) {
+    error.attachNote(diagnostic.noteOperation->getLoc()) << diagnostic.note;
+  }
+  return error;
+}
 
 /// Result of constructing immutable analysis facts or a rewrite plan.
 ///
@@ -50,9 +70,12 @@ public:
     return PlanningResult(std::in_place_index<1>, std::move(rejection));
   }
 
-  static PlanningResult invalidIR(Operation *operation, std::string message) {
+  static PlanningResult invalidIR(Operation *operation, std::string message,
+                                  Operation *noteOperation = nullptr,
+                                  std::string note = {}) {
     return PlanningResult(std::in_place_index<2>,
-                          PlanningDiagnostic{operation, std::move(message)});
+                          PlanningDiagnostic{operation, std::move(message),
+                                             noteOperation, std::move(note)});
   }
 
   bool isPlanned() const { return storage.index() == 0; }

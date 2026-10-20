@@ -96,3 +96,33 @@ module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
     func.return
   }
 }
+
+// -----
+
+// An external call that runs on no launched node cannot produce the DFB.
+
+module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
+  func.func @unexecuted_possible_producer(%runtime_condition: i1)
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    // expected-note @+1 {{dataflow buffer declared here}}
+    %dfb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 5 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %false = arith.constant false
+    %never = arith.andi %runtime_condition, %false : i1
+    scf.if %never {
+      ttl.opaque_call "possible_producer" dfb_dependencies(%dfb : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) () {header = "opaque.hpp"} : () -> ()
+    }
+    func.return
+  }
+
+  func.func @consumer() attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+    %dfb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 5 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    // expected-error @below {{logical DFB 5 is waited on but no kernel thread pushes it}}
+    // expected-note @below {{a DFB wait blocks until a matching push publishes data}}
+    %block = ttl.cb_wait %dfb
+        : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    func.return
+  }
+}

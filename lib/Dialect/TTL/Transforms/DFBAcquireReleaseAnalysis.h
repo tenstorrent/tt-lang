@@ -74,6 +74,25 @@ struct DFBAcquireInterval {
   Operation *kindBoundary = nullptr;
 };
 
+/// The protocol effect that opens an interval of `kind`.
+inline DFBProtocolEffectKind
+getDFBAcquireEffectKind(DFBAcquireReleaseKind kind) {
+  return kind == DFBAcquireReleaseKind::Producer
+             ? DFBProtocolEffectKind::Reserve
+             : DFBProtocolEffectKind::Wait;
+}
+
+/// The protocol effect that closes an interval of `kind`.
+inline DFBProtocolEffectKind
+getDFBReleaseEffectKind(DFBAcquireReleaseKind kind) {
+  return kind == DFBAcquireReleaseKind::Producer ? DFBProtocolEffectKind::Push
+                                                 : DFBProtocolEffectKind::Pop;
+}
+
+/// Whether `operation` declares a protocol effect of `kind` on `dfb`.
+bool hasDFBProtocolEffectOn(mlir::Operation *operation, mlir::Value dfb,
+                            DFBProtocolEffectKind kind);
+
 /// Push or pop actions that close one acquire interval.
 struct DFBReleaseSearch {
   /// Releases in the acquire block or projected into that block.
@@ -167,6 +186,32 @@ bool isGuardedDFBAcquire(Operation *op);
 bool operationMayDirectlyUseAcquiredDFBSlot(DFBAcquireInterval interval,
                                             Operation *operation);
 
+/// Consecutive same-kind acquisitions of one DFB that
+/// `ttl-coalesce-dfb-acquires` merges into one multi-block acquisition, and the
+/// releases that the merged release replaces. Member `i` becomes the slice at
+/// block offset `i` of the merged acquisition.
+struct CoalescedAcquireGroup {
+  SmallVector<Operation *> acquires;
+  SmallVector<Operation *> releases;
+};
+
+/// The groups `ttl-coalesce-dfb-acquires` merges among the `kind`
+/// acquisitions of `block`, in block order. The pass applies exactly this
+/// plan, so a client that asks before the pass runs sees the pass's decision.
+SmallVector<CoalescedAcquireGroup>
+planCoalescedAcquireGroups(Block &block, DFBAcquireReleaseKind kind);
+
+/// The merged group containing `acquire`, if any.
+std::optional<CoalescedAcquireGroup>
+findCoalescedAcquireGroup(Operation *acquire);
+
+/// Returns the number of whole DFB blocks transferred by one protocol effect.
+///
+/// Returns `std::nullopt` when the tile count is not a positive multiple of
+/// the DFB block size.
+std::optional<int64_t>
+getDFBProtocolEffectBlockCount(const DFBProtocolEffect &effect);
+
 /// Returns the number of whole DFB blocks acquired or released by `op`.
 ///
 /// Returns `std::nullopt` when the transaction size is not a positive multiple
@@ -206,12 +251,18 @@ DFBAcquireReleaseOperations collectDFBAcquireReleaseOps(func::FuncOp func);
 DFBAcquireInterval makeDFBAcquireInterval(Operation *acquire,
                                           ArrayRef<Operation *> acquires);
 
-/// Finds the last operation in `interval.acquire`'s block that is owned by the
-/// interval.
+/// Finds the last operation in the interval's ordering block that is owned by
+/// the interval: the acquisition's block, or the guard's block for an
+/// acquisition in an `scf.if` then-region.
 ///
 /// See `docs/development/DFBManagement.md` for the asymmetric classification of
 /// direct DFB uses and tensor SSA uses.
 Operation *findLastDFBAcquireOwnedUse(DFBAcquireInterval interval);
+
+/// Finds the last operation in `interval.acquire`'s own block that contains a
+/// use owned by the interval, or the acquisition when there is none.
+Operation *
+findLastDFBAcquireOwnedUseInAcquiringBlock(DFBAcquireInterval interval);
 
 /// Collects operations that access storage owned by `interval`.
 ///

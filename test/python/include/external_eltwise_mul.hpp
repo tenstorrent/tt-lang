@@ -34,3 +34,6 @@ static inline void ttl_external_eltwise_mul() {
   tile_regs_release();
 #endif
 }
+
+template <typename DFB>
+static inline void ttl_external_dfb_dependency_only() {}

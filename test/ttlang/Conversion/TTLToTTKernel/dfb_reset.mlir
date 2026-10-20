@@ -11,10 +11,10 @@
 // CHECK-DAG: %[[SECOND_OFFSET:.*]] = arith.constant 16 : i32
 // CHECK-DAG: %[[ALL_LOW:.*]] = arith.constant 4 : i32
 // CHECK: %[[SCRATCH_BASE:.*]] = ttkernel.get_common_arg_val
-// CHECK: ttkernel.opaque_call "experimental::reset_dfb_interfaces"(%[[SCRATCH_BASE]], %[[SELECTED_LOW]], %[[SELECTED_HIGH]]) {dfb_resource_indices = array<i32: 33>,
+// CHECK: ttkernel.opaque_call "::experimental::reset_dfb_interfaces"(%[[SCRATCH_BASE]], %[[SELECTED_LOW]], %[[SELECTED_HIGH]]) {dfb_resource_indices = array<i32: 33>,
 // CHECK: %[[SECOND_BASE:.*]] = ttkernel.get_common_arg_val
 // CHECK: %[[SECOND_STATE:.*]] = arith.addi %[[SECOND_BASE]], %[[SECOND_OFFSET]] : i32
-// CHECK: ttkernel.opaque_call "experimental::reset_dfb_interfaces"(%[[SECOND_STATE]], %[[ALL_LOW]], %[[SELECTED_HIGH]]) {dfb_resource_indices = array<i32: 2, 33>,
+// CHECK: ttkernel.opaque_call "::experimental::reset_dfb_interfaces"(%[[SECOND_STATE]], %[[ALL_LOW]], %[[SELECTED_HIGH]]) {dfb_resource_indices = array<i32: 2, 33>,
 
 module attributes {ttl.target_arch = #ttcore.arch<blackhole>} {
   func.func @reset_masks()
@@ -23,6 +23,33 @@ module attributes {ttl.target_arch = #ttcore.arch<blackhole>} {
     %high_dfb = ttl.bind_cb {cb_index = 33, block_count = 1} {dfb_id = 1 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
     ttl.reset_dfbs <0, participants[<kind = compute, identity = "compute", operation = "reset_test">, <kind = data_movement, identity = "reader", operation = "reset_test">, <kind = data_movement, identity = "writer", operation = "reset_test">]>(%high_dfb : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>)
     ttl.reset_all_dfbs <1, participants[<kind = compute, identity = "compute", operation = "reset_test">, <kind = data_movement, identity = "reader", operation = "reset_test">, <kind = data_movement, identity = "writer", operation = "reset_test">]>
+    return
+  }
+}
+
+// -----
+
+// Allocation-group members can use distinct physical indices when their
+// descriptors differ. Selecting or preserving one member applies to every
+// physical index in the shared allocation.
+// CHECK-LABEL: func.func @allocation_group_masks
+// CHECK-DAG: %[[GROUP_MASK:.*]] = arith.constant 6 : i32
+// CHECK-DAG: %[[COMPLEMENT_MASK:.*]] = arith.constant 1 : i32
+// CHECK: ttkernel.opaque_call "::experimental::reset_dfb_interfaces"({{.*}}, %[[GROUP_MASK]],
+// CHECK: ttkernel.opaque_call "::experimental::reset_dfb_interfaces"({{.*}}, %[[COMPLEMENT_MASK]],
+module attributes {ttl.target_arch = #ttcore.arch<blackhole>} {
+  func.func @allocation_group_masks()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %ungrouped = ttl.bind_cb {cb_index = 0, block_count = 1} {dfb_id = 0 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
+    %group_bf16 = ttl.bind_cb {cb_index = 1, block_count = 1}
+        {allocation_group = #ttl.dfb_allocation_group<0>, dfb_id = 1 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
+    %group_f32 = ttl.bind_cb {cb_index = 2, block_count = 1}
+        {allocation_group = #ttl.dfb_allocation_group<0>, dfb_id = 2 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
+    ttl.reset_dfbs <0, participants[<kind = compute, identity = "compute", operation = "group_masks">, <kind = data_movement, identity = "reader", operation = "group_masks">, <kind = data_movement, identity = "writer", operation = "group_masks">]>(%group_bf16 : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>)
+    ttl.reset_all_dfbs <1, participants[<kind = compute, identity = "compute", operation = "group_masks">, <kind = data_movement, identity = "reader", operation = "group_masks">, <kind = data_movement, identity = "writer", operation = "group_masks">]> preserve %group_bf16 : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
     return
   }
 }
@@ -38,7 +65,7 @@ module attributes {ttl.target_arch = #ttcore.arch<blackhole>} {
 // CHECK-LABEL: func.func @pipe_and_reset
 // CHECK: %[[RESET_OFFSET:.*]] = arith.constant 32 : i32
 // CHECK: %[[RESET_STATE:.*]] = arith.addi {{.*}}, %[[RESET_OFFSET]] : i32
-// CHECK: ttkernel.opaque_call "experimental::reset_dfb_interfaces"(%[[RESET_STATE]], {{.*}}) {dfb_resource_indices = array<i32: 0>,
+// CHECK: ttkernel.opaque_call "::experimental::reset_dfb_interfaces"(%[[RESET_STATE]], {{.*}}) {dfb_resource_indices = array<i32: 0>,
 module attributes {
   ttl.launch_grid = array<i64: 2, 2>,
   ttl.target_arch = #ttcore.arch<blackhole>

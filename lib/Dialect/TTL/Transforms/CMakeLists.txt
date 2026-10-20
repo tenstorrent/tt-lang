@@ -13,6 +13,7 @@ add_mlir_dialect_library(TTLangTTLTransforms
   DFBLogicalIdentityAnalysis.cpp
   DFBValueLifetimeAnalysis.cpp
   DFBMaterialization.cpp
+  DFBStateDiscard.cpp
   FabricManagerLifetimeAnalysis.cpp
   PipeCapacityAnalysis.cpp
   PipeCounter.cpp
@@ -30,6 +31,7 @@ add_mlir_dialect_library(TTLangTTLTransforms
   PipeTransferExpansion.cpp
   PipeTransportDFBAnalysis.cpp
   PipeTransportPlan.cpp
+  PipeTensorRegions.cpp
   ConvertTTLToCompute.cpp
   ConvertTTLComputeToSCF.cpp
   ConvertTTLTileOpsToTTKernel.cpp
@@ -55,7 +57,9 @@ add_mlir_dialect_library(TTLangTTLTransforms
   TTLMaterializeLoopState.cpp
   TTLPrintDFBValueLifetimes.cpp
   TTLPrintComputeOpCreationPlans.cpp
+  DFBProtocolDomainAnalysis.cpp
   TTLVerifyDFBSPSC.cpp
+  TTLVerifyDFBLifecycle.cpp
   TTLVerifyPipeNetGuards.cpp
   TTLErasePipeNetScopes.cpp
   TTLAssignDST.cpp

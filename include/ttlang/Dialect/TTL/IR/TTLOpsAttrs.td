@@ -113,10 +113,10 @@ def TTL_DFBReconfigurationAttr
     Identifies one synchronized update to worker-local DFB descriptors and the
     complete set of logical kernels that participate on each active worker.
     Each reconfiguration call may execute at most once per dispatch and launch
-    node, or once in every iteration of nested sequential loops with
-    compile-time-known trip counts. Repeated execution requires at least two
-    reconfiguration calls. Corresponding calls use equivalent loop nests and
-    appear in the same order in every participant. Every declaration in one
+    node, or once in every iteration of one sequential loop with a constant
+    trip count. Repeated execution requires at least two reconfiguration calls.
+    Corresponding calls use equivalent loops and appear in the same order in
+    every participant. Every declaration in one
     module uses the same participant set.
     At each call, the runtime waits for prior DFB-interface work to complete,
     installs the next descriptors, and then allows following DFB-interface work

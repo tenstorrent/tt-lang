@@ -58,44 +58,44 @@ def forward_neighbor(inp: ttnn.Tensor, out: ttnn.Tensor) -> None:
 
     @ttl.datamovement()
     def dm():
+        def pipe_src(pipe):
+            with dfb_to_send.reserve() as producer_block:
 
-        with (
-            dfb_to_send.reserve() as blk_to_send,
-            dfb_received.reserve() as blk_received,
-        ):
-
-            def pipe_src(pipe):
-
-                # write data into blk_to_send
+                # write data into producer_block
                 # ...
                 # spec:end
                 # Source node (nx, ny) loads its own payload tile to forward.
                 nx, ny = ttl.node(dims=2)
-                ttl.copy(inp[nx : nx + 1, ny : ny + 1], blk_to_send).wait()
+                ttl.copy(inp[nx : nx + 1, ny : ny + 1], producer_block).wait()
                 # spec:begin
 
-                # then copy blk_to_send to pipe:
+            with dfb_to_send.wait() as send_block:
 
-                xf = ttl.copy(blk_to_send, pipe)
+                # then copy send_block to pipe:
+
+                xf = ttl.copy(send_block, pipe)
                 xf.wait()
 
-            def pipe_dst(pipe):
+        def pipe_dst(pipe):
+            with dfb_received.reserve() as receive_block:
 
-                # copy blk_received from pipe:
+                # copy receive_block from pipe:
 
-                xf = ttl.copy(pipe, blk_received)
+                xf = ttl.copy(pipe, receive_block)
                 xf.wait()
 
-                # then read data from blk_received
+            with dfb_received.wait() as received_block:
+
+                # then read data from received_block
                 # ...
                 # spec:end
                 # Destination node (nx, ny) stores the tile from its -1 neighbor.
                 nx, ny = ttl.node(dims=2)
-                ttl.copy(blk_received, out[nx : nx + 1, ny : ny + 1]).wait()
+                ttl.copy(received_block, out[nx : nx + 1, ny : ny + 1]).wait()
                 # spec:begin
 
-            net.if_src(pipe_src)
-            net.if_dst(pipe_dst)
+        net.if_src(pipe_src)
+        net.if_dst(pipe_dst)
 
     # spec:end
 

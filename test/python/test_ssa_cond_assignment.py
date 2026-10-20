@@ -24,7 +24,6 @@ ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
 
 from ttlang_test_utils import to_l1
 
-
 # =============================================================================
 # Pattern 1: If-only reassignment in datamovement
 # =============================================================================
@@ -65,7 +64,8 @@ def dm_cond_reassign_f32_kernel(inp, out):
                 if cond_val < threshold:
                     b = ttl.raw_element_read(rblk, 0, 2)
                 ttl.raw_element_write(wblk, 0, 0, b)
-                tx = ttl.copy(wblk, out[0, 0])
+            with out_dfb.wait() as output_block:
+                tx = ttl.copy(output_block, out[0, 0])
                 tx.wait()
 
 
@@ -127,7 +127,8 @@ def dm_if_else_new_var_f32_kernel(inp, out):
                 else:
                     b = ttl.raw_element_read(rblk, 0, 3)
                 ttl.raw_element_write(wblk, 0, 0, b)
-                tx = ttl.copy(wblk, out[0, 0])
+            with out_dfb.wait() as output_block:
+                tx = ttl.copy(output_block, out[0, 0])
                 tx.wait()
 
 
@@ -188,7 +189,8 @@ def dm_if_else_reassign_f32_kernel(inp, out):
                 else:
                     b = ttl.raw_element_read(rblk, 0, 3)
                 ttl.raw_element_write(wblk, 0, 0, b)
-                tx = ttl.copy(wblk, out[0, 0])
+            with out_dfb.wait() as output_block:
+                tx = ttl.copy(output_block, out[0, 0])
                 tx.wait()
 
 
