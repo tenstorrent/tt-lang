@@ -42,7 +42,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install test dependencies
-        run: python -m pip install pytest
+        run: python -m pip install pytest pyyaml
 
       - name: Run candidate tooling tests
         run: |
@@ -86,6 +86,7 @@ jobs:
           persist-credentials: false
 
       - name: Prepare and validate the candidate manifest
+        id: prepare-candidate
         env:
           EMULATOR_COMMIT: ${{ inputs.emulator_commit }}
         run: |
@@ -103,6 +104,7 @@ jobs:
           password: ${{ github.token }}
 
       - name: Install and smoke-test the candidate
+        id: install-candidate
         env:
           TTLANG_EMULE_IMAGE: tt-lang-emule:candidate-${{ github.run_id }}
           TTLANG_EMULE_RUNTIME_SOURCE_DIR: .candidate-emulator
@@ -113,6 +115,7 @@ jobs:
             examples/compiler_only_external_call.py
 
       - name: Run the reference suite
+        id: reference-suite
         env:
           TTLANG_EMULE_IMAGE: tt-lang-emule:candidate-${{ github.run_id }}
           TTLANG_EMULE_STACK_MANIFEST: candidate-stack.json

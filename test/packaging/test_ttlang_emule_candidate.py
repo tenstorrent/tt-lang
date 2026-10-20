@@ -5,15 +5,27 @@
 import json
 import os
 import subprocess
-import textwrap
 from pathlib import Path
 
 import pytest
+import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 STACK_TOOL = REPO_ROOT / "scripts" / "tt-lang-emule-stack.py"
 MANIFEST = REPO_ROOT / "config" / "tt-lang-emule-stack.json"
 WORKFLOW = REPO_ROOT / ".github" / "workflows" / "tt-lang-emule-candidate.yml"
+
+
+def load_workflow():
+    return yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+
+
+def candidate_step(workflow, step_id):
+    return next(
+        step
+        for step in workflow["jobs"]["candidate"]["steps"]
+        if step.get("id") == step_id
+    )
 
 
 def make_emulator(tmp_path, metal_commit):
@@ -149,36 +161,39 @@ def test_candidate_rejects_dirty_pin_without_leaving_output(tmp_path):
 
 
 def test_candidate_workflow_validates_without_publishing():
-    workflow = WORKFLOW.read_text(encoding="utf-8")
+    workflow_text = WORKFLOW.read_text(encoding="utf-8")
+    workflow = load_workflow()
+    # PyYAML reads the bare `on` key as the boolean true.
+    triggers = workflow.get("on", workflow.get(True))
 
-    assert "workflow_dispatch:" in workflow
-    assert "pull_request:" in workflow
-    assert "runs-on: mlir-large-runner-lang" in workflow
-    assert "TTLANG_EMULE_SOURCE_REPOSITORY" in workflow
-    assert "TTLANG_EMULE_SOURCE_TOKEN" in workflow
-    assert "packages: read" in workflow
-    assert workflow.count("fetch-depth: 0") == 2
-    assert "docker push" not in workflow
-    assert "packages: write" not in workflow
+    assert "workflow_dispatch" in triggers
+    assert "pull_request" in triggers
+    assert workflow["jobs"]["candidate"]["runs-on"] == "mlir-large-runner-lang"
+    assert workflow["permissions"]["packages"] == "read"
+    assert "TTLANG_EMULE_SOURCE_REPOSITORY" in workflow_text
+    assert "TTLANG_EMULE_SOURCE_TOKEN" in workflow_text
+    assert "docker push" not in workflow_text
+    assert "packages: write" not in workflow_text
+    full_history_checkouts = [
+        step
+        for job in workflow["jobs"].values()
+        for step in job["steps"]
+        if step.get("with", {}).get("fetch-depth") == 0
+    ]
+    assert len(full_history_checkouts) == 2
 
-    prepare_step = workflow.split(
-        "      - name: Prepare and validate the candidate manifest\n", 1
-    )[1].split("\n      - name:", 1)[0]
-    assert "EMULATOR_COMMIT: ${{ inputs.emulator_commit }}" in prepare_step
-    assert '--emulator-commit "$EMULATOR_COMMIT"' in prepare_step
-    assert '"${{ inputs.emulator_commit }}"' not in prepare_step
+    prepare_step = candidate_step(workflow, "prepare-candidate")
+    assert prepare_step["env"]["EMULATOR_COMMIT"] == "${{ inputs.emulator_commit }}"
+    assert '--emulator-commit "$EMULATOR_COMMIT"' in prepare_step["run"]
+    assert "inputs.emulator_commit" not in prepare_step["run"]
 
 
 def test_candidate_installs_once_and_runs_reference_programs_without_rebuilding(
     tmp_path,
 ):
-    workflow = WORKFLOW.read_text(encoding="utf-8")
-    install_step = workflow.split(
-        "      - name: Install and smoke-test the candidate\n", 1
-    )[1].split("\n      - name:", 1)[0]
-    reference_step = workflow.split("      - name: Run the reference suite\n", 1)[
-        1
-    ].split("\n      - name:", 1)[0]
+    workflow = load_workflow()
+    install_step = candidate_step(workflow, "install-candidate")
+    reference_step = candidate_step(workflow, "reference-suite")
 
     installer = tmp_path / "scripts" / "install-tt-lang-emule.sh"
     launcher = tmp_path / "bin" / "tt-lang-sim"
@@ -196,15 +211,12 @@ def test_candidate_installs_once_and_runs_reference_programs_without_rebuilding(
         executable.chmod(0o755)
 
     for step in (install_step, reference_step):
-        configuration, commands = step.split("        run: |\n", 1)
         environment = os.environ.copy()
         environment.pop("TTLANG_EMULE_REBUILD", None)
-        assignments = configuration.split("        env:\n", 1)[1]
-        for assignment in assignments.splitlines():
-            key, value = assignment.strip().split(": ", 1)
-            environment[key] = value.strip('"').replace("${{ github.run_id }}", "12345")
+        for key, value in step["env"].items():
+            environment[key] = value.replace("${{ github.run_id }}", "12345")
         result = subprocess.run(
-            ["bash", "-e", "-o", "pipefail", "-c", textwrap.dedent(commands)],
+            ["bash", "-e", "-o", "pipefail", "-c", step["run"]],
             cwd=tmp_path,
             env=environment,
             capture_output=True,
