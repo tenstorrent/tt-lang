@@ -165,14 +165,10 @@ def validate_image(values, inspection, arguments):
     expected = {
         "org.opencontainers.image.source": values["TTLANG_COMPILER_REPOSITORY"],
         "io.tenstorrent.tt-lang.compiler.commit": values["TTLANG_COMPILER_BASE_COMMIT"],
-        "io.tenstorrent.tt-lang.emule.commit": arguments.emulator_commit
-        or values["TTLANG_EMULE_COMMIT"],
-        "io.tenstorrent.tt-lang.metal.repository": arguments.metal_repository
-        or values["TTLANG_METAL_REPOSITORY"],
-        "io.tenstorrent.tt-lang.metal.commit": arguments.metal_commit
-        or values["TTLANG_METAL_COMMIT"],
-        "io.tenstorrent.tt-lang.runtime.base-image": arguments.base_image
-        or values["TTLANG_EMULE_BASE_IMAGE"],
+        "io.tenstorrent.tt-lang.emule.commit": values["TTLANG_EMULE_COMMIT"],
+        "io.tenstorrent.tt-lang.metal.repository": values["TTLANG_METAL_REPOSITORY"],
+        "io.tenstorrent.tt-lang.metal.commit": values["TTLANG_METAL_COMMIT"],
+        "io.tenstorrent.tt-lang.runtime.base-image": values["TTLANG_EMULE_BASE_IMAGE"],
         "io.tenstorrent.tt-lang.runtime.manifest-sha256": values[
             "TTLANG_EMULE_STACK_MANIFEST_SHA256"
         ],
@@ -213,10 +209,6 @@ def parse_args():
         "validate-image",
         help="validate Docker image inspection JSON from stdin and emit its image ID",
     )
-    image.add_argument("--emulator-commit")
-    image.add_argument("--metal-commit")
-    image.add_argument("--metal-repository")
-    image.add_argument("--base-image")
     image.add_argument("--platform", default="linux/amd64")
     return parser.parse_args()
 

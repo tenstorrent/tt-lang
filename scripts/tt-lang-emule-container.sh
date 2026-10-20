@@ -37,20 +37,13 @@ while IFS=$'\t' read -r _STACK_KEY _STACK_VALUE; do
     esac
 done <<< "$_STACK_OUTPUT"
 
-readonly _TT_EMULE_COMMIT="${TTLANG_EMULE_RUNTIME_COMMIT:-$_MANIFEST_EMULE_COMMIT}"
-readonly _TT_METAL_COMMIT="${TTLANG_EMULE_RUNTIME_METAL_COMMIT:-$_MANIFEST_METAL_COMMIT}"
+readonly _TT_EMULE_COMMIT="$_MANIFEST_EMULE_COMMIT"
+readonly _TT_METAL_COMMIT="$_MANIFEST_METAL_COMMIT"
 readonly _TT_EMULE_SOURCE_URL="${TTLANG_EMULE_RUNTIME_SOURCE_URL:-}"
-readonly _TT_METAL_SOURCE_URL="${TTLANG_EMULE_RUNTIME_METAL_SOURCE_URL:-$_MANIFEST_METAL_REPOSITORY}"
-readonly _BASE_IMAGE="${TTLANG_EMULE_RUNTIME_BASE_IMAGE:-$_MANIFEST_BASE_IMAGE}"
+readonly _TT_METAL_SOURCE_URL="$_MANIFEST_METAL_REPOSITORY"
+readonly _BASE_IMAGE="$_MANIFEST_BASE_IMAGE"
 readonly _REQUIRED_EMULE_FILE="$_MANIFEST_CLUSTER_DESCRIPTOR"
-readonly _PLATFORM="${TTLANG_EMULE_PLATFORM:-linux/amd64}"
-
-for _COMMIT in "$_TT_EMULE_COMMIT" "$_TT_METAL_COMMIT"; do
-    if [ "${#_COMMIT}" -ne 40 ] || [[ "$_COMMIT" == *[!0-9a-f]* ]]; then
-        echo "tt-lang-sim: emulator revisions must be full lowercase commit SHAs." >&2
-        exit 2
-    fi
-done
+readonly _PLATFORM="linux/amd64"
 
 _IMAGE_INPUT_ID="$(
     {
@@ -429,11 +422,7 @@ else
 fi
 if ! _VERIFIED_IMAGE="$(
     "$_PYTHON" "$_STACK_TOOL" --manifest "$_STACK_MANIFEST" validate-image \
-        --emulator-commit "$_TT_EMULE_COMMIT" \
-        --metal-commit "$_TT_METAL_COMMIT" \
-        --metal-repository "$_TT_METAL_SOURCE_URL" \
-        --base-image "$_BASE_IMAGE" --platform "$_PLATFORM" \
-        <<< "$_IMAGE_INSPECTION"
+        --platform "$_PLATFORM" <<< "$_IMAGE_INSPECTION"
 )"; then
     echo "tt-lang-sim: image ${_IMAGE} does not match the selected emulator stack." >&2
     echo "Select a matching image or reinstall with TTLANG_EMULE_REBUILD=1 scripts/install-tt-lang-emule.sh." >&2

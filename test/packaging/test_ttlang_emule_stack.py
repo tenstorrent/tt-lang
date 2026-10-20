@@ -154,36 +154,23 @@ def test_image_validation_rejects_an_unusable_image_id(image_inspection, image_i
     assert result.stdout == ""
 
 
-@pytest.mark.parametrize(
-    "option,label,value",
-    [
-        ("--emulator-commit", "io.tenstorrent.tt-lang.emule.commit", "b" * 40),
-        ("--metal-commit", "io.tenstorrent.tt-lang.metal.commit", "c" * 40),
-        (
-            "--metal-repository",
-            "io.tenstorrent.tt-lang.metal.repository",
-            "https://github.com/tenstorrent/experimental-metal.git",
-        ),
-        (
-            "--base-image",
-            "io.tenstorrent.tt-lang.runtime.base-image",
-            "candidate@sha256:" + "d" * 64,
-        ),
-        ("--platform", "io.tenstorrent.tt-lang.runtime.platform", "linux/amd64/v2"),
-    ],
-)
-def test_image_validation_checks_resolved_runtime_overrides(
-    image_inspection, option, label, value
-):
+def test_image_validation_checks_the_selected_platform(image_inspection):
+    label = "io.tenstorrent.tt-lang.runtime.platform"
     result = run_stack(
-        "validate-image", option, value, input_text=json.dumps(image_inspection)
+        "validate-image",
+        "--platform",
+        "linux/arm64",
+        input_text=json.dumps(image_inspection),
     )
     assert result.returncode == 1
     assert label in result.stderr
 
-    image_inspection[0]["Config"]["Labels"][label] = value
+    image_inspection[0]["Config"]["Labels"][label] = "linux/arm64"
     result = run_stack(
-        "validate-image", option, value, input_text=json.dumps(image_inspection)
+        "validate-image",
+        "--platform",
+        "linux/arm64",
+        input_text=json.dumps(image_inspection),
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == image_inspection[0]["Id"]

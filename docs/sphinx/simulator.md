@@ -123,23 +123,6 @@ the cross-repository source from the `TTLANG_EMULE_SOURCE_REPOSITORY` repository
 variable and `TTLANG_EMULE_SOURCE_TOKEN` secret, so credentials and internal
 source coordinates are not baked into the runtime image.
 
-For lower-level experiments, maintainers can override individual runtime inputs:
-
-| Environment variable | Experimental input |
-|---|---|
-| `TTLANG_EMULE_RUNTIME_COMMIT` | Emulator commit, as a full lowercase SHA |
-| `TTLANG_EMULE_RUNTIME_METAL_COMMIT` | tt-metal commit, as a full lowercase SHA |
-| `TTLANG_EMULE_RUNTIME_METAL_SOURCE_URL` | Repository supplying the selected tt-metal commit |
-| `TTLANG_EMULE_RUNTIME_BASE_IMAGE` | Base container image supplying the compiler toolchain |
-| `TTLANG_EMULE_PLATFORM` | Docker build and execution platform |
-
-Use these overrides to investigate candidate combinations. The image build
-requires the selected Metal commit to match the emulator's Metal pin, and the
-compiler requires its matching LLVM toolchain. The supported runtime targets
-`linux/amd64`; another platform requires a runtime port as well as a platform
-setting. The current TT-Lang checkout supplies the compiler source. Set the same
-overrides during installation and execution so both select the same runtime.
-
 Candidate preparation and source validation check revisions and required files.
 Evaluate kernel correctness with the compiler tests and representative workloads
 before proposing a supported-manifest update. Collect fresh results for each
