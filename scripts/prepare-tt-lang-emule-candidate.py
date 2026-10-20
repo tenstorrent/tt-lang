@@ -86,11 +86,6 @@ def parse_args():
     parser.add_argument("--emulator-source", type=Path, required=True)
     parser.add_argument("--emulator-commit", required=True)
     parser.add_argument("--output", type=Path)
-    parser.add_argument(
-        "--check",
-        action="store_true",
-        help="require the input manifest to already match the candidate",
-    )
     return parser.parse_args()
 
 
@@ -140,32 +135,23 @@ def main():
         rendered = render_candidate(
             manifest, compiler_commit, emulator_commit, metal_commit
         )
-        if arguments.check:
-            if arguments.output is not None:
-                raise CandidateError("--check and --output cannot be used together")
-            if arguments.manifest.read_text(encoding="utf-8") != rendered:
-                raise CandidateError("stack manifest does not match the candidate")
-            output = arguments.manifest
-            validation_manifest = output
-        else:
-            output = arguments.output or arguments.manifest
-            with tempfile.NamedTemporaryFile(
-                mode="w",
-                encoding="utf-8",
-                dir=output.parent,
-                prefix=f".{output.name}.",
-                delete=False,
-            ) as candidate_file:
-                candidate_file.write(rendered)
-                temporary_output = Path(candidate_file.name)
-            validation_manifest = temporary_output
+        output = arguments.output or arguments.manifest
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=output.parent,
+            prefix=f".{output.name}.",
+            delete=False,
+        ) as candidate_file:
+            candidate_file.write(rendered)
+            temporary_output = Path(candidate_file.name)
 
         validation = subprocess.run(
             [
                 sys.executable,
                 str(STACK_TOOL),
                 "--manifest",
-                str(validation_manifest),
+                str(temporary_output),
                 "validate",
                 "--compiler-source",
                 str(arguments.compiler_source),
@@ -181,9 +167,8 @@ def main():
             raise CandidateError(
                 validation.stderr.strip() or "candidate stack validation failed"
             )
-        if temporary_output is not None:
-            os.replace(temporary_output, output)
-            temporary_output = None
+        os.replace(temporary_output, output)
+        temporary_output = None
         print(
             f"Prepared stack candidate: compiler={compiler_commit} "
             f"emulator={emulator_commit} metal={metal_commit} output={output}"
