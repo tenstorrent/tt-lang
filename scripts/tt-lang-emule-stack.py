@@ -6,12 +6,15 @@
 import argparse
 import hashlib
 import json
+import os
 import re
 import subprocess
 import sys
+import tempfile
 from pathlib import Path, PurePosixPath
 
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
 SHA_PATTERN = re.compile(r"[0-9a-f]{40}")
 IMAGE_PATTERN = re.compile(r"[^@\s]+@sha256:[0-9a-f]{64}")
 
@@ -33,11 +36,14 @@ def require_string(mapping, key, name):
     return value
 
 
-def require_sha(mapping, key, name):
-    value = require_string(mapping, key, name)
+def check_sha(value, name):
     if SHA_PATTERN.fullmatch(value) is None:
-        raise StackError(f"{name}.{key} must be a full lowercase commit SHA")
+        raise StackError(f"{name} must be a full lowercase commit SHA")
     return value
+
+
+def require_sha(mapping, key, name):
+    return check_sha(require_string(mapping, key, name), f"{name}.{key}")
 
 
 def require_repository(mapping, name):
@@ -156,6 +162,49 @@ def validate_sources(values, compiler_source, emulator_source):
             )
 
 
+def prepare_candidate(manifest, arguments):
+    compiler_commit = check_sha(
+        arguments.compiler_commit
+        or run_git(arguments.compiler_source, "rev-parse", "HEAD"),
+        "compiler commit",
+    )
+    emulator_commit = check_sha(arguments.emulator_commit, "emulator commit")
+    emulator_source = arguments.emulator_source
+    if run_git(emulator_source, "status", "--porcelain", "--untracked-files=all"):
+        raise StackError("emulator checkout must not contain local changes")
+    metal_commit = first_pin(emulator_source / "tt-metal-pin.txt")
+
+    try:
+        stack = json.loads(manifest.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise StackError(f"cannot read stack manifest {manifest}: {error}") from error
+    stack["compiler"]["base_commit"] = compiler_commit
+    stack["emulator"]["commit"] = emulator_commit
+    stack["metal"]["commit"] = metal_commit
+
+    output = arguments.output or manifest
+    with tempfile.NamedTemporaryFile(
+        mode="w",
+        encoding="utf-8",
+        dir=output.parent,
+        prefix=f".{output.name}.",
+        delete=False,
+    ) as candidate_file:
+        candidate_file.write(json.dumps(stack, indent=2) + "\n")
+        candidate = Path(candidate_file.name)
+    try:
+        validate_sources(
+            load_stack(candidate), arguments.compiler_source, emulator_source
+        )
+        os.replace(candidate, output)
+    finally:
+        candidate.unlink(missing_ok=True)
+    return (
+        f"Prepared stack candidate: compiler={compiler_commit} "
+        f"emulator={emulator_commit} metal={metal_commit} output={output}"
+    )
+
+
 def validate_image(values, inspection, arguments):
     if not isinstance(inspection, list) or len(inspection) != 1:
         raise StackError("image inspection must contain exactly one image")
@@ -210,6 +259,17 @@ def parse_args():
         help="validate Docker image inspection JSON from stdin and emit its image ID",
     )
     image.add_argument("--platform", default="linux/amd64")
+    prepare = subparsers.add_parser(
+        "prepare",
+        help="write a candidate manifest for an exact emulator checkout",
+    )
+    prepare.add_argument("--compiler-source", type=Path, default=REPO_ROOT)
+    prepare.add_argument("--compiler-commit")
+    prepare.add_argument("--emulator-source", type=Path, required=True)
+    prepare.add_argument("--emulator-commit", required=True)
+    prepare.add_argument(
+        "--output", type=Path, help="candidate path (default: replace --manifest)"
+    )
     return parser.parse_args()
 
 
@@ -230,6 +290,10 @@ def main():
             print(validate_image(values, inspection, arguments))
             return 0
 
+        if arguments.command == "prepare":
+            print(prepare_candidate(arguments.manifest, arguments))
+            return 0
+
         validate_sources(values, arguments.compiler_source, arguments.emulator_source)
         if not arguments.quiet:
             print(
@@ -239,7 +303,7 @@ def main():
                 f"metal={values['TTLANG_METAL_COMMIT']}"
             )
         return 0
-    except StackError as error:
+    except (StackError, OSError) as error:
         print(f"tt-lang-emule-stack: {error}", file=sys.stderr)
         return 1
 

@@ -8,7 +8,6 @@ on:
     paths:
       - ".github/workflows/tt-lang-emule-candidate.yml"
       - "config/tt-lang-emule-*.json"
-      - "scripts/prepare-tt-lang-emule-candidate.py"
       - "scripts/tt-lang-emule-stack.py"
       - "test/packaging/test_ttlang_emule_*"
   workflow_dispatch:
@@ -90,7 +89,8 @@ jobs:
         env:
           EMULATOR_COMMIT: ${{ inputs.emulator_commit }}
         run: |
-          python3 scripts/prepare-tt-lang-emule-candidate.py \
+          python3 scripts/tt-lang-emule-stack.py \
+            --manifest config/tt-lang-emule-stack.json prepare \
             --emulator-source .candidate-emulator \
             --emulator-commit "$EMULATOR_COMMIT" \
             --output candidate-stack.json

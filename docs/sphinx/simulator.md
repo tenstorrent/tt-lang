@@ -97,7 +97,8 @@ emulator checkout. The tool reads that checkout's Metal pin, records the current
 compiler commit, and runs the same source validations as the launcher:
 
 ```bash
-python3 scripts/prepare-tt-lang-emule-candidate.py \
+python3 scripts/tt-lang-emule-stack.py \
+  --manifest config/tt-lang-emule-stack.json prepare \
   --emulator-source /path/to/emulator \
   --emulator-commit FULL_COMMIT_SHA \
   --output candidate-stack.json

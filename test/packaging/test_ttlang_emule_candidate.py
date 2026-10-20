@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-PREPARE = REPO_ROOT / "scripts" / "prepare-tt-lang-emule-candidate.py"
+STACK_TOOL = REPO_ROOT / "scripts" / "tt-lang-emule-stack.py"
 MANIFEST = REPO_ROOT / "config" / "tt-lang-emule-stack.json"
 WORKFLOW = REPO_ROOT / ".github" / "workflows" / "tt-lang-emule-candidate.yml"
 
@@ -56,9 +56,10 @@ def run_prepare(source, commit, *arguments):
     return subprocess.run(
         [
             "python3",
-            str(PREPARE),
+            str(STACK_TOOL),
             "--manifest",
             str(MANIFEST),
+            "prepare",
             "--compiler-source",
             str(REPO_ROOT),
             "--emulator-source",
