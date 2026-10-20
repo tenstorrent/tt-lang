@@ -1,14 +1,9 @@
 # Compiler suite on tt-emule
 
-This is the September 19, 2026 test snapshot for
-[`kostas/tt-lang-sim-emule-consolidated`](https://github.com/tenstorrent/tt-lang/tree/kostas/tt-lang-sim-emule-consolidated),
-the branch proposed by [PR #1063](https://github.com/tenstorrent/tt-lang/pull/1063).
-It ran on the local macOS machine inside `linux/amd64` Docker, using the pinned
+This page summarizes a full compiler-suite run on tt-emule on September 19,
+2026. It ran on macOS inside `linux/amd64` Docker, using the pinned
 tt-emule/tt-metal stack and P150 target in `config/tt-lang-emule-stack.json`.
-The compiler checkout was `e81a5ac35d023cc385014013c22f9e6ecda761fc`, with the
-installer memory-limit fix subsequently committed on this branch. This is a
-historical full-suite result, not a claim that every later branch revision has
-had the complete suite rerun.
+Later revisions have not necessarily rerun the complete suite.
 
 ## What was run
 
