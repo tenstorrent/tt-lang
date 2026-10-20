@@ -355,12 +355,9 @@ if [ "$_BUILD_IMAGE" -eq 1 ]; then
         echo "  found:  ${_EMULE_SOURCE_COMMIT:-not a Git checkout}" >&2
         exit 1
     fi
-    if [ "$_TT_EMULE_COMMIT" = "$_MANIFEST_EMULE_COMMIT" ] && \
-       [ "$_TT_METAL_COMMIT" = "$_MANIFEST_METAL_COMMIT" ]; then
-        "$_PYTHON" "$_STACK_TOOL" --manifest "$_STACK_MANIFEST" validate \
-            --compiler-source "$_REPO_ROOT" --emulator-source "$_EMULE_SOURCE" \
-            --quiet
-    fi
+    "$_PYTHON" "$_STACK_TOOL" --manifest "$_STACK_MANIFEST" validate \
+        --compiler-source "$_REPO_ROOT" --emulator-source "$_EMULE_SOURCE" \
+        --quiet
     _TEMP_EMULE_CONTEXT="$(mktemp -d "${TMPDIR:-/tmp}/tt-lang-emule-context.XXXXXX")"
     git -C "$_EMULE_SOURCE" archive --format=tar "$_TT_EMULE_COMMIT" |
         tar -xf - -C "$_TEMP_EMULE_CONTEXT"
@@ -368,25 +365,6 @@ if [ "$_BUILD_IMAGE" -eq 1 ]; then
         echo "tt-lang-sim: selected emulator does not provide the required P150 descriptor." >&2
         echo "  missing: ${_REQUIRED_EMULE_FILE}" >&2
         echo "  Update the supported stack manifest before installing another runtime." >&2
-        exit 1
-    fi
-    if ! _EMULE_METAL_PIN="$(
-            awk '
-                /^[[:space:]]*#/ { next }
-                /^[[:space:]]*$/ { next }
-                { gsub(/^[[:space:]]+|[[:space:]]+$/, ""); print; exit }
-            ' "${_TEMP_EMULE_CONTEXT}/tt-metal-pin.txt" 2>/dev/null
-        )"; then
-        _EMULE_METAL_PIN=""
-    fi
-    if [ "${#_EMULE_METAL_PIN}" -ne 40 ] || \
-       [[ "$_EMULE_METAL_PIN" == *[!0-9a-f]* ]]; then
-        echo "tt-lang-sim: selected emulator has an invalid Metal pin." >&2
-        exit 1
-    fi
-    if [ "$_EMULE_METAL_PIN" != "$_TT_METAL_COMMIT" ]; then
-        echo "tt-lang-sim: selected emulator pins Metal ${_EMULE_METAL_PIN}." >&2
-        echo "  selected Metal: ${_TT_METAL_COMMIT}" >&2
         exit 1
     fi
     _TEMP_STACK_CONTEXT="$(mktemp -d "${TMPDIR:-/tmp}/tt-lang-stack-context.XXXXXX")"
