@@ -245,6 +245,12 @@ struct DFBPerNodeLifetime {
   /// Valid only when `conservativeConfigurationEpochsClassified`; otherwise
   /// every configuration may contain state.
   SmallVector<std::optional<int64_t>> conservativeConfigurationEpochs;
+  /// The subset of `conservativeConfigurationEpochs` that the node may enter,
+  /// in a non-repeated reconfiguration sequence, with state retained across a
+  /// reconfiguration that does not discard it. Installing such a configuration
+  /// on the node would reset that state. Never contains the node's first
+  /// configuration.
+  SmallVector<int64_t> retainedConfigurationEpochs;
   bool conservativeConfigurationEpochsClassified = false;
   DFBLifecycleCompletionProof completionProof;
 };

@@ -32,6 +32,20 @@ _html_escape() {
     printf '%s' "$s"
 }
 
+# Percent-encode an S3 key name for an href. S3 decodes a literal '+' in a URL
+# path as a space, so browsers following an unencoded +light wheel link get 404.
+_s3_href_quote() {
+    local LC_ALL=C s="$1" out="" ch i
+    for ((i = 0; i < ${#s}; i++)); do
+        ch="${s:i:1}"
+        case "$ch" in
+            [A-Za-z0-9._~/-]) out+="$ch" ;;
+            *) printf -v ch '%%%02X' "'$ch"; out+="$ch" ;;
+        esac
+    done
+    printf '%s' "$out"
+}
+
 # Wrap anchor lines (read from stdin) in the Package-Index HTML skeleton.
 s3_render_index() {
     local title; title="$(_html_escape "$1")"
@@ -67,7 +81,7 @@ s3_child_anchors() {
         esac
         shift
     done
-    local bucket="$1" prefix="$2" listing col1 col2 col3 name esc
+    local bucket="$1" prefix="$2" listing col1 col2 col3 name esc href
     listing="$(aws s3 ls "s3://${bucket}/${prefix}/")" || return 1
     # shellcheck disable=SC2034
     while read -r col1 col2 col3 name; do
@@ -78,9 +92,9 @@ s3_child_anchors() {
                 "$hidden_stable_wheels" == true &&
                 "$name" == *.whl ]] &&
                 _s3_is_stable_release_wheel_name "$name"; then
-                esc="$(_html_escape "$name")"
+                esc="$(_html_escape "$name")"; href="$(_s3_href_quote "$name")"
                 # Absolute href: relative would 404 from the no-slash root alias.
-                printf '<a href="%s/%s/%s" style="display:none" data-ttlang-hidden-stable-wheel="true">%s</a>\n' "$S3_INDEX_BASE_URL" "$prefix" "$esc" "$esc"
+                printf '<a href="%s/%s/%s" style="display:none" data-ttlang-hidden-stable-wheel="true">%s</a>\n' "$S3_INDEX_BASE_URL" "$prefix" "$href" "$esc"
                 continue
             fi
             [[ "$dirs_only" == false ]] || continue
@@ -88,11 +102,11 @@ s3_child_anchors() {
             # slash-key object itself, index.html, attempt.json markers, etc.
             [[ "$name" == *.whl ]] || _s3_is_readme_name "$name" || continue
         fi
-        esc="$(_html_escape "$name")"
+        esc="$(_html_escape "$name")"; href="$(_s3_href_quote "$name")"
         if [[ "$col1" == "PRE" ]]; then
-            printf '<a href="%s">%s</a><br>\n' "$esc" "$esc"
+            printf '<a href="%s">%s</a><br>\n' "$href" "$esc"
         else
-            printf '<a href="%s/%s/%s">%s</a><br>\n' "$S3_INDEX_BASE_URL" "$prefix" "$esc" "$esc"
+            printf '<a href="%s/%s/%s">%s</a><br>\n' "$S3_INDEX_BASE_URL" "$prefix" "$href" "$esc"
         fi
     done <<< "$listing"
 }
@@ -106,16 +120,16 @@ s3_local_wheel_anchors() {
         include_readme=false
         shift
     fi
-    local prefix="$1" dist_dir="$2" f name esc digest
+    local prefix="$1" dist_dir="$2" f name esc href digest
     if [[ "$include_readme" == true ]]; then
-        esc="$(_html_escape "$S3_INDEX_README_NAME")"
-        printf '<a href="%s/%s/%s">%s</a><br>\n' "$S3_INDEX_BASE_URL" "$prefix" "$esc" "$esc"
+        esc="$(_html_escape "$S3_INDEX_README_NAME")"; href="$(_s3_href_quote "$S3_INDEX_README_NAME")"
+        printf '<a href="%s/%s/%s">%s</a><br>\n' "$S3_INDEX_BASE_URL" "$prefix" "$href" "$esc"
     fi
     for f in "$dist_dir"/*.whl; do
         [[ -e "$f" ]] || continue
-        name="$(basename "$f")"; esc="$(_html_escape "$name")"
+        name="$(basename "$f")"; esc="$(_html_escape "$name")"; href="$(_s3_href_quote "$name")"
         digest="$(sha256sum "$f" | awk '{print $1}')"
-        printf '<a href="%s/%s/%s#sha256=%s">%s</a><br>\n' "$S3_INDEX_BASE_URL" "$prefix" "$esc" "$digest" "$esc"
+        printf '<a href="%s/%s/%s#sha256=%s">%s</a><br>\n' "$S3_INDEX_BASE_URL" "$prefix" "$href" "$digest" "$esc"
     done
 }
 
@@ -174,7 +188,7 @@ s3_regenerate_index() {
 _s3_top_level_wheel_view_anchors() {
     local bucket="$1" view_kind="$2" selector="${3:-}"
     local year_month="${selector/-/}"
-    local listing col1 col2 col3 name esc
+    local listing col1 col2 col3 name esc href
     listing="$(aws s3 ls "s3://${bucket}/tt-lang/")" || return 1
     # shellcheck disable=SC2034
     while read -r col1 col2 col3 name; do
@@ -192,8 +206,8 @@ _s3_top_level_wheel_view_anchors() {
                 return 2
                 ;;
         esac
-        esc="$(_html_escape "$name")"
-        printf '<a href="%s/tt-lang/%s">%s</a><br>\n' "$S3_INDEX_BASE_URL" "$esc" "$esc"
+        esc="$(_html_escape "$name")"; href="$(_s3_href_quote "$name")"
+        printf '<a href="%s/tt-lang/%s">%s</a><br>\n' "$S3_INDEX_BASE_URL" "$href" "$esc"
     done <<< "$listing"
 }
 
