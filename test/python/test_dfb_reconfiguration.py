@@ -263,6 +263,51 @@ def _make_live_crossing_operation(data_format):
     return live_crossing_operation
 
 
+def _make_node_crossing_operation(data_format):
+    # Node 0 completes one lifecycle on each side of the boundary; node 1 pushes
+    # a block before it and writes it out after it.
+    compute_kernel = ttl.Kernel(ttl.KernelKind.COMPUTE)
+    reader_kernel = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
+    writer_kernel = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
+    boundary = ttl.DFBReconfiguration(
+        participants=(compute_kernel, reader_kernel, writer_kernel),
+        discard_dfb_state=False,
+    )
+
+    @ttl.operation(grid=(2, 1))
+    def node_crossing_operation(node_input, node_output):
+        crossing = ttl.make_dfb(data_format, shape=(1, 1), block_count=2)
+
+        @ttl.compute(kernel=compute_kernel)
+        def node_crossing_compute():
+            ttl.reconfigure_dfbs(boundary)
+
+        @ttl.datamovement(kernel=reader_kernel)
+        def node_crossing_reader():
+            with crossing.reserve() as destination:
+                ttl.copy(node_input[0, 0], destination).wait()
+            ttl.reconfigure_dfbs(boundary)
+            node_x, _node_y = ttl.node(dims=2)
+            if node_x == 0:
+                with crossing.reserve() as destination:
+                    ttl.copy(node_input[0, 1], destination).wait()
+
+        @ttl.datamovement(kernel=writer_kernel)
+        def node_crossing_writer():
+            node_x, _node_y = ttl.node(dims=2)
+            if node_x == 0:
+                with crossing.wait() as source:
+                    ttl.copy(source, node_output[0, 0]).wait()
+            ttl.reconfigure_dfbs(boundary)
+            with crossing.wait() as source:
+                if node_x == 0:
+                    ttl.copy(source, node_output[0, 1]).wait()
+                else:
+                    ttl.copy(source, node_output[0, 2]).wait()
+
+    return node_crossing_operation
+
+
 def _make_conditional_reconfiguration_operation(data_format, enabled_column):
     compute_kernel = ttl.Kernel(ttl.KernelKind.COMPUTE)
     reader_kernel = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
@@ -1088,6 +1133,39 @@ def test_live_payload_crosses_reconfiguration_and_cached_execution(
 
     for actual, expected in zip(cached_outputs, cached_inputs):
         _assert_output(actual, expected, dtype)
+
+
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "f32"])
+@pytest.mark.parametrize("to_device", [to_dram, to_l1], ids=["dram", "l1"])
+def test_node_retains_payload_across_reconfiguration_without_state_discard(
+    device, dtype, to_device, monkeypatch, tmp_path
+):
+    if ttl_api._detect_device_arch(device) != "blackhole":
+        pytest.skip("requires Blackhole DFB reconfiguration support")
+
+    data_format = "bf16" if dtype == torch.bfloat16 else "float32"
+    operation = _make_node_crossing_operation(data_format)
+    monkeypatch.setenv("TTLANG_FINAL_MLIR", str(tmp_path / "node_crossing.mlir"))
+
+    node_input = (
+        torch.arange(32 * 128, dtype=torch.float32)
+        .reshape(32, 128)
+        .remainder(239)
+        .to(dtype)
+    )
+    node_output = to_device(torch.zeros_like(node_input), device)
+    operation(to_device(node_input, device), node_output)
+
+    # The configuration entered at the boundary is installed on node (0, 0)
+    # only; node (1, 0) keeps its pointers and the block it pushed before.
+    final_mlir = (tmp_path / "node_crossing.mlir").read_text()
+    assert "entry_reconfiguration = 0 : i64" in final_mlir
+    assert "storage_segments = [{nodes = [[0, 0]]}]" in final_mlir
+    expected = torch.zeros_like(node_input)
+    expected[:, 0:32] = node_input[:, 0:32]
+    expected[:, 32:64] = node_input[:, 32:64]
+    expected[:, 64:96] = node_input[:, 0:32]
+    _assert_output(node_output, expected, dtype)
 
 
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "f32"])

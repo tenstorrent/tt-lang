@@ -91,3 +91,22 @@ func.func @local_tensor_accessor_constructor()
   %local = ttkernel.LocalTensorAccessor(%bank_base) : (i32) -> !ttkernel.LocalTensorAccessor
   return
 }
+
+// -----
+
+// User-supplied opaque callees preserve relative and global qualification.
+// EMITC-LABEL: func.func @user_experimental_callees
+// EMITC: emitc.call_opaque "experimental::user_helper"
+// EMITC-NEXT: emitc.call_opaque "::experimental::user_helper"
+// CPP-LABEL: #include "user_experimental.hpp"
+// CPP: void kernel_main() {
+// CPP-NEXT: {{^ *}}experimental::user_helper();
+// CPP-NEXT: {{^ *}}::experimental::user_helper();
+func.func @user_experimental_callees()
+    attributes {ttkernel.thread = #ttkernel.thread<noc>} {
+  ttkernel.opaque_call "experimental::user_helper" ()
+      {header = "user_experimental.hpp"} : () -> ()
+  ttkernel.opaque_call "::experimental::user_helper" ()
+      {header = "user_experimental.hpp"} : () -> ()
+  return
+}

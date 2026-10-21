@@ -2450,6 +2450,12 @@ static FailureOr<PhysicalAllocationCandidate> computeAllocationWithinL1(
   return allocation;
 }
 
+static bool hasSameGeometry(const DFBConfigurationEpochDescriptor &lhs,
+                            const DFBConfigurationEpochDescriptor &rhs) {
+  return lhs.numTiles == rhs.numTiles && lhs.elementType == rhs.elementType &&
+         lhs.pageSize == rhs.pageSize && lhs.blockCount == rhs.blockCount;
+}
+
 /// Builds the dense runtime descriptor table without modifying IR.
 static FailureOr<DFBPhysicalAllocationDescriptorList>
 buildDescriptors(ArrayRef<DFBPhysicalIndexAssignment> assignments,
@@ -2558,6 +2564,13 @@ buildDescriptors(ArrayRef<DFBPhysicalIndexAssignment> assignments,
     descriptor.allocationDomain = allocationDomainByIndex.lookup(physicalIndex);
     SmallVector<const DFBPhysicalIndexAssignment *>
         configurationRepresentatives;
+    auto findConfiguration = [&](std::optional<int64_t> ordinal) {
+      return llvm::find_if(
+          descriptor.epochConfigurations,
+          [&](const DFBConfigurationEpochDescriptor &configuration) {
+            return configuration.entryReconfigurationOrdinal == ordinal;
+          });
+    };
     auto addConfiguration =
         [&](const DFBPhysicalIndexAssignment &candidate,
             std::optional<int64_t> entryReconfigurationOrdinal,
@@ -2584,28 +2597,19 @@ buildDescriptors(ArrayRef<DFBPhysicalIndexAssignment> assignments,
         return failure();
       }
 
-      int32_t numTiles = static_cast<int32_t>(*pagesPerBlock);
-      int32_t pageSize = static_cast<int32_t>(*pageSizeBytes);
-      int32_t blockCount = static_cast<int32_t>(dfbType.getBlockCount());
-      auto configurationIt = llvm::find_if(
-          descriptor.epochConfigurations,
-          [&](const DFBConfigurationEpochDescriptor &configuration) {
-            return configuration.entryReconfigurationOrdinal ==
-                   entryReconfigurationOrdinal;
-          });
+      DFBConfigurationEpochDescriptor configuration{
+          entryReconfigurationOrdinal,
+          static_cast<int32_t>(*pagesPerBlock),
+          dfbType.getElementType(),
+          static_cast<int32_t>(*pageSizeBytes),
+          static_cast<int32_t>(dfbType.getBlockCount()),
+          {}};
+      auto configurationIt = findConfiguration(entryReconfigurationOrdinal);
       if (configurationIt == descriptor.epochConfigurations.end()) {
-        descriptor.epochConfigurations.push_back({entryReconfigurationOrdinal,
-                                                  numTiles,
-                                                  dfbType.getElementType(),
-                                                  pageSize,
-                                                  blockCount,
-                                                  {}});
+        descriptor.epochConfigurations.push_back(configuration);
         configurationRepresentatives.push_back(&candidate);
         configurationIt = std::prev(descriptor.epochConfigurations.end());
-      } else if (configurationIt->numTiles != numTiles ||
-                 configurationIt->elementType != dfbType.getElementType() ||
-                 configurationIt->pageSize != pageSize ||
-                 configurationIt->blockCount != blockCount) {
+      } else if (!hasSameGeometry(*configurationIt, configuration)) {
         unsigned configurationIndex = std::distance(
             descriptor.epochConfigurations.begin(), configurationIt);
         const DFBPhysicalIndexAssignment *representative =
@@ -2645,10 +2649,10 @@ buildDescriptors(ArrayRef<DFBPhysicalIndexAssignment> assignments,
           return failure();
         }
         if (*candidateBytes > *representativeBytes) {
-          configurationIt->numTiles = numTiles;
-          configurationIt->elementType = dfbType.getElementType();
-          configurationIt->pageSize = pageSize;
-          configurationIt->blockCount = blockCount;
+          configurationIt->numTiles = configuration.numTiles;
+          configurationIt->elementType = configuration.elementType;
+          configurationIt->pageSize = configuration.pageSize;
+          configurationIt->blockCount = configuration.blockCount;
           configurationRepresentatives[configurationIndex] = &candidate;
         }
       }
@@ -2696,6 +2700,15 @@ buildDescriptors(ArrayRef<DFBPhysicalIndexAssignment> assignments,
                                        !lifetime.epochs.empty();
                               });
         });
+    // A configuration that an unproved node enters with retained state is
+    // installed on that node only when its geometry differs from the
+    // descriptor the node currently holds; otherwise the node keeps its
+    // descriptor, pointers, and counters across the reconfiguration.
+    struct RetainedConfigurationEntry {
+      const DFBPhysicalIndexAssignment *candidate;
+      const DFBPerNodeLifetime *lifetime;
+    };
+    SmallVector<RetainedConfigurationEntry> retainedConfigurationEntries;
     for (const DFBPhysicalIndexAssignment *indexedCandidate :
          assignmentsIt->second) {
       const DFBPhysicalIndexAssignment &candidate = *indexedCandidate;
@@ -2755,9 +2768,17 @@ buildDescriptors(ArrayRef<DFBPhysicalIndexAssignment> assignments,
           if (lifetime.conservativeConfigurationEpochsClassified) {
             for (std::optional<int64_t> ordinal :
                  lifetime.conservativeConfigurationEpochs) {
+              if (ordinal &&
+                  llvm::is_contained(lifetime.retainedConfigurationEpochs,
+                                     *ordinal)) {
+                continue;
+              }
               if (failed(addConfiguration(candidate, ordinal, nodeDomain))) {
                 return failure();
               }
+            }
+            if (!lifetime.retainedConfigurationEpochs.empty()) {
+              retainedConfigurationEntries.push_back({&candidate, &lifetime});
             }
           } else {
             if (failed(addConfiguration(candidate, std::nullopt, nodeDomain))) {
@@ -2789,6 +2810,35 @@ buildDescriptors(ArrayRef<DFBPhysicalIndexAssignment> assignments,
           failed(addConfiguration(candidate, std::nullopt,
                                   candidate.launchDomain))) {
         return failure();
+      }
+    }
+
+    for (const RetainedConfigurationEntry &entry :
+         retainedConfigurationEntries) {
+      LaunchNodeDomain nodeDomain;
+      nodeDomain.nodes.insert(entry.lifetime->node);
+      auto heldIt = descriptor.epochConfigurations.end();
+      for (std::optional<int64_t> ordinal :
+           entry.lifetime->conservativeConfigurationEpochs) {
+        auto configurationIt = findConfiguration(ordinal);
+        if (!ordinal ||
+            !llvm::is_contained(entry.lifetime->retainedConfigurationEpochs,
+                                *ordinal)) {
+          assert(configurationIt != descriptor.epochConfigurations.end() &&
+                 "every non-retained epoch has an installed configuration");
+          heldIt = configurationIt;
+          continue;
+        }
+        assert(heldIt != descriptor.epochConfigurations.end() &&
+               "a node enters its first configuration without retained state");
+        if (configurationIt == descriptor.epochConfigurations.end() ||
+            hasSameGeometry(*heldIt, *configurationIt)) {
+          continue;
+        }
+        if (failed(addConfiguration(*entry.candidate, ordinal, nodeDomain))) {
+          return failure();
+        }
+        heldIt = findConfiguration(ordinal);
       }
     }
 
