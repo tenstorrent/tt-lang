@@ -135,9 +135,6 @@ def test_image_validation_emits_the_immutable_image_id(image_inspection, image_i
         "io.tenstorrent.tt-lang.runtime.base-image",
         "io.tenstorrent.tt-lang.runtime.manifest-sha256",
         "io.tenstorrent.tt-lang.runtime.platform",
-        "io.tenstorrent.tt-lang.target.name",
-        "io.tenstorrent.tt-lang.target.cluster-descriptor",
-        "io.tenstorrent.tt-lang.target.mesh-device",
     ],
 )
 def test_image_validation_rejects_missing_or_mismatched_labels(

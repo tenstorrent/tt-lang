@@ -229,6 +229,8 @@ def validate_image(values, inspection, arguments):
     image = require_mapping(inspection[0], "image")
     config = require_mapping(image.get("Config"), "image.Config")
     labels = require_mapping(config.get("Labels"), "image.Config.Labels")
+    # The target labels name the profile selected at build time. The launcher
+    # selects the target at run time, so one image serves every target.
     expected = {
         "org.opencontainers.image.source": values["TTLANG_COMPILER_REPOSITORY"],
         "io.tenstorrent.tt-lang.compiler.commit": values["TTLANG_COMPILER_BASE_COMMIT"],
@@ -240,11 +242,6 @@ def validate_image(values, inspection, arguments):
             "TTLANG_EMULE_STACK_MANIFEST_SHA256"
         ],
         "io.tenstorrent.tt-lang.runtime.platform": arguments.platform,
-        "io.tenstorrent.tt-lang.target.name": values["TTLANG_EMULE_TARGET"],
-        "io.tenstorrent.tt-lang.target.cluster-descriptor": values[
-            "TTLANG_EMULE_CLUSTER_DESCRIPTOR"
-        ],
-        "io.tenstorrent.tt-lang.target.mesh-device": values["TTLANG_EMULE_MESH_DEVICE"],
     }
     mismatches = [
         f"{key}: expected {value!r}, found {labels.get(key)!r}"

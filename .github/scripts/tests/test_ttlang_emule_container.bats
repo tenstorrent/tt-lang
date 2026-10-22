@@ -472,6 +472,24 @@ q1|quasar-q1|quasar_Q1|
 EOF
 }
 
+@test "an image built for P100 runs with the P100 target" {
+    cd "$TTLANG_REPO_ROOT"
+    MOCK_IMAGE_LABEL_OVERRIDES='{
+        "io.tenstorrent.tt-lang.target.name": "blackhole-p100",
+        "io.tenstorrent.tt-lang.target.cluster-descriptor": "cluster_descriptors/blackhole_P100.yaml",
+        "io.tenstorrent.tt-lang.target.mesh-device": "P100"
+    }' \
+        TTLANG_EMULE_TARGET=p100 \
+        TTLANG_EMULE_DOCKER="$MOCK_DOCKER" \
+        run -0 "$RUNNER" examples/eltwise_add.py
+
+    assert_log_line "MESH_DEVICE=P100"
+    assert_log_line \
+        "TT_METAL_MOCK_CLUSTER_DESC_PATH=/opt/tt-emule/cluster_descriptors/blackhole_P100.yaml"
+    assert_run_image "$MOCK_IMAGE_ID"
+    refute_log_line "build"
+}
+
 @test "unknown and empty target profiles fail before Docker" {
     cd "$TTLANG_REPO_ROOT"
     local target
@@ -540,10 +558,7 @@ EOF
         io.tenstorrent.tt-lang.metal.commit \
         io.tenstorrent.tt-lang.runtime.base-image \
         io.tenstorrent.tt-lang.runtime.manifest-sha256 \
-        io.tenstorrent.tt-lang.runtime.platform \
-        io.tenstorrent.tt-lang.target.name \
-        io.tenstorrent.tt-lang.target.cluster-descriptor \
-        io.tenstorrent.tt-lang.target.mesh-device; do
+        io.tenstorrent.tt-lang.runtime.platform; do
         : > "$MOCK_DOCKER_LOG"
         MOCK_IMAGE_LABEL_OVERRIDES="{\"$label\":\"wrong-stack\"}" \
             TTLANG_EMULE_IMAGE=example.invalid/runtime:mutable \
