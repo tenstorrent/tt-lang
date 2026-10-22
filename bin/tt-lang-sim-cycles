@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# SPDX-FileCopyrightText: (c) 2026 Tenstorrent AI ULC
+#
+# SPDX-License-Identifier: Apache-2.0
+# TT-Lang cycle estimator (tt-lang-sim-cycles)
+#
+# Estimates kernel cycle counts from a JSON Lines trace file produced by
+# tt-lang-sim --trace.
+# Usage: tt-lang-sim-cycles trace.jsonl [--hw-profile NAME] [--detailed] [--json-out FILE]
+
+PYTHON="${PYTHON:-python}"
+
+# Resolve the repo/toolchain root from the script's own location so this works
+# when invoked as ./bin/tt-lang-sim-cycles or from an arbitrary working directory.
+_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+_REPO_ROOT="$(dirname "$_SCRIPT_DIR")"
+
+# Sources: python/sim_stats; installed ttlang: python_packages/sim_stats.
+if [ -d "${_REPO_ROOT}/python/sim_stats" ]; then
+    export PYTHONPATH="${_REPO_ROOT}/python${PYTHONPATH:+:${PYTHONPATH}}"
+    exec "$PYTHON" -m sim_stats.cycles "$@"
+fi
+
+if [ -d "${_REPO_ROOT}/python_packages/sim_stats" ]; then
+    export PYTHONPATH="${_REPO_ROOT}/python_packages${PYTHONPATH:+:${PYTHONPATH}}"
+    exec "$PYTHON" -m sim_stats.cycles "$@"
+fi
+
+echo "tt-lang-sim-cycles: cannot locate the sim_stats package." >&2
+echo "  checked: ${_REPO_ROOT}/python/sim_stats (source tree)" >&2
+echo "  checked: ${_REPO_ROOT}/python_packages/sim_stats (installed)" >&2
+exit 1
