@@ -82,19 +82,36 @@ and tt-emule JIT caches live in named Docker volumes.
 
 ### Image contents and disk usage
 
-The image uses a separate build stage to prepare tt-metal and tt-emule. Its
-final stage contains one toolchain Python environment, the LLVM SDK, Clang,
-and the emulator runtime's shared libraries, headers, JIT sources, and firmware.
+The image uses separate build stages to prepare tt-metal, tt-emule, and the
+Python environment. Its final stage contains one toolchain Python environment,
+the LLVM SDK, Clang, and the emulator runtime's shared libraries, headers, JIT
+sources, and firmware.
+The emulator source enters only through the build stage, and no command runs
+with network access once the source is present, in that stage or in the final
+stage. Earlier stages download tt-metal and its submodules at their pinned
+commits, tt-metal's CMake (CPM) dependencies, the SFPI toolchain, and the Python
+environment; the final stage installs its system packages before it copies
+anything from the build stage.
+`.github/containers/emule-metal-deps.lock` records the Git commit or content
+digest of each CPM dependency and of the SFPI toolchain, and the build fails if
+a download differs.
 The LLVM development libraries support compiling the current TT-Lang checkout;
 pytest and lit support the existing compiler test commands. Documentation,
 lint, and hardware-management tools remain available in the development images.
 
 Image builds install the compiler and test dependencies from
-`requirements-test.txt`, including its nested build/runtime requirements.
-The image retains those requirement files under
-`/opt/tt-emule-runtime/requirements`. Installation and program execution verify
-that they match the checkout, so the compiler uses the image's prepared Python
-environment. Requirement changes select a new runtime image identity.
+`.github/containers/emule-requirements.lock`, which pins CPU-only PyTorch and
+every wheel that `requirements-test.txt` and its nested build/runtime
+requirements resolve to by URL and SHA-256 hash. The build installs
+`requirements-test.txt` from those verified downloads only, so it fails if the
+lock no longer satisfies the requirements or holds other packages. The image
+retains the requirement
+files under `/opt/tt-emule-runtime/requirements`. Installation and program
+execution verify that they match the checkout, so the compiler uses the image's
+prepared Python environment. Requirement and lock changes select a new runtime
+image identity. After changing a requirement file or the tt-metal pin, run
+`scripts/update-tt-lang-emule-locks.sh` and commit both regenerated lock files;
+it needs Docker but not the emulator source.
 
 The toolchain's `src/python` directory supplies installed MLIR Python resources
 referenced by its CMake package exports. These files support building TT-Lang's

@@ -5,6 +5,7 @@
 
 import json
 import os
+import re
 import runpy
 import shlex
 import subprocess
@@ -129,6 +130,115 @@ def test_container_build_uses_and_checks_cpu_torch():
     uplift_paths = (REPO_ROOT / ".github/scripts/uplift-paths.sh").read_text()
     for helper in ("check-cpu-torch.py", "prepare-toolchain-venv.sh"):
         assert f".github/containers/{helper}" in uplift_paths
+
+
+def emule_stage(name):
+    dockerfile = (CONTAINERS / "Dockerfile.emule").read_text()
+    return dockerfile.split(f" AS {name}\n", 1)[1].split("\nFROM ", 1)[0]
+
+
+def test_emule_image_replaces_donor_venv_with_locked_cpu_torch():
+    venv = emule_stage("venv")
+    resolve = emule_stage("venv-resolve")
+    runtime = emule_stage("runtime")
+    cpu_check = "/opt/ttlang-toolchain/venv/bin/python /tmp/check-cpu-torch.py"
+    steps = [
+        "rm -rf /opt/ttlang-toolchain/venv",
+        "python3.12 -m venv /opt/ttlang-toolchain/venv",
+        "-r /tmp/emule-requirements.lock",
+        "--find-links /tmp/wheels torch",
+        "-r /tmp/requirements/requirements-test.txt",
+        "check-venv",
+        cpu_check,
+        "bash /tmp/trim-emule-venv.sh",
+    ]
+    assert [venv.index(step) for step in steps] == sorted(
+        venv.index(step) for step in steps
+    )
+    prepare = "bash /tmp/prepare-toolchain-venv.sh /opt/ttlang-toolchain"
+    assert (
+        resolve.index(prepare)
+        < resolve.index("-r /tmp/requirements/requirements-test.txt")
+        < resolve.index(cpu_check)
+    )
+    # The native build keeps the donor venv it was configured with.
+    for stage in ("toolchain", "metal-fetch", "metal-source", "build"):
+        assert "rm -rf /opt/ttlang-toolchain/venv" not in emule_stage(stage)
+    assert "COPY --from=venv /opt/ttlang-toolchain/venv " in runtime
+    for stage in (venv, resolve, runtime):
+        assert "source=check-cpu-torch.py,target=/tmp/check-cpu-torch.py" in stage
+        assert "download.pytorch.org" not in stage
+    assert runtime.index("--without-pip --symlinks") < runtime.index(cpu_check)
+    assert runtime.index("-m pip check") < runtime.index(cpu_check)
+
+
+@pytest.mark.parametrize(
+    "failure", ["", "venv", "download", "torch", "install", "verify", "check", "trim"]
+)
+def test_emule_locked_venv_stops_on_failures(tmp_path, failure):
+    section = emule_stage("venv")
+    command = (
+        "rm -rf /opt/ttlang-toolchain/venv"
+        + section.split("rm -rf /opt/ttlang-toolchain/venv", 1)[1].split("\n\n", 1)[0]
+    )
+    toolchain = tmp_path / "toolchain"
+    helpers = tmp_path / "helpers"
+    log = tmp_path / "calls.jsonl"
+    helpers.mkdir()
+    (toolchain / "venv").mkdir(parents=True)
+    (toolchain / "venv/donor").write_text("donor\n")
+    venv_python = f"""#!{sys.executable}
+import json, os, sys
+step = (
+    'download' if 'download' in sys.argv
+    else 'torch' if sys.argv[-1] == 'torch'
+    else 'install' if 'install' in sys.argv
+    else 'verify' if 'check-venv' in sys.argv
+    else 'check'
+)
+with open(os.environ['CALL_LOG'], 'a') as stream:
+    stream.write(json.dumps(step) + '\\n')
+sys.exit(23 if step == os.environ['FAIL_STEP'] else 0)
+"""
+    (helpers / "python3.12").write_text(
+        '#!/usr/bin/env bash\nset -eu\n[ "$1 $2" = "-m venv" ] && [ ! -e "$3" ]\n'
+        'printf \'"venv"\\n\' >> "$CALL_LOG"\n'
+        '[ "$FAIL_STEP" != venv ] || exit 23\n'
+        'mkdir -p "$3/bin"\n'
+        f'cp "{helpers}/venv-python" "$3/bin/python"\n'
+        'chmod +x "$3/bin/python"\n'
+        'ln -s python "$3/bin/python3"\n'
+        'ln -s python "$3/bin/python3.12"\n'
+    )
+    (helpers / "python3.12").chmod(0o755)
+    (helpers / "venv-python").write_text(venv_python)
+    (helpers / "trim-emule-venv.sh").write_text(
+        'printf \'"trim"\\n\' >> "$CALL_LOG"\n' '[ "$FAIL_STEP" != trim ] || exit 23\n'
+    )
+    # One pass, so a tmp_path under /tmp cannot be rewritten a second time.
+    paths = {"/opt/ttlang-toolchain": str(toolchain), "/tmp/": f"{helpers}/"}
+    command = re.sub(
+        "|".join(map(re.escape, paths)), lambda match: paths[match[0]], command
+    )
+    result = subprocess.run(
+        ["bash", "-e", "-c", command],
+        env={
+            **os.environ,
+            "PATH": f"{helpers}{os.pathsep}{os.environ['PATH']}",
+            "CALL_LOG": str(log),
+            "FAIL_STEP": failure,
+        },
+        capture_output=True,
+        text=True,
+    )
+    expected = ["venv", "download", "torch", "install", "verify", "check", "trim"]
+    if failure:
+        expected = expected[: expected.index(failure) + 1]
+    assert [json.loads(line) for line in log.read_text().splitlines()] == expected
+    assert result.returncode == (23 if failure else 0), result.stderr
+    assert not (toolchain / "venv/donor").exists()
+    if not failure:
+        assert not any((toolchain / "venv/bin").iterdir())
 
 
 @pytest.mark.parametrize(
