@@ -87,7 +87,12 @@ class Pipe(Generic[DstT]):
                 case _:
                     return obj
 
-        return hash((make_hashable(self.src), make_hashable(self.dst)))
+        # Cache the hash to ensure identical Pipe instances always yield the same hash,
+        # preventing the generation of new global semaphores on each dispatch.
+        # This is a minimal fix; the actual semaphore reuse should be in the PipeNet layer.
+        if not hasattr(self, '_hash_cache'):
+            object.__setattr__(self, '_hash_cache', hash((make_hashable(self.src), make_hashable(self.dst))))
+        return self._hash_cache
 
 
 # Union of Pipe instances with different destination types
