@@ -176,7 +176,13 @@ jobs:
             -w /workspace \
             -e TTLANG_TOOLCHAIN_DIR=/opt/ttlang-toolchain \
             "$BASE_IMAGE" \
-            bash scripts/build-and-install.sh --configure-only
+            bash -e -c '
+              # Source overrides may predate the CPU-only packaging policy.
+              if [ -f .github/containers/prepare-toolchain-venv.sh ]; then
+                bash .github/containers/prepare-toolchain-venv.sh "$TTLANG_TOOLCHAIN_DIR"
+              fi
+              bash scripts/build-and-install.sh --configure-only
+            '
           echo "=== Configure complete ==="
           df -h
 

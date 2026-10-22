@@ -267,9 +267,9 @@ inline const llvm::StringMap<HeaderRequirement> &getCalleeToHeadersMap() {
         {"where_tile_init",                                {"api/compute/eltwise_unary/where.h", ""}},
 
         // Experimental.
-        {"experimental::tilize_block",                     {"api/compute/tilize.h", ""}},
-        {"experimental::untilize_block",                   {"api/compute/untilize.h", ""}},
-        {"experimental::pack_untilize_block",              {"api/compute/pack_untilize.h", ""}},
+        {"::experimental::tilize_block",                   {"api/compute/tilize.h", ""}},
+        {"::experimental::untilize_block",                 {"api/compute/untilize.h", ""}},
+        {"::experimental::pack_untilize_block",            {"api/compute/pack_untilize.h", ""}},
 
         // Numeric.
         {"bfloat16_greater",                               {"api/numeric/bfloat16.h", "api/numeric/bfloat16.h"}},

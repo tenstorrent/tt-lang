@@ -190,7 +190,19 @@ jobs:
                   GH_TOKEN: ${{ github.token }}
               run: |
                   set -o pipefail
-                  gh api --paginate \
-                      "/repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/attempts/${GITHUB_RUN_ATTEMPT}/jobs?per_page=100" |
-                      python3 .github/scripts/check-hardware-job-results.py \
-                          --expected-job-count "${{ inputs.run_quietbox_tests && (inputs.run_galaxy_tests && 3 || 2) || (inputs.run_galaxy_tests && 2 || 1) }}"
+                  # A hardware job can finish seconds before this job starts,
+                  # while the Jobs API still lacks some of its step results.
+                  for check_attempt in $(seq 1 12); do
+                      check_status=0
+                      gh api --paginate \
+                          "/repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/attempts/${GITHUB_RUN_ATTEMPT}/jobs?per_page=100" |
+                          python3 .github/scripts/check-hardware-job-results.py \
+                              --expected-job-count "${{ inputs.run_quietbox_tests && (inputs.run_galaxy_tests && 3 || 2) || (inputs.run_galaxy_tests && 2 || 1) }}" ||
+                          check_status=$?
+                      if [ "$check_status" -ne 75 ]; then
+                          exit "$check_status"
+                      fi
+                      sleep 10
+                  done
+                  echo "::error::Hardware job step results were not recorded after 12 checks."
+                  exit 1
