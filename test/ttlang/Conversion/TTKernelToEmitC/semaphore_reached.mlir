@@ -7,13 +7,13 @@
 // cache-coherent experimental implementation.
 
 // EMITC-LABEL: func.func @kernel_main
-// EMITC: %[[REACHED:.*]] = emitc.call_opaque "experimental::semaphore_reached"
+// EMITC: %[[REACHED:.*]] = emitc.call_opaque "::experimental::semaphore_reached"
 
 // CPP: bool semaphore_reached(
 // CPP: invalidate_l1_cache();
 // CPP-NEXT: return *sem_addr >= val;
 // CPP-LABEL: void kernel_main()
-// CPP: bool {{.*}} = experimental::semaphore_reached(
+// CPP: bool {{.*}} = ::experimental::semaphore_reached(
 func.func @kernel_main() attributes {ttkernel.thread = #ttkernel.thread<noc>} {
   %address = arith.constant 4096 : i32
   %sequence = arith.constant 3 : i32

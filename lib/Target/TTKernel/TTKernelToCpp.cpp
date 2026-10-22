@@ -121,61 +121,62 @@ public:
           callOp->hasAttr("ttlang.requires_dfb_descriptor");
 
       // Our experimental kernel code snippets.
-      if (callee == "experimental::unpack_stall_on_pack") {
+      if (callee == "::experimental::unpack_stall_on_pack") {
         emitLlk(experimental_reg_api_generated,
                 experimental_reg_api_generated_len);
       }
-      if (callee == "experimental::tilize_block") {
+      if (callee == "::experimental::tilize_block") {
         emitLlk(experimental_tilize_llks_generated,
                 experimental_tilize_llks_generated_len);
       }
-      if (callee == "experimental::untilize_block") {
+      if (callee == "::experimental::untilize_block") {
         emitLlk(experimental_untilize_llks_generated,
                 experimental_untilize_llks_generated_len);
       }
-      if (callee == "experimental::pack_untilize_block") {
+      if (callee == "::experimental::pack_untilize_block") {
         emitLlk(experimental_pack_untilize_llks_generated,
                 experimental_pack_untilize_llks_generated_len);
       }
-      if (callee == "experimental::semaphore_reached" ||
-          callee == "experimental::semaphore_wait" ||
-          callee == "experimental::semaphore_wait_min") {
+      if (callee == "::experimental::semaphore_reached" ||
+          callee == "::experimental::semaphore_wait" ||
+          callee == "::experimental::semaphore_wait_min") {
         emitLlk(experimental_semaphore_generated,
                 experimental_semaphore_generated_len);
       }
-      if (callee == "experimental::convert_logical_x_to_translated" ||
-          callee == "experimental::convert_logical_y_to_translated") {
+      if (callee == "::experimental::convert_logical_x_to_translated" ||
+          callee == "::experimental::convert_logical_y_to_translated") {
         emitLlk(experimental_coord_translation_generated,
                 experimental_coord_translation_generated_len);
       }
-      if (callee == "experimental::constant_table_lookup" ||
-          callee == "experimental::constant_table_lookup_word") {
+      if (callee == "::experimental::constant_table_lookup" ||
+          callee == "::experimental::constant_table_lookup_word") {
         emitLlk(experimental_constant_table_generated,
                 experimental_constant_table_generated_len);
       }
-      if (callee == "experimental::routing_plane_atomic_inc" ||
-          callee == "experimental::routing_plane_fused_write_atomic_inc" ||
-          callee == "experimental::routing_plane_scatter_write" ||
-          callee == "experimental::routing_plane_write") {
+      if (callee == "::experimental::routing_plane_atomic_inc" ||
+          callee == "::experimental::routing_plane_fused_write_atomic_inc" ||
+          callee == "::experimental::routing_plane_scatter_write" ||
+          callee == "::experimental::routing_plane_write") {
         emitRoutingPlaneManager();
       }
-      if (callee == "experimental::routing_plane_scatter_write") {
+      if (callee == "::experimental::routing_plane_scatter_write") {
         emitLlk(experimental_routing_plane_scatter_write_generated,
                 experimental_routing_plane_scatter_write_generated_len);
       }
-      if (callee == "experimental::routing_plane_write") {
+      if (callee == "::experimental::routing_plane_write") {
         emitLlk(experimental_routing_plane_write_generated,
                 experimental_routing_plane_write_generated_len);
       }
-      if (callee == "experimental::close_fabric_connections" ||
-          callee == "experimental::setup_fabric_connections" ||
-          callee == "experimental::get_my_device_id" ||
-          callee == "experimental::fabric_fast_write_any_len" ||
-          callee == "experimental::fabric_mcast_fast_write_any_len" ||
-          callee == "experimental::fabric_sem_inc" ||
-          callee == "experimental::fabric_mcast_sem_inc" ||
-          callee == "experimental::get_my_logical_mesh_position" ||
-          callee == "experimental::get_device_id_from_logical_mesh_position") {
+      if (callee == "::experimental::close_fabric_connections" ||
+          callee == "::experimental::setup_fabric_connections" ||
+          callee == "::experimental::get_my_device_id" ||
+          callee == "::experimental::fabric_fast_write_any_len" ||
+          callee == "::experimental::fabric_mcast_fast_write_any_len" ||
+          callee == "::experimental::fabric_sem_inc" ||
+          callee == "::experimental::fabric_mcast_sem_inc" ||
+          callee == "::experimental::get_my_logical_mesh_position" ||
+          callee ==
+              "::experimental::get_device_id_from_logical_mesh_position") {
         // Emit in order: topology_info -> routing -> api.
         // 1. Topology info.
         emitLlk(experimental_fabric_topology_info_generated,
@@ -189,17 +190,17 @@ public:
         emitLlk(experimental_fabric_api_generated,
                 experimental_fabric_api_generated_len);
       }
-      if (callee == "experimental::matmul_block") {
+      if (callee == "::experimental::matmul_block") {
         emitLlk(experimental_matmul_llks_generated,
                 experimental_matmul_llks_generated_len);
       }
-      if (callee == "experimental::row_normalization_block") {
+      if (callee == "::experimental::row_normalization_block") {
         emitLlk(experimental_row_normalization_generated,
                 experimental_row_normalization_generated_len);
       }
-      if (callee == "experimental::write_row_mask_tile" ||
-          callee == "experimental::write_col_mask_tile" ||
-          callee == "experimental::fill_arange_tile") {
+      if (callee == "::experimental::write_row_mask_tile" ||
+          callee == "::experimental::write_col_mask_tile" ||
+          callee == "::experimental::fill_arange_tile") {
         emitLlk(experimental_padding_llks_generated,
                 experimental_padding_llks_generated_len);
       }
@@ -230,11 +231,11 @@ public:
         }
       }
 
-      if (value.starts_with("experimental::RoutingPlaneConnectionManager")) {
+      if (value.starts_with("::experimental::RoutingPlaneConnectionManager")) {
         emitRoutingPlaneManager();
       }
 
-      if (value.starts_with("experimental::invoke_sfpi")) {
+      if (value.starts_with("::experimental::invoke_sfpi")) {
         emitLlk(experimental_invoke_sfpi_llks_generated,
                 experimental_invoke_sfpi_llks_generated_len);
       }
