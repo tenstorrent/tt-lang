@@ -36,3 +36,6 @@ jobs:
         env:
           BATS_LIB_PATH: /usr/lib
         run: bats --print-output-on-failure .github/scripts/tests/
+
+      - name: Test private host-mock dispatch and status reporting
+        run: python3 .github/scripts/tests/test_dispatch_k3_host_mock.py

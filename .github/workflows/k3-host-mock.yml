@@ -1,0 +1,67 @@
+name: K3 host mock
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "20 22 * * *"
+  workflow_dispatch:
+    inputs:
+      compiler_sha:
+        description: "Full compiler SHA reachable from main; empty selects this run's SHA."
+        type: string
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: k3-host-mock-${{ inputs.compiler_sha || github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  host-mock:
+    if: github.repository == 'tenstorrent/tt-lang' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    environment: k3-host-mock-dispatch
+    permissions:
+      contents: read
+      statuses: write
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          submodules: false
+      - name: Validate compiler SHA and publish pending status
+        id: prepare
+        env:
+          GH_TOKEN: ${{ github.token }}
+          K3_COMPILER_SHA: ${{ inputs.compiler_sha }}
+        run: python3 .github/scripts/dispatch-k3-host-mock.py prepare
+      - name: Create private dispatch token
+        id: dispatch-token
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
+        with:
+          app-id: ${{ vars.K3_DISPATCH_APP_ID }}
+          private-key: ${{ secrets.K3_DISPATCH_APP_PRIVATE_KEY }}
+          owner: tenstorrent
+          repositories: tt-lang-ops-and-models
+          permission-actions: write
+      - name: Dispatch and await exact-SHA host mocks
+        id: run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          K3_DISPATCH_TOKEN: ${{ steps.dispatch-token.outputs.token }}
+          K3_COMPILER_SHA: ${{ steps.prepare.outputs.compiler_sha }}
+          K3_CORRELATION_ID: ${{ steps.prepare.outputs.correlation_id }}
+        run: python3 .github/scripts/dispatch-k3-host-mock.py dispatch
+      - name: Publish terminal public status
+        if: always() && steps.prepare.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          K3_COMPILER_SHA: ${{ steps.prepare.outputs.compiler_sha }}
+          K3_CORRELATION_ID: ${{ steps.prepare.outputs.correlation_id }}
+          K3_RUN_OUTCOME: ${{ steps.run.outcome }}
+        run: python3 .github/scripts/dispatch-k3-host-mock.py finish
