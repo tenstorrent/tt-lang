@@ -60,10 +60,10 @@ jobs:
       - name: Validate the emulator source configuration
         timeout-minutes: 1
         env:
-          SOURCE_SSH_KEY: ${{ secrets.TTLANG_EMULE_SOURCE_SSH_KEY }}
+          SOURCE_READ_TOKEN: ${{ secrets.TTLANG_EMULE_SOURCE_READ_TOKEN }}
           SOURCE_REPOSITORY: ${{ secrets.TTLANG_EMULE_SOURCE_REPOSITORY }}
         run: |
-          if [[ -z "$SOURCE_SSH_KEY" ]] ||
+          if [[ ! "$SOURCE_READ_TOKEN" =~ ^github_pat_[A-Za-z0-9_]+$ ]] ||
              [[ ! "$SOURCE_REPOSITORY" =~ ^tenstorrent/[A-Za-z0-9_.-]+$ ]]; then
             echo 'The emulator source configuration is missing or invalid.' >&2
             exit 2
@@ -83,7 +83,7 @@ jobs:
         with:
           repository: ${{ secrets.TTLANG_EMULE_SOURCE_REPOSITORY }}
           ref: ${{ steps.stack.outputs.emulator_sha }}
-          ssh-key: ${{ secrets.TTLANG_EMULE_SOURCE_SSH_KEY }}
+          token: ${{ secrets.TTLANG_EMULE_SOURCE_READ_TOKEN }}
           path: private-runtime
           fetch-depth: 1
           persist-credentials: false
@@ -104,7 +104,7 @@ jobs:
               test "$status" -eq 1
             fi
           done
-          # A key, known_hosts or credentials file left behind by the checkout.
+          # A credentials file left behind by the checkout.
           # The runner writes this step's own script ($0) there after the snapshot.
           leftovers="$(find "$RUNNER_TEMP" -mindepth 1 -maxdepth 1 ! -name "${0##*/}" |
             LC_ALL=C sort | LC_ALL=C comm -13 "$RUNNER_TEMP/runner-temp.before" -)"

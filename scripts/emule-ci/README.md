@@ -65,14 +65,31 @@ both are reported, not fatal, and should be pruned. Refresh the list, and the
 image lock files, on every stack-pin bump.
 
 **Admin setup.** Create the environment `tt-lang-emule`, restricted to the
-`main` branch, with "Allow administrators to bypass" off. Add a deploy key with
-"Allow write access" off to the private emulator repository (organization
-policy must allow deploy keys there). Store its private key as the environment
-secret `TTLANG_EMULE_SOURCE_SSH_KEY`, and the repository as
+`main` branch, with "Allow administrators to bypass" off. A developer with read
+access to the private emulator repository creates a fine-grained personal
+access token with resource owner `tenstorrent`, repository access "Only select
+repositories" listing only the private emulator repository, repository
+permission Contents: Read-only (Metadata: Read-only is added automatically),
+no other permissions, and an expiration date. The token returns "not found"
+until an organization admin (OSPO) approves the request. Store the raw
+`github_pat_...` value (no prefix, no trailing newline) as the environment
+secret `TTLANG_EMULE_SOURCE_READ_TOKEN`, and the repository as
 `TTLANG_EMULE_SOURCE_REPOSITORY` in the form `tenstorrent/<name>` (no URL, no
 trailing newline); any other value fails the validation step. Do not create
-repository- or organization-level copies. Revoke the deploy key to stop
-all access at once.
+repository- or organization-level copies.
+
+Unlike a deploy key, this interim token belongs to the developer: it reaches
+only what that developer can read, its reads are attributed to them in audit
+logs, and only they (or organization admins, through approval and revocation)
+can change its scope or revoke it. It stops working when it expires, when it is
+revoked, or when its owner loses access to the repository or leaves the
+organization; every run then fails at "Checkout the pinned private source
+without retaining credentials" while validation still passes. Record the expiry
+date and, before it, regenerate the token with the same settings and overwrite
+the environment secret in place; the sim area owner does this. Once the job is
+stable, an OSPO Jira ticket replaces the token with a bot-owned one with the
+same settings, which ends the person-bound phase; the same expiry and rotation
+rules apply to it. Revoke the token to stop all access at once.
 
 **Recommended `main` ruleset hardening** (not enforced by this workflow):
 enable "Require review from Code Owners" and "Require approval of the most

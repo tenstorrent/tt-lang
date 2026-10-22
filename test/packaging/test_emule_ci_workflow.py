@@ -113,7 +113,7 @@ def test_secrets_reach_only_validation_and_private_checkout():
     raw = (ROOT / WORKFLOW).read_text()
     secrets = {
         "secrets.TTLANG_EMULE_SOURCE_REPOSITORY",
-        "secrets.TTLANG_EMULE_SOURCE_SSH_KEY",
+        "secrets.TTLANG_EMULE_SOURCE_READ_TOKEN",
     }
     found = re.findall(r"secrets\.[A-Za-z0-9_]+", raw)
     assert set(found) == secrets and len(found) == 2 * len(secrets)
@@ -155,7 +155,7 @@ def test_checkouts_are_pinned_and_keep_no_credentials():
     assert private["with"] == {
         "repository": "${{ secrets.TTLANG_EMULE_SOURCE_REPOSITORY }}",
         "ref": "${{ steps.stack.outputs.emulator_sha }}",
-        "ssh-key": "${{ secrets.TTLANG_EMULE_SOURCE_SSH_KEY }}",
+        "token": "${{ secrets.TTLANG_EMULE_SOURCE_READ_TOKEN }}",
         "path": "private-runtime",
         "fetch-depth": "1",
         "persist-credentials": "false",
@@ -164,7 +164,7 @@ def test_checkouts_are_pinned_and_keep_no_credentials():
     }
     validate = workflow_step("Validate the emulator source configuration")
     assert validate["env"] == {
-        "SOURCE_SSH_KEY": "${{ secrets.TTLANG_EMULE_SOURCE_SSH_KEY }}",
+        "SOURCE_READ_TOKEN": "${{ secrets.TTLANG_EMULE_SOURCE_READ_TOKEN }}",
         "SOURCE_REPOSITORY": "${{ secrets.TTLANG_EMULE_SOURCE_REPOSITORY }}",
     }
 
@@ -173,7 +173,10 @@ def test_checkouts_are_pinned_and_keep_no_credentials():
     "overrides,allowed",
     [
         ({}, True),
-        ({"SOURCE_SSH_KEY": ""}, False),
+        ({"SOURCE_READ_TOKEN": ""}, False),
+        ({"SOURCE_READ_TOKEN": "github_pat_TOKEN_SENTINEL\n"}, False),
+        ({"SOURCE_READ_TOKEN": "ghp_TOKEN_SENTINEL"}, False),
+        ({"SOURCE_READ_TOKEN": "token github_pat_TOKEN_SENTINEL"}, False),
         ({"SOURCE_REPOSITORY": ""}, False),
         ({"SOURCE_REPOSITORY": "outsider/emulator"}, False),
         ({"SOURCE_REPOSITORY": "tenstorrent/"}, False),
@@ -185,7 +188,7 @@ def test_checkouts_are_pinned_and_keep_no_credentials():
 )
 def test_source_configuration_is_validated_without_echoing_it(overrides, allowed):
     env = {
-        "SOURCE_SSH_KEY": "KEY_SENTINEL",
+        "SOURCE_READ_TOKEN": "github_pat_TOKEN_SENTINEL",
         "SOURCE_REPOSITORY": "tenstorrent/runtime",
         **overrides,
     }
@@ -203,7 +206,7 @@ def test_source_configuration_is_validated_without_echoing_it(overrides, allowed
     )
     assert (result.returncode == 0) is allowed
     output = result.stdout + result.stderr
-    assert "KEY_SENTINEL" not in output
+    assert "TOKEN_SENTINEL" not in output
     assert "runtime" not in output and "outsider" not in output
 
 
@@ -294,7 +297,7 @@ def test_retained_checkout_credentials_stop_before_source_execution(tmp_path, ke
     # Files written after the snapshot inside existing directories are not leftovers.
     (runner_temp / "_runner_file_commands/set_output_1").write_text("")
     if key == "runner-temp-leftover":
-        (runner_temp / "0f1e2d3c_known_hosts").write_text("AUTH_SENTINEL")
+        (runner_temp / "git-credentials-0f1e2d3c.config").write_text("AUTH_SENTINEL")
     elif key:
         subprocess.run(
             ["git", "-C", str(workspace / "private-runtime"), "config", key]
@@ -311,7 +314,7 @@ def test_retained_checkout_credentials_stop_before_source_execution(tmp_path, ke
     assert (result.returncode == 0) == (key is None), result.stderr
     assert marker.exists() == (key is None)
     output = result.stdout + result.stderr
-    assert "AUTH_SENTINEL" not in output and "known_hosts" not in output
+    assert "AUTH_SENTINEL" not in output and "git-credentials" not in output
 
 
 def test_missing_runner_temp_snapshot_fails_closed(tmp_path):
