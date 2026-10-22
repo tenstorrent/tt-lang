@@ -154,6 +154,7 @@ void createTTLToTTKernelPipeline(OpPassManager &pm,
   } else {
     buildTTKernelRecordCleanupPipeline(pm);
   }
+  pm.addPass(createTTKernelVerifyHardwareConfig());
   if (options.lowerToEmitC) {
     pm.addPass(::mlir::tt::createConvertTTKernelToEmitC());
     pm.addPass(createCanonicalizerPass());
