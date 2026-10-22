@@ -39,7 +39,7 @@ from .context_types import TraceEvent
 # All defined event categories.  Pass ALL_CATEGORIES to :func:`set_tracing`
 # to enable everything; pass an empty frozenset to disable.
 ALL_CATEGORIES: frozenset[str] = frozenset(
-    {"operation", "kernel", "dfb", "copy", "pipe"}
+    {"operation", "kernel", "dfb", "copy", "pipe", "compute"}
 )
 
 
@@ -61,6 +61,7 @@ _EVENT_CATEGORY: dict[str, str] = {
     "copy_end": "copy",
     "pipe_send": "pipe",
     "pipe_recv": "pipe",
+    "compute_op": "compute",  # for cycle-accurate compute ops
 }
 
 
@@ -141,6 +142,25 @@ def trace(event: str, **data: Any) -> None:
             data=data,
         )
     )
+
+
+def dtype_name(dt: object) -> str:
+    """Canonical short name for a declared dtype (bf16 / fp32 / fp16 / bfp8 / ...).
+
+    Works on any dtype repr (torch dtypes or the sim's declared-dtype objects) so
+    it needs no import of the dtype classes. Feeds the ``compute_op`` / ``copy``
+    trace so the cycle estimator can key rates and tile bytes on dtype.
+    """
+    s = str(dt).lower()
+    if "bfloat8" in s or "bfp8" in s:
+        return "bfp8"
+    if "bfloat16" in s:
+        return "bf16"
+    if "float32" in s:
+        return "fp32"
+    if "float16" in s:
+        return "fp16"
+    return str(dt).replace("torch.", "")
 
 
 def get_pipe_name(pipe: Any) -> str:
