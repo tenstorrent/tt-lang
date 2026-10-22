@@ -31,7 +31,8 @@ def candidate_step(workflow, step_id):
 def make_emulator(tmp_path, metal_commit):
     manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
     source = tmp_path / "emulator"
-    descriptor = source / manifest["target"]["cluster_descriptor"]
+    target = manifest["targets"][manifest["default_target"]]
+    descriptor = source / target["cluster_descriptor"]
     descriptor.parent.mkdir(parents=True)
     descriptor.touch()
     (source / "tt-metal-pin.txt").write_text(
