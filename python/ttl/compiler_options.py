@@ -73,7 +73,8 @@ def _make_parser() -> argparse.ArgumentParser:
         default=None,
         dest="subblock_sync",
         action=argparse.BooleanOptionalAction,
-        help="Refine DFB reserve/push to per-subblock granularity (default: disabled).",
+        help="Refine DFB reserve/push to per-subblock granularity; peeled computes "
+        "preserve the original reservation and publication (default: disabled).",
     )
     p.add_argument(
         "--ttl-combine-pack-tiles",
