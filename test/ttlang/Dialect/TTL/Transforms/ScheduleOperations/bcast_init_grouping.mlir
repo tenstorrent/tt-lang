@@ -25,6 +25,7 @@
 // CHECK-NEXT:  ttkernel.unary_bcast({{.*}}, <col>)
 // CHECK-NEXT:  ttkernel.unary_bcast({{.*}}, <col>)
 // Row bcast group: 4 tiles from CB1
+// CHECK-NEXT:  ttkernel.reconfig_data_format
 // CHECK-NEXT:  ttkernel.unary_bcast_init({{.*}}, <row>)
 // CHECK-NEXT:  ttkernel.unary_bcast({{.*}}, <row>)
 // CHECK-NEXT:  ttkernel.unary_bcast({{.*}}, <row>)
@@ -37,6 +38,7 @@
 // CHECK-NEXT:  ttkernel.mul_binary_tile
 // CHECK-NEXT:  ttkernel.mul_binary_tile
 // Scalar bcast group: 4 tiles from CB2
+// CHECK-NEXT:  ttkernel.reconfig_data_format
 // CHECK-NEXT:  ttkernel.unary_bcast_init({{.*}}, <scalar>)
 // CHECK-NEXT:  ttkernel.unary_bcast({{.*}}, <scalar>)
 // CHECK-NEXT:  ttkernel.unary_bcast({{.*}}, <scalar>)

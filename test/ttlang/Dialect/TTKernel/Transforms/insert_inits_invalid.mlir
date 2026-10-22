@@ -22,6 +22,23 @@ func.func @missing_release() {
 
 // -----
 
+// A runtime-selected CB cannot be used for startup before its selection. Reject
+// it instead of moving hardware startup into the body of the kernel.
+// expected-error @below {{kernel-entry startup requires compile-time CB IDs or entry arguments}}
+func.func @runtime_selected_startup(%arg_index: i32) {
+  %cb = ttkernel.get_arg_val(%arg_index) : (i32) -> !ttkernel.cb<2, !ttcore.tile<32x32, bf16>>
+  %c0 = arith.constant 0 : index
+  ttkernel.tile_regs_acquire() : () -> ()
+  ttkernel.copy_tile(%cb, %c0, %c0) : (!ttkernel.cb<2, !ttcore.tile<32x32, bf16>>, index, index) -> ()
+  ttkernel.tile_regs_commit() : () -> ()
+  ttkernel.tile_regs_wait() : () -> ()
+  ttkernel.pack_tile(%c0, %cb, %c0, false) : (index, !ttkernel.cb<2, !ttcore.tile<32x32, bf16>>, index) -> ()
+  ttkernel.tile_regs_release() : () -> ()
+  func.return
+}
+
+// -----
+
 // Test: sync region packs to output CBs with different data formats.
 // bf16 vs f32 element types require different PACK routing, so this must error.
 func.func @multiple_output_cbs_different_formats() {

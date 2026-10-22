@@ -18,8 +18,9 @@
 // CHECK-DAG: %[[CB0:.*]] = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<2, !ttcore.tile<32x32, bf16>>
 // CHECK-DAG: %[[CB1:.*]] = ttkernel.get_compile_time_arg_val(1) : () -> !ttkernel.cb<2, !ttcore.tile<32x32, bf16>>
 // CHECK-DAG: %[[CB2:.*]] = ttkernel.get_compile_time_arg_val(2) : () -> !ttkernel.cb<2, !ttcore.tile<32x32, bf16>>
-// CHECK:      "ttkernel.mm_block_init"(%[[CB0]], %[[CB1]], %[[CB2]], %[[C0_I32]], %[[C1_I32]], %[[C1_I32]], %[[C1_I32]])
+// CHECK:      "ttkernel.mm_block_init_short"(%[[CB0]], %[[CB1]], %[[C0_I32]], %[[C1_I32]], %[[C1_I32]], %[[C1_I32]])
 // CHECK:      ttkernel.tile_regs_acquire
+// CHECK-NEXT: ttkernel.reconfig_data_format(
 // CHECK-NEXT: "ttkernel.mm_block_init_short"(%[[CB0]], %[[CB1]], %[[C0_I32]], %[[C1_I32]], %[[C1_I32]], %[[C1_I32]])
 // CHECK-NEXT: ttkernel.matmul_block(%[[CB0]], %[[CB1]], %[[C0]], %[[C0]], %[[C0]], %[[C0_I32]], %[[C1_I32]], %[[C1_I32]], %[[C1_I32]])
 // CHECK-NEXT: ttkernel.tile_regs_commit
@@ -68,8 +69,9 @@ func.func @matmul_1x1_bf16(
 // CHECK-DAG: %[[CB1:.*]] = ttkernel.get_compile_time_arg_val(1) : () -> !ttkernel.cb<24, !ttcore.tile<32x32, bf16>>
 // CHECK-DAG: %[[CB2:.*]] = ttkernel.get_compile_time_arg_val(2) : () -> !ttkernel.cb<12, !ttcore.tile<32x32, bf16>>
 // mm_block_init: ct=3, rt=2, kt=4.
-// CHECK:      "ttkernel.mm_block_init"(%[[CB0]], %[[CB1]], %[[CB2]], %[[C0_I32]], %[[C3_I32]], %[[C2_I32]], %[[C4_I32]])
+// CHECK:      "ttkernel.mm_block_init_short"(%[[CB0]], %[[CB1]], %[[C0_I32]], %[[C3_I32]], %[[C2_I32]], %[[C4_I32]])
 // CHECK:      ttkernel.tile_regs_acquire
+// CHECK-NEXT: ttkernel.reconfig_data_format(
 // CHECK-NEXT: "ttkernel.mm_block_init_short"(%[[CB0]], %[[CB1]], %[[C0_I32]], %[[C3_I32]], %[[C2_I32]], %[[C4_I32]])
 // K loop: in0_idx=k, in1_idx=k*3 for each k in 0..3.
 // CHECK-NEXT: scf.for %[[K:.*]] = %[[C0]] to %[[C4]] step
@@ -124,8 +126,9 @@ func.func @matmul_2x4_4x3(
 // CHECK-DAG: %[[CB0:.*]] = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<4, !ttcore.tile<32x32, f32>>
 // CHECK-DAG: %[[CB1:.*]] = ttkernel.get_compile_time_arg_val(1) : () -> !ttkernel.cb<4, !ttcore.tile<32x32, f32>>
 // CHECK-DAG: %[[CB2:.*]] = ttkernel.get_compile_time_arg_val(2) : () -> !ttkernel.cb<8, !ttcore.tile<32x32, f32>>
-// CHECK:      "ttkernel.mm_block_init"(%[[CB0]], %[[CB1]], %[[CB2]], %[[C0_I32]], %[[C2_I32]], %[[C2_I32]], %[[C1_I32]])
+// CHECK:      "ttkernel.mm_block_init_short"(%[[CB0]], %[[CB1]], %[[C0_I32]], %[[C2_I32]], %[[C2_I32]], %[[C1_I32]])
 // CHECK:      ttkernel.tile_regs_acquire
+// CHECK-NEXT: ttkernel.reconfig_data_format(
 // CHECK-NEXT: "ttkernel.mm_block_init_short"(%[[CB0]], %[[CB1]], %[[C0_I32]], %[[C2_I32]], %[[C2_I32]], %[[C1_I32]])
 // CHECK-NEXT: ttkernel.matmul_block(%[[CB0]], %[[CB1]], %[[C0]], %[[C0]], %[[C0]], %[[C0_I32]], %[[C2_I32]], %[[C2_I32]], %[[C1_I32]])
 // CHECK-NEXT: ttkernel.tile_regs_commit
@@ -165,7 +168,7 @@ func.func @matmul_2x2_f32(
 // =============================================================================
 
 // CHECK-LABEL: func.func @matmul_add_accumulator
-// CHECK:      "ttkernel.mm_block_init"
+// CHECK:      "ttkernel.mm_block_init_short"
 // CHECK:      ttkernel.tile_regs_acquire
 // Accumulator loaded via individual copy_tile.
 // CHECK:      ttkernel.copy_tile(
@@ -221,8 +224,9 @@ func.func @matmul_add_accumulator() attributes {ttl.base_cta_index = 4 : i32, tt
 // CHECK-DAG: %[[CB1:.*]] = ttkernel.get_compile_time_arg_val(1) : () -> !ttkernel.cb<6, !ttcore.tile<32x32, bf16>>
 // CHECK-DAG: %[[CB2:.*]] = ttkernel.get_compile_time_arg_val(2) : () -> !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>
 // mm_block_init: ct=1, rt=2, kt=3.
-// CHECK:      "ttkernel.mm_block_init"(%[[CB0]], %[[CB1]], %[[CB2]], %[[C0_I32]], %[[C1_I32]], %[[C2_I32]], %[[C3_I32]])
+// CHECK:      "ttkernel.mm_block_init_short"(%[[CB0]], %[[CB1]], %[[C0_I32]], %[[C1_I32]], %[[C2_I32]], %[[C3_I32]])
 // CHECK:      ttkernel.tile_regs_acquire
+// CHECK-NEXT: ttkernel.reconfig_data_format(
 // CHECK-NEXT: "ttkernel.mm_block_init_short"(%[[CB0]], %[[CB1]], %[[C0_I32]], %[[C1_I32]], %[[C2_I32]], %[[C3_I32]])
 // K loop: ct=1 so in1_idx=k*1=k (CSE merges with in0_idx=k).
 // CHECK-NEXT: scf.for %[[K:.*]] = %[[C0]] to %[[C3]] step
@@ -276,8 +280,9 @@ func.func @matmul_k3(
 // CHECK-DAG: %[[CB1:.*]] = ttkernel.get_compile_time_arg_val(1) : () -> !ttkernel.cb<12, !ttcore.tile<32x32, bf16>>
 // CHECK-DAG: %[[CB2:.*]] = ttkernel.get_compile_time_arg_val(2) : () -> !ttkernel.cb<8, !ttcore.tile<32x32, bf16>>
 // mm_block_init: transpose=1, ct=2, rt=2, kt=3.
-// CHECK:      "ttkernel.mm_block_init"(%[[CB0]], %[[CB1]], %[[CB2]], %[[C1_I32]], %[[C2_I32]], %[[C2_I32]], %[[C3_I32]])
+// CHECK:      "ttkernel.mm_block_init_short"(%[[CB0]], %[[CB1]], %[[C1_I32]], %[[C2_I32]], %[[C2_I32]], %[[C3_I32]])
 // CHECK:      ttkernel.tile_regs_acquire
+// CHECK-NEXT: ttkernel.reconfig_data_format(
 // CHECK-NEXT: "ttkernel.mm_block_init_short"(%[[CB0]], %[[CB1]], %[[C1_I32]], %[[C2_I32]], %[[C2_I32]], %[[C3_I32]])
 // K loop: stride 1 so in1_idx=k (CSE merges with in0_idx=k); transpose operand=1.
 // CHECK-NEXT: scf.for %[[K:.*]] = %[[C0]] to %[[C3]] step

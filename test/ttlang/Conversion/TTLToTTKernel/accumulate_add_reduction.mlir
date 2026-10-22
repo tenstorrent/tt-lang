@@ -11,14 +11,17 @@
 
 // CHECK-LABEL: func.func @accumulate_add_reduction
 // CHECK-DAG: %[[C0:.*]] = arith.constant 0 : index
-// CHECK: %[[INIT_CB:.*]] = ttkernel.get_compile_time_arg_val(0)
-// CHECK: %[[CONTRIB_CB:.*]] = ttkernel.get_compile_time_arg_val(1)
-// CHECK: %[[OUT_CB:.*]] = ttkernel.get_compile_time_arg_val(2)
-// CHECK: ttkernel.binary_op_init_common(%[[CONTRIB_CB]], %[[CONTRIB_CB]], %[[OUT_CB]])
+// CHECK-DAG: %[[INIT_CB:.*]] = ttkernel.get_compile_time_arg_val(0)
+// CHECK-DAG: %[[CONTRIB_CB:.*]] = ttkernel.get_compile_time_arg_val(1)
+// CHECK-DAG: %[[OUT_CB:.*]] = ttkernel.get_compile_time_arg_val(2)
+// CHECK: ttkernel.reconfig_data_format(%[[CONTRIB_CB]], %[[CONTRIB_CB]])
+// CHECK: ttkernel.pack_reconfig_data_format(%[[OUT_CB]])
 // CHECK: scf.for %[[I:.*]] =
 // CHECK-NEXT: ttkernel.tile_regs_acquire
+// CHECK-NEXT: ttkernel.reconfig_data_format(
 // CHECK-NEXT: ttkernel.copy_tile_init(%[[INIT_CB]])
 // CHECK-NEXT: ttkernel.copy_tile(%[[INIT_CB]], %[[I]], %[[C0]])
+// CHECK-NEXT: ttkernel.reconfig_data_format(
 // CHECK-NEXT: ttkernel.binary_dest_reuse_tiles_init(%[[CONTRIB_CB]], <add>, <dest_to_srca>)
 // CHECK-NEXT: scf.for %[[J:.*]] =
 // CHECK-NOT: ttkernel.copy_tile(%[[CONTRIB_CB]]
