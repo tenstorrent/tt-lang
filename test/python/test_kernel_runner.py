@@ -3331,7 +3331,11 @@ def test_build_pipe_runtime_resources_appends_global_semaphore_args(monkeypatch)
     assert resources.expected_extra_common_runtime_args == 2
 
 
-def test_build_pipe_runtime_resources_zero_initializes_reset_state(monkeypatch):
+@pytest.mark.parametrize("zero_initialize", [False, True])
+@pytest.mark.parametrize("call_style", ["keyword", "positional"])
+def test_build_pipe_runtime_resources_honors_scratch_initialization(
+    monkeypatch, zero_initialize, call_style
+):
     observed_allocations = []
 
     def allocate_scratch(core_ranges, num_bytes, device, *, zero_initialize=False):
@@ -3345,17 +3349,26 @@ def test_build_pipe_runtime_resources_zero_initializes_reset_state(monkeypatch):
     core_ranges = object()
     device = object()
 
-    resources = kernel_runner.build_pipe_runtime_resources(
+    arguments = dict(
         tensors=[],
         core_ranges=core_ranges,
+        cb_configs=[],
         pipe_sram_scratch_bytes=16,
+        num_pipe_global_semaphores=0,
+        pipe_computed_address_dfb_indices=[],
         device=device,
-        initialize_sram_scratch=True,
+        initialize_sram_scratch=zero_initialize,
+        kernel_specs=[],
+        dfb_reconfiguration_plan=None,
     )
+    if call_style == "keyword":
+        resources = kernel_runner.build_pipe_runtime_resources(**arguments)
+    else:
+        resources = kernel_runner.build_pipe_runtime_resources(*arguments.values())
 
     assert len(resources.scratch_tensors) == 1
     assert resources.extra_common_runtime_args == [0x4000]
-    assert observed_allocations == [(core_ranges, 16, device, True)]
+    assert observed_allocations == [(core_ranges, 16, device, zero_initialize)]
 
 
 def test_pipe_computed_address_backing_uses_maximum_epoch_capacity(monkeypatch):
@@ -5790,6 +5803,59 @@ def test_routing_plane_runtime_args_are_dense_per_device(monkeypatch):
     ]
 
 
+def test_routing_plane_skips_routes_without_generated_manager_interval(
+    monkeypatch,
+):
+    fake_ttnn = _FakeTTNN()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    program = _make_fake_fabric_program(1)
+    route = kernel_runner.FabricRouteSpec((0, 0), (0, 1), ((0, 0),), 0)
+
+    kernel_runner.configure_routing_plane_runtime_args(
+        program_descriptor=program,
+        kernel_fabric_routes=[[route]],
+        kernel_fabric_runtime_arg_base_common_indices=[0],
+        kernel_fabric_manager_intervals=[()],
+        mesh_device=_FakeMeshDevice(),
+        device_coordinates=(0, 0),
+        grid_cols=1,
+        grid_rows=1,
+    )
+
+    assert program.kernels[0].runtime_args[0][0][:5] == [0] * 5
+    assert fake_ttnn.fabric_direction_calls == []
+    assert fake_ttnn.fabric_setup_calls == []
+    assert program.semaphores == []
+
+
+def test_routing_plane_restricts_generated_routes_to_interval_nodes(
+    monkeypatch,
+):
+    fake_ttnn = _FakeTTNN()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    program = _make_fake_fabric_program(1)
+    program.kernels[0].core_ranges = _make_fake_core_ranges((1, 0))
+    route = kernel_runner.FabricRouteSpec((0, 0), (0, 1), ((0, 0), (1, 0)), 0)
+
+    kernel_runner.configure_routing_plane_runtime_args(
+        program_descriptor=program,
+        kernel_fabric_routes=[[route]],
+        kernel_fabric_runtime_arg_base_common_indices=[0],
+        kernel_fabric_manager_intervals=[
+            (_fabric_manager_interval("sender", launch_nodes=((1, 0),)),)
+        ],
+        mesh_device=_FakeMeshDevice(),
+        device_coordinates=(0, 0),
+        grid_cols=2,
+        grid_rows=1,
+    )
+
+    assert program.kernels[0].runtime_args[0][0][:5] == [0] * 5
+    assert program.kernels[0].runtime_args[1][0][:5] == [1, 0, 1, 0, 0]
+    assert len(fake_ttnn.fabric_setup_calls) == 1
+    assert fake_ttnn.fabric_setup_calls[0][-1] == (1, 0)
+
+
 def test_routing_plane_accepts_route_cache_as_eighth_positional_argument(
     monkeypatch,
 ):
@@ -7612,7 +7678,10 @@ def test_compiled_mixed_fabric_claim_rejects_one_shared_link(monkeypatch):
         abi_identity="collective-v1",
     )
 
-    with pytest.raises(ValueError, match="cannot assign distinct forwarding links"):
+    with pytest.raises(
+        ValueError,
+        match="fabric mux clients have no forwarding link not occupied by a direct",
+    ):
         kernel_runner.configure_routing_plane_runtime_args(
             program_descriptor=program,
             kernel_fabric_routes=compiled.kernel_fabric_routes,
@@ -8564,11 +8633,9 @@ def test_cached_dispatch_failure_discards_reset_state(monkeypatch):
     monkeypatch.setattr(
         kernel_runner, "get_min_remaining_l1_for_device", lambda _device, **_kwargs: 0
     )
-    build_initialization = []
     scratch_generations = []
 
     def build_resources(**kwargs):
-        build_initialization.append(kwargs["initialize_sram_scratch"])
         scratch = object()
         scratch_generations.append(scratch)
         return kernel_runner.PipeRuntimeResources(
@@ -8609,7 +8676,7 @@ def test_cached_dispatch_failure_discards_reset_state(monkeypatch):
     assert cache.pipe_resources is None
     kernel_runner.run_kernel_on_device(**arguments)
 
-    assert build_initialization == [True, True]
+    assert len(scratch_generations) == 2
     assert cache.pipe_resources.scratch_tensors[0] is scratch_generations[1]
     assert fake_ttnn.synchronize_calls == [device]
 
@@ -8651,13 +8718,13 @@ def test_cached_dispatch_failure_retains_state_when_sync_fails(monkeypatch):
     assert retained_caches[0].pipe_resources.global_semaphores[0] is not None
 
 
-def test_cached_pipe_resources_distinguish_reset_initialization(monkeypatch):
+def test_cached_pipe_resources_initialize_stateful_scratch(monkeypatch):
     fake_ttnn = _FakeTTNN()
     monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
-    build_calls = []
+    build_initialization = []
 
     def build_resources(**kwargs):
-        build_calls.append(kwargs["initialize_sram_scratch"])
+        build_initialization.append(kwargs["initialize_sram_scratch"])
         return kernel_runner.PipeRuntimeResources(
             scratch_tensors=[object()],
             global_semaphores=[],
@@ -8694,14 +8761,24 @@ def test_cached_pipe_resources_distinguish_reset_initialization(monkeypatch):
     repeated_with_reset = kernel_runner.get_cached_runtime_resources(
         num_dfb_resets=1, **arguments
     )
+    with_global_semaphore = kernel_runner.get_cached_runtime_resources(
+        num_dfb_resets=0,
+        **{**arguments, "num_pipe_global_semaphores": 1},
+    )
+    repeated_with_global_semaphore = kernel_runner.get_cached_runtime_resources(
+        num_dfb_resets=0,
+        **{**arguments, "num_pipe_global_semaphores": 1},
+    )
 
     assert first_without_reset[0] is repeated_without_reset[0]
     assert first_without_reset[1] is repeated_without_reset[1]
     assert first_with_reset[0] is repeated_with_reset[0]
     assert first_with_reset[1] is repeated_with_reset[1]
     assert first_with_reset[0] is not first_without_reset[0]
-    assert build_calls == [False, True]
-    assert fake_ttnn.synchronize_calls == [device]
+    assert with_global_semaphore[0] is not first_with_reset[0]
+    assert repeated_with_global_semaphore[0] is not with_global_semaphore[0]
+    assert build_initialization == [False, True, True, True]
+    assert fake_ttnn.synchronize_calls == [device, device, device]
 
 
 def test_run_kernel_reuses_reconfiguration_resource_generation(monkeypatch):
