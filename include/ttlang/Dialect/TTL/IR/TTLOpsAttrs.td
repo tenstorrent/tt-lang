@@ -13,6 +13,15 @@ include "mlir/IR/AttrTypeBase.td"
 // TTL attribute definitions
 //===----------------------------------------------------------------------===//
 
+def TTL_TopkOrderAttr : EnumAttr<TTL_Dialect, TTL_TopkOrder, "topk_order"> {
+  let assemblyFormat = "`<` $value `>`";
+}
+
+def TTL_TopkPayloadAttr
+    : EnumAttr<TTL_Dialect, TTL_TopkPayload, "topk_payload"> {
+  let assemblyFormat = "`<` $value `>`";
+}
+
 def TTL_LogicalKernelAttr : TTL_Attr<"LogicalKernel", "logical_kernel"> {
   let summary = "Target-independent identity of one operation kernel";
   let description = [{

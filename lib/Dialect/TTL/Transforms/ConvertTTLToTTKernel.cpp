@@ -2399,6 +2399,13 @@ static LogicalResult lowerTTLOpsToTTKernel(
   target.addLegalOp<TileRegsAcquireOp, TileRegsCommitOp, TileRegsWaitOp,
                     TileRegsReleaseOp>();
 
+  // TopK helpers are lowered with the tile ops. They are not tile-compute
+  // ops, so the illegal dialect would reject them in this phase.
+  target.addLegalOp<TileTopkFuseOp, TileTopkDefuseOp,
+                    TileTopkStampLocalPositionsOp, TileTopkStripRankTagsOp,
+                    TileTopkCanonicalizeNegzeroValuesOp,
+                    TileTopkUint16MoveDestTileToPackHalfOp>();
+
   // SignpostOp and DPrintOp are lowered in separate EmitC passes.
   target.addLegalOp<SignpostOp, DPrintOp>();
 
@@ -2693,6 +2700,13 @@ lowerTileOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
         // DST lifecycle ops are illegal.
         if (mlir::isa<TileRegsAcquireOp, TileRegsCommitOp, TileRegsWaitOp,
                       TileRegsReleaseOp>(op)) {
+          return false;
+        }
+        // TopK helpers lower in this phase.
+        if (mlir::isa<TileTopkFuseOp, TileTopkDefuseOp,
+                      TileTopkStampLocalPositionsOp, TileTopkStripRankTagsOp,
+                      TileTopkCanonicalizeNegzeroValuesOp,
+                      TileTopkUint16MoveDestTileToPackHalfOp>(op)) {
           return false;
         }
         // All other TTL ops are legal (ComputeOp, YieldOp, AttachCBOp).
