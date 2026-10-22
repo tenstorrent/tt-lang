@@ -12,7 +12,14 @@ set -euo pipefail
 _SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 _REPO_ROOT="$(dirname "$_SCRIPT_DIR")"
 readonly _SCRIPT_DIR _REPO_ROOT
-readonly _STACK_MANIFEST="${TTLANG_EMULE_STACK_MANIFEST:-${_REPO_ROOT}/config/tt-lang-emule-stack.json}"
+_STACK_MANIFEST="${TTLANG_EMULE_STACK_MANIFEST:-${_REPO_ROOT}/config/tt-lang-emule-stack.json}"
+# The image input ID is computed from the repository root, so a relative
+# setting must name the file from the caller's directory before that.
+case "$_STACK_MANIFEST" in
+    /*) ;;
+    *) _STACK_MANIFEST="${PWD}/${_STACK_MANIFEST}" ;;
+esac
+readonly _STACK_MANIFEST
 readonly _STACK_TOOL="${_SCRIPT_DIR}/tt-lang-emule-stack.py"
 readonly _PYTHON="${TTLANG_EMULE_HOST_PYTHON:-python3}"
 

@@ -1126,6 +1126,27 @@ PY
     refute_log_line "build"
 }
 
+@test "a relative stack manifest setting resolves against the caller's directory" {
+    local caller="$BATS_TEST_TMPDIR/caller"
+    mkdir -p "$caller"
+    cp "$TTLANG_REPO_ROOT/config/tt-lang-emule-stack.json" "$caller/stack.json"
+    cd "$caller"
+    TTLANG_EMULE_STACK_MANIFEST="$caller/stack.json" \
+        TTLANG_EMULE_DOCKER="$MOCK_DOCKER" \
+        run -0 "$RUNNER" "$TTLANG_REPO_ROOT/examples/eltwise_add.py"
+    local expected_image
+    expected_image="$(grep -m 1 '^tt-lang-emule:' "$MOCK_DOCKER_LOG")"
+    : > "$MOCK_DOCKER_LOG"
+
+    TTLANG_EMULE_STACK_MANIFEST=stack.json \
+        TTLANG_EMULE_DOCKER="$MOCK_DOCKER" \
+        run -0 "$RUNNER" "$TTLANG_REPO_ROOT/examples/eltwise_add.py"
+
+    assert_log_line "$expected_image"
+    assert_log_line "run"
+    refute_log_line "build"
+}
+
 @test "an unavailable daemon fails before inspecting or building the image" {
     cd "$TTLANG_REPO_ROOT"
     MOCK_DOCKER_INFO_STATUS=1 TTLANG_EMULE_DOCKER="$MOCK_DOCKER" \
