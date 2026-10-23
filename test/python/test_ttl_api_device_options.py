@@ -529,6 +529,27 @@ class TestMeshProgramPlacement:
         assert calls[0]["mesh_program_placements"] == [placement]
         assert calls[0]["fabric_route_cache"] is compiled_kernel._fabric_route_cache
 
+    def test_compiled_kernel_forwards_memory_model(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(
+            ttl_api,
+            "run_kernel_on_device",
+            lambda **kwargs: calls.append(kwargs),
+        )
+        compiled_kernel = ttl_api.CompiledTTNNKernel(
+            kernel_paths=[],
+            kernel_configs=[],
+            kernel_arg_specs=[],
+            num_tensors=1,
+            core_ranges=_CoreRanges(),
+            kernel_tensor_indices=[],
+            memory_model="compiler-sram",
+        )
+
+        compiled_kernel(_TensorWithDevice(_DeviceWithMeshShape((1, 1))))
+
+        assert calls[0]["memory_model"] == "compiler-sram"
+
 
 @pytest.mark.parametrize("logical_selectors", [None, [], [None]])
 def test_resource_factory_requires_complete_logical_selectors(logical_selectors):

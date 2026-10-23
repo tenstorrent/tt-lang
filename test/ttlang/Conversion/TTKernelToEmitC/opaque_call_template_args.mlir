@@ -25,6 +25,8 @@ func.func @typed_literals_to_emitc() attributes {ttkernel.thread = #ttkernel.thr
 
 // The emitted definition precedes the user header that names it.
 // CPP-LABEL: #include <cstdint>
+// CPP: #include "api/dataflow/dataflow_api.h"
+// CPP: #include "api/dataflow/circular_buffer.h"
 // CPP: namespace ttlang {
 // CPP: struct DFBDescriptor {
 // CPP: } // namespace ttlang
@@ -33,6 +35,47 @@ func.func @typed_literals_to_emitc() attributes {ttkernel.thread = #ttkernel.thr
 func.func @dfb_descriptor_template_to_emitc() attributes {ttkernel.thread = #ttkernel.thread<noc>} {
   ttkernel.opaque_call "describe" template_args [11 : si32, #ttkernel.dfb_descriptor<3, 2, 4, 4096>] () {dfb_resource_indices = array<i32: 3>, header = "describe.hpp"} : () -> ()
   return
+}
+
+// -----
+
+// Compiler-managed descriptors bind storage by arena address on Wormhole.
+// EMITC-LABEL: func.func @compiler_l1_descriptor_template_to_emitc
+// EMITC: emitc.call_opaque "describe"
+// EMITC-SAME: template_args = [#emitc.opaque<"ttlang::l1::DFBDescriptor<2048, 1, 2, 0, 64>">]
+// EMITC-SAME: ttlang.requires_compiler_l1
+// EMITC: emitc.call_opaque "describe"
+// EMITC-SAME: template_args = [#emitc.opaque<"ttlang::l1::DFBDescriptor<2048, 1, 2, 8, 12344>">]
+// CPP: #ifndef TTLANG_COMPILER_L1_TARGET_H
+// CPP: class DFBDescriptor
+// CPP: #include "describe.hpp"
+// CPP: describe<ttlang::l1::DFBDescriptor<2048, 1, 2, 0, 64>>();
+// CPP: describe<ttlang::l1::DFBDescriptor<2048, 1, 2, 8, 12344>>();
+module attributes {ttl.memory_model = "compiler-sram", ttl.l1_arena_bytes = 16448 : i64, ttl.target_arch = #ttcore.arch<wormhole_b0>, ttl.dfb_allocations = [
+  {block_count = 2 : i32, dfb_index = 0 : i32, element_type = !ttcore.tile<32x32, bf16>, l1_allocation_bytes = 4096 : i64, l1_offset = 0 : i64, l1_payload_offset = 64 : i64, num_tiles = 1 : i32, page_size = 2048 : i32, storage_index = 0 : i32},
+  {block_count = 2 : i32, dfb_index = 1 : i32, element_type = !ttcore.tile<32x32, bf16>, l1_allocation_bytes = 4096 : i64, l1_offset = 8 : i64, l1_payload_offset = 12352 : i64, num_tiles = 1 : i32, page_size = 2048 : i32, storage_index = 1 : i32}
+]} {
+  func.func @compiler_l1_descriptor_template_to_emitc() attributes {ttkernel.thread = #ttkernel.thread<noc>} {
+    ttkernel.opaque_call "describe" template_args [#ttkernel.dfb_descriptor<0, 1, 2, 2048>] () {dfb_resource_indices = array<i32: 0>, header = "describe.hpp"} : () -> ()
+    ttkernel.opaque_call "describe" template_args [#ttkernel.dfb_descriptor<1, 1, 2, 2048>] () {dfb_resource_indices = array<i32: 1>, header = "describe.hpp"} : () -> ()
+    return
+  }
+}
+
+// -----
+
+// Compute descriptors preserve direct-to-destination format selection.
+// EMITC-LABEL: func.func @compiler_l1_compute_descriptor
+// EMITC: #emitc.opaque<"ttlang::l1::ComputeDFBDescriptor<static_cast<uint32_t>(DataFormat::Float32), 4096, 1, 1, 0, 64, true>">
+// CPP: #ifndef TTLANG_COMPILER_L1_COMPUTE_H
+// CPP: class ComputeDFBDescriptor
+// CPP: #include "describe.hpp"
+// CPP: describe<ttlang::l1::ComputeDFBDescriptor<static_cast<uint32_t>(DataFormat::Float32), 4096, 1, 1, 0, 64, true>>();
+module attributes {ttl.memory_model = "compiler-sram", ttl.l1_arena_bytes = 4160 : i64, ttl.target_arch = #ttcore.arch<wormhole_b0>, ttl.dfb_allocations = [{block_count = 1 : i32, dfb_index = 0 : i32, element_type = !ttcore.tile<32x32, f32>, l1_allocation_bytes = 4096 : i64, l1_offset = 0 : i64, l1_payload_offset = 64 : i64, num_tiles = 1 : i32, page_size = 4096 : i32, storage_index = 0 : i32}]} {
+  func.func @compiler_l1_compute_descriptor() attributes {ttkernel.thread = #ttkernel.thread<compute>, ttl.unpack_to_dest_fp32 = array<i32: 0>} {
+    ttkernel.opaque_call "describe" template_args [#ttkernel.dfb_descriptor<0, 1, 1, 4096>] () {dfb_resource_indices = array<i32: 0>, header = "describe.hpp"} : () -> ()
+    return
+  }
 }
 
 // -----

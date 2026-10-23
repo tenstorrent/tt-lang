@@ -5,12 +5,28 @@
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 
 #include "ttlang/Dialect/TTKernel/IR/TTKernelOps.h"
+#include "ttlang/Target/TargetInfo.h"
 #include "llvm/ADT/BitVector.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/CheckedArithmetic.h"
 #include "llvm/Support/raw_ostream.h"
 
 namespace mlir::tt::ttl {
+
+FailureOr<DFBIdentityRange> getDFBIdentityRange(Operation *operation) {
+  auto module = operation->getParentOfType<ModuleOp>();
+  if (usesCompilerSRAM(module)) {
+    auto allocations =
+        module->getAttrOfType<ArrayAttr>(kDFBAllocationsAttrName);
+    if (!allocations) {
+      return failure();
+    }
+    return DFBIdentityRange{static_cast<int64_t>(allocations.size()),
+                            "the compiler-sram allocation plan"};
+  }
+  return DFBIdentityRange{getTargetMaxDFBIndices(operation),
+                          getTargetDFBIndexCapacityDescription(operation)};
+}
 
 Value getDFBConversionCastSource(Operation *operation) {
   auto cast = dyn_cast_or_null<UnrealizedConversionCastOp>(operation);

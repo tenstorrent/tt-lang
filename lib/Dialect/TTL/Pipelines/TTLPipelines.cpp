@@ -91,7 +91,9 @@ void createTTLToTTKernelPipeline(OpPassManager &pm,
   }
   {
     TTLFinalizeDFBIndicesOptions finalizeOptions;
+    finalizeOptions.memoryModel = options.memoryModel;
     finalizeOptions.reuseUserDFBs = options.reuseUserDFBs;
+    finalizeOptions.sramAllocationStrategy = options.sramAllocationStrategy;
     finalizeOptions.unsafeAssumeAllocationGroups =
         options.unsafeAssumeAllocationGroups;
     finalizeOptions.exactColoringSearchStateLimit =
