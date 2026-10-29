@@ -117,7 +117,9 @@ execution verify that they match the checkout, so the compiler uses the image's
 prepared Python environment. Requirement and lock changes select a new runtime
 image identity. After changing a requirement file or the tt-metal pin, run
 `scripts/update-tt-lang-emule-locks.sh` and commit both regenerated lock files;
-it needs Docker but not the emulator source.
+it needs Docker but not the emulator source. To regenerate them for a candidate
+stack, select its manifest with `TTLANG_EMULE_STACK_MANIFEST` as described in
+[Updating the supported stack](simulator.md#updating-the-supported-stack).
 
 The toolchain's `src/python` directory supplies installed MLIR Python resources
 referenced by its CMake package exports. These files support building TT-Lang's

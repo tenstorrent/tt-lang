@@ -440,6 +440,33 @@ make_entrypoint_fixture() {
     assert_output ""
 }
 
+@test "lock updates follow a selected candidate manifest" {
+    local updater="$TTLANG_REPO_ROOT/scripts/update-tt-lang-emule-locks.sh"
+    local candidate_dir="$BATS_TEST_TMPDIR/candidate"
+    mkdir -p "$candidate_dir"
+    python3 - "$TTLANG_REPO_ROOT/config/tt-lang-emule-stack.json" \
+        "$candidate_dir/candidate-stack.json" <<'PY'
+import json
+import pathlib
+import sys
+
+stack = json.loads(pathlib.Path(sys.argv[1]).read_text())
+stack["metal"]["commit"] = "c" * 40
+pathlib.Path(sys.argv[2]).write_text(json.dumps(stack, indent=2) + "\n")
+PY
+
+    # A relative selection names the file from the caller's directory.
+    cd "$candidate_dir"
+    MOCK_DOCKER_LOCKS="emule-requirements.lock emule-metal-deps.lock" \
+        TTLANG_EMULE_DOCKER="$MOCK_DOCKER" \
+        TTLANG_EMULE_STACK_MANIFEST=candidate-stack.json \
+        run -0 "$updater"
+    assert_log_line "TT_METAL_COMMIT=cccccccccccccccccccccccccccccccccccccccc"
+    refute_log_contains "TT_METAL_COMMIT=$(python3 -c \
+        'import json, sys; print(json.load(open(sys.argv[1]))["metal"]["commit"])' \
+        "$TTLANG_REPO_ROOT/config/tt-lang-emule-stack.json")"
+}
+
 @test "lock updates keep the committed locks unless both are produced" {
     local updater="$TTLANG_REPO_ROOT/scripts/update-tt-lang-emule-locks.sh"
     local containers="$TTLANG_REPO_ROOT/.github/containers"

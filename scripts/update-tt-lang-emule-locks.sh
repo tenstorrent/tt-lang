@@ -6,7 +6,9 @@
 # Regenerate the lock files that pin the tt-emule runtime image's downloads:
 # .github/containers/emule-requirements.lock from requirements-test.txt and
 # .github/containers/emule-metal-deps.lock from the manifest's tt-metal
-# commit. The lock stages never receive the emulator source.
+# commit. Like the launcher, TTLANG_EMULE_STACK_MANIFEST selects a candidate
+# manifest instead of config/tt-lang-emule-stack.json. The lock stages never
+# receive the emulator source.
 
 set -euo pipefail
 
@@ -19,7 +21,7 @@ _SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 _REPO_ROOT="$(dirname "$_SCRIPT_DIR")"
 readonly _SCRIPT_DIR _REPO_ROOT
 readonly _CONTAINERS="${_REPO_ROOT}/.github/containers"
-readonly _STACK_MANIFEST="${_REPO_ROOT}/config/tt-lang-emule-stack.json"
+readonly _STACK_MANIFEST="${TTLANG_EMULE_STACK_MANIFEST:-${_REPO_ROOT}/config/tt-lang-emule-stack.json}"
 readonly _PYTHON="${TTLANG_EMULE_HOST_PYTHON:-python3}"
 readonly _DOCKER="${TTLANG_EMULE_DOCKER:-docker}"
 readonly _LOCKS=(emule-requirements.lock emule-metal-deps.lock)
