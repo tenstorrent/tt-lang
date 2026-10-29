@@ -1,9 +1,11 @@
 # Compiler suite on tt-emule
 
 This page summarizes a full compiler-suite run on tt-emule on September 19,
-2026. It ran on macOS inside `linux/amd64` Docker, using the pinned
-tt-emule/tt-metal stack and P150 target in `config/tt-lang-emule-stack.json`.
-Later revisions have not necessarily rerun the complete suite.
+2026. It ran on macOS inside `linux/amd64` Docker, using tt-emule `7292395c`
+with tt-metal `b6c508c4` and the P150 target. The pins in
+`config/tt-lang-emule-stack.json` have moved since; for the current pins,
+`config/tt-lang-emule-xfail.json` lists the compiler tests known to fail, crash,
+or hang on the emulator.
 
 ## What was run
 

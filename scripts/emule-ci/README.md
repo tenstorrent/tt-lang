@@ -76,7 +76,11 @@ until an organization admin (OSPO) approves the request. Store the raw
 secret `TTLANG_EMULE_SOURCE_READ_TOKEN`, and the repository as
 `TTLANG_EMULE_SOURCE_REPOSITORY` in the form `tenstorrent/<name>` (no URL, no
 trailing newline); any other value fails the validation step. Do not create
-repository- or organization-level copies.
+repository- or organization-level copies. The `Validate compiler-backed
+emulation candidate` workflow reads the private source through its own
+repository-level variable `TTLANG_EMULE_SOURCE_REPOSITORY` and secret
+`TTLANG_EMULE_SOURCE_TOKEN`; this job never reads them, and this setup neither
+creates nor revokes them. A repository variable is not masked in logs.
 
 Unlike a deploy key, this interim token belongs to the developer: it reaches
 only what that developer can read, its reads are attributed to them in audit
@@ -89,7 +93,7 @@ date and, before it, regenerate the token with the same settings and overwrite
 the environment secret in place; the sim area owner does this. Once the job is
 stable, an OSPO Jira ticket replaces the token with a bot-owned one with the
 same settings, which ends the person-bound phase; the same expiry and rotation
-rules apply to it. Revoke the token to stop all access at once.
+rules apply to it. Revoke the token to stop this job's access at once.
 
 **Recommended `main` ruleset hardening** (not enforced by this workflow):
 enable "Require review from Code Owners" and "Require approval of the most

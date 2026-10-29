@@ -315,11 +315,15 @@ hardware configuration, not workload compatibility. Complete models and
 multi-device workloads require further validation, and Quasar kernels require
 compiler support beyond this change.
 
-Known compiler-suite failures with the pinned runtime include RISC-V inline
-assembly rejected by the x86 JIT, a missing RMSNorm SFPU header, incorrect results
-in some dynamic-buffer reuse and collective tests, and missing DPRINT output.
-The incorrect-output and DPRINT failures still require isolated reproducers;
-they are not all established tt-emule defects. Device execution tests provide
+`config/tt-lang-emule-xfail.json` lists the compiler tests known to fail,
+crash, or hang with the pinned runtime, each with a reason; the emulator CI
+expects those results. An earlier pinned runtime's failures included RISC-V
+inline assembly rejected by the x86 JIT, a missing RMSNorm SFPU header,
+incorrect results in some dynamic-buffer reuse and collective tests, and missing
+DPRINT output (see the
+[historical compiler-suite report](compiler-emule-test-status.md)). The
+incorrect-output and DPRINT failures still require isolated reproducers; they
+are not all established tt-emule defects. Device execution tests provide
 the evidence for emulated execution; compiler-only tests cover the compiler
 itself.
 
@@ -361,8 +365,10 @@ TTLANG_EMULE_REBUILD=1 ./scripts/install-tt-lang-emule.sh
 ```
 
 The rebuild installs the matching compiler/test dependencies into the image
-and prepares the compiler volume. The configured emulator source location is
-used again for the rebuild.
+from `.github/containers/emule-requirements.lock` and prepares the compiler
+volume. If a requirement file changed, regenerate the lock with
+`scripts/update-tt-lang-emule-locks.sh` first; otherwise the build stops. The
+configured emulator source location is used again for the rebuild.
 
 ### Emulator source access fails
 
