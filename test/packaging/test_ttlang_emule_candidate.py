@@ -141,12 +141,14 @@ def test_candidate_rejects_malicious_compiler_revisions(tmp_path, payload):
 
 def test_candidate_rejects_a_checkout_at_another_commit(tmp_path):
     source, emulator_commit = make_emulator(tmp_path, "c" * 40)
+    output = tmp_path / "candidate.json"
 
-    result = run_prepare(source, "d" * 40)
+    result = run_prepare(source, "d" * 40, "--output", str(output))
 
     assert result.returncode == 1
     assert emulator_commit in result.stderr
     assert "expected" in result.stderr
+    assert not output.exists()
 
 
 def test_candidate_rejects_dirty_pin_without_leaving_output(tmp_path):
