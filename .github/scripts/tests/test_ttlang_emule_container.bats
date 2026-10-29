@@ -1187,11 +1187,10 @@ PY
             assert_log_line local-runtime:pilot
             assert_log_line "TT_EMULE_COMMIT=$(git -C "$emule_source" rev-parse HEAD)"
             refute_log_line run
-            if [ "$rebuild" -eq 1 ]; then
-                refute_log_line image
-            else
-                assert_log_line image
-            fi
+            # Only rebuild=0 probes for an existing image; every successful
+            # build is then inspected to verify its provenance.
+            [ "$(grep -F -x -c image "$MOCK_DOCKER_LOG")" -eq \
+                $(( 1 - rebuild + (build_status == 0) )) ]
             shopt -s nullglob
             local retained_runtime_dirs=(
                 "$runtime_tmp"/tt-lang-emule.*
