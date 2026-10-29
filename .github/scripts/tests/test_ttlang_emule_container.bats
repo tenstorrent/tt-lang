@@ -18,6 +18,7 @@ make_stack_manifest() {
     sed \
         "s/\"base_commit\": \"[0-9a-f]*\"/\"base_commit\": \"$compiler_commit\"/" \
         "$SOURCE_REPO_ROOT/config/tt-lang-emule-stack.json" > "$target"
+    export MOCK_IMAGE_MANIFEST="$target"
 }
 
 make_runner_fixture() {
@@ -76,20 +77,22 @@ PY
 }
 
 make_emulator_fixture() {
-    local source="$1"
-    mkdir -p "$source/cluster_descriptors"
-    git -C "$source" init -q
-    touch "$source/tracked-source" \
-        "$source/cluster_descriptors/blackhole_P150_unharvested.yaml"
-    printf '%s\n' bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb > \
-        "$source/tt-metal-pin.txt"
-    git -C "$source" add .
-    git -C "$source" \
+    local root="$1"
+    local metal_commit="$2"
+    local descriptor
+    shift 2
+    mkdir -p "$root/cluster_descriptors"
+    touch "$root/tracked-source"
+    for descriptor in blackhole_P150_unharvested "$@"; do
+        touch "$root/cluster_descriptors/$descriptor.yaml"
+    done
+    printf '%s\n' "$metal_commit" > "$root/tt-metal-pin.txt"
+    git -C "$root" init -q
+    git -C "$root" add .
+    git -C "$root" \
         -c user.name=test -c user.email=test@example.com \
         commit -q -m "Pinned source"
-    touch "$source/untracked-secret"
-    pin_emulator_runtime "$(git -C "$source" rev-parse HEAD)" \
-        bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+    touch "$root/untracked-secret"
 }
 
 make_mock_docker() {
@@ -106,18 +109,60 @@ case "${1:-}" in
         exit "${MOCK_DOCKER_INFO_STATUS:-0}"
         ;;
     image)
+        image_status="${MOCK_DOCKER_IMAGE_STATUS:-0}"
+        if grep -F -x -q build "$MOCK_DOCKER_LOG"; then
+            image_status="${MOCK_DOCKER_BUILT_IMAGE_STATUS:-0}"
+        fi
         if [ "${MOCK_DOCKER_IMAGE_ERROR+x}" = x ]; then
             printf '%s\n' "$MOCK_DOCKER_IMAGE_ERROR" >&2
-        elif [ "${MOCK_DOCKER_IMAGE_STATUS:-0}" -eq 1 ]; then
-            printf 'Error response from daemon: No such image: %s\n' "$3" >&2
+        elif [ "$image_status" -eq 1 ]; then
+            printf 'Error response from daemon: No such image: %s\n' "${@: -1}" >&2
         fi
-        if [ -n "${MOCK_DOCKER_IMAGE_OUTPUT:-}" ]; then
+        if [ "${MOCK_DOCKER_IMAGE_OUTPUT+x}" = x ]; then
             printf '%s\n' "$MOCK_DOCKER_IMAGE_OUTPUT"
+        elif [ "$image_status" -eq 0 ]; then
+            python3 - <<'PY'
+import hashlib
+import json
+import os
+import pathlib
+
+manifest = pathlib.Path(os.environ["MOCK_IMAGE_MANIFEST"])
+stack = json.loads(manifest.read_text())
+target = stack["targets"][stack["default_target"]]
+labels = {
+    "org.opencontainers.image.source": stack["compiler"]["repository"],
+    "io.tenstorrent.tt-lang.compiler.commit": stack["compiler"]["base_commit"],
+    "io.tenstorrent.tt-lang.emule.commit": os.environ.get(
+        "MOCK_IMAGE_EMULE_COMMIT", stack["emulator"]["commit"]
+    ),
+    "io.tenstorrent.tt-lang.metal.repository": os.environ.get(
+        "MOCK_IMAGE_METAL_REPOSITORY", stack["metal"]["repository"]
+    ),
+    "io.tenstorrent.tt-lang.metal.commit": os.environ.get(
+        "MOCK_IMAGE_METAL_COMMIT", stack["metal"]["commit"]
+    ),
+    "io.tenstorrent.tt-lang.runtime.base-image": os.environ.get(
+        "MOCK_IMAGE_BASE_IMAGE", stack["runtime"]["base_image"]
+    ),
+    "io.tenstorrent.tt-lang.runtime.manifest-sha256": hashlib.sha256(
+        manifest.read_bytes()
+    ).hexdigest(),
+    "io.tenstorrent.tt-lang.runtime.platform": os.environ.get(
+        "MOCK_IMAGE_PLATFORM", "linux/amd64"
+    ),
+    "io.tenstorrent.tt-lang.target.name": target["name"],
+    "io.tenstorrent.tt-lang.target.cluster-descriptor": target["cluster_descriptor"],
+    "io.tenstorrent.tt-lang.target.mesh-device": target["mesh_device"],
+}
+labels.update(json.loads(os.environ.get("MOCK_IMAGE_LABEL_OVERRIDES", "{}")))
+print(json.dumps([{"Id": os.environ["MOCK_IMAGE_ID"], "Config": {"Labels": labels}}]))
+PY
         fi
         if [ -n "${MOCK_DOCKER_IMAGE_SIGNAL:-}" ]; then
             kill -s "$MOCK_DOCKER_IMAGE_SIGNAL" "$$"
         fi
-        exit "${MOCK_DOCKER_IMAGE_STATUS:-0}"
+        exit "$image_status"
         ;;
     images)
         if [ -n "${MOCK_DOCKER_LIST_ERROR:-}" ]; then
@@ -151,6 +196,10 @@ case "${1:-}" in
             [ ! -e "$source_context/.git" ] || exit 98
             [ ! -e "$source_context/untracked-secret" ] || exit 99
             [ -f "$stack_context/tt-lang-emule-stack.json" ] || exit 96
+            if [ -n "${MOCK_EXPECTED_STACK_MANIFEST:-}" ]; then
+                cmp "$stack_context/tt-lang-emule-stack.json" \
+                    "$MOCK_EXPECTED_STACK_MANIFEST" || exit 90
+            fi
             context="${!#}"
             for requirement in requirements.txt requirements-runtime.txt requirements-test.txt; do
                 cmp -s "$stack_context/$requirement" "$context/../../$requirement" || exit 91
@@ -200,7 +249,8 @@ setup() {
     done
     MOCK_DOCKER="$BATS_TEST_TMPDIR/docker"
     MOCK_DOCKER_LOG="$BATS_TEST_TMPDIR/docker.log"
-    export MOCK_DOCKER_LOG
+    MOCK_IMAGE_ID=sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee
+    export MOCK_DOCKER_LOG MOCK_IMAGE_ID
     make_mock_docker "$MOCK_DOCKER"
     unset TT_METAL_CACHE TT_EMULE_JIT_CACHE_DIR MESH_DEVICE EMULE_FABRIC8 \
         TT_METAL_ALLOCATOR_MODE_HYBRID TT_METAL_MOCK_CLUSTER_DESC_PATH
@@ -230,6 +280,18 @@ refute_log_contains() {
     run -1 grep -F -- "$1" "$MOCK_DOCKER_LOG"
 }
 
+assert_run_image() {
+    local image="$1"
+    local mutable_tag="${2:-}"
+    run -0 awk -v image="$image" -v mutable_tag="$mutable_tag" '
+        $0 == "run" { in_run = 1; next }
+        in_run && $0 == image { found = 1 }
+        in_run && $0 == mutable_tag { used_tag = 1 }
+        in_run && $0 == "END" { exit }
+        END { exit !(in_run && found && !used_tag) }
+    ' "$MOCK_DOCKER_LOG"
+}
+
 make_mock_entrypoint_commands() {
     local target_dir="$1"
     mkdir -p "$target_dir"
@@ -256,6 +318,7 @@ printf 'allocator_hybrid=%s\n' "${TT_METAL_ALLOCATOR_MODE_HYBRID:-}"
 printf 'fabric8=%s\n' "${EMULE_FABRIC8:-}"
 printf 'emule_cache=%s\n' "${TT_EMULE_JIT_CACHE_DIR:-}"
 printf 'mesh=%s\n' "${MESH_DEVICE:-}"
+printf 'mesh_set=%s\n' "${MESH_DEVICE+x}"
 printf 'compile_only=%s\n' "${TTLANG_COMPILE_ONLY:-}"
 printf 'sim_only=%s\n' "${TTLANG_SIM_ONLY:-}"
 for argument in "$@"; do
@@ -434,8 +497,91 @@ EOF
     assert_log_line \
         "type=volume,src=tt-lang-emule-build-${runtime_id}-${source_id},dst=/ttlang-build"
     assert_log_line \
-        "type=volume,src=tt-lang-emule-cache-${runtime_id},dst=/tt-metal-cache"
+        "type=volume,src=tt-lang-emule-cache-${runtime_id}-p150,dst=/tt-metal-cache"
+    assert_log_line "MESH_DEVICE=P150"
+    assert_log_line \
+        "TT_METAL_MOCK_CLUSTER_DESC_PATH=/opt/tt-emule/cluster_descriptors/blackhole_P150_unharvested.yaml"
+    assert_run_image "$MOCK_IMAGE_ID"
     refute_log_line "build"
+}
+
+@test "target selection shares the runtime and compiler but isolates runtime caches" {
+    cd "$TTLANG_REPO_ROOT"
+    local target
+    local target_name
+    local descriptor
+    local mesh
+    local image
+    local build_volume
+    local fingerprint
+    local default_cache
+    local selected_cache
+    TTLANG_EMULE_DOCKER="$MOCK_DOCKER" run -0 "$RUNNER" examples/program.py
+    image="$(awk '/^tt-lang-emule:/{print; exit}' "$MOCK_DOCKER_LOG")"
+    build_volume="$(grep '^type=volume,.*dst=/ttlang-build$' "$MOCK_DOCKER_LOG")"
+    fingerprint="$(grep '^TTLANG_EMULE_SOURCE_FINGERPRINT=' "$MOCK_DOCKER_LOG")"
+    default_cache="$(grep '^type=volume,.*dst=/tt-metal-cache$' "$MOCK_DOCKER_LOG")"
+    while IFS='|' read -r target target_name descriptor mesh; do
+        : > "$MOCK_DOCKER_LOG"
+        TTLANG_EMULE_TARGET="$target" TTLANG_EMULE_DOCKER="$MOCK_DOCKER" \
+            run -0 "$RUNNER" examples/program.py
+        assert_log_line "$image"
+        assert_log_line "$build_volume"
+        assert_log_line "$fingerprint"
+        assert_log_line "TTLANG_EMULE_TARGET_NAME=$target_name"
+        assert_log_line "MESH_DEVICE=$mesh"
+        assert_log_line \
+            "TT_METAL_MOCK_CLUSTER_DESC_PATH=/opt/tt-emule/cluster_descriptors/$descriptor.yaml"
+        selected_cache="$(grep '^type=volume,.*dst=/tt-metal-cache$' "$MOCK_DOCKER_LOG")"
+        [ "$selected_cache" = "type=volume,src=tt-lang-emule-cache-${image#tt-lang-emule:}-${target},dst=/tt-metal-cache" ]
+        if [ "$target" = p150 ]; then
+            [ "$selected_cache" = "$default_cache" ]
+        else
+            [ "$selected_cache" != "$default_cache" ]
+        fi
+        refute_log_line "build"
+    done <<'EOF'
+p150|blackhole-p150|blackhole_P150_unharvested|P150
+p100|blackhole-p100|blackhole_P100|P100
+p150-harvested|blackhole-p150-harvested|blackhole_P150|P150
+p300|blackhole-p300|blackhole_P300_both_mmio|P300
+p150x4|blackhole-p150x4|blackhole_4xP150|P150x4
+p150x8|blackhole-p150x8|blackhole_8xP150|P150x8
+p150x8-unharvested|blackhole-p150x8-unharvested|blackhole_8xP150_unharvested|P150x8
+galaxy|blackhole-galaxy|blackhole_galaxy|BHGLX
+n150|wormhole-n150|wormhole_N150|N150
+n300|wormhole-n300|wormhole_N300|N300
+q1|quasar-q1|quasar_Q1|
+EOF
+}
+
+@test "an image built for P100 runs with the P100 target" {
+    cd "$TTLANG_REPO_ROOT"
+    MOCK_IMAGE_LABEL_OVERRIDES='{
+        "io.tenstorrent.tt-lang.target.name": "blackhole-p100",
+        "io.tenstorrent.tt-lang.target.cluster-descriptor": "cluster_descriptors/blackhole_P100.yaml",
+        "io.tenstorrent.tt-lang.target.mesh-device": "P100"
+    }' \
+        TTLANG_EMULE_TARGET=p100 \
+        TTLANG_EMULE_DOCKER="$MOCK_DOCKER" \
+        run -0 "$RUNNER" examples/eltwise_add.py
+
+    assert_log_line "MESH_DEVICE=P100"
+    assert_log_line \
+        "TT_METAL_MOCK_CLUSTER_DESC_PATH=/opt/tt-emule/cluster_descriptors/blackhole_P100.yaml"
+    assert_run_image "$MOCK_IMAGE_ID"
+    refute_log_line "build"
+}
+
+@test "unknown and empty target profiles fail before Docker" {
+    cd "$TTLANG_REPO_ROOT"
+    local target
+    for target in unknown ""; do
+        TTLANG_EMULE_TARGET="$target" TTLANG_EMULE_DOCKER="$MOCK_DOCKER" \
+            run -1 "$RUNNER" examples/program.py
+        assert_output --partial "unknown target"
+        [ ! -e "$MOCK_DOCKER_LOG" ]
+    done
 }
 
 @test "linked worktree mounts its external Git metadata read-only" {
@@ -467,6 +613,122 @@ EOF
     refute_log_contains "/ttlang-reports"
 }
 
+@test "a matching explicit image runs by its validated immutable ID" {
+    local image_id
+    cd "$TTLANG_REPO_ROOT"
+    for image_id in "$MOCK_IMAGE_ID" \
+        eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee; do
+        : > "$MOCK_DOCKER_LOG"
+        MOCK_IMAGE_ID="$image_id" \
+            TTLANG_EMULE_IMAGE=example.invalid/runtime:mutable \
+            TTLANG_EMULE_DOCKER="$MOCK_DOCKER" \
+            run -0 "$RUNNER" examples/eltwise_add.py
+
+        assert_log_line "example.invalid/runtime:mutable"
+        assert_run_image "$image_id" example.invalid/runtime:mutable
+        refute_log_line "build"
+    done
+}
+
+@test "an existing explicit image must match every selected stack label" {
+    local label
+    cd "$TTLANG_REPO_ROOT"
+    for label in \
+        org.opencontainers.image.source \
+        io.tenstorrent.tt-lang.compiler.commit \
+        io.tenstorrent.tt-lang.emule.commit \
+        io.tenstorrent.tt-lang.metal.repository \
+        io.tenstorrent.tt-lang.metal.commit \
+        io.tenstorrent.tt-lang.runtime.base-image \
+        io.tenstorrent.tt-lang.runtime.manifest-sha256 \
+        io.tenstorrent.tt-lang.runtime.platform; do
+        : > "$MOCK_DOCKER_LOG"
+        MOCK_IMAGE_LABEL_OVERRIDES="{\"$label\":\"wrong-stack\"}" \
+            TTLANG_EMULE_IMAGE=example.invalid/runtime:mutable \
+            TTLANG_EMULE_DOCKER="$MOCK_DOCKER" \
+            run -1 "$RUNNER" examples/eltwise_add.py
+
+        assert_output --partial "image provenance mismatch"
+        assert_output --partial "$label: expected"
+        assert_output --partial "found 'wrong-stack'"
+        assert_output --partial "does not match the selected emulator stack"
+        assert_output --partial "TTLANG_EMULE_REBUILD=1 scripts/install-tt-lang-emule.sh"
+        refute_log_line "build"
+        refute_log_line "run"
+    done
+}
+
+@test "missing or malformed image inspection data prevents execution" {
+    local inspection
+    cd "$TTLANG_REPO_ROOT"
+    for inspection in '' not-json '[]' '{}' '[null]' \
+        '[{"Config":null}]' '[{"Config":{}}]' \
+        '[{"Config":{"Labels":null}}]' \
+        '[{"Config":{"Labels":[]}}]' \
+        '[{"Config":{"Labels":"wrong-type"}}]' \
+        '[{"Config":{"Labels":{}}}]'; do
+        : > "$MOCK_DOCKER_LOG"
+        MOCK_DOCKER_IMAGE_OUTPUT="$inspection" \
+            TTLANG_EMULE_IMAGE=runtime:unlabeled \
+            TTLANG_EMULE_DOCKER="$MOCK_DOCKER" \
+            run -1 "$RUNNER" examples/eltwise_add.py
+
+        assert_output --partial "does not match the selected emulator stack"
+        refute_output --partial "Traceback"
+        refute_log_line "build"
+        refute_log_line "run"
+    done
+}
+
+@test "missing or nonstring provenance values prevent execution" {
+    local value
+    cd "$TTLANG_REPO_ROOT"
+    for value in null 123 '[]' '{}'; do
+        : > "$MOCK_DOCKER_LOG"
+        MOCK_IMAGE_LABEL_OVERRIDES="{\"io.tenstorrent.tt-lang.emule.commit\":$value}" \
+            TTLANG_EMULE_IMAGE=runtime:malformed \
+            TTLANG_EMULE_DOCKER="$MOCK_DOCKER" \
+            run -1 "$RUNNER" examples/eltwise_add.py
+
+        assert_output --partial "io.tenstorrent.tt-lang.emule.commit: expected"
+        refute_log_line "build"
+        refute_log_line "run"
+    done
+}
+
+@test "matching labels require a full immutable image ID" {
+    local image_id
+    cd "$TTLANG_REPO_ROOT"
+    for image_id in '' eeeeeeeeeeee runtime:mutable sha256:eeee \
+        sha256:EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE; do
+        : > "$MOCK_DOCKER_LOG"
+        MOCK_IMAGE_ID="$image_id" TTLANG_EMULE_DOCKER="$MOCK_DOCKER" \
+            run -1 "$RUNNER" examples/eltwise_add.py
+
+        assert_output --partial "image.Id"
+        refute_log_line "build"
+        refute_log_line "run"
+    done
+}
+
+@test "installer and shell reject mismatched existing image provenance" {
+    local launcher
+    cd "$TTLANG_REPO_ROOT"
+    for launcher in "$INSTALLER" "$SHELL_LAUNCHER"; do
+        : > "$MOCK_DOCKER_LOG"
+        MOCK_IMAGE_METAL_COMMIT=ffffffffffffffffffffffffffffffffffffffff \
+            TTLANG_EMULE_IMAGE=runtime:stale \
+            TTLANG_EMULE_RUNTIME_SOURCE_DIR="$BATS_TEST_TMPDIR/never-read-source" \
+            TTLANG_EMULE_DOCKER="$MOCK_DOCKER" \
+            run -1 "$launcher"
+
+        assert_output --partial "io.tenstorrent.tt-lang.metal.commit: expected"
+        refute_output --partial "emulator source directory not found"
+        refute_log_line "build"
+        refute_log_line "run"
+    done
+}
+
 @test "installer is the only public path that enables installation" {
     cd "$TTLANG_REPO_ROOT"
     rm examples/compiler_only_external_call.py
@@ -476,9 +738,12 @@ EOF
     assert_output --partial "Runtime cache volume: tt-lang-emule-cache-"
 
     assert_log_line "TTLANG_EMULE_INSTALL=1"
+    assert_run_image "$MOCK_IMAGE_ID"
     refute_log_contains "/workspace/examples/"
 
     run -2 "$INSTALLER" unexpected
+    assert_output --partial "Usage: scripts/install-tt-lang-emule.sh"
+    run -2 "$INSTALLER" --target=p100
     assert_output --partial "Usage: scripts/install-tt-lang-emule.sh"
 }
 
@@ -495,11 +760,57 @@ EOF
     assert_log_line "MESH_DEVICE=P150"
     assert_log_line "TT_METAL_ALLOCATOR_MODE_HYBRID=1"
     assert_log_contains "TTLANG_EMULE_SOURCE_FINGERPRINT="
+    assert_run_image "$MOCK_IMAGE_ID"
     refute_log_line "TTLANG_EMULE_INSTALL=1"
     refute_log_line "build"
 
     run -2 "$SHELL_LAUNCHER" unexpected
     assert_output --partial "Usage: scripts/shell-tt-lang-emule.sh"
+}
+
+@test "developer shell accepts both target syntaxes" {
+    cd "$TTLANG_REPO_ROOT"
+    local target
+    local descriptor
+    local mesh
+    while IFS='|' read -r target descriptor mesh; do
+        : > "$MOCK_DOCKER_LOG"
+        TTLANG_EMULE_DOCKER="$MOCK_DOCKER" \
+            run -0 "$SHELL_LAUNCHER" "--target=$target"
+        assert_log_line "TTLANG_EMULE_SHELL=1"
+        assert_log_line "MESH_DEVICE=$mesh"
+        assert_log_line \
+            "TT_METAL_MOCK_CLUSTER_DESC_PATH=/opt/tt-emule/cluster_descriptors/$descriptor.yaml"
+
+        : > "$MOCK_DOCKER_LOG"
+        TTLANG_EMULE_DOCKER="$MOCK_DOCKER" \
+            run -0 "$SHELL_LAUNCHER" --target "$target"
+        assert_log_line "TTLANG_EMULE_SHELL=1"
+        assert_log_line "MESH_DEVICE=$mesh"
+        refute_log_line "build"
+    done <<'EOF'
+p100|blackhole_P100|P100
+n300|wormhole_N300|N300
+q1|quasar_Q1|
+EOF
+}
+
+@test "developer shell rejects missing empty unknown and extra target arguments" {
+    local option
+    for option in --target --target=; do
+        TTLANG_EMULE_DOCKER="$MOCK_DOCKER" run -2 "$SHELL_LAUNCHER" "$option"
+        assert_output --partial "--target"
+    done
+    TTLANG_EMULE_DOCKER="$MOCK_DOCKER" \
+        run -2 "$SHELL_LAUNCHER" --target ""
+    assert_output --partial "--target"
+    TTLANG_EMULE_DOCKER="$MOCK_DOCKER" \
+        run -1 "$SHELL_LAUNCHER" --target unknown
+    assert_output --partial "unknown target"
+    TTLANG_EMULE_DOCKER="$MOCK_DOCKER" \
+        run -2 "$SHELL_LAUNCHER" --target p100 unexpected
+    assert_output --partial "Usage: scripts/shell-tt-lang-emule.sh"
+    [ ! -e "$MOCK_DOCKER_LOG" ]
 }
 
 @test "installer and shell helper propagate a container failure" {
@@ -771,9 +1082,11 @@ PY
     local rebuild
     local inspect_status
     mkdir -p "$runtime_tmp"
-    make_emulator_fixture "$emule_source"
+    make_emulator_fixture "$emule_source" bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
+        blackhole_P100
     emule_commit="$(git -C "$emule_source" rev-parse HEAD)"
     emule_source="$(cd "$emule_source" && pwd -P)"
+    pin_emulator_runtime "$emule_commit" bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
     cd "$TTLANG_REPO_ROOT"
     for source_mode in directory url rebuild; do
         source_dir=""
@@ -820,8 +1133,13 @@ PY
         assert_log_line "$TTLANG_REPO_ROOT/.github/containers"
         refute_log_line "$TTLANG_REPO_ROOT"
         assert_log_line "run"
+        assert_run_image "$MOCK_IMAGE_ID"
         if [ "$source_mode" = rebuild ]; then
-            refute_log_line "image"
+            run -0 awk '
+                $0 == "build" { built = 1 }
+                $0 == "image" { if (!built) exit 1; inspected = 1 }
+                $0 == "run" { exit !inspected }
+            ' "$MOCK_DOCKER_LOG"
         fi
         shopt -s nullglob
         local retained_runtime_dirs=(
@@ -840,7 +1158,9 @@ PY
     local emule_source="$BATS_TEST_TMPDIR/external-emule"
     local runtime_tmp="$BATS_TEST_TMPDIR/runtime-tmp"
     local rebuild build_status
-    make_emulator_fixture "$emule_source"
+    make_emulator_fixture "$emule_source" bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+    pin_emulator_runtime "$(git -C "$emule_source" rev-parse HEAD)" \
+        bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
     mkdir -p "$runtime_tmp"
     # The workflow rebuilds; rebuild=0 covers a missing image. A failed build
     # must propagate, print no image, and still remove the exported sources.
@@ -898,6 +1218,54 @@ PY
     assert_output --partial "emulator target descriptor is missing"
     assert_output --partial "blackhole_P150_unharvested.yaml"
     refute_log_line "build"
+    refute_log_line "run"
+}
+
+@test "newly built images must pass provenance validation before installation" {
+    local emule_source="$BATS_TEST_TMPDIR/build-emule"
+    local emule_commit
+    local rebuild
+    make_emulator_fixture "$emule_source" bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+    emule_commit="$(git -C "$emule_source" rev-parse HEAD)"
+    pin_emulator_runtime "$emule_commit" bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+    cd "$TTLANG_REPO_ROOT"
+
+    for rebuild in 0 1; do
+        : > "$MOCK_DOCKER_LOG"
+        MOCK_DOCKER_IMAGE_STATUS=1 \
+            MOCK_IMAGE_METAL_COMMIT=cccccccccccccccccccccccccccccccccccccccc \
+            TTLANG_EMULE_REBUILD="$rebuild" \
+            TTLANG_EMULE_RUNTIME_SOURCE_DIR="$emule_source" \
+            TTLANG_EMULE_DOCKER="$MOCK_DOCKER" \
+            run -1 "$INSTALLER"
+
+        assert_output --partial "io.tenstorrent.tt-lang.metal.commit: expected"
+        assert_log_line "build"
+        run -0 awk '
+            $0 == "build" { built = 1 }
+            $0 == "image" && built { inspected = 1 }
+            END { exit !inspected }
+        ' "$MOCK_DOCKER_LOG"
+        refute_log_line "run"
+    done
+}
+
+@test "failed inspection of a newly built image preserves its exit status" {
+    local emule_source="$BATS_TEST_TMPDIR/build-emule"
+    local emule_commit
+    make_emulator_fixture "$emule_source" bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+    emule_commit="$(git -C "$emule_source" rev-parse HEAD)"
+    pin_emulator_runtime "$emule_commit" bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+    cd "$TTLANG_REPO_ROOT"
+
+    MOCK_DOCKER_IMAGE_STATUS=1 \
+        MOCK_DOCKER_BUILT_IMAGE_STATUS=125 \
+        TTLANG_EMULE_RUNTIME_SOURCE_DIR="$emule_source" \
+        TTLANG_EMULE_DOCKER="$MOCK_DOCKER" \
+        run -125 "$INSTALLER"
+
+    assert_output --partial "cannot verify image provenance"
+    assert_log_line "build"
     refute_log_line "run"
 }
 
@@ -960,6 +1328,99 @@ PY
 
     assert_output --partial "emulator.commit must be a full lowercase commit SHA"
     [ ! -e "$MOCK_DOCKER_LOG" ]
+}
+
+@test "an alternate candidate manifest supplies the runtime pins and build context" {
+    local emule_source="$BATS_TEST_TMPDIR/candidate-emule"
+    local candidate="$BATS_TEST_TMPDIR/candidate stack.json"
+    local emule_commit
+    local metal_commit=dddddddddddddddddddddddddddddddddddddddd
+    local base_image="example.invalid/candidate@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    local manifest_hash
+    make_emulator_fixture "$emule_source" "$metal_commit"
+    emule_commit="$(git -C "$emule_source" rev-parse HEAD)"
+    python3 - "$TTLANG_REPO_ROOT/config/tt-lang-emule-stack.json" \
+        "$candidate" "$emule_commit" "$metal_commit" "$base_image" <<'PY'
+import json
+import pathlib
+import sys
+
+stack = json.loads(pathlib.Path(sys.argv[1]).read_text())
+stack["emulator"]["commit"] = sys.argv[3]
+stack["metal"]["commit"] = sys.argv[4]
+stack["runtime"]["base_image"] = sys.argv[5]
+pathlib.Path(sys.argv[2]).write_text(json.dumps(stack, indent=2) + "\n")
+PY
+    manifest_hash="$(python3 -c \
+        'import hashlib, pathlib, sys; print(hashlib.sha256(pathlib.Path(sys.argv[1]).read_bytes()).hexdigest())' \
+        "$candidate")"
+    cd "$TTLANG_REPO_ROOT"
+
+    TTLANG_EMULE_STACK_MANIFEST="$candidate" \
+        TTLANG_EMULE_IMAGE=runtime:previous-stack \
+        TTLANG_EMULE_DOCKER="$MOCK_DOCKER" \
+        run -1 "$RUNNER" examples/eltwise_add.py
+
+    assert_output --partial "io.tenstorrent.tt-lang.emule.commit: expected '$emule_commit'"
+    assert_output --partial "io.tenstorrent.tt-lang.runtime.manifest-sha256: expected '$manifest_hash'"
+    refute_log_line "build"
+    refute_log_line "run"
+    : > "$MOCK_DOCKER_LOG"
+    export MOCK_IMAGE_MANIFEST="$candidate"
+
+    MOCK_DOCKER_IMAGE_STATUS=1 \
+        MOCK_DOCKER_REQUIRE_SANITIZED_CONTEXT=1 \
+        MOCK_EXPECTED_STACK_MANIFEST="$candidate" \
+        TTLANG_EMULE_INSTALL=1 \
+        TTLANG_EMULE_STACK_MANIFEST="$candidate" \
+        TTLANG_EMULE_RUNTIME_SOURCE_DIR="$emule_source" \
+        TTLANG_EMULE_DOCKER="$MOCK_DOCKER" \
+        run -0 "$RUNNER"
+
+    TTLANG_EMULE_STACK_MANIFEST="$candidate" \
+        TTLANG_EMULE_DOCKER="$MOCK_DOCKER" \
+        run -0 "$RUNNER" examples/eltwise_add.py
+
+    assert_log_line "TT_EMULE_COMMIT=$emule_commit"
+    assert_log_line "TT_METAL_COMMIT=$metal_commit"
+    assert_log_line "BASE_IMAGE=$base_image"
+    assert_log_line "STACK_MANIFEST_SHA256=$manifest_hash"
+    assert_log_contains "tt-lang-emule:${emule_commit:0:8}-${metal_commit:0:8}-r"
+    assert_log_line "build"
+    assert_log_line "run"
+    git diff --exit-code -- config/tt-lang-emule-stack.json
+}
+
+@test "an empty stack manifest setting selects the pinned manifest" {
+    cd "$TTLANG_REPO_ROOT"
+    TTLANG_EMULE_STACK_MANIFEST= \
+        TTLANG_EMULE_DOCKER="$MOCK_DOCKER" \
+        run -0 "$RUNNER" examples/eltwise_add.py
+
+    assert_log_line "run"
+    assert_log_line "linux/amd64"
+    refute_log_line "build"
+}
+
+@test "a relative stack manifest setting resolves against the caller's directory" {
+    local caller="$BATS_TEST_TMPDIR/caller"
+    mkdir -p "$caller"
+    cp "$TTLANG_REPO_ROOT/config/tt-lang-emule-stack.json" "$caller/stack.json"
+    cd "$caller"
+    TTLANG_EMULE_STACK_MANIFEST="$caller/stack.json" \
+        TTLANG_EMULE_DOCKER="$MOCK_DOCKER" \
+        run -0 "$RUNNER" "$TTLANG_REPO_ROOT/examples/eltwise_add.py"
+    local expected_image
+    expected_image="$(grep -m 1 '^tt-lang-emule:' "$MOCK_DOCKER_LOG")"
+    : > "$MOCK_DOCKER_LOG"
+
+    TTLANG_EMULE_STACK_MANIFEST=stack.json \
+        TTLANG_EMULE_DOCKER="$MOCK_DOCKER" \
+        run -0 "$RUNNER" "$TTLANG_REPO_ROOT/examples/eltwise_add.py"
+
+    assert_log_line "$expected_image"
+    assert_log_line "run"
+    refute_log_line "build"
 }
 
 @test "an unavailable daemon fails before inspecting or building the image" {
@@ -1223,6 +1684,7 @@ PY
     printf 'export TTLANG_SIM_ONLY=1 TTLANG_COMPILE_ONLY=1\n' > "$build_dir/env/activate"
 
     PATH="$mock_bin:$PATH" \
+        MESH_DEVICE=N300 \
         TT_METAL_MOCK_CLUSTER_DESC_PATH="$cluster" \
         TTLANG_EMULE_EXPECTED_LLVM_SHA="$expected_llvm_sha" \
         TTLANG_EMULE_SOURCE_FINGERPRINT="$source_fingerprint" \
@@ -1237,11 +1699,38 @@ PY
     assert_line "allocator_hybrid=1"
     assert_line "fabric8=1"
     assert_line "emule_cache=/tt-metal-cache/emule-jit"
-    assert_line "mesh=P150"
+    assert_line "mesh=N300"
+    assert_line "mesh_set=x"
     assert_line "compile_only="
     assert_line "sim_only="
     assert_line "python=$program"
     assert_line "python=argument with spaces"
+    [ ! -e "$MOCK_ENTRYPOINT_LOG" ]
+}
+
+@test "entrypoint accepts an omitted mesh and unsets an explicitly empty mesh" {
+    make_entrypoint_fixture
+    unset MESH_DEVICE
+    PATH="$mock_bin:$PATH" \
+        TT_METAL_MOCK_CLUSTER_DESC_PATH="$cluster" \
+        TTLANG_EMULE_EXPECTED_LLVM_SHA="$expected_llvm_sha" \
+        TTLANG_EMULE_SOURCE_FINGERPRINT="$source_fingerprint" \
+        TTLANG_EMULE_BUILD_DIR="$build_dir" \
+        run -0 /bin/bash "$test_entrypoint" "$program"
+    assert_line "mesh="
+    assert_line "mesh_set="
+    assert_line "python=$program"
+
+    PATH="$mock_bin:$PATH" \
+        TT_METAL_MOCK_CLUSTER_DESC_PATH="$cluster" \
+        TTLANG_EMULE_EXPECTED_LLVM_SHA="$expected_llvm_sha" \
+        TTLANG_EMULE_SOURCE_FINGERPRINT="$source_fingerprint" \
+        TTLANG_EMULE_BUILD_DIR="$build_dir" \
+        MESH_DEVICE="" \
+        run -0 /bin/bash "$test_entrypoint" "$program"
+    assert_line "mesh="
+    assert_line "mesh_set="
+    assert_line "python=$program"
     [ ! -e "$MOCK_ENTRYPOINT_LOG" ]
 }
 
@@ -1382,11 +1871,11 @@ EOF
     [ ! -e "$MOCK_ENTRYPOINT_LOG" ]
 }
 
-@test "entrypoint requires every target setting from the launcher" {
+@test "entrypoint requires the descriptor and allocator settings from the launcher" {
     make_entrypoint_fixture
     local setting
     for setting in TT_METAL_MOCK_CLUSTER_DESC_PATH \
-        TT_METAL_ALLOCATOR_MODE_HYBRID MESH_DEVICE; do
+        TT_METAL_ALLOCATOR_MODE_HYBRID; do
         run -1 env -u "$setting" /bin/bash "$test_entrypoint" "$program"
         assert_output --partial "required target setting ${setting} is missing"
         [ ! -e "$MOCK_ENTRYPOINT_LOG" ]

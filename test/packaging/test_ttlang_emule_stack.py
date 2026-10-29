@@ -7,13 +7,62 @@ import json
 import subprocess
 from pathlib import Path
 
+import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 STACK_TOOL = REPO_ROOT / "scripts" / "tt-lang-emule-stack.py"
 STACK_MANIFEST = REPO_ROOT / "config" / "tt-lang-emule-stack.json"
+TARGET_PROFILES = [
+    (
+        "p150",
+        "blackhole-p150",
+        "cluster_descriptors/blackhole_P150_unharvested.yaml",
+        "P150",
+    ),
+    ("p100", "blackhole-p100", "cluster_descriptors/blackhole_P100.yaml", "P100"),
+    (
+        "p150-harvested",
+        "blackhole-p150-harvested",
+        "cluster_descriptors/blackhole_P150.yaml",
+        "P150",
+    ),
+    (
+        "p300",
+        "blackhole-p300",
+        "cluster_descriptors/blackhole_P300_both_mmio.yaml",
+        "P300",
+    ),
+    (
+        "p150x4",
+        "blackhole-p150x4",
+        "cluster_descriptors/blackhole_4xP150.yaml",
+        "P150x4",
+    ),
+    (
+        "p150x8",
+        "blackhole-p150x8",
+        "cluster_descriptors/blackhole_8xP150.yaml",
+        "P150x8",
+    ),
+    (
+        "p150x8-unharvested",
+        "blackhole-p150x8-unharvested",
+        "cluster_descriptors/blackhole_8xP150_unharvested.yaml",
+        "P150x8",
+    ),
+    (
+        "galaxy",
+        "blackhole-galaxy",
+        "cluster_descriptors/blackhole_galaxy.yaml",
+        "BHGLX",
+    ),
+    ("n150", "wormhole-n150", "cluster_descriptors/wormhole_N150.yaml", "N150"),
+    ("n300", "wormhole-n300", "cluster_descriptors/wormhole_N300.yaml", "N300"),
+    ("q1", "quasar-q1", "cluster_descriptors/quasar_Q1.yaml", ""),
+]
 
 
-def run_stack(*arguments, manifest=STACK_MANIFEST):
+def run_stack(*arguments, manifest=STACK_MANIFEST, input_text=None):
     return subprocess.run(
         [
             "python3",
@@ -25,15 +74,187 @@ def run_stack(*arguments, manifest=STACK_MANIFEST):
         check=False,
         capture_output=True,
         text=True,
+        input=input_text,
     )
+
+
+@pytest.fixture
+def image_inspection():
+    stack = json.loads(STACK_MANIFEST.read_text(encoding="utf-8"))
+    target = stack["targets"][stack["default_target"]]
+    return [
+        {
+            "Id": "sha256:" + "a" * 64,
+            "Config": {
+                "Labels": {
+                    "org.opencontainers.image.source": stack["compiler"]["repository"],
+                    "io.tenstorrent.tt-lang.compiler.commit": stack["compiler"][
+                        "base_commit"
+                    ],
+                    "io.tenstorrent.tt-lang.emule.commit": stack["emulator"]["commit"],
+                    "io.tenstorrent.tt-lang.metal.repository": stack["metal"][
+                        "repository"
+                    ],
+                    "io.tenstorrent.tt-lang.metal.commit": stack["metal"]["commit"],
+                    "io.tenstorrent.tt-lang.runtime.base-image": stack["runtime"][
+                        "base_image"
+                    ],
+                    "io.tenstorrent.tt-lang.runtime.manifest-sha256": hashlib.sha256(
+                        STACK_MANIFEST.read_bytes()
+                    ).hexdigest(),
+                    "io.tenstorrent.tt-lang.runtime.platform": "linux/amd64",
+                    "io.tenstorrent.tt-lang.target.name": target["name"],
+                    "io.tenstorrent.tt-lang.target.cluster-descriptor": target[
+                        "cluster_descriptor"
+                    ],
+                    "io.tenstorrent.tt-lang.target.mesh-device": target["mesh_device"],
+                }
+            },
+        }
+    ]
+
+
+@pytest.mark.parametrize("image_id", ["sha256:" + "a" * 64, "a" * 64])
+def test_image_validation_emits_the_immutable_image_id(image_inspection, image_id):
+    image_inspection[0]["Id"] = image_id
+    result = run_stack("validate-image", input_text=json.dumps(image_inspection))
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == image_inspection[0]["Id"]
+
+
+@pytest.mark.parametrize("missing", [False, True])
+@pytest.mark.parametrize(
+    "label",
+    [
+        "org.opencontainers.image.source",
+        "io.tenstorrent.tt-lang.compiler.commit",
+        "io.tenstorrent.tt-lang.emule.commit",
+        "io.tenstorrent.tt-lang.metal.repository",
+        "io.tenstorrent.tt-lang.metal.commit",
+        "io.tenstorrent.tt-lang.runtime.base-image",
+        "io.tenstorrent.tt-lang.runtime.manifest-sha256",
+        "io.tenstorrent.tt-lang.runtime.platform",
+    ],
+)
+def test_image_validation_rejects_missing_or_mismatched_labels(
+    image_inspection, label, missing
+):
+    labels = image_inspection[0]["Config"]["Labels"]
+    if missing:
+        del labels[label]
+    else:
+        labels[label] = "different"
+
+    result = run_stack("validate-image", input_text=json.dumps(image_inspection))
+
+    assert result.returncode == 1
+    assert "image provenance mismatch" in result.stderr
+    assert label in result.stderr
+    assert result.stdout == ""
+
+
+@pytest.mark.parametrize(
+    "inspection",
+    [
+        None,
+        {},
+        [],
+        [{}, {}],
+        [None],
+        [{}],
+        [{"Config": {}}],
+        [{"Config": {"Labels": []}}],
+    ],
+)
+def test_image_validation_rejects_malformed_inspection(inspection):
+    result = run_stack("validate-image", input_text=json.dumps(inspection))
+
+    assert result.returncode == 1
+    assert "tt-lang-emule-stack:" in result.stderr
+    assert "Traceback" not in result.stderr
+    assert result.stdout == ""
+
+
+def test_image_validation_rejects_invalid_json():
+    result = run_stack("validate-image", input_text="not image inspection JSON")
+
+    assert result.returncode == 1
+    assert "cannot read image inspection" in result.stderr
+    assert result.stdout == ""
+
+
+@pytest.mark.parametrize(
+    "image_id", [None, "", "runtime:latest", "a" * 12, "sha256:abc"]
+)
+def test_image_validation_rejects_an_unusable_image_id(image_inspection, image_id):
+    image_inspection[0]["Id"] = image_id
+
+    result = run_stack("validate-image", input_text=json.dumps(image_inspection))
+
+    assert result.returncode == 1
+    assert "image.Id" in result.stderr
+    assert result.stdout == ""
+
+
+def test_image_validation_checks_the_selected_platform(image_inspection):
+    label = "io.tenstorrent.tt-lang.runtime.platform"
+    result = run_stack(
+        "validate-image",
+        "--platform",
+        "linux/arm64",
+        input_text=json.dumps(image_inspection),
+    )
+    assert result.returncode == 1
+    assert label in result.stderr
+
+    image_inspection[0]["Config"]["Labels"][label] = "linux/arm64"
+    result = run_stack(
+        "validate-image",
+        "--platform",
+        "linux/arm64",
+        input_text=json.dumps(image_inspection),
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == image_inspection[0]["Id"]
+
+
+def test_image_validation_checks_the_selected_manifest(image_inspection, tmp_path):
+    candidate = json.loads(STACK_MANIFEST.read_text(encoding="utf-8"))
+    candidate["compiler"]["base_commit"] = "e" * 40
+    candidate_path = tmp_path / "candidate.json"
+    candidate_path.write_text(json.dumps(candidate), encoding="utf-8")
+
+    result = run_stack(
+        "validate-image",
+        manifest=candidate_path,
+        input_text=json.dumps(image_inspection),
+    )
+    assert result.returncode == 1
+    assert "compiler.commit" in result.stderr
+    assert "manifest-sha256" in result.stderr
+
+    labels = image_inspection[0]["Config"]["Labels"]
+    labels["io.tenstorrent.tt-lang.compiler.commit"] = "e" * 40
+    labels["io.tenstorrent.tt-lang.runtime.manifest-sha256"] = hashlib.sha256(
+        candidate_path.read_bytes()
+    ).hexdigest()
+    result = run_stack(
+        "validate-image",
+        manifest=candidate_path,
+        input_text=json.dumps(image_inspection),
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == image_inspection[0]["Id"]
 
 
 def write_emulator_stack(tmp_path):
     manifest = json.loads(STACK_MANIFEST.read_text(encoding="utf-8"))
     emulator = tmp_path / "emulator"
-    descriptor = emulator / manifest["target"]["cluster_descriptor"]
-    descriptor.parent.mkdir(parents=True)
-    descriptor.touch()
+    for target in manifest["targets"].values():
+        descriptor = emulator / target["cluster_descriptor"]
+        descriptor.parent.mkdir(parents=True, exist_ok=True)
+        descriptor.touch()
     (emulator / "tt-metal-pin.txt").write_text(
         f"# Tested Metal revision.\n{manifest['metal']['commit']}\n",
         encoding="utf-8",
@@ -82,8 +303,149 @@ def test_manifest_emits_exact_runtime_inputs():
     assert "TTLANG_EMULE_ALLOCATOR_MODE" not in values
     assert len(values["TTLANG_EMULE_COMMIT"]) == 40
     assert len(values["TTLANG_METAL_COMMIT"]) == 40
+    assert values["TTLANG_EMULE_TARGET_ID"] == "p150"
+    assert values["TTLANG_EMULE_TARGET"] == "blackhole-p150"
     assert values["TTLANG_EMULE_MESH_DEVICE"] == "P150"
     assert "@sha256:" in values["TTLANG_EMULE_BASE_IMAGE"]
+
+
+def test_manifest_contains_all_supported_targets():
+    manifest = json.loads(STACK_MANIFEST.read_text(encoding="utf-8"))
+
+    assert set(manifest["targets"]) == {profile[0] for profile in TARGET_PROFILES}
+    assert "mesh_device" not in manifest["targets"]["q1"]
+
+
+@pytest.mark.parametrize("target, name, descriptor, mesh", TARGET_PROFILES)
+def test_manifest_emits_selected_target(target, name, descriptor, mesh):
+    result = run_stack("--target", target, "emit")
+
+    assert result.returncode == 0, result.stderr
+    values = dict(line.split("\t", 1) for line in result.stdout.splitlines())
+    assert values["TTLANG_EMULE_TARGET_ID"] == target
+    assert values["TTLANG_EMULE_TARGET"] == name
+    assert values["TTLANG_EMULE_CLUSTER_DESCRIPTOR"] == descriptor
+    assert values["TTLANG_EMULE_MESH_DEVICE"] == mesh
+    default_result = run_stack("emit")
+    assert default_result.returncode == 0, default_result.stderr
+    defaults = dict(line.split("\t", 1) for line in default_result.stdout.splitlines())
+    target_keys = {
+        "TTLANG_EMULE_TARGET_ID",
+        "TTLANG_EMULE_TARGET",
+        "TTLANG_EMULE_CLUSTER_DESCRIPTOR",
+        "TTLANG_EMULE_MESH_DEVICE",
+    }
+    assert {key: value for key, value in values.items() if key not in target_keys} == {
+        key: value for key, value in defaults.items() if key not in target_keys
+    }
+
+
+@pytest.mark.parametrize("target", ["unknown", ""])
+@pytest.mark.parametrize("command", ["emit", "validate"])
+def test_manifest_rejects_unknown_and_empty_selected_targets(target, command):
+    result = run_stack("--target", target, command)
+
+    assert result.returncode == 1
+    assert "unknown target" in result.stderr
+    assert result.stdout == ""
+
+
+@pytest.mark.parametrize("default_target", ["unknown", ""])
+def test_manifest_rejects_invalid_default_target(tmp_path, default_target):
+    manifest = json.loads(STACK_MANIFEST.read_text(encoding="utf-8"))
+    manifest["default_target"] = default_target
+    invalid_manifest = tmp_path / "invalid-stack.json"
+    invalid_manifest.write_text(json.dumps(manifest), encoding="utf-8")
+
+    result = run_stack("emit", manifest=invalid_manifest)
+
+    assert result.returncode == 1
+    assert "default_target" in result.stderr
+
+
+@pytest.mark.parametrize("profile", [{}, None])
+def test_manifest_rejects_empty_target_profiles(tmp_path, profile):
+    manifest = json.loads(STACK_MANIFEST.read_text(encoding="utf-8"))
+    manifest["targets"]["p100"] = profile
+    invalid_manifest = tmp_path / "invalid-stack.json"
+    invalid_manifest.write_text(json.dumps(manifest), encoding="utf-8")
+
+    result = run_stack("emit", manifest=invalid_manifest)
+
+    assert result.returncode == 1
+    assert "targets.p100" in result.stderr
+
+
+@pytest.mark.parametrize("mesh", ["", None, 1, False, [], {}])
+def test_manifest_rejects_invalid_present_mesh_device(tmp_path, mesh):
+    manifest = json.loads(STACK_MANIFEST.read_text(encoding="utf-8"))
+    manifest["targets"]["q1"]["mesh_device"] = mesh
+    invalid_manifest = tmp_path / "invalid-stack.json"
+    invalid_manifest.write_text(json.dumps(manifest), encoding="utf-8")
+
+    result = run_stack("emit", manifest=invalid_manifest)
+
+    assert result.returncode == 1
+    assert "targets.q1.mesh_device must be a non-empty string" in result.stderr
+    assert result.stdout == ""
+
+
+@pytest.mark.parametrize(
+    "descriptor", ["/tmp/cluster.yaml", "../cluster.yaml", "a/../b"]
+)
+def test_manifest_rejects_unsafe_descriptor_paths_in_any_profile(tmp_path, descriptor):
+    manifest = json.loads(STACK_MANIFEST.read_text(encoding="utf-8"))
+    manifest["targets"]["p100"]["cluster_descriptor"] = descriptor
+    invalid_manifest = tmp_path / "invalid-stack.json"
+    invalid_manifest.write_text(json.dumps(manifest), encoding="utf-8")
+
+    result = run_stack("emit", manifest=invalid_manifest)
+
+    assert result.returncode == 1
+    assert (
+        "targets.p100.cluster_descriptor must be a safe relative path" in result.stderr
+    )
+
+
+@pytest.mark.parametrize(
+    "target, descriptor",
+    [(target, descriptor) for target, _, descriptor, _ in TARGET_PROFILES],
+)
+def test_manifest_validates_the_selected_emulator_descriptor(
+    tmp_path, target, descriptor
+):
+    emulator, test_manifest = write_emulator_stack(tmp_path)
+    result = run_stack(
+        "--target",
+        target,
+        "validate",
+        "--emulator-source",
+        str(emulator),
+        manifest=test_manifest,
+    )
+    assert result.returncode == 0, result.stderr
+
+    (emulator / descriptor).unlink()
+    other_result = run_stack(
+        "--target",
+        "p100" if target == "p150" else "p150",
+        "validate",
+        "--emulator-source",
+        str(emulator),
+        manifest=test_manifest,
+    )
+    assert other_result.returncode == 0, other_result.stderr
+    result = run_stack(
+        "--target",
+        target,
+        "validate",
+        "--emulator-source",
+        str(emulator),
+        manifest=test_manifest,
+    )
+    assert result.returncode == 1
+    assert "emulator target descriptor is missing" in result.stderr
+    assert descriptor in result.stderr
 
 
 def test_manifest_accepts_a_compiler_descendant_of_its_baseline(tmp_path):

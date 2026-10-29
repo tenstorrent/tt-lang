@@ -168,14 +168,14 @@ def row_all_gather_computed_address(inp, out):
 # P2P-FINAL-DAG: %[[P2P_BASE_ARG_INDEX:.*]] = "emitc.constant"() <{value = 2 : index}>
 # Address calculation may move relative to the capacity wait; both must
 # precede the payload write.
-# P2P-FINAL-DAG: call_opaque "experimental::semaphore_wait_min"
+# P2P-FINAL-DAG: call_opaque "::experimental::semaphore_wait_min"
 # P2P-FINAL-DAG: call_opaque "get_common_arg_val"(%[[P2P_BASE_ARG_INDEX]])
 # P2P-FINAL-DAG: = rem {{.*}} : (ui32, ui32) -> ui32
 # P2P-FINAL: noc0.async_write
 # P2P-FINAL-NOT: noc_inline_dw_write
 # P2P-FINAL-NOT: load_from_l1
 
-# P2P-CPP-DAG: experimental::semaphore_wait_min(
+# P2P-CPP-DAG: ::experimental::semaphore_wait_min(
 # P2P-CPP-DAG: get_common_arg_val<uint32_t>(
 # P2P-CPP-DAG: {{.*}} % {{.*}};
 # P2P-CPP: noc0.async_write(
@@ -191,7 +191,7 @@ def row_all_gather_computed_address(inp, out):
 # ALLGATHER-BF16-FINAL-DAG: %[[STRIDE:.*]] = "emitc.constant"() <{value = 2048 : i32}>
 # ALLGATHER-FP32-FINAL-DAG: %[[STRIDE:.*]] = "emitc.constant"() <{value = 4096 : i32}>
 # ALLGATHER-FINAL-DAG: %[[ALLGATHER_BASE_ARG_INDEX:.*]] = "emitc.constant"() <{value = 2 : index}>
-# ALLGATHER-FINAL-DAG: call_opaque "experimental::semaphore_wait"
+# ALLGATHER-FINAL-DAG: call_opaque "::experimental::semaphore_wait"
 # ALLGATHER-FINAL-DAG: call_opaque "get_common_arg_val"(%[[ALLGATHER_BASE_ARG_INDEX]])
 # ALLGATHER-FINAL-DAG: %[[STRIDE_UI:.*]] = cast %[[STRIDE]] : i32 to ui32
 # ALLGATHER-FINAL-DAG: mul {{.*}}, %[[STRIDE_UI]]
@@ -200,7 +200,7 @@ def row_all_gather_computed_address(inp, out):
 # ALLGATHER-FINAL-NOT: noc_inline_dw_write
 # ALLGATHER-FINAL-NOT: load_from_l1
 
-# ALLGATHER-CPP-DAG: experimental::semaphore_wait(
+# ALLGATHER-CPP-DAG: ::experimental::semaphore_wait(
 # ALLGATHER-CPP-DAG: get_common_arg_val<uint32_t>(
 # ALLGATHER-CPP-DAG: {{.*}} % {{.*}};
 # ALLGATHER-CPP: noc0.async_write_multicast<NocOptions::MCAST_INCL_SRC>(

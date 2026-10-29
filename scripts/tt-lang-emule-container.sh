@@ -12,7 +12,14 @@ set -euo pipefail
 _SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 _REPO_ROOT="$(dirname "$_SCRIPT_DIR")"
 readonly _SCRIPT_DIR _REPO_ROOT
-readonly _STACK_MANIFEST="${_REPO_ROOT}/config/tt-lang-emule-stack.json"
+_STACK_MANIFEST="${TTLANG_EMULE_STACK_MANIFEST:-${_REPO_ROOT}/config/tt-lang-emule-stack.json}"
+# The image input ID is computed from the repository root, so a relative
+# setting must name the file from the caller's directory before that.
+case "$_STACK_MANIFEST" in
+    /*) ;;
+    *) _STACK_MANIFEST="${PWD}/${_STACK_MANIFEST}" ;;
+esac
+readonly _STACK_MANIFEST
 readonly _STACK_TOOL="${_SCRIPT_DIR}/tt-lang-emule-stack.py"
 readonly _PYTHON="${TTLANG_EMULE_HOST_PYTHON:-python3}"
 
@@ -21,7 +28,11 @@ if ! command -v "$_PYTHON" >/dev/null 2>&1; then
     exit 1
 fi
 
-_STACK_OUTPUT="$("$_PYTHON" "$_STACK_TOOL" --manifest "$_STACK_MANIFEST" emit)"
+_STACK_ARGS=(--manifest "$_STACK_MANIFEST")
+if [ "${TTLANG_EMULE_TARGET+x}" = x ]; then
+    _STACK_ARGS+=(--target "$TTLANG_EMULE_TARGET")
+fi
+_STACK_OUTPUT="$("$_PYTHON" "$_STACK_TOOL" "${_STACK_ARGS[@]}" emit)"
 while IFS=$'\t' read -r _STACK_KEY _STACK_VALUE; do
     case "$_STACK_KEY" in
         TTLANG_EMULE_STACK_MANIFEST_SHA256) _MANIFEST_SHA256="$_STACK_VALUE" ;;
@@ -31,6 +42,7 @@ while IFS=$'\t' read -r _STACK_KEY _STACK_VALUE; do
         TTLANG_METAL_REPOSITORY) _MANIFEST_METAL_REPOSITORY="$_STACK_VALUE" ;;
         TTLANG_METAL_COMMIT) _MANIFEST_METAL_COMMIT="$_STACK_VALUE" ;;
         TTLANG_EMULE_BASE_IMAGE) _MANIFEST_BASE_IMAGE="$_STACK_VALUE" ;;
+        TTLANG_EMULE_TARGET_ID) _TARGET_ID="$_STACK_VALUE" ;;
         TTLANG_EMULE_TARGET) _MANIFEST_TARGET="$_STACK_VALUE" ;;
         TTLANG_EMULE_CLUSTER_DESCRIPTOR) _MANIFEST_CLUSTER_DESCRIPTOR="$_STACK_VALUE" ;;
         TTLANG_EMULE_MESH_DEVICE) _MANIFEST_MESH_DEVICE="$_STACK_VALUE" ;;
@@ -75,12 +87,12 @@ _DOCKER="${TTLANG_EMULE_DOCKER:-docker}"
 _IMAGE="${TTLANG_EMULE_IMAGE:-tt-lang-emule:${_RUNTIME_ID}}"
 _SOURCE_ID="$(printf '%s' "$_REPO_ROOT" | cksum | awk '{print $1}')"
 _BUILD_VOLUME="${TTLANG_EMULE_BUILD_VOLUME:-tt-lang-emule-build-${_RUNTIME_ID}-${_SOURCE_ID}}"
-_CACHE_VOLUME="${TTLANG_EMULE_CACHE_VOLUME:-tt-lang-emule-cache-${_RUNTIME_ID}}"
+_CACHE_VOLUME="${TTLANG_EMULE_CACHE_VOLUME:-tt-lang-emule-cache-${_RUNTIME_ID}-${_TARGET_ID}}"
 _TEMP_EMULE_SOURCE=""
 _TEMP_EMULE_CONTEXT=""
 _TEMP_STACK_CONTEXT=""
 
-"$_PYTHON" "$_STACK_TOOL" --manifest "$_STACK_MANIFEST" validate \
+"$_PYTHON" "$_STACK_TOOL" "${_STACK_ARGS[@]}" validate \
     --compiler-source "$_REPO_ROOT" --quiet
 
 _COMPILER_SHA="$(git -C "$_REPO_ROOT" rev-parse HEAD)"
@@ -146,7 +158,7 @@ trap 'exit 143' TERM
 
 usage() {
     cat >&2 <<'EOF'
-Usage: ./bin/tt-lang-sim --backend=emule SCRIPT.py [arguments]
+Usage: ./bin/tt-lang-sim --backend=emule SCRIPT.py [--target TARGET] [-- arguments]
 
 Runs SCRIPT.py unchanged with the TT-Lang compiler and tt-emule. A working
 Docker-compatible daemon is required. On Apple Silicon the image runs as
@@ -379,14 +391,14 @@ if [ "$_BUILD_IMAGE" -eq 1 ]; then
         echo "  found:  ${_EMULE_SOURCE_COMMIT:-not a Git checkout}" >&2
         exit 1
     fi
-    "$_PYTHON" "$_STACK_TOOL" --manifest "$_STACK_MANIFEST" validate \
+    "$_PYTHON" "$_STACK_TOOL" "${_STACK_ARGS[@]}" validate \
         --compiler-source "$_REPO_ROOT" --emulator-source "$_EMULE_SOURCE" \
         --quiet
     _TEMP_EMULE_CONTEXT="$(mktemp -d "${TMPDIR:-/tmp}/tt-lang-emule-context.XXXXXX")"
     git -C "$_EMULE_SOURCE" archive --format=tar "$_TT_EMULE_COMMIT" |
         tar -xf - -C "$_TEMP_EMULE_CONTEXT"
     if [ ! -f "${_TEMP_EMULE_CONTEXT}/${_REQUIRED_EMULE_FILE}" ]; then
-        echo "tt-lang-sim: selected emulator does not provide the required P150 descriptor." >&2
+        echo "tt-lang-sim: selected emulator does not provide the required ${_TARGET_ID} descriptor." >&2
         echo "  missing: ${_REQUIRED_EMULE_FILE}" >&2
         echo "  Update the supported stack manifest before installing another runtime." >&2
         exit 1
@@ -418,6 +430,22 @@ if [ "$_BUILD_IMAGE" -eq 1 ]; then
         "${_REPO_ROOT}/.github/containers"
 fi
 
+if _IMAGE_INSPECTION="$("$_DOCKER" image inspect -- "$_IMAGE")"; then
+    :
+else
+    _IMAGE_INSPECT_STATUS=$?
+    echo "tt-lang-sim: cannot verify image provenance for ${_IMAGE}." >&2
+    exit "$_IMAGE_INSPECT_STATUS"
+fi
+if ! _VERIFIED_IMAGE="$(
+    "$_PYTHON" "$_STACK_TOOL" --manifest "$_STACK_MANIFEST" validate-image \
+        --platform "$_PLATFORM" <<< "$_IMAGE_INSPECTION"
+)"; then
+    echo "tt-lang-sim: image ${_IMAGE} does not match the selected emulator stack." >&2
+    echo "Select a matching image or reinstall with TTLANG_EMULE_REBUILD=1 scripts/install-tt-lang-emule.sh." >&2
+    exit 1
+fi
+
 cleanup
 if [ "${TTLANG_EMULE_BUILD_ONLY:-0}" = "1" ]; then
     printf 'Runtime image: %s\n' "$_IMAGE"
@@ -430,6 +458,6 @@ if [ "${TTLANG_EMULE_INSTALL:-0}" = "1" ]; then
 fi
 if [ "${TTLANG_EMULE_INSTALL:-0}" = "1" ] || \
    [ "${TTLANG_EMULE_SHELL:-0}" = "1" ]; then
-    exec "$_DOCKER" "${_RUN_ARGS[@]}" "$_IMAGE"
+    exec "$_DOCKER" "${_RUN_ARGS[@]}" "$_VERIFIED_IMAGE"
 fi
-exec "$_DOCKER" "${_RUN_ARGS[@]}" "$_IMAGE" "$_CONTAINER_SCRIPT" "$@"
+exec "$_DOCKER" "${_RUN_ARGS[@]}" "$_VERIFIED_IMAGE" "$_CONTAINER_SCRIPT" "$@"

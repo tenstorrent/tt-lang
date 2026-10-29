@@ -4940,6 +4940,7 @@ static DFBLifecycleCompletionProof computePerNodeLifetime(
 
   SmallVector<std::optional<int64_t>> &conservativeEpochs =
       lifetime.conservativeConfigurationEpochs;
+  SmallVector<int64_t> &retainedEpochs = lifetime.retainedConfigurationEpochs;
   lifetime.conservativeConfigurationEpochsClassified = true;
   bool mayRetainState = false;
   std::optional<int64_t> configurationOrdinal;
@@ -4964,6 +4965,14 @@ static DFBLifecycleCompletionProof computePerNodeLifetime(
       if (const ValidatedDFBReconfiguration *reconfiguration =
               boundaries[intervalIndex].reconfiguration) {
         configurationOrdinal = reconfiguration->boundary.getOrdinal();
+        // TODO(#1178): a repeated sequence reinstalls its launch
+        // configuration at that configuration's boundary in every
+        // iteration, so retaining state there needs a launch-only
+        // membership in the plan.
+        if (mayRetainState && !repeatedReconfigurationCount &&
+            !llvm::is_contained(retainedEpochs, *configurationOrdinal)) {
+          retainedEpochs.push_back(*configurationOrdinal);
+        }
       }
     }
   }

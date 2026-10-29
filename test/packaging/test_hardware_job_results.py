@@ -26,8 +26,9 @@ def _hardware_job(
     tests_complete: bool = True,
     failed_step_name: str | None = None,
     complete_runner_conclusion: str = "success",
+    tests_complete_recorded: bool = True,
 ) -> dict[str, object]:
-    steps: list[dict[str, str]] = [
+    steps: list[dict[str, str | None]] = [
         {"name": "Set up job", "conclusion": "success"},
         {"name": "Set up runner", "conclusion": setup_conclusion},
     ]
@@ -35,10 +36,13 @@ def _hardware_job(
         steps.append({"name": "Initialize containers", "conclusion": "success"})
         if failed_step_name is not None:
             steps.append({"name": failed_step_name, "conclusion": "failure"})
+        tests_complete_conclusion = "success" if tests_complete else "skipped"
         steps.append(
             {
                 "name": "Mark hardware tests complete",
-                "conclusion": "success" if tests_complete else "skipped",
+                "conclusion": (
+                    tests_complete_conclusion if tests_complete_recorded else None
+                ),
             }
         )
         steps.append(
@@ -185,3 +189,29 @@ def test_missing_hardware_job_fails() -> None:
 
     assert result.returncode == 1
     assert "Expected 2 hardware jobs, found 1" in result.stdout
+
+
+def test_unrecorded_step_result_is_pending() -> None:
+    result = _run_check(
+        [
+            _hardware_job("n150"),
+            _hardware_job("galaxy-bh", tests_complete_recorded=False),
+        ],
+    )
+
+    assert result.returncode == 75, result.stdout + result.stderr
+    assert "step results are not recorded yet" in result.stdout
+
+
+def test_post_setup_failure_is_not_pending() -> None:
+    result = _run_check(
+        [
+            _hardware_job(
+                "n150", tests_complete=False, failed_step_name="Build tt-lang"
+            ),
+            _hardware_job("galaxy-bh", tests_complete_recorded=False),
+        ],
+    )
+
+    assert result.returncode == 1
+    assert "Build tt-lang concluded failure" in result.stdout

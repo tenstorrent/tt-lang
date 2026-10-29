@@ -410,6 +410,45 @@ class TestScriptMustBeFirstArgument:
         assert result.returncode == 0, result.stderr
         assert "python backend selected" in result.stdout
 
+    @pytest.mark.parametrize(
+        "target_options", [["--target=p100"], ["--target", "p150"]]
+    )
+    def test_python_backend_rejects_target_selection(self, tmp_path, target_options):
+        script = tmp_path / "kernel.py"
+        script.write_text("raise AssertionError('script must not run')\n")
+        result = subprocess.run(
+            [sys.executable, "-m", "sim.ttlang_sim", str(script), *target_options],
+            cwd=self._REPO,
+            env=self._ENV,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 2
+        assert "--target requires the emule backend" in result.stderr
+        assert "AssertionError" not in result.stderr
+
+    def test_python_backend_preserves_target_after_separator(self, tmp_path):
+        script = tmp_path / "kernel.py"
+        script.write_text("import sys\nprint(repr(sys.argv[1:]))\n")
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "sim.ttlang_sim",
+                str(script),
+                "--",
+                "--target",
+                "p100",
+                "--target=p150",
+            ],
+            cwd=self._REPO,
+            env=self._ENV,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, result.stderr
+        assert "['--', '--target', 'p100', '--target=p150']" in result.stdout
+
     def test_unknown_backend_is_rejected(self, tmp_path):
         script = tmp_path / "kernel.py"
         script.write_text("raise AssertionError('script must not run')\n")

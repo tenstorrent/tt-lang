@@ -24,6 +24,14 @@ EOF
     chmod +x "$target"
 }
 
+make_isolated_path() {
+    mkdir -p "$ROOT/path"
+    local tool
+    for tool in bash cat dirname; do
+        ln -s "$(command -v "$tool")" "$ROOT/path/$tool"
+    done
+}
+
 # Build a synthetic root containing bin/tt-lang-sim plus optional layout
 # markers. Args after $1 are one or more of: "source", "installed".
 make_layout() {
@@ -43,7 +51,7 @@ make_layout() {
 }
 
 setup() {
-    unset TTLANG_SIM_BACKEND TTLANG_EMULE_RUNNER
+    unset TTLANG_SIM_BACKEND TTLANG_EMULE_RUNNER TTLANG_EMULE_TARGET
     ROOT="$BATS_TEST_TMPDIR/root"
     mkdir -p "$ROOT"
     MOCK_PY="$ROOT/mock_python"
@@ -53,6 +61,9 @@ make_mock_emule_runner() {
     local target="$1"
     cat > "$target" <<'EOF'
 #!/usr/bin/env bash
+if [ "${TTLANG_EMULE_TARGET+x}" = x ]; then
+    echo "target=$TTLANG_EMULE_TARGET"
+fi
 for a in "$@"; do
     echo "argv=$a"
 done
@@ -114,17 +125,81 @@ EOF
     assert_line --index 0 "PYTHONPATH=$ROOT/python_packages:/preexisting/path"
 }
 
-@test "PYTHON env override is honored over a PATH-resolved python" {
+@test "python3-only PATH dispatches the Python backend" {
     make_layout "$ROOT" installed
-    # PATH shim that would exit 99 if used.
-    mkdir -p "$ROOT/path-shim"
-    cat > "$ROOT/path-shim/python" <<'EOF'
-#!/usr/bin/env bash
-exit 99
-EOF
-    chmod +x "$ROOT/path-shim/python"
+    make_isolated_path
+    make_mock_python "$ROOT/path/python3"
+    run -0 env -u PYTHON PATH="$ROOT/path" PYTHONPATH="" \
+        "$ROOT/bin/tt-lang-sim" --backend=python program.py
+    assert_line --index 0 "PYTHONPATH=$ROOT/python_packages"
+    assert_line --index 2 "argv=ttl.sim.ttlang_sim"
+    assert_line --index 3 "argv=program.py"
+}
+
+@test "empty PYTHON uses python3 from PATH in a source checkout" {
+    make_layout "$ROOT" source
+    make_isolated_path
+    make_mock_python "$ROOT/path/python3"
+    run -0 env PATH="$ROOT/path" PYTHON="" PYTHONPATH="" \
+        "$ROOT/bin/tt-lang-sim" program.py
+    assert_line --index 0 "PYTHONPATH=$ROOT/python"
+    assert_line --index 2 "argv=sim.ttlang_sim"
+    assert_line --index 3 "argv=program.py"
+}
+
+@test "PATH python is preferred over python3 for activated environments" {
+    make_layout "$ROOT" source
+    make_isolated_path
+    make_mock_python "$ROOT/path/python"
+    ln -s /bin/false "$ROOT/path/python3"
+    run -0 env -u PYTHON PATH="$ROOT/path" PYTHONPATH="" \
+        "$ROOT/bin/tt-lang-sim" program.py
+    assert_line --index 2 "argv=sim.ttlang_sim"
+}
+
+@test "PYTHON env override is honored over PATH-resolved interpreters" {
+    make_layout "$ROOT" installed
+    make_isolated_path
+    ln -s /bin/false "$ROOT/path/python"
+    ln -s /bin/false "$ROOT/path/python3"
+    MOCK_PY="$ROOT/custom python"
     make_mock_python "$MOCK_PY"
-    PATH="$ROOT/path-shim:$PATH" PYTHON="$MOCK_PY" PYTHONPATH="" run -0 "$ROOT/bin/tt-lang-sim"
+    run -0 env PATH="$ROOT/path" PYTHON="$MOCK_PY" PYTHONPATH="" \
+        "$ROOT/bin/tt-lang-sim"
+    assert_line --index 2 "argv=ttl.sim.ttlang_sim"
+}
+
+@test "missing PYTHON override does not fall back to PATH interpreters" {
+    make_layout "$ROOT" source
+    make_isolated_path
+    make_mock_python "$ROOT/path/python3"
+    run ! env PATH="$ROOT/path" PYTHON="$ROOT/missing-python" \
+        "$ROOT/bin/tt-lang-sim" program.py
+    assert_output --partial "$ROOT/missing-python"
+}
+
+@test "missing Python interpreters report how to set an override" {
+    make_layout "$ROOT" source
+    make_isolated_path
+    run -1 env -u PYTHON PATH="$ROOT/path" "$ROOT/bin/tt-lang-sim" program.py
+    assert_line "tt-lang-sim: cannot find python or python3 on PATH."
+    assert_line "  Set PYTHON to the Python interpreter to use."
+}
+
+@test "emule dispatch, help and version work without Python interpreters on PATH" {
+    make_layout "$ROOT" source
+    make_isolated_path
+    local runner="$ROOT/emule-runner"
+    make_mock_emule_runner "$runner"
+    run -0 env -u PYTHON PATH="$ROOT/path" TTLANG_EMULE_RUNNER="$runner" \
+        "$ROOT/bin/tt-lang-sim" --backend=emule program.py
+    assert_output "argv=program.py"
+    run -0 env -u PYTHON PATH="$ROOT/path" \
+        "$ROOT/bin/tt-lang-sim" --backend=emule --help
+    assert_output --partial "Usage: tt-lang-sim --backend=emule SCRIPT.py"
+    run -0 env -u PYTHON PATH="$ROOT/path" \
+        "$ROOT/bin/tt-lang-sim" --backend=emule --version
+    assert_output "tt-lang-sim emule (checkout unknown)"
 }
 
 @test "child python exit code is propagated" {
@@ -164,22 +239,114 @@ EOF
     assert_output "argv=program.py"
 }
 
+@test "emule target defaults ignore an inherited target override" {
+    make_layout "$ROOT" source
+    local runner="$ROOT/emule-runner"
+    make_mock_emule_runner "$runner"
+    TTLANG_EMULE_TARGET=p100 TTLANG_EMULE_RUNNER="$runner" \
+        run -0 "$ROOT/bin/tt-lang-sim" --backend=emule program.py
+    assert_output "argv=program.py"
+}
+
+@test "emule accepts both target syntaxes and consumes the target option" {
+    make_layout "$ROOT" source
+    local runner="$ROOT/emule-runner"
+    local target
+    make_mock_emule_runner "$runner"
+    for target in p150 p100 p150-harvested p300 p150x4 p150x8 \
+        p150x8-unharvested galaxy n150 n300 q1; do
+        TTLANG_EMULE_RUNNER="$runner" run -0 "$ROOT/bin/tt-lang-sim" \
+            --backend=emule "--target=$target" "two words.py" --script-option
+        assert_output "target=$target
+argv=two words.py
+argv=--script-option"
+
+        TTLANG_EMULE_RUNNER="$runner" run -0 "$ROOT/bin/tt-lang-sim" \
+            "two words.py" --target "$target" --backend emule --script-option
+        assert_output "target=$target
+argv=two words.py
+argv=--script-option"
+    done
+}
+
+@test "target-looking script arguments after separator remain literal" {
+    make_layout "$ROOT" source
+    local runner="$ROOT/emule-runner"
+    make_mock_emule_runner "$runner"
+    TTLANG_EMULE_RUNNER="$runner" run -0 "$ROOT/bin/tt-lang-sim" \
+        --backend=emule program.py -- --target p100 --target=p150
+    assert_output "argv=program.py
+argv=--target
+argv=p100
+argv=--target=p150"
+
+    make_mock_python "$MOCK_PY"
+    PYTHON="$MOCK_PY" PYTHONPATH="" run -0 "$ROOT/bin/tt-lang-sim" \
+        program.py -- --target p100 --target=p150
+    assert_line "argv=--"
+    assert_line "argv=--target"
+    assert_line "argv=p100"
+    assert_line "argv=--target=p150"
+}
+
+@test "explicit targets require the emule backend before dispatch" {
+    make_layout "$ROOT" source
+    make_mock_python "$MOCK_PY"
+    PYTHON="$MOCK_PY" run -2 "$ROOT/bin/tt-lang-sim" \
+        program.py --target=p100
+    assert_output --partial "--target"
+    assert_output --partial "emule"
+    refute_output --partial "argv="
+
+    PYTHON="$MOCK_PY" run -2 "$ROOT/bin/tt-lang-sim" \
+        --backend=python --target p150 program.py
+    assert_output --partial "--target"
+    assert_output --partial "emule"
+    refute_output --partial "argv="
+}
+
+@test "missing and empty target values are rejected before dispatch" {
+    make_layout "$ROOT" source
+    local runner="$ROOT/emule-runner"
+    local option
+    make_mock_emule_runner "$runner"
+    for option in --target --target=; do
+        TTLANG_EMULE_RUNNER="$runner" run -2 "$ROOT/bin/tt-lang-sim" \
+            --backend=emule program.py "$option"
+        assert_output --partial "--target"
+        refute_output --partial "argv="
+    done
+    TTLANG_EMULE_RUNNER="$runner" run -2 "$ROOT/bin/tt-lang-sim" \
+        --backend=emule program.py --target ""
+    assert_output --partial "--target"
+    refute_output --partial "argv="
+}
+
 @test "emule environment help does not require host Python or a runner" {
     make_layout "$ROOT" source
     TTLANG_SIM_BACKEND=emule TTLANG_EMULE_RUNNER=/bin/false \
         PYTHON=/bin/false \
         run -0 "$ROOT/bin/tt-lang-sim" --help
-    assert_output --partial "Usage: tt-lang-sim --backend=emule SCRIPT.py"
+    assert_output --partial "Usage: tt-lang-sim --backend=emule"
+    assert_output --partial "SCRIPT.py"
     assert_output --partial "./scripts/install-tt-lang-emule.sh"
 }
 
 @test "explicit emule help does not require host Python or a runner" {
     make_layout "$ROOT" source
     local option
+    local target
     for option in -h --help; do
         TTLANG_EMULE_RUNNER=/bin/false PYTHON=/bin/false \
             run -0 "$ROOT/bin/tt-lang-sim" --backend=emule "$option"
-        assert_output --partial "Usage: tt-lang-sim --backend=emule SCRIPT.py"
+        assert_output --partial "Usage: tt-lang-sim --backend=emule"
+        assert_output --partial "SCRIPT.py"
+        for target in p150 p100 p150-harvested p300 p150x4 p150x8 \
+            p150x8-unharvested galaxy n150 n300 q1; do
+            assert_output --partial "$target"
+        done
+        assert_output --partial "Q1 is experimental: device opening is blocked"
+        assert_output --partial "TT-Lang compiler support is pending"
     done
 }
 
@@ -187,7 +354,8 @@ EOF
     make_layout "$ROOT" source
     TTLANG_EMULE_RUNNER=/bin/false PYTHON=/bin/false \
         run -1 "$ROOT/bin/tt-lang-sim" --backend emule
-    assert_output --partial "Usage: tt-lang-sim --backend=emule SCRIPT.py"
+    assert_output --partial "Usage: tt-lang-sim --backend=emule"
+    assert_output --partial "SCRIPT.py"
 }
 
 @test "emule version reports the source checkout without host Python" {
@@ -241,7 +409,9 @@ EOF
 
 @test "unknown backend is rejected before dispatch" {
     make_layout "$ROOT" source
-    run -2 "$ROOT/bin/tt-lang-sim" program.py --backend unknown
+    make_isolated_path
+    run -2 env -u PYTHON PATH="$ROOT/path" \
+        "$ROOT/bin/tt-lang-sim" program.py --backend unknown
     assert_output --partial "unknown backend 'unknown'"
 }
 

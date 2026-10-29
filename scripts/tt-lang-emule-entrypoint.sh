@@ -33,7 +33,7 @@ else
 fi
 
 for _TARGET_SETTING in TT_METAL_MOCK_CLUSTER_DESC_PATH \
-    TT_METAL_ALLOCATOR_MODE_HYBRID MESH_DEVICE; do
+    TT_METAL_ALLOCATOR_MODE_HYBRID; do
     if [ -z "${!_TARGET_SETTING:-}" ]; then
         echo "tt-lang emule container: required target setting ${_TARGET_SETTING} is missing; use the host launcher or installer." >&2
         exit 1
@@ -42,7 +42,12 @@ done
 
 export TT_METAL_EMULE_MODE=1
 export TT_METAL_SLOW_DISPATCH_MODE=1
-export TT_METAL_MOCK_CLUSTER_DESC_PATH TT_METAL_ALLOCATOR_MODE_HYBRID MESH_DEVICE
+export TT_METAL_MOCK_CLUSTER_DESC_PATH TT_METAL_ALLOCATOR_MODE_HYBRID
+if [ -n "${MESH_DEVICE:-}" ]; then
+    export MESH_DEVICE
+else
+    unset MESH_DEVICE
+fi
 export EMULE_FABRIC8="${EMULE_FABRIC8:-1}"
 export TT_METAL_CACHE="${TT_METAL_CACHE:-/tt-metal-cache}"
 export TT_EMULE_JIT_CACHE_DIR="${TT_EMULE_JIT_CACHE_DIR:-${TT_METAL_CACHE}/emule-jit}"

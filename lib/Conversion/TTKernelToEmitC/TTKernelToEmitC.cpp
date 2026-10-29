@@ -108,7 +108,7 @@ static std::string datatypeToDataformatStr(ttcore::DataType dtype) {
 static std::string getTTKernelCalleeName(llvm::StringRef opName) {
   opName.consume_front("ttkernel.");
   if (opName.consume_front("experimental.")) {
-    return ("experimental::" + opName).str();
+    return ("::experimental::" + opName).str();
   }
   return opName.str();
 }
@@ -534,13 +534,13 @@ public:
     addConversion(
         [ctx](mlir::tt::ttkernel::FabricConnectionManagerType type) -> Type {
           return emitc::OpaqueType::get(
-              ctx, "experimental::FabricConnectionManager");
+              ctx, "::experimental::FabricConnectionManager");
         });
     addConversion(
         [ctx](mlir::tt::ttkernel::RoutingPlaneConnectionManagerType type)
             -> Type {
           return emitc::OpaqueType::get(
-              ctx, "experimental::RoutingPlaneConnectionManager");
+              ctx, "::experimental::RoutingPlaneConnectionManager");
         });
     addConversion(
         [ctx](IndexType type) -> Type { return emitc::SizeTType::get(ctx); });
@@ -1376,7 +1376,7 @@ public:
           "0x" + llvm::utohexstr(packedWords.front()) + "U");
       auto call = emitc::CallOpaqueOp::create(
           rewriter, op.getLoc(), resultType,
-          "experimental::constant_table_lookup_word", ArrayAttr(),
+          "::experimental::constant_table_lookup_word", ArrayAttr(),
           rewriter.getArrayAttr(templateArgs),
           ValueRange{adaptor.getIndex(), packedWord});
       rewriter.replaceOp(op, call.getResult(0));
@@ -1390,7 +1390,7 @@ public:
 
     auto call = emitc::CallOpaqueOp::create(
         rewriter, op.getLoc(), resultType,
-        "experimental::constant_table_lookup", ArrayAttr(),
+        "::experimental::constant_table_lookup", ArrayAttr(),
         rewriter.getArrayAttr(templateArgs),
         ValueRange{adaptor.getIndex(), tableRef});
     rewriter.replaceOp(op, call.getResult(0));
@@ -2490,7 +2490,7 @@ public:
                   ConversionPatternRewriter &rewriter) const final {
     assert(op.getRegion().hasOneBlock());
     rewriter.create<emitc::VerbatimOp>(op->getLoc(),
-                                       "experimental::invoke_sfpi([=]() {");
+                                       "::experimental::invoke_sfpi([=]() {");
     auto endScope = rewriter.create<emitc::VerbatimOp>(op->getLoc(), "});");
     rewriter.inlineBlockBefore(&op.getRegion().front(), endScope);
     rewriter.eraseOp(op);
@@ -2712,7 +2712,7 @@ public:
   matchAndRewrite(Op op, Op::Adaptor adaptor,
                   ConversionPatternRewriter &rewriter) const final {
     rewriter.replaceOpWithNewOp<emitc::CallOpaqueOp>(
-        op, TypeRange(), "experimental::routing_plane_atomic_inc", nullptr,
+        op, TypeRange(), "::experimental::routing_plane_atomic_inc", nullptr,
         nullptr, adaptor.getOperands());
     return success();
   }
@@ -2729,8 +2729,8 @@ public:
   matchAndRewrite(Op op, Op::Adaptor adaptor,
                   ConversionPatternRewriter &rewriter) const final {
     rewriter.replaceOpWithNewOp<emitc::CallOpaqueOp>(
-        op, TypeRange(), "experimental::routing_plane_write", nullptr, nullptr,
-        adaptor.getOperands());
+        op, TypeRange(), "::experimental::routing_plane_write", nullptr,
+        nullptr, adaptor.getOperands());
     return success();
   }
 };
@@ -2746,7 +2746,7 @@ public:
   matchAndRewrite(Op op, Op::Adaptor adaptor,
                   ConversionPatternRewriter &rewriter) const final {
     rewriter.replaceOpWithNewOp<emitc::CallOpaqueOp>(
-        op, TypeRange(), "experimental::routing_plane_scatter_write", nullptr,
+        op, TypeRange(), "::experimental::routing_plane_scatter_write", nullptr,
         nullptr, adaptor.getOperands());
     return success();
   }
@@ -2763,7 +2763,7 @@ public:
   matchAndRewrite(Op op, Op::Adaptor adaptor,
                   ConversionPatternRewriter &rewriter) const final {
     rewriter.replaceOpWithNewOp<emitc::CallOpaqueOp>(
-        op, TypeRange(), "experimental::routing_plane_fused_write_atomic_inc",
+        op, TypeRange(), "::experimental::routing_plane_fused_write_atomic_inc",
         nullptr, nullptr, adaptor.getOperands());
     return success();
   }
@@ -3113,7 +3113,7 @@ public:
         adaptor.getInputCb(), adaptor.getGammaCb(), adaptor.getOutputCb(),
         reductionScalerBits, epsilonBits};
     rewriter.replaceOpWithNewOp<emitc::CallOpaqueOp>(
-        op, TypeRange(), "experimental::row_normalization_block", ArrayAttr(),
+        op, TypeRange(), "::experimental::row_normalization_block", ArrayAttr(),
         ArrayAttr::get(op.getContext(), templateArguments), operands);
     return success();
   }

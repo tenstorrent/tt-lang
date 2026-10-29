@@ -5,6 +5,7 @@
 // RUN: ttlang-opt %s -pass-pipeline='builtin.module(func.func(ttl-create-producer-compute,ttl-insert-intermediate-dfbs,convert-ttl-to-compute),ttl-set-compute-kernel-config{enable-fpu-binary-ops=0 matmul-full-fp32=0 reduce-full-fp32=0},func.func(ttl-assign-dst,ttl-subblock-compute-for-dst,ttl-lower-to-loops,ttl-annotate-cb-associations),convert-ttl-to-ttkernel,ttkernel-insert-inits,func.func(ttkernel-combine-pack-tiles),canonicalize,cse,lower-affine)' -o %t.ttkernel.mlir
 // RUN: FileCheck %s --input-file=%t.ttkernel.mlir --check-prefix=TTKERNEL
 // RUN: ttlang-opt --allow-unregistered-dialect --convert-ttkernel-to-emitc %t.ttkernel.mlir -o %t.emitc.mlir
+// RUN: FileCheck %s --input-file=%t.emitc.mlir --check-prefix=EMITC
 // RUN: ttlang-translate --allow-unregistered-dialect --ttkernel-to-cpp -o %t.cpp %t.emitc.mlir
 // RUN: FileCheck %s --input-file=%t.cpp --check-prefix=CPP
 
@@ -35,11 +36,16 @@
 // TTKERNEL-NEXT:  ttkernel.tile_regs_release
 // TTKERNEL-NOT:   ttkernel.tile_regs_acquire
 
+// EmitC names the global helper, and C++ selects its implementation.
+// EMITC-LABEL: func.func @row_normalization_full_gamma
+// EMITC: emitc.call_opaque "::experimental::row_normalization_block"
+// CPP: namespace row_normalization_detail {
+
 // C++ translation retains the single-acquire and block-pack schedule.
 // CPP-LABEL: void kernel_main()
 // CPP:       init_sfpu(get_compile_time_arg_val(0), get_compile_time_arg_val(2));
 // CPP-NEXT:  tile_regs_acquire();
-// CPP-NEXT:  experimental::row_normalization_block<3, true, DataFormat::Float16_b>(
+// CPP-NEXT:  ::experimental::row_normalization_block<3, true, DataFormat::Float16_b>(
 // CPP-SAME:  1020331500U,
 // CPP-NEXT:  tile_regs_commit();
 // CPP-NEXT:  tile_regs_wait();
