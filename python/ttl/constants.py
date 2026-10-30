@@ -33,7 +33,7 @@ def validate_math_fidelity(math_fidelity: str | None) -> None:
 
 
 # Per-core static CB region budget (bytes) when IR has no system descriptor:
-# Wormhole and Blackhole total L1 (1464 KiB) minus reserved kernel space (128 KiB)
+# Wormhole and Blackhole total L1 (1464 KiB) minus reserved kernel space (32 KiB)
 # per tt-metal dev_mem_map. Matches ChipDesc usable L1 for those architectures
 # and ttl-validate-cb-budget fallback; with a device + system_desc, the compiler
 # uses ChipDescAttr::getUsableL1Size() instead.

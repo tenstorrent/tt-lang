@@ -26,6 +26,7 @@ from typing import Any, Optional
 from .operation import set_default_grid
 from .greenlet_scheduler import set_scheduler_algorithm
 from .context import set_dry_run
+from .context_types import DEFAULT_MAX_L1_BYTES
 from .constants import BACKEND_EMULE, BACKEND_PYTHON
 
 
@@ -303,7 +304,7 @@ def main() -> None:
         type=int,
         metavar="BYTES",
         dest="max_l1",
-        help="Maximum L1 memory per node in bytes; warns if total CB capacity exceeds this (default: 1336 KiB)",
+        help=f"Maximum L1 memory per node in bytes; warns if total CB capacity exceeds this (default: {DEFAULT_MAX_L1_BYTES // 1024} KiB)",
     )
 
     parser.add_argument(
