@@ -7,7 +7,8 @@ name: tt-emule compiler test inventory
 # Never add pull_request, pull_request_target, workflow_call or merge_group.
 on:
   push:
-    branches: [main]
+    # TEMPORARY: one pre-merge trial from the PR branch; reverted right after.
+    branches: [main, kostas/tt-lang-emule-hosted-ci-experiment]
   workflow_dispatch: {}
 
 permissions: {}
@@ -18,7 +19,10 @@ concurrency:
 
 jobs:
   inventory:
-    if: github.repository == 'tenstorrent/tt-lang' && github.ref == 'refs/heads/main'
+    if: >-
+      github.repository == 'tenstorrent/tt-lang' &&
+      (github.ref == 'refs/heads/main' ||
+      github.ref == 'refs/heads/kostas/tt-lang-emule-hosted-ci-experiment')
     # Admin-managed; restricted to main with admin bypass off. Holds the secrets.
     environment: tt-lang-emule
     runs-on: ubuntu-24.04
