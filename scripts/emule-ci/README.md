@@ -58,8 +58,11 @@ inventory.
 by inventory case ID; only this job applies it. Each entry has a generic
 `reason` (at most 160 characters of letters, digits, spaces and `,.;:()'_-`,
 so no paths, URLs, or `#N` references; review and the public-content check keep
-issue and repository names out) and `run`; use `run: false` for crashes and
-hangs, which are then never executed. Listed passes are counted as
+issue and repository names out) and `run`; use `run: false` for crashes, hangs,
+and failures that destabilize the emulator for later cases in the same file,
+which are then never executed. A new failing case in a file whose other
+failures are not run is listed the same way, unless repeated runs of the whole
+file show that it fails cleanly. Listed passes are counted as
 `xpass_count`, and listed cases that were not collected as `stale_xfail_count`;
 both are reported, not fatal, and should be pruned. Refresh the list, and the
 image lock files, on every stack-pin bump.

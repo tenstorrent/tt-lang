@@ -25,10 +25,6 @@
       "reason": "tt-emule: lit test fails",
       "run": true
     },
-    "python/pipe/test_dfb_spsc_domains.py::test_shared_dfb_disjoint_consumers": {
-      "reason": "tt-emule: kernel JIT compilation fails",
-      "run": true
-    },
     "python/pipe/test_mcast_matmul.py::test_balanced_matmul": {
       "reason": "tt-emule: test is killed for exceeding container memory; not run",
       "run": false
@@ -40,14 +36,6 @@
     "python/pipe/test_mcast_matmul.py::test_mcast_matmul": {
       "reason": "tt-emule: test is killed for exceeding container memory; not run",
       "run": false
-    },
-    "python/pipe/test_minimal_matmul_pipes.py::test_minimal_matmul_pipes": {
-      "reason": "tt-emule: kernel JIT compilation fails",
-      "run": true
-    },
-    "python/pipe/test_pipe_patterns.py::test_row_rings_full": {
-      "reason": "tt-emule: kernel JIT compilation fails",
-      "run": true
     },
     "python/pipe/test_pipe_protocols.py::test_branch_order_uses_published_addresses[bf16]": {
       "reason": "tt-emule: test crashes the emulator; not run",
@@ -121,54 +109,6 @@
       "reason": "tt-emule: kernel JIT compilation fails",
       "run": true
     },
-    "python/pipe/test_pipenet_active_guard.py::test_pipenet_active_guard_under_full_grid[2x2]": {
-      "reason": "tt-emule: kernel JIT compilation fails",
-      "run": true
-    },
-    "python/pipe/test_pipenet_active_guard.py::test_pipenet_active_guard_under_full_grid[4x3]": {
-      "reason": "tt-emule: kernel JIT compilation fails",
-      "run": true
-    },
-    "python/pipe/test_pipenet_collectives.py::test_loopback_multicast": {
-      "reason": "tt-emule: kernel JIT compilation fails",
-      "run": true
-    },
-    "python/pipe/test_pipenet_collectives.py::test_nested_if_callbacks": {
-      "reason": "tt-emule: kernel JIT compilation fails",
-      "run": true
-    },
-    "python/pipe/test_pipenet_collectives.py::test_overlapping_pipenets": {
-      "reason": "tt-emule: kernel JIT compilation fails",
-      "run": true
-    },
-    "python/pipe/test_pipenet_collectives.py::test_per_row_scatter": {
-      "reason": "tt-emule: kernel JIT compilation fails",
-      "run": true
-    },
-    "python/pipe/test_pipenet_collectives.py::test_scatter_subgrid": {
-      "reason": "tt-emule: kernel JIT compilation fails",
-      "run": true
-    },
-    "python/pipe/test_pipenet_sync.py::test_full_grid_fanout_uses_sram_address_table[few-recipients]": {
-      "reason": "tt-emule: kernel JIT compilation fails",
-      "run": true
-    },
-    "python/pipe/test_pipenet_sync.py::test_full_grid_fanout_uses_sram_address_table[full-minus-source]": {
-      "reason": "tt-emule: kernel JIT compilation fails",
-      "run": true
-    },
-    "python/pipe/test_pipenet_sync.py::test_full_grid_fanout_uses_sram_address_table[one-recipient]": {
-      "reason": "tt-emule: kernel JIT compilation fails",
-      "run": true
-    },
-    "python/pipe/test_pipenet_sync.py::test_full_grid_unicast_fanout_uses_global_ready_counters[threshold-plus-one]": {
-      "reason": "tt-emule: kernel JIT compilation fails",
-      "run": true
-    },
-    "python/pipe/test_pipenet_sync.py::test_interleaved_pipenets_use_global_ready_counters": {
-      "reason": "tt-emule: kernel JIT compilation fails",
-      "run": true
-    },
     "python/pipe/test_pipenet_sync.py::test_many_to_one_global_counters_work_with_all_protocols[ra-rp-bf16]": {
       "reason": "tt-emule: test crashes the emulator; not run",
       "run": false
@@ -180,22 +120,6 @@
     "python/pipe/test_pipenet_sync.py::test_posted_gather_uses_distinct_receiver_slots": {
       "reason": "tt-emule: test crashes the emulator; not run",
       "run": false
-    },
-    "python/pipe/test_pipenet_tree_reduce.py::test_tree_reduce[default-dram-bf16]": {
-      "reason": "tt-emule: kernel JIT compilation fails",
-      "run": true
-    },
-    "python/pipe/test_pipenet_tree_reduce.py::test_tree_reduce[default-dram-fp32]": {
-      "reason": "tt-emule: kernel JIT compilation fails",
-      "run": true
-    },
-    "python/pipe/test_pipenet_tree_reduce.py::test_tree_reduce[default-l1-bf16]": {
-      "reason": "tt-emule: kernel JIT compilation fails",
-      "run": true
-    },
-    "python/pipe/test_pipenet_tree_reduce.py::test_tree_reduce[default-l1-fp32]": {
-      "reason": "tt-emule: kernel JIT compilation fails",
-      "run": true
     },
     "python/pipe/test_receive_auto_wait.py::test_receive_wait_inserted_outside_runtime_guard[bf16]": {
       "reason": "tt-emule: test crashes the emulator; not run",
@@ -490,6 +414,22 @@
       "run": false
     },
     "python/test_dfb_reconfiguration.py::test_live_payload_crosses_reconfiguration_and_cached_execution[l1-f32]": {
+      "reason": "tt-emule: test fails and destabilizes the emulator for later cases; not run",
+      "run": false
+    },
+    "python/test_dfb_reconfiguration.py::test_node_retains_payload_across_reconfiguration_without_state_discard[dram-bf16]": {
+      "reason": "tt-emule: test fails and destabilizes the emulator for later cases; not run",
+      "run": false
+    },
+    "python/test_dfb_reconfiguration.py::test_node_retains_payload_across_reconfiguration_without_state_discard[dram-f32]": {
+      "reason": "tt-emule: test fails and destabilizes the emulator for later cases; not run",
+      "run": false
+    },
+    "python/test_dfb_reconfiguration.py::test_node_retains_payload_across_reconfiguration_without_state_discard[l1-bf16]": {
+      "reason": "tt-emule: test fails and destabilizes the emulator for later cases; not run",
+      "run": false
+    },
+    "python/test_dfb_reconfiguration.py::test_node_retains_payload_across_reconfiguration_without_state_discard[l1-f32]": {
       "reason": "tt-emule: test fails and destabilizes the emulator for later cases; not run",
       "run": false
     },
@@ -795,10 +735,6 @@
     },
     "python/test_external_dfb_reuse.py::test_external_protocol_state_reset_drains_compute_interfaces[l1-f32]": {
       "reason": "tt-emule: test raises an error",
-      "run": true
-    },
-    "python/test_flash_chain_8node.py::test_flash_chain_8node": {
-      "reason": "tt-emule: kernel JIT compilation fails",
       "run": true
     },
     "python/test_raw_element.py::test_bf16_argmax_row": {
