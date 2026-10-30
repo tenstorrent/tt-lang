@@ -62,6 +62,13 @@ def main() -> int:
 
     print(f"{package} {version}: imports OK")
 
+    # The simulator formats kernel errors with the compiler's diagnostics
+    # module, which it loads by path; check that path exists in the wheel.
+    from ttl.sim.diagnostics import lazy_import_diagnostics
+
+    lazy_import_diagnostics()
+    print(f"{package} {version}: ttl.diagnostics OK")
+
     # sim_stats package + tt-lang-sim-stats entry point (pip console_scripts)
     import sim_stats  # noqa: F401
     from sim_stats.__main__ import main as _sim_stats_main  # noqa: F401
