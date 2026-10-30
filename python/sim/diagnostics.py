@@ -20,6 +20,10 @@ def lazy_import_diagnostics() -> Any:
     Uses file-based import rather than ``from ttl import diagnostics`` because
     tt-lang-sim shadows the ``ttl`` module with a simulator shim.
 
+    Looks in the source tree (``python/sim/`` next to ``python/ttl/``) and in
+    the installed layout, where both wheels put the simulator at ``ttl/sim/``
+    next to ``ttl/diagnostics.py``.
+
     Returns:
         The ttl.diagnostics module
 
@@ -30,17 +34,26 @@ def lazy_import_diagnostics() -> Any:
     import sys
     from pathlib import Path
 
-    # Resolve the real path of this file (follows symlinks) to find the
-    # source tree, then locate diagnostics.py relative to it.
-    sim_dir = Path(__file__).resolve().parent  # python/sim/
-    diagnostics_path = sim_dir.parent / "ttl" / "diagnostics.py"
-    spec = importlib.util.spec_from_file_location("ttl.diagnostics", diagnostics_path)
-    if spec and spec.loader:
-        diagnostics = importlib.util.module_from_spec(spec)
-        sys.modules["ttl.diagnostics"] = diagnostics
-        spec.loader.exec_module(diagnostics)
-        return diagnostics
-    raise ImportError("Could not load ttl.diagnostics")
+    # Resolve the real path of this file (follows symlinks), so a build tree's
+    # ttl/sim -> python/sim symlink still finds the source tree.
+    sim_dir = Path(__file__).resolve().parent
+    candidates = [
+        sim_dir.parent / "ttl" / "diagnostics.py",  # source tree: python/sim/
+        sim_dir.parent / "diagnostics.py",  # installed: ttl/sim/
+    ]
+    for diagnostics_path in candidates:
+        if not diagnostics_path.is_file():
+            continue
+        spec = importlib.util.spec_from_file_location(
+            "ttl.diagnostics", diagnostics_path
+        )
+        if spec and spec.loader:
+            diagnostics = importlib.util.module_from_spec(spec)
+            sys.modules["ttl.diagnostics"] = diagnostics
+            spec.loader.exec_module(diagnostics)
+            return diagnostics
+    searched = ", ".join(str(path) for path in candidates)
+    raise ImportError(f"Could not load ttl.diagnostics; looked for {searched}")
 
 
 def is_simulator_frame(filename: str) -> bool:
