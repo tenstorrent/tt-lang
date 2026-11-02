@@ -25,9 +25,15 @@ never runs on pull requests, because only code already reviewed and merged to
 `main` may run next to the private source and its credential. A cold build plus
 the inventory is expected to take about 3.5 to 4 hours (not yet measured on
 hosted runners); the job limit is 6 hours. The job summary publishes per-suite
-counts only. Build output, logs, and test IDs stay on the runner and are deleted
-when the job ends; to investigate a failure, check out that `main` commit and
-follow "Reproduce locally" below.
+counts only. The private checkout's Git output, build output, logs, and test IDs
+stay on the runner and are deleted when the job ends; to investigate a failure,
+check out that `main` commit and follow "Reproduce locally" below.
+
+**Runner memory.** The emulator reserves device memory larger than the hosted
+runner's RAM and touches only what kernels use. The kernel's default heuristic
+refuses such a reservation when no swap covers it, so the job sets
+`vm.overcommit_memory=1` on the runner, as Docker Desktop does; the worker's
+container memory limit still bounds actual use.
 
 **Image build downloads.** Nothing is downloaded once the private source is
 present. tt-metal and its submodules (at their pinned commits), tt-metal's CPM

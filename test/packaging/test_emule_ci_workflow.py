@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import re
 import shlex
+import shutil
 import subprocess
 import uuid
 
@@ -56,6 +57,7 @@ STEP_NAMES = [
     "Checkout the pinned private source without retaining credentials",
     "Verify sources and absence of retained checkout credentials",
     "Build the runner-local runtime image",
+    "Allow the emulator's sparse memory reservations",
     "Run the compiler test inventory",
     "Report the public per-suite summary",
 ]
@@ -138,30 +140,31 @@ def test_secrets_reach_only_validation_and_private_checkout():
         assert forbidden not in raw, forbidden
 
 
+PRIVATE_CHECKOUT = "Checkout the pinned private source without retaining credentials"
+
+
 def test_checkouts_are_pinned_and_keep_no_credentials():
     steps = workflow_definition()["jobs"]["inventory"]["steps"]
+    # Only the public checkout uses an action. Its output names the checked-out
+    # commit's subject, so the private source is fetched by plain Git instead.
     actions = [step for step in steps if "uses" in step]
-    assert len(actions) == 2
-    public, private = actions
-    for step in actions:
-        assert re.fullmatch(r"actions/checkout@[0-9a-f]{40}", step["uses"])
-        assert step["with"]["persist-credentials"] == "false"
+    assert [step["name"] for step in actions] == ["Checkout the compiler revision"]
+    (public,) = actions
+    assert re.fullmatch(r"actions/checkout@[0-9a-f]{40}", public["uses"])
     assert public["with"] == {
         "ref": "${{ github.sha }}",
         "path": "compiler",
         "fetch-depth": "0",
         "persist-credentials": "false",
     }
-    assert private["with"] == {
-        "repository": "${{ secrets.TTLANG_EMULE_SOURCE_REPOSITORY }}",
-        "ref": "${{ steps.stack.outputs.emulator_sha }}",
-        "token": "${{ secrets.TTLANG_EMULE_SOURCE_READ_TOKEN }}",
-        "path": "private-runtime",
-        "fetch-depth": "1",
-        "persist-credentials": "false",
-        "submodules": "false",
-        "lfs": "false",
+    private = workflow_step(PRIVATE_CHECKOUT)
+    assert private["env"] == {
+        "SOURCE_READ_TOKEN": "${{ secrets.TTLANG_EMULE_SOURCE_READ_TOKEN }}",
+        "SOURCE_REPOSITORY": "${{ secrets.TTLANG_EMULE_SOURCE_REPOSITORY }}",
+        "EMULATOR_SHA": "${{ steps.stack.outputs.emulator_sha }}",
     }
+    # Inputs reach the script only through its environment, never its text.
+    assert "${{" not in private["run"]
     validate = workflow_step("Validate the emulator source configuration")
     assert validate["env"] == {
         "SOURCE_READ_TOKEN": "${{ secrets.TTLANG_EMULE_SOURCE_READ_TOKEN }}",
@@ -241,6 +244,21 @@ def test_worker_accepts_the_hosted_invocation():
     assert 6900 + 30 < 60 * int(build["timeout-minutes"])
 
 
+def test_memory_overcommit_is_set_just_before_the_worker():
+    # The emulator reserves device memory larger than the hosted runner's RAM
+    # and touches only a small part of it, so the runner must allow the
+    # reservation; the worker's container memory limit bounds actual use.
+    name = "Allow the emulator's sparse memory reservations"
+    assert STEP_NAMES.index(name) + 1 == STEP_NAMES.index(
+        "Run the compiler test inventory"
+    )
+    step = workflow_step(name)
+    assert set(step) == {"name", "timeout-minutes", "run"}
+    assert step["run"].strip().splitlines()[-1] == (
+        "sudo sysctl -w vm.overcommit_memory=1"
+    )
+
+
 def test_stack_step_reads_exact_manifest_pin(tmp_path):
     output = tmp_path / "output"
     result = subprocess.run(
@@ -273,6 +291,116 @@ def run_step(name, env):
     )
 
 
+def private_source(tmp_path):
+    """A local repository standing in for the private one, behind its URL."""
+    work = tmp_path / "private-work"
+    git = ["git", "-C", str(work), "-c", "user.name=CI", "-c", "user.email=ci@example"]
+    subprocess.run(["git", "init", "-q", str(work)], check=True)
+    (work / "runtime.txt").write_text("runtime\n")
+    subprocess.run([*git, "add", "runtime.txt"], check=True)
+    subprocess.run(
+        [*git, "commit", "-q", "-m", "SUBJECT_SENTINEL names a private project"],
+        check=True,
+    )
+    sha = subprocess.run(
+        [*git, "rev-parse", "HEAD"], check=True, capture_output=True, text=True
+    ).stdout.strip()
+    remote = tmp_path / "private.git"
+    subprocess.run(["git", "clone", "-q", "--bare", str(work), str(remote)], check=True)
+    # Helpers configured outside the step must never see the token.
+    decoy = tmp_path / "decoy-helper-called"
+    config = tmp_path / "gitconfig"
+    config.write_text(
+        f'[url "{remote.as_uri()}"]\n'
+        "\tinsteadOf = https://github.com/tenstorrent/runtime.git\n"
+        f"[credential]\n\thelper = \"!f() {{ touch '{decoy}'; }}; f\"\n"
+        '[credential "https://github.com"]\n'
+        f"\thelper = \"!f() {{ touch '{decoy}'; }}; f\"\n"
+    )
+    return sha, config, decoy
+
+
+@pytest.mark.parametrize("pinned", [True, False])
+def test_private_checkout_keeps_its_output_and_the_token_off_the_log(tmp_path, pinned):
+    sha, config, decoy = private_source(tmp_path)
+    workspace = tmp_path / "workspace"
+    (workspace / "compiler").mkdir(parents=True)
+    subprocess.run(["git", "init", "-q", str(workspace / "compiler")], check=True)
+    runner_temp = tmp_path / "runner-temp"
+    runner_temp.mkdir()
+    # Record every Git command line and, at the fetch, ask the configured
+    # helpers for, store and erase credentials exactly as an HTTPS fetch would.
+    real_git = shutil.which("git")
+    commands = tmp_path / "git-commands"
+    credentials = tmp_path / "git-credentials"
+    wrapper = tmp_path / "bin/git"
+    wrapper.parent.mkdir()
+    wrapper.write_text(
+        "#!/bin/sh\n"
+        f"printf '%s\\n' \"$*\" >> '{commands}'\n"
+        'case " $* " in *" fetch "*)\n'
+        "  printf 'protocol=https\\nhost=github.com\\n\\n' |\n"
+        f"    '{real_git}' credential fill >> '{credentials}' 2>&1\n"
+        "  for action in approve reject; do\n"
+        "    printf 'protocol=https\\nhost=github.com\\nusername=u\\npassword=p\\n\\n' |\n"
+        f"      '{real_git}' credential $action >> '{credentials}' 2>&1\n"
+        "  done;;\n"
+        "esac\n"
+        f"exec '{real_git}' \"$@\"\n"
+    )
+    wrapper.chmod(0o755)
+    validated = tmp_path / "validated"
+    python = tmp_path / "python3"
+    python.write_text(f"#!/bin/sh\ntouch '{validated}'\n")
+    python.chmod(0o755)
+    env = {
+        "PATH": f"{wrapper.parent}{os.pathsep}{os.environ['PATH']}",
+        "GIT_CONFIG_GLOBAL": str(config),
+        # Keep the developer's system helpers, such as a keychain, out of it.
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GITHUB_WORKSPACE": str(workspace),
+        "RUNNER_TEMP": str(runner_temp),
+        "SOURCE_READ_TOKEN": "github_pat_TOKEN_SENTINEL",
+        "SOURCE_REPOSITORY": "tenstorrent/runtime",
+        "EMULATOR_SHA": sha if pinned else "b" * 40,
+    }
+    # The steps run in the job's order, each script kept as the runner does.
+    snapshot = run_step("Snapshot the runner temporary directory", env)
+    assert snapshot.returncode == 0, snapshot.stderr
+    result = run_step(PRIVATE_CHECKOUT, env)
+    # The public log gets only the exit code.
+    assert result.stderr == ""
+    if pinned:
+        assert result.returncode == 0
+        assert result.stdout == "Private checkout: exit=0\n"
+        head = subprocess.run(
+            ["git", "-C", str(workspace / "private-runtime"), "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        assert head.stdout.strip() == sha
+        verify = run_step(
+            "Verify sources and absence of retained checkout credentials", env
+        )
+        assert verify.returncode == 0, verify.stderr
+        assert validated.exists()
+    else:
+        assert result.returncode != 0
+        assert re.fullmatch(r"Private checkout: exit=[1-9][0-9]*\n", result.stdout)
+    # Only the step's own helper sees the token: no other helper, command line
+    # or config file.
+    assert "password=github_pat_TOKEN_SENTINEL" in credentials.read_text()
+    assert not decoy.exists()
+    assert "TOKEN_SENTINEL" not in commands.read_text()
+    git_config = workspace / "private-runtime/.git/config"
+    assert "TOKEN_SENTINEL" not in git_config.read_text()
+    assert "credential" not in git_config.read_text()
+    log = runner_temp / "private-checkout.log"
+    assert "TOKEN_SENTINEL" not in log.read_text()
+    assert "SUBJECT_SENTINEL" not in result.stdout + log.read_text()
+
+
 @pytest.mark.parametrize(
     "key",
     [
@@ -282,7 +410,12 @@ def run_step(name, env):
         "core.sshCommand",
         "include.path",
         "includeIf.gitdir:/runner/.path",
+        "http.extraHeader",
+        "url.https://x-access-token:AUTH_SENTINEL@github.com/.insteadOf",
+        "remote-url",
         "runner-temp-leftover",
+        # Expected files must be recorded in the snapshot, not appear after it.
+        "unrecorded-checkout-log",
     ],
 )
 def test_retained_checkout_credentials_stop_before_source_execution(tmp_path, key):
@@ -298,6 +431,14 @@ def test_retained_checkout_credentials_stop_before_source_execution(tmp_path, ke
     (runner_temp / "_runner_file_commands/set_output_1").write_text("")
     if key == "runner-temp-leftover":
         (runner_temp / "git-credentials-0f1e2d3c.config").write_text("AUTH_SENTINEL")
+    elif key == "unrecorded-checkout-log":
+        (runner_temp / "private-checkout.log").write_text("checkout output")
+    elif key == "remote-url":
+        subprocess.run(
+            ["git", "-C", str(workspace / "private-runtime"), "remote", "add"]
+            + ["origin", "https://x-access-token:AUTH_SENTINEL@github.com/t/r.git"],
+            check=True,
+        )
     elif key:
         subprocess.run(
             ["git", "-C", str(workspace / "private-runtime"), "config", key]
