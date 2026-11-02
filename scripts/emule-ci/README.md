@@ -57,8 +57,11 @@ that never started, such as after a crash or at the worker deadline. Each case
 is limited to 300 s and each group to 45 minutes; a group that writes no
 output or case event for 10 minutes is stopped early. A group with incomplete
 coverage, or one stopped by either limit, is an `infrastructure_error`, never a
-pass. `test/sim` is outside this
-inventory.
+pass. Before the inventory, one representative case must pass with at least
+one `ttnn.generic_op` call returning. If it does not, the summary gives one
+fixed reason, such as `source_git_failed`, `case_failed`, `group_killed` or
+`runtime_not_observed`, and, if the case started, its counts; other exit codes
+are reported as `smoke_failure`. `test/sim` is outside this inventory.
 
 **xfail list.** `config/tt-lang-emule-xfail.json` lists known emulator failures
 by inventory case ID; only this job applies it. Each entry has a generic

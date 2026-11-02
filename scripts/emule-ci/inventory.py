@@ -79,6 +79,14 @@ XFAIL_LIST = "config/tt-lang-emule-xfail.json"
 XFAIL_REASON = re.compile(r"[A-Za-z0-9 ,.;:()'_-]{1,160}")
 
 
+class SourceRevisionMismatch(ValueError):
+    """The source checkout is not at the requested revision."""
+
+
+class SourceNotClean(ValueError):
+    """The source checkout has uncommitted or untracked changes."""
+
+
 def read_json(path):
     return json.loads(Path(path).read_text(encoding="utf-8"))
 
@@ -639,7 +647,7 @@ def validate_source(source, revision):
         check=True,
     ).stdout.strip()
     if actual != revision:
-        raise ValueError("source HEAD differs from the requested revision")
+        raise SourceRevisionMismatch("source HEAD differs from the requested revision")
     clean = subprocess.run(
         [*git, "status", "--porcelain", "--untracked-files=normal"],
         capture_output=True,
@@ -647,7 +655,7 @@ def validate_source(source, revision):
         check=True,
     )
     if clean.stdout.strip():
-        raise ValueError("inventory source must be a clean committed checkout")
+        raise SourceNotClean("inventory source must be a clean committed checkout")
 
 
 def collect(args, env):

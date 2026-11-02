@@ -318,17 +318,58 @@ def smoke_harness(tmp_path, monkeypatch):
     return inventory
 
 
+INCOMPLETE = {"status": "infrastructure_error", "complete": False}
+
+
 @pytest.mark.parametrize(
-    "code,outcomes,returns,expected",
+    "code,group,outcomes,returns,expected",
     [
-        (0, {"passed": 1}, 1, 0),
-        (0, {"skipped": 1}, 1, 1),
-        (0, {"passed": 1}, 0, 1),
-        (1, {"failed": 1}, 1, 1),
+        (0, {}, {"passed": 1}, 1, 0),
+        (0, {}, {"skipped": 1}, 1, worker.SmokeFailure.CASE_NOT_PASSED),
+        (0, {}, {"passed": 1}, 0, worker.SmokeFailure.RUNTIME_NOT_OBSERVED),
+        (1, {"status": "failed"}, {"failed": 1}, 1, worker.SmokeFailure.CASE_FAILED),
+        # The case passed but the group did not, e.g. an error at teardown.
+        (1, {"status": "failed"}, {"passed": 1}, 1, worker.SmokeFailure.GROUP_FAILED),
+        (1, INCOMPLETE, {"incomplete": 1}, 0, worker.SmokeFailure.GROUP_INCOMPLETE),
+        (
+            1,
+            {**INCOMPLETE, "timed_out": True, "exit_code": -15},
+            {"incomplete": 1},
+            0,
+            worker.SmokeFailure.GROUP_TIMED_OUT,
+        ),
+        (
+            1,
+            {**INCOMPLETE, "stalled": True, "exit_code": -15},
+            {"incomplete": 1},
+            0,
+            worker.SmokeFailure.GROUP_STALLED,
+        ),
+        (
+            1,
+            {**INCOMPLETE, "exit_code": -9},
+            {"incomplete": 1},
+            0,
+            worker.SmokeFailure.GROUP_KILLED,
+        ),
+        (
+            1,
+            {**INCOMPLETE, "exit_code": 137},
+            {"incomplete": 1},
+            0,
+            worker.SmokeFailure.GROUP_KILLED,
+        ),
+        (
+            1,
+            {**INCOMPLETE, "exit_code": 4},
+            {"not_run": 1},
+            0,
+            worker.SmokeFailure.GROUP_ABNORMAL_EXIT,
+        ),
     ],
 )
 def test_smoke_requires_numerical_pass_and_observed_execution(
-    smoke_harness, monkeypatch, tmp_path, code, outcomes, returns, expected
+    smoke_harness, monkeypatch, tmp_path, code, group, outcomes, returns, expected
 ):
     calls = []
 
@@ -342,9 +383,13 @@ def test_smoke_requires_numerical_pass_and_observed_execution(
                         "id": "pytest:python/pipe/test_broadcast_2d.py",
                         "outcomes": outcomes,
                         "complete": True,
-                        "status": "passed" if code == 0 else "failed",
+                        "status": "passed",
+                        "exit_code": code,
+                        "timed_out": False,
+                        "stalled": False,
                         "wall_seconds": 1,
                         "launch_counts": {"launch": 1, "returned": returns},
+                        **group,
                     }
                 ],
             },
@@ -357,6 +402,58 @@ def test_smoke_requires_numerical_pass_and_observed_execution(
     assert (args.timeout, args.group_timeout, args.stall_timeout) == (600, 900, 800)
     assert env["TT_METAL_CACHE"] == str(tmp_path / "cache/smoke")
     assert env["TT_EMULE_JIT_CACHE_DIR"] == str(tmp_path / "cache/smoke/emule-jit")
+
+
+@pytest.mark.parametrize(
+    "failure,expected",
+    [
+        ("revision", worker.SmokeFailure.SOURCE_REVISION_MISMATCH),
+        ("dirty", worker.SmokeFailure.SOURCE_NOT_CLEAN),
+        ("git", worker.SmokeFailure.SOURCE_GIT_FAILED),
+        ("no-git", worker.SmokeFailure.SOURCE_GIT_FAILED),
+        ("environment", worker.SmokeFailure.ENVIRONMENT_INVALID),
+        ("results", worker.SmokeFailure.RESULTS_UNWRITABLE),
+        ("inventory", worker.SmokeFailure.INVENTORY_ERROR),
+        ("inventory-value", worker.SmokeFailure.INVENTORY_ERROR),
+        ("no-results", worker.SmokeFailure.INVENTORY_ERROR),
+        ("two-groups", worker.SmokeFailure.INVENTORY_ERROR),
+    ],
+)
+def test_smoke_reports_which_setup_step_failed(
+    smoke_harness, monkeypatch, tmp_path, failure, expected
+):
+    errors = {
+        "revision": smoke_harness.SourceRevisionMismatch("private-sentinel"),
+        "dirty": smoke_harness.SourceNotClean("private-sentinel"),
+        "git": subprocess.CalledProcessError(128, ["git", "private-sentinel"]),
+        "no-git": FileNotFoundError("private-sentinel"),
+    }
+
+    def validate_source(*args):
+        if failure in errors:
+            raise errors[failure]
+
+    def run(args, env):
+        if not failure.startswith(("inventory", "no-results", "two-groups")):
+            pytest.fail("the smoke group ran after a failed setup step")
+        if failure == "inventory":
+            raise OSError("private-sentinel")
+        if failure == "inventory-value":
+            raise ValueError("private-sentinel")
+        if failure == "two-groups":
+            group = {"outcomes": {"passed": 1}, "status": "passed"}
+            smoke_harness.write_json(
+                args.output / "results.json", {"groups": [group, group]}
+            )
+        return 0
+
+    monkeypatch.setattr(smoke_harness, "validate_source", validate_source)
+    monkeypatch.setattr(smoke_harness, "run", run)
+    if failure == "environment":
+        monkeypatch.delenv("TT_METAL_EMULE_MODE")
+    if failure == "results":
+        (tmp_path / "emule-results/smoke").mkdir(parents=True)
+    assert worker.runtime_smoke("a" * 40, IMAGE) == expected
 
 
 def test_stats_expose_only_numeric_resource_fields():
@@ -659,6 +756,31 @@ def test_failed_stage_stops_before_later_stages(instance, monkeypatch, failure):
     code, calls = execute_stages(instance, monkeypatch, failure)
     assert code == 1
     assert [name for name, _ in calls] == STAGES[: STAGES.index(last) + 1]
+    if failure == "smoke-without-evidence":
+        assert instance.summary["failure_reason"] == "runtime_not_observed"
+
+
+def test_failure_reasons_are_distinct_exit_codes():
+    # A repeated value would alias two reasons; @unique refuses it at import.
+    assert [int(member) for member in worker.PreflightFailure] == list(range(20, 25))
+    assert [int(member) for member in worker.SmokeFailure] == list(range(30, 45))
+    assert not worker.PREFLIGHT_REASONS & worker.SMOKE_REASONS
+
+
+def test_smoke_line_counts_a_case_the_run_never_reached():
+    report = summary()
+    report.update(
+        planned_case_count=1,
+        case_outcome_counts={},
+        generic_op_launches=0,
+        generic_op_returns=0,
+        runtime_execution_observed=False,
+    )
+    rendered = worker.report_summary(
+        worker_summary(smoke=report, failure_reason="group_killed")
+    )
+    assert "Smoke failure: `group_killed`" in rendered
+    assert "(0 of 0 generic_op calls returned); cases not_run 1;" in rendered
 
 
 @pytest.mark.parametrize(
@@ -709,6 +831,54 @@ def test_preflight_summary_publishes_only_fixed_reason(
         output / "private/preflight.log"
     ).read_text() == "private-preflight-error-sentinel"
     assert calls == ["preflight"]
+
+
+@pytest.mark.parametrize(
+    "code,reason,report",
+    [
+        (30, "source_git_failed", "valid"),
+        (37, "case_failed", "valid"),
+        (39, "runtime_not_observed", "valid"),
+        (37, "case_failed", "missing"),
+        (37, "case_failed", "private"),
+        (1, "smoke_failure", "valid"),
+        (125, "smoke_failure", "missing"),
+    ],
+)
+def test_smoke_failure_publishes_only_fixed_reason_and_counts(
+    instance, monkeypatch, code, reason, report
+):
+    smoke = instance.private / "container/smoke/summary.json"
+    if report == "missing":
+        smoke.unlink()
+    elif report == "private":
+        smoke.write_text(json.dumps({**summary(), "log": "/private/log"}))
+
+    def prepare():
+        instance.revision = "a" * 40
+        instance.environment["TTLANG_EMULE_IMAGE"] = IMAGE
+
+    calls = []
+    monkeypatch.setattr(instance, "prepare", prepare)
+    monkeypatch.setattr(instance, "sizes", lambda _: None)
+    monkeypatch.setattr(
+        instance,
+        "stage",
+        lambda name, command: calls.append(name) or (code if name == "smoke" else 0),
+    )
+    assert instance.execute() == 1
+    assert calls == STAGES[: STAGES.index("smoke") + 1]
+    assert instance.summary["failure_reason"] == reason
+    # The smoke group's counts are published only when they pass the contract.
+    assert ("smoke" in instance.summary) == (report == "valid")
+    rendered = worker.report_summary(instance.summary)
+    assert f"Smoke failure: `{reason}`" in rendered
+    assert "private" not in rendered
+    if report == "valid":
+        assert (
+            "Representative smoke: runtime execution observed True"
+            " (3 of 3 generic_op calls returned); cases passed 2, unsupported 1;"
+        ) in rendered
 
 
 def test_test_tools_are_prepared_before_every_execution(instance, monkeypatch):

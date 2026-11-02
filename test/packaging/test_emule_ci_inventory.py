@@ -726,16 +726,23 @@ def test_observer_marks_listed_cases_non_strict_and_skips_cases_not_run(tmp_path
 
 
 @pytest.mark.parametrize(
-    "head,dirty", [("b" * 40, ""), ("a" * 40, " M test/python/test_add.py\n")]
+    "head,dirty,error",
+    [
+        ("b" * 40, "", emule_inventory.SourceRevisionMismatch),
+        ("a" * 40, " M test/python/test_add.py\n", emule_inventory.SourceNotClean),
+    ],
 )
 def test_source_revision_and_cleanliness_are_verified(
-    monkeypatch, tmp_path, head, dirty
+    monkeypatch, tmp_path, head, dirty, error
 ):
     responses = iter([SimpleNamespace(stdout=head), SimpleNamespace(stdout=dirty)])
     monkeypatch.setattr(
         emule_inventory.subprocess, "run", lambda *args, **kwargs: next(responses)
     )
-    with pytest.raises(ValueError):
+    # Distinct types let the smoke stage publish which check failed; both stay
+    # ValueErrors for the other callers.
+    assert issubclass(error, ValueError)
+    with pytest.raises(error):
         emule_inventory.validate_source(tmp_path, "a" * 40)
 
 

@@ -6,7 +6,7 @@
 """Local-only, bounded emulator worker. No image builds, pulls or publication."""
 
 import argparse
-from enum import IntEnum
+from enum import IntEnum, unique
 import json
 import math
 import os
@@ -34,12 +34,42 @@ ENVIRONMENT_KEYS = {
 }
 
 
+# Exit codes are the reasons; a repeated value would silently alias a reason.
+@unique
 class PreflightFailure(IntEnum):
     RUNTIME_IMPORT_FAILED = 20
     CPU_ONLY_TORCH_REQUIRED = 21
     RANGE_LOCKSTEP_API_MISSING = 22
     PIP_CHECK_FAILED = 23
     PIP_CHECK_TIMED_OUT = 24
+
+
+@unique
+class SmokeFailure(IntEnum):
+    SOURCE_GIT_FAILED = 30
+    SOURCE_REVISION_MISMATCH = 31
+    SOURCE_NOT_CLEAN = 32
+    ENVIRONMENT_INVALID = 33
+    RESULTS_UNWRITABLE = 34
+    INVENTORY_ERROR = 35
+    GROUP_INCOMPLETE = 36
+    CASE_FAILED = 37
+    CASE_NOT_PASSED = 38
+    RUNTIME_NOT_OBSERVED = 39
+    GROUP_TIMED_OUT = 40
+    GROUP_STALLED = 41
+    GROUP_KILLED = 42
+    GROUP_ABNORMAL_EXIT = 43
+    GROUP_FAILED = 44
+
+
+# The only failure reasons a public summary may carry. Exit codes without a
+# fixed meaning, such as an uncaught exception or a Docker error, map to the
+# stage's generic reason.
+PREFLIGHT_REASONS = {"preflight_failure"} | {
+    member.name.lower() for member in PreflightFailure
+}
+SMOKE_REASONS = {"smoke_failure"} | {member.name.lower() for member in SmokeFailure}
 
 
 def bounded_integer(value, maximum):
@@ -342,11 +372,12 @@ def report_summary(summary):
     lines = [f"Worker status: `{status}`"]
     reason = summary.get("failure_reason")
     if reason is not None:
-        if reason != "preflight_failure" and reason not in {
-            member.name.lower() for member in PreflightFailure
-        }:
+        if reason in PREFLIGHT_REASONS:
+            lines.append(f"Preflight failure: `{reason}`")
+        elif reason in SMOKE_REASONS:
+            lines.append(f"Smoke failure: `{reason}`")
+        else:
             raise ValueError("unexpected failure reason")
-        lines.append(f"Preflight failure: `{reason}`")
     stages = summary.get("stages", {})
     if not isinstance(stages, dict):
         raise ValueError("unexpected worker stages")
@@ -364,9 +395,15 @@ def report_summary(summary):
             )
     if "smoke" in summary:
         smoke = public_test_summary(summary["smoke"])
+        outcomes = with_unreached(
+            smoke["case_outcome_counts"], smoke["planned_case_count"]
+        )
         lines.append(
             "Representative smoke: runtime execution observed "
-            f"{smoke['runtime_execution_observed']}, {smoke['wall_seconds']:.0f} s"
+            f"{smoke['runtime_execution_observed']}"
+            f" ({smoke['generic_op_returns']} of {smoke['generic_op_launches']}"
+            f" generic_op calls returned); cases {format_counts(outcomes)};"
+            f" {smoke['wall_seconds']:.0f} s"
         )
     if "tests" not in summary:
         # Either the inventory never started or its summary was not readable;
@@ -493,21 +530,54 @@ def runtime_smoke(revision, runtime_id):
         ],
     }
     inventory.validate_manifest(manifest)
-    inventory.validate_source(args.source, revision)
-    env = inventory.environment(args)
-    args.output.mkdir(parents=True, exist_ok=False)
-    inventory.write_json(args.manifest, manifest)
-    result = inventory.run(args, env)
-    evidence = inventory.read_json(args.output / "results.json")
-    groups = evidence["groups"]
-    if (
-        result != 0
-        or len(groups) != 1
-        or groups[0]["outcomes"] != {"passed": 1}
-        or not inventory.public_summary(evidence)["runtime_execution_observed"]
-    ):
-        return 1
-    return 0
+    # Each failure maps to a fixed reason, the only detail that leaves the
+    # runner; the logs stay private.
+    try:
+        inventory.validate_source(args.source, revision)
+    except inventory.SourceRevisionMismatch:
+        return SmokeFailure.SOURCE_REVISION_MISMATCH
+    except inventory.SourceNotClean:
+        return SmokeFailure.SOURCE_NOT_CLEAN
+    except (OSError, subprocess.CalledProcessError):
+        return SmokeFailure.SOURCE_GIT_FAILED
+    try:
+        env = inventory.environment(args)
+    except ValueError:
+        return SmokeFailure.ENVIRONMENT_INVALID
+    try:
+        args.output.mkdir(parents=True, exist_ok=False)
+        inventory.write_json(args.manifest, manifest)
+    except OSError:
+        return SmokeFailure.RESULTS_UNWRITABLE
+    try:
+        result = inventory.run(args, env)
+        evidence = inventory.read_json(args.output / "results.json")
+        groups = evidence["groups"]
+        observed = inventory.public_summary(evidence)["runtime_execution_observed"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return SmokeFailure.INVENTORY_ERROR
+    if len(groups) != 1:
+        return SmokeFailure.INVENTORY_ERROR
+    group = groups[0]
+    if group.get("status") == "infrastructure_error":
+        code = group.get("exit_code")
+        if group.get("timed_out"):
+            return SmokeFailure.GROUP_TIMED_OUT
+        if group.get("stalled"):
+            return SmokeFailure.GROUP_STALLED
+        # A signal, such as an emulator crash or the kernel's OOM killer.
+        if type(code) is int and (code < 0 or code > 128):
+            return SmokeFailure.GROUP_KILLED
+        if code not in (0, 1):
+            return SmokeFailure.GROUP_ABNORMAL_EXIT
+        return SmokeFailure.GROUP_INCOMPLETE
+    if "failed" in group["outcomes"]:
+        return SmokeFailure.CASE_FAILED
+    if group["outcomes"] != {"passed": 1}:
+        return SmokeFailure.CASE_NOT_PASSED
+    if not observed:
+        return SmokeFailure.RUNTIME_NOT_OBSERVED
+    return 0 if result == 0 else SmokeFailure.GROUP_FAILED
 
 
 class Worker:
@@ -771,7 +841,7 @@ class Worker:
                 ],
             ):
                 return 1
-            if self.stage(
+            smoke = self.stage(
                 "smoke",
                 [
                     "bash",
@@ -783,13 +853,28 @@ class Worker:
                     "--runtime-id",
                     self.environment["TTLANG_EMULE_IMAGE"],
                 ],
-            ):
-                return 1
+            )
             smoke_report = self.private / "container/smoke/summary.json"
+            if smoke:
+                try:
+                    reason = SmokeFailure(smoke).name.lower()
+                except ValueError:
+                    reason = "smoke_failure"
+                self.summary["failure_reason"] = reason
+                # The smoke group's validated counts, when it got that far,
+                # show where it stopped.
+                try:
+                    self.summary["smoke"] = public_test_summary(
+                        json.loads(smoke_report.read_text())
+                    )
+                except (OSError, ValueError, TypeError):
+                    pass
+                return 1
             self.summary["smoke"] = public_test_summary(
                 json.loads(smoke_report.read_text())
             )
             if not self.summary["smoke"]["runtime_execution_observed"]:
+                self.summary["failure_reason"] = "runtime_not_observed"
                 return 1
             if self.stage(
                 "collect",
