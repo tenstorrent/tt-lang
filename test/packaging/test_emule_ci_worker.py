@@ -916,6 +916,36 @@ def test_prepare_uses_existing_cmake_test_tools_target():
         worker.test_tools_command({"TTLANG_EMULE_CI_THREADS": "2"})
 
 
+@pytest.mark.parametrize("launch", ["capture", "stage"])
+def test_host_git_keeps_the_mounted_index_readable(
+    instance, tmp_path, monkeypatch, launch
+):
+    # Under the worker's umask 077, a Git status that refreshes a stale index
+    # must leave it readable to container root, which lacks CAP_DAC_OVERRIDE.
+    source = tmp_path / "source"
+    git = ["git", "-C", str(source), "-c", "user.name=t", "-c", "user.email=t@t"]
+    subprocess.run(["git", "init", "--quiet", str(source)], check=True)
+    (source / "file").write_text("x\n")
+    subprocess.run([*git, "add", "file"], check=True)
+    subprocess.run(
+        [*git, "-c", "commit.gpgsign=false", "commit", "-qm", "x"], check=True
+    )
+    os.utime(source / "file", (0, 0))
+    monkeypatch.setattr(instance, "source", source)
+    monkeypatch.setattr(instance, "sample", lambda name: None)
+    monkeypatch.setattr(instance, "stop_owned_container", lambda name: None)
+    command = ["git", "status", "--porcelain"]
+    original_umask = os.umask(0o077)
+    try:
+        if launch == "capture":
+            assert instance.capture(command).returncode == 0
+        else:
+            assert instance.stage("index", command) == 0
+    finally:
+        os.umask(original_umask)
+    assert (source / ".git/index").stat().st_mode & 0o044 == 0o044
+
+
 def test_exited_docker_client_still_cleans_up_owned_container(instance, monkeypatch):
     class ExitedProcess:
         returncode = 1

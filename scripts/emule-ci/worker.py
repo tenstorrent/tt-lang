@@ -22,6 +22,10 @@ import uuid
 
 IMAGE_ID = re.compile(r"sha256:[0-9a-f]{64}\Z")
 NAME = re.compile(r"[a-z0-9][a-z0-9-]{0,63}\Z")
+# The worker's own files stay private under umask 077, but host Git rewrites
+# the checkout's .git/index with its caller's umask, and container root has no
+# CAP_DAC_OVERRIDE on native Linux to read a 0600 index. Children use 022.
+CHILD_UMASK = 0o022
 ENVIRONMENT_KEYS = {
     "TTLANG_EMULE_TARGET_NAME",
     "TTLANG_EMULE_EXPECTED_LLVM_SHA",
@@ -639,6 +643,7 @@ class Worker:
             stderr=subprocess.PIPE,
             text=True,
             timeout=min(timeout, remaining),
+            umask=CHILD_UMASK,
         )
         with (self.private / "host.log").open("a", encoding="utf-8") as log:
             log.write(json.dumps(command) + "\n" + result.stdout + result.stderr)
@@ -699,6 +704,7 @@ class Worker:
                     stdout=log,
                     stderr=subprocess.STDOUT,
                     start_new_session=True,
+                    umask=CHILD_UMASK,
                 )
                 while process.poll() is None:
                     if time.monotonic() >= self.deadline:
