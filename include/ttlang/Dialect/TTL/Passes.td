@@ -1542,8 +1542,39 @@ def TTKernelInsertInits
     Per-op inits (`exp_tile_init`, `add_tiles_init`, etc.) configure the
     MATH pipeline for a specific operation type. An init is emitted
     whenever the op type changes from the previous compute op in
-    linear block order. Init tracking resets at sync boundaries
-    (`tile_regs_acquire`/`commit`/`wait`/`release`).
+    linear block order. Init tracking follows `scf.for`, `scf.if`, and
+    `scf.while`, and resets at sync boundaries
+    (`tile_regs_acquire`/`commit`/`wait`/`release`). A loop whose every
+    iteration computes with one key and loop-invariant operands is
+    initialized once, before the loop. An existing SrcA write invalidates the
+    key, so the next compute gets its own init.
+
+    `copy_tile_init` programs the unpack mode and not the SrcA data format.
+    That format is written by the full configures (`init_sfpu`,
+    `binary_op_init_common`, `mm_block_init` with SrcA on in1,
+    `transpose_wh_init`, `unary_bcast_init`, `compute_kernel_hw_startup`) and
+    by `reconfig_data_format_srca`, and it persists across sync regions. The
+    short inits `copy_tile_init`, `add_tiles_init`, `sub_tiles_init`,
+    `mul_tiles_init`, `binary_dest_reuse_tiles_init`, `reduce_init`, and
+    `mm_block_init_short` require the SrcA format of one operand. When that
+    element type differs from the programmed operand,
+    `reconfig_data_format_srca` is inserted immediately before the init,
+    including an init hoisted before a loop. add, sub, and mul require in0.
+    Dest reuse requires the unpacked CB. Row sum and row average require the
+    scaler; other reduces require the data CB. Matmul requires in1. The
+    dataflow runs over the whole function body and reads the inits present in
+    the IR, so a common init hoisted above a compiler loop that holds several
+    sync regions is observed once, and the backedge carries the last region's
+    format into the first. The one-operand form is used when the programmed
+    operand is not a single CB: on a loop backedge, at a branch join, or when
+    no full configure precedes the consumer. That form updates the data format
+    only; it does not reprogram tile or face geometry. The two-operand form
+    does when the geometry differs.
+
+    `reduce_uninit` runs before the next non-reduce compute and before a
+    sync boundary when any incoming path may still be in reduction. A branch
+    join or a loop that might not run keeps that fact after the init key is
+    no longer unique.
 
     Example (consecutive same-type ops share one init):
     ```mlir

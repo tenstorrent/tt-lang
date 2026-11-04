@@ -127,6 +127,51 @@ ComputeKernelHWStartupOp::parse(::mlir::OpAsmParser &parser,
   return success();
 }
 
+void ReconfigDataFormatSrcaOp::print(::mlir::OpAsmPrinter &printer) {
+  printer << "(";
+  if (Value old = getSrcaOld()) {
+    printer << old << ", ";
+  }
+  printer << getSrcaNew() << ")";
+  printer.printOptionalAttrDict((*this)->getAttrs());
+  printer << " : ";
+  printer.printFunctionalType(getOperation()->getOperandTypes(),
+                              getOperation()->getResultTypes());
+}
+
+::mlir::ParseResult
+ReconfigDataFormatSrcaOp::parse(::mlir::OpAsmParser &parser,
+                                ::mlir::OperationState &result) {
+  SmallVector<OpAsmParser::UnresolvedOperand, 2> operands;
+  OpAsmParser::UnresolvedOperand operand;
+  if (parser.parseLParen() || parser.parseOperand(operand)) {
+    return failure();
+  }
+  operands.push_back(operand);
+  if (succeeded(parser.parseOptionalComma())) {
+    if (parser.parseOperand(operand)) {
+      return failure();
+    }
+    operands.push_back(operand);
+  }
+  if (parser.parseRParen() || parser.parseOptionalAttrDict(result.attributes) ||
+      parser.parseColon()) {
+    return failure();
+  }
+
+  FunctionType functionType;
+  if (parser.parseType(functionType)) {
+    return failure();
+  }
+  if (functionType.getNumInputs() != operands.size()) {
+    return parser.emitError(parser.getNameLoc())
+           << "expected " << operands.size() << " operand types";
+  }
+  result.addTypes(functionType.getResults());
+  return parser.resolveOperands(operands, functionType.getInputs(),
+                                parser.getNameLoc(), result.operands);
+}
+
 static bool insideKernelFunction(mlir::Operation *op) {
   mlir::Operation *parentOp = op->getParentOp();
 
