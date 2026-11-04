@@ -7,35 +7,15 @@ semantics used by both local NoC and fabric transports.
 
 ## System overview
 
-```text
-  Python operation
-  DeviceDomain + TransferGraph + graph PipeNet
-                         |
-                         v
-  +-----------------------------------------------------------+
-  | Logical transfer semantics                                |
-  | source/destination relation and DFB ownership             |
-  | synchronization protocol                                  |
-  +-----------------------------------------------------------+
-                         |
-                         v
-  +-----------------------------------------------------------+
-  | Host runtime route binding                                |
-  | FabricNodeIds, forwarding directions, injection links     |
-  +-----------------------------------------------------------+
-                         |
-                         v
-  +-----------------------------------------------------------+
-  | Source TENSIX node                                        |
-  | encode target route -> fabric write + atomic              |
-  +-----------------------------------------------------------+
-                         |
-                         | TT-Metal fabric routing tables
-                         v
-  +-----------------------------------------------------------+
-  | Destination device                                        |
-  | completion wait -> destination DFB consumption            |
-  +-----------------------------------------------------------+
+```mermaid
+flowchart TD
+    A[Python operation: DeviceDomain, TransferGraph, PipeNet]
+    B[Logical transfer: endpoints, destination storage, protocol]
+    C[Host route binding: FabricNodeIds, directions, links]
+    D[Source TENSIX: encode route and submit payload and completion]
+    E[Destination device: wait for completion, then read destination]
+    A --> B --> C --> D
+    D -->|TT-Metal fabric routing tables| E
 ```
 
 High-level TTL records the logical transfer only. The active TT-Metal control
@@ -44,7 +24,7 @@ encoding, and device routing tables forward the packet.
 
 ## Hardware capabilities
 
-### TENSIX nodes and dataflow buffers
+### TENSIX nodes and destination storage
 
 A TENSIX node contains five Baby RISC-V processors, local SRAM, hardware
 semaphores, and dataflow buffers (DFBs). Data movement kernels execute on the
@@ -53,25 +33,28 @@ processors. A DFB is an L1-resident FIFO used to transfer tiles between those
 threads.
 
 Pipe payload storage remains receiver-owned for both local and fabric
-transfers. The receiver reserves a DFB block before the sender writes into it.
-The fabric does not provide a hidden payload buffer with PipeNet semantics.
-Fabric routers and packet buffers transport data between devices, while the
-destination address still identifies storage in a receiver node's L1.
+transfers. An L1 destination uses a receiver DFB block; the receiver reserves
+it before the sender writes. A fabric transfer may instead target a region of
+an interleaved DRAM tensor. The receiver reads that region after completion,
+and the compiler proves that writes cannot overwrite an unread region. Fabric
+routers and packet buffers transport data; they do not provide PipeNet payload
+storage.
 
 ### On-device NoC and inter-device fabric
 
 The NoC transfers data between nodes and memory controllers on one device. A
-NoC unicast address contains the translated destination node coordinates and
-the destination L1 address. Existing PipeNet lowering uses NoC writes and NoC
-semaphore increments for transfers whose endpoints are on the same device.
+NoC unicast address for a local DFB transfer contains the translated
+destination node coordinates and the destination L1 address. Existing PipeNet
+lowering uses NoC writes and NoC semaphore increments for transfers whose
+endpoints are on the same device.
 
 The TT-Metal fabric transfers packets between devices. A fabric packet
 contains two distinct destinations:
 
 - a chip route selects the destination device or the sequence of fabric
   routers;
-- a NoC command selects the destination node and L1 address after the packet
-  reaches the destination device.
+- a NoC command selects the destination L1 address or DRAM page address after
+  the packet reaches the destination device.
 
 These destinations must not be conflated. A logical `DeviceRef` determines
 which device participates in a transfer. Immediately before submitting a
@@ -83,8 +66,9 @@ control plane owned by the active `MeshDevice` runtime context to configure an
 injection connection. When explicit link assignment is required, binding also
 queries the eligible forwarding links. Binding completes before
 `ttnn.generic_op(...)` submits the program; it does not execute in a device
-kernel. The packet's NoC command is built separately from the destination node
-coordinates and receiver DFB address.
+kernel. The packet's NoC command is built separately from the destination
+address: translated node coordinates and an L1 DFB address for an L1 receive,
+or tensor metadata and page coordinates for a DRAM receive.
 
 ### Routing-plane connections
 
@@ -162,14 +146,41 @@ kernel does not reconstruct a topology model or search connection tags.
 The selected operation is a target-runtime decision. Neither the fabric mode
 nor either route encoding is part of the TTL domain or transfer-graph model.
 
+### Fabric PipeNet synchronization protocol
+
+The compiler selects one of three
+[fabric protocols](PipeNets.md#computed-dram-tensor-destinations).
+`PipeSynchronizationProtocol::Fabric` implements `CLA/RP` for an L1 DFB or
+`CDA/RP` for an interleaved DRAM tensor region. The receiver posts readiness
+over the reverse fabric route; the sender waits for it before writing.
+`PipeSynchronizationProtocol::FabricNoRendezvous` implements `CDA/NR`: a
+point-to-point DRAM transfer whose destination regions are proven disjoint
+throughout the invocation. It omits the reverse readiness increment and
+sender wait. All three use a remote completion increment and a receiver wait.
+
+| Protocol | Receiver post | Sender | Receiver after completion |
+| --- | --- | --- | --- |
+| `CLA/RP` | Reserve the L1 DFB block and increment sender readiness. | Wait for readiness; write the computed L1 DFB slot. | Consume and pop the DFB block. |
+| `CDA/RP` | Increment sender readiness; no destination DFB reservation. | Wait for readiness; write the computed DRAM tensor region. | Read the region into a local DFB before reusing it. |
+| `CDA/NR` | Record the completion sequence; no reverse readiness post. | Write a region proven disjoint from other writes in the invocation. | Read the region after completion. |
+
+Readiness and completion counters are cumulative; lowering does not reset
+them between transfer occurrences. TT-Fabric link-level flow control manages
+packet transport resources. It does not protect a destination against
+overwrite or replace PipeNet completion synchronization. Fabric transfers do
+not use the `CA/CC` capacity-counter protocol.
+
 ### Payload and completion ordering
 
-The current fabric transport uses the fused packet command
-`to_noc_fused_unicast_write_atomic_inc`. The packet writes the payload to the
-destination DFB and increments the receiver-completion semaphore as one fabric
-command. The receiver waits for that semaphore before consuming the DFB block.
+For an L1 DFB or one DRAM page, the sender uses a fused payload write and
+completion increment. For a multi-page DRAM region, it emits scatter writes
+of up to four pages per packet (or a single-page write for the remainder),
+then a separate completion increment. These commands use one routing-plane
+connection; its ordering makes the payload visible before completion. The
+receiver waits for completion before consuming the DFB block or reading the
+DRAM region.
 
-The sender follows TT-Metal's packet lifecycle:
+The fused command follows TT-Metal's packet lifecycle:
 
 1. Reset and allocate a packet header.
 2. Encode the chip route.
@@ -180,8 +191,9 @@ The sender follows TT-Metal's packet lifecycle:
 7. Close the opened connections.
 
 The target runtime reports the maximum fabric payload size. Code generation
-must not embed a device-specific limit. Larger PipeNet payloads require
-target-aware packetization, with the completion increment in the final packet.
+must not embed a device-specific limit. Larger L1 PipeNet payloads require
+target-aware packetization, with completion after the payload packets. DRAM
+tensor regions use the page-based writes described above.
 
 ### Physical and logical device arrangements
 
@@ -393,16 +405,13 @@ should describe communication semantics without adding target topology fields.
 
 ### Shared pipe protocol
 
-Local and fabric transfers use the same logical protocol:
-
-- the receiver owns and reserves the destination DFB block;
-- the receiver publishes readiness or participates in a proven capacity
-  protocol;
-- the sender writes into the receiver-owned block;
-- the receiver waits for a completion signal before consuming the block;
-- source and destination roles are restricted by PipeNet guards;
-- DFB reserve, wait, push, and pop lifetimes remain visible to shared compiler
-  analyses.
+Local and fabric transfers use the same logical ordering requirements. The
+receiver owns the destination storage. The sender writes only after a receiver
+post, a proven capacity credit, or proof that its DRAM destination is disjoint
+and cannot be reused during the invocation. The receiver observes completion
+before reading the payload. PipeNet guards restrict endpoint roles. DFB
+lifetimes remain visible to shared compiler analyses when the destination is
+a DFB.
 
 The transport emitter maps that protocol onto either NoC or fabric
 operations. It does not redefine PipeNet semantics.
@@ -430,6 +439,8 @@ coordinates. Host runtime binding accepts only source and destination pairs
 that the active TT-Metal control plane can route. The current implementation:
 
 - resolves logical endpoints to `FabricNodeId` values;
+- checks direct neighbors before choosing a shorter 1D ring route over a
+  closing link;
 - queries the outgoing direction along each resolved route and, when the
   target exposes link enumeration, the eligible injection links for its
   connection target;
@@ -445,9 +456,9 @@ that the active TT-Metal control plane can route. The current implementation:
   count for 1D routing.
 
 Together, the compiler's fabric route and Pipe module plans record logical
-route indices, source and destination TENSIX nodes, L1 address formulas,
-payload constraints, and synchronization objects. Host binding maps each
-logical route index to a connection slot and final physical target. Neither
+route indices, source and destination TENSIX nodes, destination address
+formulas, payload constraints, and synchronization objects. Host binding maps
+each logical route index to a connection slot and final physical target. Neither
 plan infers topology from a `DeviceDomain`.
 
 A future route optimizer belongs in this late planner. When the control plane
@@ -655,13 +666,15 @@ emission:
 
 - Same-device receiver posts publish or compute a NoC destination and use
   local synchronization resources.
-- Cross-device receiver posts send a reverse-route fabric atomic that publishes
-  readiness to the sender.
-- A cross-device sender waits for readiness, combines the host-provided
-  destination DFB base with the destination TENSIX coordinates, and emits one
-  fused fabric payload write plus completion increment on the forward route.
-- The receiver waits on its local completion counter before consuming the DFB
-  block.
+- `CLA/RP` and `CDA/RP` receiver posts send a reverse-route fabric atomic
+  that publishes readiness. `CDA/NR` omits this atomic after the disjoint
+  destination proof.
+- The cross-device sender computes an L1 DFB slot address or DRAM tensor page
+  addresses. It waits for readiness under `CLA/RP` and `CDA/RP`, then emits
+  a fused write and completion for one destination page or ordered writes and
+  a separate completion increment for multiple DRAM pages.
+- The receiver waits on its local completion counter before consuming the L1
+  DFB block or reading the DRAM tensor region.
 
 The resource planner resolves every synchronization counter to an L1 address
 before transport emission. Transport code consumes that address and never
@@ -673,12 +686,14 @@ colors use global storage so one color has one storage kind on every source
 node. Proven receiver/sender manager ownership uses a separate local semaphore
 and generation protocol.
 
-Fabric lowering currently requires computed receiver DFB addresses. The
-sender receives the destination DFB base from host runtime arguments and builds
-the remote NoC address from the destination node coordinates. The
-receiver-published address-table mechanism is limited to the NoC transport.
-After packet injection, TT-Metal fabric routers perform all intermediate
-forwarding; lowering does not generate programs for intermediate devices.
+Fabric lowering requires computed receiver addresses. For an L1 destination,
+the sender receives the DFB base from host runtime arguments and builds the
+remote NoC address from the destination node coordinates. For a DRAM
+destination, it computes page addresses from tensor metadata and destination
+coordinates. The receiver-published address-table mechanism is limited to the
+NoC transport. After packet injection, TT-Metal fabric routers perform all
+intermediate forwarding; lowering does not generate programs for intermediate
+devices.
 
 ### TTKernel representation
 
@@ -688,7 +703,8 @@ submission:
 - create a `RoutingPlaneConnectionManager` value;
 - open connections from a runtime argument block;
 - submit a remote atomic increment;
-- submit a fused payload write and remote atomic increment;
+- submit a fused payload write and remote atomic increment, or DRAM page
+  writes followed by a remote atomic increment;
 - close the opened connections.
 
 The send operations take a connection index, destination device id,
@@ -700,7 +716,9 @@ route encoding.
 
 `lib/Conversion/TTKernelToEmitC/TTKernelToEmitC.cpp` lowers routing-plane
 operations to a generated adapter that dispatches to the direct manager or mux
-client from runtime arguments. Packet construction is common to both modes:
+client from runtime arguments. The following shows the fused L1 or one-page
+DRAM path; multi-page DRAM uses scatter writes and a separate completion
+increment. Route encoding is common to both modes:
 
 ```cpp
 experimental::RoutingPlaneConnectionManager connection_manager;
@@ -847,13 +865,14 @@ send and receiver post. Unknown loop counts, mismatched interval sequences, or
 generation-count overflow remain interfering and require distinct links.
 
 One compiler-allocated local semaphore transfers ownership across the complete
-proven sequence. The receiver opens its manager, publishes readiness, closes
-the manager before waiting for payload completion, and publishes the sender
-generation. The sender then opens its manager, sends the payload, closes the
-manager, and publishes the next receiver generation. Repeated or
-multi-interval sequences derive generations from a kernel-local invocation
-ordinal that advances only when an interval executes. This preserves the
-sequence when a conditional skips an interval. One single-shot interval uses
+proven sequence. For a receiver-post transfer, the receiver opens its manager,
+publishes readiness, closes the manager before waiting for payload completion,
+and publishes the sender generation. The sender then opens its manager, sends
+the payload, closes the manager, and publishes the next receiver generation.
+Repeated or multi-interval sequences derive generations from a kernel-local
+invocation ordinal that advances only when an interval executes. This
+preserves the sequence when a conditional skips an interval. One single-shot
+interval uses
 constant generations and requires no ordinal. Program submission reinitializes
 compiler-managed semaphores, including when a cached program descriptor is
 reused. Global-semaphore-only compilation does not allocate this local
@@ -875,11 +894,12 @@ from node-number differences.
 
 ### Destination-routed transport behavior
 
-Generated C++ uses the routing-plane manager, packet pool, target route encoder,
-fused write and atomic command, sender submission sequence, completion wait,
-and connection closure. Fabric routers forward the packet according to the
-TT-Metal routing tables; intermediate TENSIX programs are not part of the
-current transport.
+Generated C++ uses the routing-plane manager, packet pool, target route
+encoder, sender submission sequence, completion wait, and connection closure.
+It uses a fused write and atomic command for L1 destinations and one-page DRAM
+regions. Multi-page DRAM regions use page writes and an ordered completion
+atomic. Fabric routers forward packets according to the TT-Metal routing
+tables; intermediate TENSIX programs are not part of the current transport.
 
 ### Validation requirements
 
