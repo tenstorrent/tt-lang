@@ -7,7 +7,8 @@
 // Each device is the source of one edge. The lowering indexes a compact
 // device-to-edge range, then combines the selected edge block with the
 // row-major logical node index. It does not scan all eight records or compare
-// their endpoint device/node coordinates at runtime.
+// their endpoint device/node coordinates at runtime. Every selected transfer
+// is one-shot and omits receiver readiness.
 // CHECK-LABEL: func.func @sender()
 // CHECK: %[[NODE_X:.*]] = ttkernel.my_logical_x_
 // CHECK-NEXT: %[[NODE_Y:.*]] = ttkernel.my_logical_y_
@@ -23,6 +24,7 @@
 // CHECK-NEXT: %[[EDGE_OFFSET:.*]] = arith.muli %[[EDGE_BLOCK]], %{{.*}} overflow<nuw> : index
 // CHECK-NEXT: %[[RECORD:.*]] = arith.addi %[[EDGE_OFFSET]], %[[NODE_INDEX]] overflow<nuw> : index
 // CHECK-NOT: arith.cmpi
+// CHECK-NOT: ttkernel.experimental.semaphore_wait
 // CHECK: ttkernel.routing_plane.fused_write_atomic_inc
 // CHECK-NOT: ttl.pipenet_local_record_loop
 
@@ -43,7 +45,7 @@
 // CHECK-NEXT: %[[DST_EDGE_OFFSET:.*]] = arith.muli %[[DST_EDGE_BLOCK]], %{{.*}} overflow<nuw> : index
 // CHECK-NEXT: %[[DST_RECORD:.*]] = arith.addi %[[DST_EDGE_OFFSET]], %[[DST_NODE_INDEX]] overflow<nuw> : index
 // CHECK-NOT: arith.cmpi
-// CHECK: ttkernel.routing_plane.atomic_inc
+// CHECK-NOT: ttkernel.routing_plane.atomic_inc
 // CHECK-NOT: ttl.pipenet_local_record_loop
 
 #domain = #ttl.device_domain<components = <name = "device", extent = [2]>>

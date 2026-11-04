@@ -65,6 +65,12 @@ getPipeNetRecordLoopInductionValue(const PipeNetRecordLoop &recordLoop,
                                    std::uint64_t recordIndex,
                                    PipeRecordAttr selectedRecord = {});
 
+/// Return the number of records selected by `recordLoop` at `location`, or no
+/// result when device membership cannot be determined.
+std::optional<std::uint64_t>
+getMatchingPipeNetRecordCount(const PipeNetRecordLoop &recordLoop,
+                              const LaunchExecutionLocation &location);
+
 /// The record selected by one active PipeNet callback loop.
 struct ActivePipeNetRecord {
   /// Callback loop whose current iteration selected this record.

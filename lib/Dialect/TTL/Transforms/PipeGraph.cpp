@@ -73,6 +73,13 @@ struct PipeGraphAnalysisState : LaunchNodeDomainState {
 
 namespace {
 
+// Retain launch-context facts without cached analyses that reference `state`.
+static LaunchNodeDomainState
+extractLaunchNodeEvaluationState(PipeGraphAnalysisState &state) {
+  state.executionCountAnalysesByFunction.clear();
+  return std::move(static_cast<LaunchNodeDomainState &>(state));
+}
+
 static LogicalResult collectLaunchNodeDomains(ModuleOp mod,
                                               PipeGraphAnalysisState &state) {
   state.initialize(mod);
@@ -1751,8 +1758,8 @@ LogicalResult PipeGraph::verifyTensorRegionDestinations(
         return WalkResult::interrupt();
       }
       std::optional<std::uint64_t> accessExecutionCount =
-          getExactExecutionCountAtLaunchLocation(copy, *maybeLocation,
-                                                 analysisState);
+          mlir::tt::ttl::getExactExecutionCountAtLaunchLocation(
+              copy, *maybeLocation, analysisState);
       if (accessExecutionCount && *accessExecutionCount == 0) {
         continue;
       }
@@ -1906,8 +1913,8 @@ LogicalResult PipeGraph::verifyTensorRegionDestinations(
     }
     CopyOp read = reads.front();
     std::optional<std::uint64_t> readCount =
-        getExactExecutionCountAtLaunchLocation(read, *maybeLocation,
-                                               analysisState);
+        mlir::tt::ttl::getExactExecutionCountAtLaunchLocation(
+            read, *maybeLocation, analysisState);
     std::optional<ReceiverControlContext> postContext =
         getReceiverControlContext(postOp, *maybeLocation, analysisState);
     std::optional<ReceiverControlContext> readContext =
@@ -2292,6 +2299,24 @@ LaunchNodeDomain PipeGraph::getOperationLaunchDomain(Operation *op) const {
     return LaunchNodeDomain::unknown();
   }
   return it->second;
+}
+
+std::optional<std::uint64_t> PipeGraph::getExactExecutionCountAtLaunchLocation(
+    Operation *operation, const LaunchExecutionLocation &location) const {
+  if (!hasAnalyzedLaunchGrid) {
+    return std::nullopt;
+  }
+  return mlir::tt::ttl::getExactExecutionCountAtLaunchLocation(
+      operation, location, launchNodeDomainState);
+}
+
+std::optional<bool> PipeGraph::evaluatePredicateAtLaunchLocation(
+    Value predicate, const LaunchExecutionLocation &location) const {
+  if (!hasAnalyzedLaunchGrid) {
+    return std::nullopt;
+  }
+  return mlir::tt::ttl::evaluatePredicateAtLaunchLocation(
+      predicate, location, launchNodeDomainState);
 }
 
 const DFBAcquireReleaseIndex &
@@ -3478,6 +3503,8 @@ PipeGraph::build(ModuleOp mod, const PipeTransferIndex &transferIndex,
     graph.hasAnalyzedLaunchGrid = analysisState.hasLaunchGrid;
     graph.operationLaunchDomains =
         std::move(analysisState.operationLaunchDomains);
+    graph.launchNodeDomainState =
+        extractLaunchNodeEvaluationState(analysisState);
     return std::move(graph);
   }
   analysisState.dfbLogicalIdentities =
@@ -3533,6 +3560,7 @@ PipeGraph::build(ModuleOp mod, const PipeTransferIndex &transferIndex,
       std::move(analysisState.operationLaunchDomains);
   graph.dfbLifecycles = std::move(analysisState.dfbLifecycles);
   graph.receiverPopsByStream = std::move(analysisState.popsByStream);
+  graph.launchNodeDomainState = extractLaunchNodeEvaluationState(analysisState);
   return std::move(graph);
 }
 

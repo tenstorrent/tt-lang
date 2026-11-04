@@ -4,25 +4,27 @@
 // to selected-record combinations that execute on the same logical device.
 
 // Each device selects one outer destination record and the same inner record.
-// The receiver therefore posts once per edge and needs one DFB slot.
+// The receiver therefore posts once per edge, needs one DFB slot, and does not
+// send a readiness message before the payload transfer.
 
 // CHECK-LABEL: module attributes
-// CHECK-SAME: ttl.pipe_global_semaphore_count = 2 : i64
+// CHECK-SAME: ttl.pipe_global_semaphore_count = 1 : i64
 // CHECK-LABEL: func.func @senders
+// CHECK-NOT: ttkernel.experimental.semaphore_wait
 // CHECK: ttkernel.routing_plane.fused_write_atomic_inc
 // CHECK-NOT: ttkernel.routing_plane.fused_write_atomic_inc
 // CHECK-LABEL: func.func @receivers
 // CHECK: ttkernel.cb_reserve_back
-// CHECK-NEXT: ttkernel.experimental.semaphore_wait_min
-// CHECK-NEXT: %[[MANAGER:.*]] = ttkernel.routing_plane.create_connection_manager
-// CHECK-NEXT: %[[CONNECTION_COUNT:.*]] = ttkernel.routing_plane.open_connections %[[MANAGER]],
-// CHECK: ttkernel.routing_plane.atomic_inc(%[[MANAGER]], %[[CONNECTION_COUNT]],
-// CHECK: ttkernel.routing_plane.close_connections(%[[MANAGER]],
-// CHECK-NEXT: ttkernel.noc_semaphore_set
+// CHECK-NOT: ttkernel.routing_plane.create_connection_manager
+// CHECK-NOT: ttkernel.routing_plane.atomic_inc
+// CHECK: %[[SEQUENCE_INDEX:.*]] = ttkernel.experimental.constant_table_lookup
+// CHECK-NEXT: %[[PREVIOUS_SEQUENCE:.*]] = memref.load {{.*}}[%[[SEQUENCE_INDEX]]]
+// CHECK-NEXT: %[[COMPLETION_SEQUENCE:.*]] = arith.addi %[[PREVIOUS_SEQUENCE]], {{.*}} : i32
+// CHECK-NEXT: memref.store %[[COMPLETION_SEQUENCE]], {{.*}}[%[[SEQUENCE_INDEX]]]
 // CHECK-NEXT: %[[COMPLETION_ARG_INDEX:.*]] = ttkernel.experimental.constant_table_lookup
 // CHECK-NEXT: %[[COMPLETION_ADDRESS:.*]] = ttkernel.get_common_arg_val(%[[COMPLETION_ARG_INDEX]])
 // CHECK-NEXT: %[[COMPLETION_PTR:.*]] = ttkernel.reinterpret_cast(%[[COMPLETION_ADDRESS]])
-// CHECK-NEXT: ttkernel.experimental.semaphore_wait_min
+// CHECK-NEXT: ttkernel.experimental.semaphore_wait_min(%[[COMPLETION_PTR]], %[[COMPLETION_SEQUENCE]])
 // CHECK-NEXT: ttkernel.cb_push_back
 // CHECK-NOT: ttkernel.cb_reserve_back
 // CHECK: return
