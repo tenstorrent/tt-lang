@@ -6,6 +6,7 @@
 #define TTLANG_DIALECT_TTKERNEL_TTKERNELDIALECT_TD
 
 include "mlir/IR/OpBase.td"
+include "mlir/Interfaces/SideEffectInterfaces.td"
 
 //===----------------------------------------------------------------------===//
 // TTKernel dialect definition.
@@ -81,6 +82,14 @@ def TTKernel_NocCommandStateUnknownOpTrait
 
 def TTKernel_LayoutOpTrait : TTKernel_Trait<"TTKernelLayoutOpTrait", []>;
 
+def TTKernel_HardwareConfigEffectsTrait
+    : TTKernel_Trait<"TTKernelHardwareConfigEffectsTrait", []>;
+
+// Memory effects of compute and init operations, including their MathInit
+// access. See TTKernelConfigEffects.h.
+def TTKernel_HardwareConfigEffects
+    : TraitList<[TTKernel_HardwareConfigEffectsTrait, MemoryEffectsOpInterface]>;
+
 //===----------------------------------------------------------------------===//
 // Base TTKernel operation definitions.
 //===----------------------------------------------------------------------===//
@@ -89,13 +98,16 @@ class TTKernel_Op<string mnemonic, list<Trait> traits = []> :
         Op<TTKernel_Dialect, mnemonic, traits>;
 
 class TTKernel_FPUOp<string mnemonic, list<Trait> traits = []> :
-        TTKernel_Op<mnemonic, [TTKernel_FPUOpTrait] # traits>;
+        TTKernel_Op<mnemonic, [TTKernel_FPUOpTrait,
+                               TTKernel_HardwareConfigEffects] # traits>;
 
 class TTKernel_SFPUOp<string mnemonic, list<Trait> traits = []> :
-        TTKernel_Op<mnemonic, [TTKernel_SFPUOpTrait] # traits>;
+        TTKernel_Op<mnemonic, [TTKernel_SFPUOpTrait,
+                               TTKernel_HardwareConfigEffects] # traits>;
 
 class TTKernel_InitOp<string mnemonic, list<Trait> traits = []> :
-        TTKernel_Op<mnemonic, [TTKernel_InitOpTrait] # traits>;
+        TTKernel_Op<mnemonic, [TTKernel_InitOpTrait,
+                               TTKernel_HardwareConfigEffects] # traits>;
 
 class TTKernel_NocOp<string mnemonic, list<Trait> traits = []> :
         TTKernel_Op<mnemonic, [TTKernel_NocOpTrait] # traits>;
