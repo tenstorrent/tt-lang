@@ -11,25 +11,31 @@
 // HEADER: noc_async_full_barrier();
 // HEADER: TTI_STALLWAIT(p_stall::STALL_TDMA, waitResources);
 // HEADER-NEXT: tensix_sync();
+// HEADER: TTI_STALLWAIT(p_stall::STALL_TDMA, waitResources);
+// HEADER-NEXT: tensix_sync();
+// HEADER: publishState(volatile uint32_t tt_l1_ptr *synchronizationState,
+// HEADER: storeStateWord(&synchronizationState[dm0StateWord], state);
+// HEADER: storeStateWord(&synchronizationState[unpackStateWord], state);
+// HEADER: storeStateWord(&synchronizationState[packStateWord], state);
 // HEADER: FORCE_INLINE void enter(volatile uint32_t tt_l1_ptr *synchronizationState)
 // HEADER: completeInterfaceWork();
+// HEADER: publishState(synchronizationState, entryComplete);
 // HEADER: while (!participantsHaveState(synchronizationState, entryComplete))
 // HEADER: FORCE_INLINE void exit(volatile uint32_t tt_l1_ptr *synchronizationState)
-// HEADER-NOT: storeStateWord(&synchronizationState[arrivalWord], 0);
-// HEADER: storeStateWord(&synchronizationState[arrivalWord], exitComplete);
+// HEADER: publishState(synchronizationState, exitComplete);
 // HEADER-NEXT: while (loadStateWord(&synchronizationState[releaseWord]) != exitComplete) {
 // HEADER-NEXT: }
 // HEADER-NEXT: #elif defined(TTL_DFB_RESET_DM1)
-// HEADER-NEXT: while (!participantsHaveState(synchronizationState, exitComplete))
+// HEADER: while (!participantsHaveState(synchronizationState, exitComplete))
 // HEADER: storeStateWord(&synchronizationState[releaseWord], exitComplete);
 // HEADER-NOT: participantsHaveState(synchronizationState, 0)
 // HEADER-NOT: storeStateWord(&synchronizationState[releaseWord], 0);
 // HEADER: FORCE_INLINE void applyMask(uint32_t activeMask, uint32_t firstDFBIndex)
 // HEADER: interface.fifo_rd_ptr = base;
 // HEADER: interface.fifo_wr_ptr = base;
+// HEADER: interface.fifo_wr_tile_ptr = 0;
 // HEADER: *get_cb_tiles_received_ptr(dfbIndex) = 0;
 // HEADER: *get_cb_tiles_acked_ptr(dfbIndex) = 0;
-// HEADER: interface.fifo_wr_tile_ptr = 0;
 // HEADER: FORCE_INLINE void complete_dfb_interface_work()
 // HEADER: dfb_reset_detail::completeInterfaceWork();
 // HEADER: FORCE_INLINE void reset_dfb_interfaces(uint32_t synchronizationAddress,
