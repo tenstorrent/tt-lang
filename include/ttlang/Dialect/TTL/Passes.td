@@ -1106,6 +1106,22 @@ def TTLVerifyDFBSPSC
   let dependentDialects = [];
 }
 
+def TTLRejectDFBNetworks
+    : Pass<"ttl-reject-dfb-networks", "::mlir::ModuleOp"> {
+  let summary = "Reject DFB networks, which nothing lowers yet";
+  let description = [{
+    Emits an error for each `ttl.dfb.network` in the module, naming the
+    network. Nothing lowers networks yet.
+
+    Network records declare DFB producers and consumers that no kernel op
+    shows, so passes that infer DFB endpoints from kernel ops would see an
+    incomplete program. This pass must therefore run before any pass that
+    reasons about DFB producers or consumers.
+  }];
+
+  let dependentDialects = [];
+}
+
 def TTLVerifyDFBLifecycle
     : Pass<"ttl-verify-dfb-lifecycle", "::mlir::ModuleOp"> {
   let summary = "Verify DFB acquire/release order and capacity per launch node";

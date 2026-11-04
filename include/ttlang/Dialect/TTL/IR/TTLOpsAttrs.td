@@ -557,4 +557,45 @@ def TTL_PipeNetRecordsAttr : TTL_Attr<"PipeNetRecords", "pipenet_records"> {
   let genVerifyDecl = 1;
 }
 
+def TTL_DFBNetworkForkStorageAttr
+    : TTL_Attr<"DFBNetworkForkStorage", "dfb_network_fork_storage"> {
+  let summary = "Payload storage of a DFB network fork";
+  let description = [{
+    Declares where a fork keeps the items it delivers to its outputs.
+    `replicated` gives each output stream its own payload storage and writes
+    every item once per output. `shared` keeps one payload ring that every
+    output reads; a slot is reused only after every output releases it.
+    `auto` lets the compiler choose shared storage when it is legal and
+    replicated storage otherwise.
+  }];
+  let parameters = (ins "DFBNetworkForkStorage":$value);
+  let assemblyFormat = "`<` $value `>`";
+}
+
+def TTL_DFBNetworkSplitPolicyAttr
+    : TTL_Attr<"DFBNetworkSplitPolicy", "dfb_network_split_policy"> {
+  let summary = "Item assignment policy of a DFB network split";
+  let description = [{
+    Declares which output receives each item of a split. Every item goes to
+    exactly one output. `round_robin` sends item i to output i mod N.
+    `contiguous` sends each output one consecutive run of items, in output
+    order.
+  }];
+  let parameters = (ins "DFBNetworkSplitPolicy":$value);
+  let assemblyFormat = "`<` $value `>`";
+}
+
+def TTL_DFBNetworkMergePolicyAttr
+    : TTL_Attr<"DFBNetworkMergePolicy", "dfb_network_merge_policy"> {
+  let summary = "Input read order of a DFB network merge";
+  let description = [{
+    Declares the order in which a merge's single reader takes items from its
+    inputs. `round_robin` visits the inputs in a fixed rotation and skips
+    exhausted inputs. `first_ready` takes an item from the first ready input
+    found by a rotating scan, so the order depends on timing.
+  }];
+  let parameters = (ins "DFBNetworkMergePolicy":$value);
+  let assemblyFormat = "`<` $value `>`";
+}
+
 #endif // TTLANG_DIALECT_TTL_IR_TTLOPSATTRS_TD

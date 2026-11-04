@@ -2805,6 +2805,174 @@ mlir::LogicalResult mlir::tt::ttl::TileStoreOp::verify() {
 }
 
 //===----------------------------------------------------------------------===//
+// DFB network ops
+//===----------------------------------------------------------------------===//
+
+void mlir::tt::ttl::DFBNetworkOp::build(OpBuilder &builder,
+                                        OperationState &state,
+                                        ::llvm::StringRef symName) {
+  state.addRegion()->emplaceBlock();
+  state.addAttribute(getSymNameAttrName(state.name),
+                     builder.getStringAttr(symName));
+}
+
+mlir::LogicalResult mlir::tt::ttl::DFBNetworkOp::verifyRegions() {
+  mlir::SymbolTable symbolTable(getOperation());
+  llvm::DenseMap<mlir::Attribute, mlir::Operation *> consumedBy;
+  llvm::DenseMap<int64_t, mlir::Operation *> producedBy;
+  // The handles each record writes: its output DFB ids, or a merge's symbol.
+  llvm::DenseMap<mlir::Operation *, llvm::SmallVector<Attribute, 4>>
+      producedHandles;
+
+  for (Operation &record : *getBody()) {
+    // The handles this record reads (DFB ids or merge symbols) and the DFBs it
+    // writes.
+    llvm::SmallVector<Attribute, 4> consumed;
+    llvm::ArrayRef<int64_t> produced;
+    if (auto fork = dyn_cast<DFBForkOp>(record)) {
+      consumed.push_back(fork.getSource());
+      produced = fork.getOutputs();
+    } else if (auto split = dyn_cast<DFBSplitOp>(record)) {
+      consumed.push_back(split.getSource());
+      produced = split.getOutputs();
+    } else if (auto merge = dyn_cast<DFBMergeOp>(record)) {
+      llvm::append_range(consumed, merge.getInputs());
+      producedHandles[&record].push_back(
+          FlatSymbolRefAttr::get(merge.getSymNameAttr()));
+    } else {
+      return record.emitOpError() << "is not a DFB network record";
+    }
+
+    for (Attribute handle : consumed) {
+      if (auto symbol = dyn_cast<FlatSymbolRefAttr>(handle)) {
+        Operation *target = symbolTable.lookup(symbol.getValue());
+        if (!target) {
+          return record.emitOpError()
+                 << "handle " << symbol
+                 << " does not name a record in this network";
+        }
+        if (!isa<DFBMergeOp>(target)) {
+          InFlightDiagnostic diag = record.emitOpError()
+                                    << "handle " << symbol
+                                    << " does not name a ttl.dfb.merge";
+          diag.attachNote(target->getLoc()) << symbol << " is defined here";
+          return diag;
+        }
+      }
+
+      auto [it, inserted] = consumedBy.try_emplace(handle, &record);
+      if (!inserted) {
+        InFlightDiagnostic diag = record.emitOpError()
+                                  << "handle " << handle
+                                  << " is already consumed";
+        diag.attachNote(it->second->getLoc()) << "first consumed here";
+        return diag;
+      }
+    }
+
+    for (int64_t output : produced) {
+      producedHandles[&record].push_back(
+          IntegerAttr::get(IndexType::get(getContext()), output));
+      auto [it, inserted] = producedBy.try_emplace(output, &record);
+      if (!inserted) {
+        InFlightDiagnostic diag = record.emitOpError()
+                                  << "output " << output
+                                  << " is already produced";
+        diag.attachNote(it->second->getLoc()) << "first produced here";
+        return diag;
+      }
+    }
+  }
+
+  // Each handle has at most one consumer, so following the consumers of a
+  // record's outputs visits everything downstream of it. Reaching a record
+  // that is still on the current path closes a cycle.
+  enum class VisitState { InProgress, Done };
+  llvm::DenseMap<Operation *, VisitState> visitState;
+  std::function<LogicalResult(Operation *)> visit =
+      [&](Operation *record) -> LogicalResult {
+    visitState[record] = VisitState::InProgress;
+    for (Attribute handle : producedHandles.lookup(record)) {
+      Operation *consumer = consumedBy.lookup(handle);
+      if (!consumer) {
+        continue;
+      }
+      auto it = visitState.find(consumer);
+      if (it == visitState.end()) {
+        if (failed(visit(consumer))) {
+          return failure();
+        }
+      } else if (it->second == VisitState::InProgress) {
+        return record->emitOpError() << "handle " << handle << " forms a cycle";
+      }
+    }
+    visitState[record] = VisitState::Done;
+    return success();
+  };
+  for (Operation &record : *getBody()) {
+    if (!visitState.contains(&record) && failed(visit(&record))) {
+      return failure();
+    }
+  }
+
+  return success();
+}
+
+// Verifies the source and outputs shared by fork and split records.
+static mlir::LogicalResult
+verifyDFBNetworkSourceAndOutputs(mlir::Operation *op, mlir::Attribute source,
+                                 llvm::ArrayRef<int64_t> outputs) {
+  if (outputs.empty()) {
+    return op->emitOpError() << "requires at least one output";
+  }
+
+  llvm::SmallDenseSet<int64_t> outputSet;
+  for (int64_t output : outputs) {
+    if (!outputSet.insert(output).second) {
+      return op->emitOpError() << "output " << output << " is duplicated";
+    }
+  }
+
+  if (auto sourceId = mlir::dyn_cast<mlir::IntegerAttr>(source)) {
+    int64_t dfbId = sourceId.getInt();
+    if (outputSet.contains(dfbId)) {
+      return op->emitOpError()
+             << "source DFB id " << dfbId << " is also an output";
+    }
+  }
+
+  return mlir::success();
+}
+
+mlir::LogicalResult mlir::tt::ttl::DFBForkOp::verify() {
+  return verifyDFBNetworkSourceAndOutputs(getOperation(), getSource(),
+                                          getOutputs());
+}
+
+mlir::LogicalResult mlir::tt::ttl::DFBSplitOp::verify() {
+  return verifyDFBNetworkSourceAndOutputs(getOperation(), getSource(),
+                                          getOutputs());
+}
+
+mlir::LogicalResult mlir::tt::ttl::DFBMergeOp::verify() {
+  ArrayAttr inputs = getInputs();
+  if (inputs.empty()) {
+    return emitOpError() << "requires at least one input";
+  }
+
+  // Attributes are uniqued, so one set catches repeated DFB ids and repeated
+  // merge symbols.
+  llvm::SmallDenseSet<Attribute> inputSet;
+  for (Attribute input : inputs) {
+    if (!inputSet.insert(input).second) {
+      return emitOpError() << "input " << input << " is duplicated";
+    }
+  }
+
+  return success();
+}
+
+//===----------------------------------------------------------------------===//
 // DFBInputOpInterface implementations
 //===----------------------------------------------------------------------===//
 

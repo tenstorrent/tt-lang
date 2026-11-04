@@ -725,6 +725,11 @@ Different producer or pop-owner kernels may reference the same DFB when their
 launch-node domains are disjoint. Every physical node still has one producer
 and one pop owner.
 
+[DFBNetworks.md](DFBNetworks.md) describes the `ttl.dfb.network` IR, which
+declares fork, split, and merge connections among DFBs on one node. Its
+verifier keeps each connection to one writer and one reader. No pass lowers a
+network yet; the pipeline rejects any module that contains one.
+
 ### Invalid and valid multiple-reader protocols
 
 The following program has two pop owners because leaving each `wait` context
