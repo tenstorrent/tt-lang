@@ -15,7 +15,7 @@ are implemented manually.
 
 import math as _math
 from itertools import product as _iter_product
-from typing import Callable, List, Optional, Set, Tuple
+from typing import Callable, List, Literal, Optional, Set, Tuple
 
 import torch
 
@@ -202,17 +202,19 @@ def exp(
     approx: bool = False,
     scale: Optional[float] = None,
     skip_clamp_check: bool = False,
-    iterations: int = 8,
+    iterations: Literal[8] = 8,
 ) -> Block:
     """Element-wise exponential (simulator reference).
 
-    Mirrors the ``ttl.exp`` DSL signature. ``scale`` is numerically meaningful
-    (computes ``exp(scale * x)``); the remaining flags (``approx``,
-    ``skip_clamp_check``, ``iterations``) only control the hardware SFPU
-    approximation and are accepted for API parity but do not change the exact
-    reference result.
+    Mirrors the ``ttl.math.exp`` DSL signature. ``scale`` is numerically
+    meaningful (computes ``exp(scale * x)``); ``approx`` and
+    ``skip_clamp_check`` control hardware SFPU behavior but do not change the
+    exact reference result. Only the full-tile iteration count of 8 is
+    supported.
     """
-    del approx, skip_clamp_check, iterations  # hardware-only knobs
+    if iterations != 8:
+        raise ValueError(f"ttl.math.exp iterations must be 8, got {iterations}")
+    del approx, skip_clamp_check  # hardware-only knobs
 
     def _op(t: torch.Tensor) -> torch.Tensor:
         if scale is not None:
