@@ -13,10 +13,9 @@
 //      Scans each tile_regs_acquire -> tile_regs_release region to determine
 //      the compute category (FPU binary vs SFPU/copy/bcast) and derives
 //      input/output CBs from compute and pack ops.
-//   2. Per-op inits: emitted in linear block order whenever the op type
-//      changes (unary SFPU, binary SFPU, minmax, FPU binary). The init
-//      key is (init op TypeID, operand values). An init is inserted only
-//      when the key changes. Tracking resets at sync boundaries.
+//   2. Per-op inits: emitted in execution order whenever the op type changes
+//      (unary SFPU, binary SFPU, minmax, FPU binary). The init key is (init op
+//      TypeID, operand values). Tracking resets at sync and region boundaries.
 //
 // TODO(#329): Emit init_short variants for cheaper re-inits on type switches.
 //
@@ -561,6 +560,74 @@ struct TTKernelInsertInitsPass
       ttk::ReduceUninitOp::create(builder, loc);
     };
 
+    auto processComputeOp = [&](Operation *computeOp, Operation *insertBefore,
+                                std::optional<InitKey> &prevKey,
+                                ttk::ReduceTileOp &prevReduce) {
+      auto mapIt = computeToInit.find(computeOp->getName().getTypeID());
+      assert(mapIt != computeToInit.end() && "expected TTKernel compute op");
+      InitKey key = computeInitKey(computeOp);
+      if (!prevKey || *prevKey != key) {
+        if (prevKey &&
+            prevKey->typeId == mlir::TypeID::get<ttk::ReduceTileOp>() &&
+            key.typeId != mlir::TypeID::get<ttk::ReduceTileOp>()) {
+          OpBuilder builder(insertBefore);
+          emitReduceUninit(builder, insertBefore->getLoc(), prevReduce);
+        }
+        OpBuilder builder(insertBefore);
+        mapIt->second.createInit(builder, computeOp->getLoc(), computeOp);
+      }
+      prevKey = key;
+      prevReduce = dyn_cast<ttk::ReduceTileOp>(computeOp);
+      computeOp->setAttr(kInitInserted, UnitAttr::get(computeOp->getContext()));
+    };
+
+    std::function<void(Block &)> processNestedBlock;
+    processNestedBlock = [&](Block &block) {
+      std::optional<InitKey> prevKey;
+      ttk::ReduceTileOp prevReduce;
+      for (Operation &op : llvm::make_early_inc_range(block)) {
+        if (isSyncBoundary(&op)) {
+          if (prevReduce) {
+            OpBuilder builder(&op);
+            emitReduceUninit(builder, op.getLoc(), prevReduce);
+          }
+          prevKey = std::nullopt;
+          prevReduce = nullptr;
+          continue;
+        }
+
+        if (computeToInit.contains(op.getName().getTypeID())) {
+          processComputeOp(&op, &op, prevKey, prevReduce);
+          continue;
+        }
+
+        if (op.getNumRegions() == 0) {
+          continue;
+        }
+
+        // A nested region can execute zero or multiple times. Initialize its
+        // blocks independently, then conservatively forget the hardware mode.
+        if (prevReduce) {
+          OpBuilder builder(&op);
+          emitReduceUninit(builder, op.getLoc(), prevReduce);
+        }
+        prevKey = std::nullopt;
+        prevReduce = nullptr;
+        for (Region &region : op.getRegions()) {
+          for (Block &nestedBlock : region) {
+            processNestedBlock(nestedBlock);
+          }
+        }
+      }
+
+      if (prevReduce) {
+        Operation *terminator = block.getTerminator();
+        assert(terminator && "expected terminated nested block");
+        OpBuilder builder(terminator);
+        emitReduceUninit(builder, terminator->getLoc(), prevReduce);
+      }
+    };
+
     auto processOp = [&](Operation &topOp, std::optional<InitKey> &prevKey,
                          ttk::ReduceTileOp &prevReduce) {
       if (isSyncBoundary(&topOp)) {
@@ -574,27 +641,32 @@ struct TTKernelInsertInitsPass
         return;
       }
 
+      SmallVector<Operation *> computeOps;
       topOp.walk([&](Operation *inner) {
-        auto mapIt = computeToInit.find(inner->getName().getTypeID());
-        if (mapIt == computeToInit.end()) {
-          return WalkResult::advance();
+        if (computeToInit.contains(inner->getName().getTypeID())) {
+          computeOps.push_back(inner);
         }
-        InitKey key = computeInitKey(inner);
-        if (!prevKey || *prevKey != key) {
-          if (prevKey &&
-              prevKey->typeId == mlir::TypeID::get<ttk::ReduceTileOp>() &&
-              key.typeId != mlir::TypeID::get<ttk::ReduceTileOp>()) {
-            OpBuilder builder(&topOp);
-            emitReduceUninit(builder, topOp.getLoc(), prevReduce);
-          }
-          OpBuilder builder(&topOp);
-          mapIt->second.createInit(builder, inner->getLoc(), inner);
-        }
-        prevKey = key;
-        prevReduce = dyn_cast<ttk::ReduceTileOp>(inner);
-        inner->setAttr(kInitInserted, UnitAttr::get(inner->getContext()));
-        return WalkResult::interrupt();
       });
+
+      if (computeOps.empty()) {
+        return;
+      }
+      if (computeOps.size() == 1) {
+        processComputeOp(computeOps.front(), &topOp, prevKey, prevReduce);
+        return;
+      }
+
+      if (prevReduce) {
+        OpBuilder builder(&topOp);
+        emitReduceUninit(builder, topOp.getLoc(), prevReduce);
+      }
+      prevKey = std::nullopt;
+      prevReduce = nullptr;
+      for (Region &region : topOp.getRegions()) {
+        for (Block &block : region) {
+          processNestedBlock(block);
+        }
+      }
     };
 
     moduleOp->walk([&](ttk::TileRegsAcquireOp acquireOp) {
