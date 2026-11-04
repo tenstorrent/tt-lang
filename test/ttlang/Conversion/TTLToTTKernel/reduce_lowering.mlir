@@ -21,10 +21,11 @@
 // CHECK-LABEL: func.func @reduce_sum_dim0_1x1
 // CHECK-DAG: %[[C1I:.*]] = arith.constant 1 : i32
 // CHECK-DAG: %[[C0:.*]] = arith.constant 0 : index
-// CHECK: %[[CB0:.*]] = ttkernel.get_compile_time_arg_val(0)
-// CHECK: %[[CB1:.*]] = ttkernel.get_compile_time_arg_val(1)
-// CHECK: %[[CB2:.*]] = ttkernel.get_compile_time_arg_val(2)
-// CHECK: ttkernel.init_sfpu(%[[CB0]], %[[CB2]])
+// CHECK-DAG: %[[CB0:.*]] = ttkernel.get_compile_time_arg_val(0)
+// CHECK-DAG: %[[CB1:.*]] = ttkernel.get_compile_time_arg_val(1)
+// CHECK-DAG: %[[CB2:.*]] = ttkernel.get_compile_time_arg_val(2)
+// CHECK: ttkernel.reconfig_data_format(%[[CB0]], %[[CB0]])
+// CHECK: ttkernel.pack_reconfig_data_format(%[[CB2]])
 // CHECK: ttkernel.tile_regs_acquire
 // CHECK: ttkernel.reduce_init(%[[CB0]], %[[CB1]], %[[CB2]], <reduce_sum>, <reduce_dim_col>)
 // CHECK-NEXT: ttkernel.reduce_tile(%[[CB0]], %[[CB1]], %[[C0]], %[[C0]], %[[C0]], <reduce_sum>, <reduce_dim_col>)
@@ -111,9 +112,9 @@ func.func @reduce_sum_dim1_1x1() attributes {ttl.base_cta_index = 3 : i32, ttl.c
 // CHECK-DAG: %[[C2:.*]] = arith.constant 2 : index
 // CHECK-DAG: %[[C0I:.*]] = arith.constant 0 : i32
 // CHECK-DAG: %[[C1I:.*]] = arith.constant 1 : i32
-// CHECK: %[[CB0:.*]] = ttkernel.get_compile_time_arg_val(0)
-// CHECK: %[[CB1:.*]] = ttkernel.get_compile_time_arg_val(1)
-// CHECK: %[[CB2:.*]] = ttkernel.get_compile_time_arg_val(2)
+// CHECK-DAG: %[[CB0:.*]] = ttkernel.get_compile_time_arg_val(0)
+// CHECK-DAG: %[[CB1:.*]] = ttkernel.get_compile_time_arg_val(1)
+// CHECK-DAG: %[[CB2:.*]] = ttkernel.get_compile_time_arg_val(2)
 // Disable L1 accumulation before the reduction loop.
 // CHECK: ttkernel.pack_reconfig_l1_acc(%[[C0I]])
 // CHECK: scf.for %[[IV:.*]] = %[[C0]] to %[[C2]] step %[[C1]]

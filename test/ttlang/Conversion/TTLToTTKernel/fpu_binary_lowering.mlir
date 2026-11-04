@@ -3,10 +3,10 @@
 // both operands from CBs lower to FPU ops (ttkernel.add_tiles) instead of
 // SFPU ops (ttkernel.add_binary_tile). FPU ops read from CBs, not DST.
 
-// FPU path (default): add_tiles reads from CB, binary_op_init_common init.
+// FPU path (default): add_tiles reads from CB, binary region reconfiguration init.
 // RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttl-set-compute-kernel-config,func.func(ttl-assign-dst,ttl-subblock-compute-for-dst{subblock-sync=true},ttl-lower-to-loops,ttl-schedule-operations,ttl-annotate-cb-associations), convert-ttl-to-ttkernel, ttkernel-insert-inits, canonicalize, cse)' --split-input-file | FileCheck %s --check-prefix=FPU
 
-// SFPU path: add_binary_tile reads from DST, init_sfpu init.
+// SFPU path: add_binary_tile reads from DST, unary region reconfiguration init.
 // RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttl-set-compute-kernel-config{enable-fpu-binary-ops=0 matmul-full-fp32=0 reduce-full-fp32=0},func.func(ttl-assign-dst,ttl-subblock-compute-for-dst{subblock-sync=true},ttl-lower-to-loops,ttl-schedule-operations,ttl-annotate-cb-associations), convert-ttl-to-ttkernel, ttkernel-insert-inits, canonicalize, cse)' --split-input-file | FileCheck %s --check-prefix=SFPU
 
 // =============================================================================
@@ -14,11 +14,11 @@
 // =============================================================================
 // FPU path: dstPerIteration=1 (no copy_tile), unroll_factor=min(8,4)=4.
 // All 4 tiles fit in one subblock, no outer loop.
-// Expect: binary_op_init_common + 4x add_tiles + 4x pack_tile.
+// Expect: binary region reconfiguration + 4x add_tiles + 4x pack_tile.
 //
 // SFPU path: dstPerIteration=2 (copy lhs + copy rhs), unroll_factor=min(4,4)=4.
 // All 4 tiles fit, but each needs 2 copy_tiles.
-// Expect: init_sfpu + 4x copy_tile(lhs) + 4x copy_tile(rhs) +
+// Expect: unary region reconfiguration + 4x copy_tile(lhs) + 4x copy_tile(rhs) +
 //         4x add_binary_tile + 4x pack_tile.
 
 // FPU-LABEL: func.func @fpu_add_2x2
@@ -27,13 +27,14 @@
 // FPU-DAG: %[[C2:.*]] = arith.constant 2 : index
 // FPU-DAG: %[[C1:.*]] = arith.constant 1 : index
 // FPU-DAG: %[[C0:.*]] = arith.constant 0 : index
-// FPU:     %[[CB0:.*]] = ttkernel.get_compile_time_arg_val(0)
-// FPU:     %[[CB1:.*]] = ttkernel.get_compile_time_arg_val(1)
-// FPU:     %[[CB2:.*]] = ttkernel.get_compile_time_arg_val(2)
+// FPU-DAG:     %[[CB0:.*]] = ttkernel.get_compile_time_arg_val(0)
+// FPU-DAG:     %[[CB1:.*]] = ttkernel.get_compile_time_arg_val(1)
+// FPU-DAG:     %[[CB2:.*]] = ttkernel.get_compile_time_arg_val(2)
 // FPU:     ttkernel.cb_wait_front(%[[CB0]], %[[C4I]])
 // FPU:     ttkernel.cb_wait_front(%[[CB2]], %[[C4I]])
 // FPU:     ttkernel.cb_reserve_back(%[[CB1]], %[[C4I]])
-// FPU:     ttkernel.binary_op_init_common(%[[CB0]], %[[CB2]], %[[CB1]])
+// FPU:     ttkernel.reconfig_data_format(%[[CB0]], %[[CB2]])
+// FPU:     ttkernel.pack_reconfig_data_format(%[[CB1]])
 // FPU:     ttkernel.tile_regs_acquire
 // No copy_tile ops for FPU binary (operands read from CB)
 // FPU-NOT: ttkernel.copy_tile
@@ -62,13 +63,14 @@
 // SFPU-DAG: %[[C2:.*]] = arith.constant 2 : index
 // SFPU-DAG: %[[C1:.*]] = arith.constant 1 : index
 // SFPU-DAG: %[[C0:.*]] = arith.constant 0 : index
-// SFPU:     %[[CB0:.*]] = ttkernel.get_compile_time_arg_val(0)
-// SFPU:     %[[CB1:.*]] = ttkernel.get_compile_time_arg_val(1)
-// SFPU:     %[[CB2:.*]] = ttkernel.get_compile_time_arg_val(2)
+// SFPU-DAG:     %[[CB0:.*]] = ttkernel.get_compile_time_arg_val(0)
+// SFPU-DAG:     %[[CB1:.*]] = ttkernel.get_compile_time_arg_val(1)
+// SFPU-DAG:     %[[CB2:.*]] = ttkernel.get_compile_time_arg_val(2)
 // SFPU:     ttkernel.cb_wait_front(%[[CB0]], %[[C4I]])
 // SFPU:     ttkernel.cb_wait_front(%[[CB2]], %[[C4I]])
 // SFPU:     ttkernel.cb_reserve_back(%[[CB1]], %[[C4I]])
-// SFPU:     ttkernel.init_sfpu(%[[CB0]], %[[CB1]])
+// SFPU:     ttkernel.reconfig_data_format(%[[CB0]], %[[CB0]])
+// SFPU:     ttkernel.pack_reconfig_data_format(%[[CB1]])
 // SFPU:     ttkernel.tile_regs_acquire
 // Grouped: all copies from CB0, all copies from CB2, then all adds
 // SFPU:     ttkernel.copy_tile_init(%[[CB0]])
@@ -134,13 +136,14 @@ func.func @fpu_add_2x2()
 // FPU-LABEL: func.func @fpu_sub_1x1
 // FPU-DAG: %[[C1I:.*]] = arith.constant 1 : i32
 // FPU-DAG: %[[C0:.*]] = arith.constant 0 : index
-// FPU:     %[[CB0:.*]] = ttkernel.get_compile_time_arg_val(0)
-// FPU:     %[[CB1:.*]] = ttkernel.get_compile_time_arg_val(1)
-// FPU:     %[[CB2:.*]] = ttkernel.get_compile_time_arg_val(2)
+// FPU-DAG:     %[[CB0:.*]] = ttkernel.get_compile_time_arg_val(0)
+// FPU-DAG:     %[[CB1:.*]] = ttkernel.get_compile_time_arg_val(1)
+// FPU-DAG:     %[[CB2:.*]] = ttkernel.get_compile_time_arg_val(2)
 // FPU:     ttkernel.cb_wait_front(%[[CB0]], %[[C1I]])
 // FPU:     ttkernel.cb_wait_front(%[[CB2]], %[[C1I]])
 // FPU:     ttkernel.cb_reserve_back(%[[CB1]], %[[C1I]])
-// FPU:     ttkernel.binary_op_init_common(%[[CB0]], %[[CB2]], %[[CB1]])
+// FPU:     ttkernel.reconfig_data_format(%[[CB0]], %[[CB2]])
+// FPU:     ttkernel.pack_reconfig_data_format(%[[CB1]])
 // FPU:     ttkernel.tile_regs_acquire
 // FPU-NOT: ttkernel.copy_tile
 // FPU:     ttkernel.sub_tiles_init(%[[CB0]], %[[CB2]])
@@ -155,10 +158,11 @@ func.func @fpu_add_2x2()
 // SFPU-DAG: %[[C1I:.*]] = arith.constant 1 : i32
 // SFPU-DAG: %[[C1:.*]] = arith.constant 1 : index
 // SFPU-DAG: %[[C0:.*]] = arith.constant 0 : index
-// SFPU:     %[[CB0:.*]] = ttkernel.get_compile_time_arg_val(0)
-// SFPU:     %[[CB1:.*]] = ttkernel.get_compile_time_arg_val(1)
-// SFPU:     %[[CB2:.*]] = ttkernel.get_compile_time_arg_val(2)
-// SFPU:     ttkernel.init_sfpu(%[[CB0]], %[[CB1]])
+// SFPU-DAG:     %[[CB0:.*]] = ttkernel.get_compile_time_arg_val(0)
+// SFPU-DAG:     %[[CB1:.*]] = ttkernel.get_compile_time_arg_val(1)
+// SFPU-DAG:     %[[CB2:.*]] = ttkernel.get_compile_time_arg_val(2)
+// SFPU:     ttkernel.reconfig_data_format(%[[CB0]], %[[CB0]])
+// SFPU:     ttkernel.pack_reconfig_data_format(%[[CB1]])
 // SFPU:     ttkernel.tile_regs_acquire
 // SFPU:     ttkernel.copy_tile_init(%[[CB0]])
 // SFPU:     ttkernel.copy_tile(%[[CB0]], %[[C0]], %[[C0]])
@@ -218,13 +222,14 @@ func.func @fpu_sub_1x1()
 // FPU-LABEL: func.func @fpu_mul_1x1
 // FPU-DAG: %[[C1I:.*]] = arith.constant 1 : i32
 // FPU-DAG: %[[C0:.*]] = arith.constant 0 : index
-// FPU:     %[[CB0:.*]] = ttkernel.get_compile_time_arg_val(0)
-// FPU:     %[[CB1:.*]] = ttkernel.get_compile_time_arg_val(1)
-// FPU:     %[[CB2:.*]] = ttkernel.get_compile_time_arg_val(2)
+// FPU-DAG:     %[[CB0:.*]] = ttkernel.get_compile_time_arg_val(0)
+// FPU-DAG:     %[[CB1:.*]] = ttkernel.get_compile_time_arg_val(1)
+// FPU-DAG:     %[[CB2:.*]] = ttkernel.get_compile_time_arg_val(2)
 // FPU:     ttkernel.cb_wait_front(%[[CB0]], %[[C1I]])
 // FPU:     ttkernel.cb_wait_front(%[[CB2]], %[[C1I]])
 // FPU:     ttkernel.cb_reserve_back(%[[CB1]], %[[C1I]])
-// FPU:     ttkernel.binary_op_init_common(%[[CB0]], %[[CB2]], %[[CB1]])
+// FPU:     ttkernel.reconfig_data_format(%[[CB0]], %[[CB2]])
+// FPU:     ttkernel.pack_reconfig_data_format(%[[CB1]])
 // FPU:     ttkernel.tile_regs_acquire
 // FPU-NOT: ttkernel.copy_tile
 // FPU:     ttkernel.mul_tiles_init(%[[CB0]], %[[CB2]])
@@ -239,10 +244,11 @@ func.func @fpu_sub_1x1()
 // SFPU-DAG: %[[C1I:.*]] = arith.constant 1 : i32
 // SFPU-DAG: %[[C1:.*]] = arith.constant 1 : index
 // SFPU-DAG: %[[C0:.*]] = arith.constant 0 : index
-// SFPU:     %[[CB0:.*]] = ttkernel.get_compile_time_arg_val(0)
-// SFPU:     %[[CB1:.*]] = ttkernel.get_compile_time_arg_val(1)
-// SFPU:     %[[CB2:.*]] = ttkernel.get_compile_time_arg_val(2)
-// SFPU:     ttkernel.init_sfpu(%[[CB0]], %[[CB1]])
+// SFPU-DAG:     %[[CB0:.*]] = ttkernel.get_compile_time_arg_val(0)
+// SFPU-DAG:     %[[CB1:.*]] = ttkernel.get_compile_time_arg_val(1)
+// SFPU-DAG:     %[[CB2:.*]] = ttkernel.get_compile_time_arg_val(2)
+// SFPU:     ttkernel.reconfig_data_format(%[[CB0]], %[[CB0]])
+// SFPU:     ttkernel.pack_reconfig_data_format(%[[CB1]])
 // SFPU:     ttkernel.tile_regs_acquire
 // SFPU:     ttkernel.copy_tile_init(%[[CB0]])
 // SFPU:     ttkernel.copy_tile(%[[CB0]], %[[C0]], %[[C0]])
@@ -310,13 +316,14 @@ func.func @fpu_mul_1x1()
 // FPU-DAG: %[[C0:.*]] = arith.constant 0 : index
 // FPU-DAG: %[[C1:.*]] = arith.constant 1 : index
 // FPU-DAG: %[[C2:.*]] = arith.constant 2 : index
-// FPU:     %[[CB0:.*]] = ttkernel.get_compile_time_arg_val(0)
-// FPU:     %[[CB1:.*]] = ttkernel.get_compile_time_arg_val(1)
-// FPU:     %[[CB2:.*]] = ttkernel.get_compile_time_arg_val(2)
+// FPU-DAG:     %[[CB0:.*]] = ttkernel.get_compile_time_arg_val(0)
+// FPU-DAG:     %[[CB1:.*]] = ttkernel.get_compile_time_arg_val(1)
+// FPU-DAG:     %[[CB2:.*]] = ttkernel.get_compile_time_arg_val(2)
 // FPU:     ttkernel.cb_wait_front(%[[CB0]], %[[C6I]])
 // FPU:     ttkernel.cb_wait_front(%[[CB2]], %[[C6I]])
 // FPU:     ttkernel.cb_reserve_back(%[[CB1]], %[[C6I]])
-// FPU:     ttkernel.binary_op_init_common(%[[CB0]], %[[CB2]], %[[CB1]])
+// FPU:     ttkernel.reconfig_data_format(%[[CB0]], %[[CB2]])
+// FPU:     ttkernel.pack_reconfig_data_format(%[[CB1]])
 // Outer loop: 2 iterations (one per row of the 2x3 grid).
 // Per-subblock cb_reserve inside loop (outermost dim subblocked).
 // FPU:     scf.for %[[IV:.*]] = %[[C0]] to %[[C2]] step %[[C1]]
@@ -353,13 +360,14 @@ func.func @fpu_mul_1x1()
 // SFPU-DAG: %[[C1:.*]] = arith.constant 1 : index
 // SFPU-DAG: %[[C2:.*]] = arith.constant 2 : index
 // SFPU-DAG: %[[C3:.*]] = arith.constant 3 : index
-// SFPU:     %[[CB0:.*]] = ttkernel.get_compile_time_arg_val(0)
-// SFPU:     %[[CB1:.*]] = ttkernel.get_compile_time_arg_val(1)
-// SFPU:     %[[CB2:.*]] = ttkernel.get_compile_time_arg_val(2)
+// SFPU-DAG:     %[[CB0:.*]] = ttkernel.get_compile_time_arg_val(0)
+// SFPU-DAG:     %[[CB1:.*]] = ttkernel.get_compile_time_arg_val(1)
+// SFPU-DAG:     %[[CB2:.*]] = ttkernel.get_compile_time_arg_val(2)
 // SFPU:     ttkernel.cb_wait_front(%[[CB0]], %[[C6I]])
 // SFPU:     ttkernel.cb_wait_front(%[[CB2]], %[[C6I]])
 // SFPU:     ttkernel.cb_reserve_back(%[[CB1]], %[[C6I]])
-// SFPU:     ttkernel.init_sfpu(%[[CB0]], %[[CB1]])
+// SFPU:     ttkernel.reconfig_data_format(%[[CB0]], %[[CB0]])
+// SFPU:     ttkernel.pack_reconfig_data_format(%[[CB1]])
 // SFPU:     scf.for %[[IV:.*]] = %[[C0]] to %[[C3]] step %[[C1]]
 // SFPU:       ttkernel.tile_regs_acquire
 // Grouped within subblock: copies from CB0 for both tiles, copies from CB2,
@@ -436,10 +444,11 @@ func.func @fpu_add_tanh_f32()
 // FPU-LABEL: func.func @fpu_mul_mismatched_block_count
 // FPU-DAG: %[[C1I:.*]] = arith.constant 1 : i32
 // FPU-DAG: %[[C0:.*]] = arith.constant 0 : index
-// FPU:     %[[CB0:.*]] = ttkernel.get_compile_time_arg_val(0)
-// FPU:     %[[CB1:.*]] = ttkernel.get_compile_time_arg_val(1)
-// FPU:     %[[CB2:.*]] = ttkernel.get_compile_time_arg_val(2)
-// FPU:     ttkernel.binary_op_init_common(%[[CB0]], %[[CB2]], %[[CB1]])
+// FPU-DAG:     %[[CB0:.*]] = ttkernel.get_compile_time_arg_val(0)
+// FPU-DAG:     %[[CB1:.*]] = ttkernel.get_compile_time_arg_val(1)
+// FPU-DAG:     %[[CB2:.*]] = ttkernel.get_compile_time_arg_val(2)
+// FPU:     ttkernel.reconfig_data_format(%[[CB0]], %[[CB2]])
+// FPU:     ttkernel.pack_reconfig_data_format(%[[CB1]])
 // FPU:     ttkernel.tile_regs_acquire
 // FPU-NOT: ttkernel.copy_tile
 // FPU:     ttkernel.mul_tiles_init(%[[CB0]], %[[CB2]])

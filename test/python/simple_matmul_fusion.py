@@ -92,8 +92,13 @@ def matmul_fusion_kernel(a, b, c, out):
 
 # CHECK-CPP:       matmul_block_init(
 # CHECK-CPP:       tile_regs_acquire
+# CHECK-CPP-NEXT:  reconfig_data_format<SrcOrder::Regular, true>(
 # CHECK-CPP-NEXT:  copy_tile_init(
+# CHECK-CPP-NEXT:  #ifndef ARCH_QUASAR
+# CHECK-CPP-NEXT:  MATH((ckernel::math::_configure_unary_preserve_zero_flag_state_()));
+# CHECK-CPP-NEXT:  #endif
 # CHECK-CPP-NEXT:  copy_tile(
+# CHECK-CPP-NEXT:  reconfig_data_format<SrcOrder::Regular, true>(
 # CHECK-CPP-NEXT:  matmul_block_init(
 # CHECK-CPP-NEXT:  matmul_block(
 # CHECK-CPP-NEXT:  tile_regs_commit
