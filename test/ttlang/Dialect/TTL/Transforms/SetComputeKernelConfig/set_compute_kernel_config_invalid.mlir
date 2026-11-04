@@ -254,3 +254,68 @@ module attributes {
     return
   }
 }
+
+// -----
+
+// TopK fused mode requires 32-bit destination accumulation.
+func.func @topk_fused_requires_fp32() attributes {fp32_dest_acc_en = false} {
+  %dst = arith.constant 0 : index
+  %direction = arith.constant 0 : i32
+  %end_phase = arith.constant 4 : i32
+  %start_phase = arith.constant 0 : i32
+  // expected-error @below {{'ttl.tile_topk_local_sort' op requires 32-bit destination elements, but fp32 destination accumulation is explicitly disabled}}
+  ttl.tile_topk_local_sort dst[%dst] direction = %direction
+      end_phase = %end_phase start_phase = %start_phase
+      {order = #ttl.topk_order<descending>, fused = true}
+      : (index, i32, i32, i32) -> ()
+  return
+}
+
+// -----
+
+// TopK rank-stamped mode requires 32-bit destination accumulation.
+func.func @topk_rank_stamped_requires_fp32()
+    attributes {fp32_dest_acc_en = false} {
+  %dst = arith.constant 0 : index
+  %direction = arith.constant 0 : i32
+  %end_phase = arith.constant 4 : i32
+  %start_phase = arith.constant 0 : i32
+  // expected-error @below {{'ttl.tile_topk_local_sort' op requires 32-bit destination elements, but fp32 destination accumulation is explicitly disabled}}
+  ttl.tile_topk_local_sort dst[%dst] direction = %direction
+      end_phase = %end_phase start_phase = %start_phase
+      {order = #ttl.topk_order<descending>,
+       rank_stamped = true, tag_bits = 8 : i32}
+      : (index, i32, i32, i32) -> ()
+  return
+}
+
+// -----
+
+// An explicit TopK fp32 destination setting requires 32-bit destination
+// accumulation even when the operation has no fused or rank-stamped mode.
+func.func @topk_explicit_fp32_requires_fp32()
+    attributes {fp32_dest_acc_en = false} {
+  %dst = arith.constant 0 : index
+  %direction = arith.constant 0 : i32
+  %end_phase = arith.constant 4 : i32
+  %start_phase = arith.constant 0 : i32
+  // expected-error @below {{'ttl.tile_topk_local_sort' op requires 32-bit destination elements, but fp32 destination accumulation is explicitly disabled}}
+  ttl.tile_topk_local_sort dst[%dst] direction = %direction
+      end_phase = %end_phase start_phase = %start_phase
+      {order = #ttl.topk_order<descending>, fp32_dest_acc_en = true}
+      : (index, i32, i32, i32) -> ()
+  return
+}
+
+// -----
+
+// A TopK helper without a stage op in its section still requires 32-bit
+// destination accumulation.
+func.func @topk_helper_requires_fp32() attributes {fp32_dest_acc_en = false} {
+  %dst = arith.constant 0 : index
+  %one = arith.constant 1 : i32
+  // expected-error @below {{'ttl.tile_topk_defuse' op requires 32-bit destination elements, but fp32 destination accumulation is explicitly disabled}}
+  ttl.tile_topk_defuse dst[%dst] num_tiles = %one
+      {order = #ttl.topk_order<descending>} : (index, i32) -> ()
+  return
+}

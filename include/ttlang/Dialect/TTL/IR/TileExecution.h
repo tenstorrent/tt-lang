@@ -61,6 +61,10 @@ struct TileExecutionInfo {
   bool accumulatesIntoDst = false;
   /// Maximum simultaneous destination residency required by this operation.
   std::uint64_t requiredDstSlots = 1;
+  /// This operation requires physical fp32 destination accumulation
+  /// independent of any tile operand's element type, e.g. TopK `fused`,
+  /// `rank_stamped`, or an explicit `fp32_dest_acc_en = true`.
+  bool requiresFp32DestinationAccumulation = false;
 };
 
 /// Return strategies structurally permitted by the operation's SSA operands.

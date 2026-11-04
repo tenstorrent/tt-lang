@@ -151,7 +151,12 @@ public:
                                primitive == ComputePrimitive::Subtract ||
                                primitive == ComputePrimitive::Multiply;
     bool isIntegerBroadcast = primitive == ComputePrimitive::Broadcast;
-    if ((isIntegerArithmetic || isIntegerBroadcast) &&
+    // TopK transposes u16 index tiles and packs fused keys into a u32 buffer
+    // named by the transpose output operand.
+    bool isIntegerTranspose = primitive == ComputePrimitive::Transpose &&
+                              tileType.getHeight() == 32 &&
+                              tileType.getWidth() == 32;
+    if ((isIntegerArithmetic || isIntegerBroadcast || isIntegerTranspose) &&
         isSupportedIntegerDataType(dataType)) {
       return success();
     }

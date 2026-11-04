@@ -126,6 +126,7 @@ struct TileExecutionOption {
   TileExecutionStrategy strategy;
   llvm::SmallVector<DFBInputUse> dfbInputUses;
   llvm::SmallVector<DestinationUse> destinationUses;
+  llvm::SmallVector<Operation *> fp32DestinationAccumulationUses;
 };
 
 /// Legal strategy alternatives retained for kernel-wide resolution.
@@ -145,6 +146,7 @@ struct FullFp32AccumulationUse {
 struct KernelRequirements {
   llvm::SmallVector<DFBInputUse> dfbInputUses;
   llvm::SmallVector<DestinationUse> destinationUses;
+  llvm::SmallVector<Operation *> fp32DestinationAccumulationUses;
   llvm::SmallVector<FullFp32AccumulationUse> fullFp32AccumulationUses;
   llvm::SmallVector<TileExecutionChoice, 0> tileStrategyChoices;
 };

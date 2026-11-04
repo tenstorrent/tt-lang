@@ -25,6 +25,8 @@ def test_ttl_passes_registered():
         "convert-ttl-to-compute",
         "ttl-assign-dst",
         "ttl-lower-to-loops",
+        "ttl-lower-topk",
+        "ttl-verify-topk-epoch",
         "ttl-annotate-cb-associations",
         "ttkernel-unroll-static-pipenet-record-loops",
     ]
@@ -39,6 +41,8 @@ def test_ttl_passes_registered():
         # CHECK: convert-ttl-to-compute pass registered
         # CHECK: ttl-assign-dst pass registered
         # CHECK: ttl-lower-to-loops pass registered
+        # CHECK: ttl-lower-topk pass registered
+        # CHECK: ttl-verify-topk-epoch pass registered
         # CHECK: ttl-annotate-cb-associations pass registered
         # CHECK: ttkernel-unroll-static-pipenet-record-loops pass registered
 

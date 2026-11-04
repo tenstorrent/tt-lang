@@ -714,6 +714,9 @@ def test_operation_cache_compilation_is_single_flight(monkeypatch):
 
 
 def test_operation_cache_synchronizes_before_owner_destruction(monkeypatch):
+    # Owners left by earlier tests must finalize against the real ttnn, not
+    # the recording fake installed below.
+    gc.collect()
     events = []
 
     class LifetimeOwner:
@@ -796,6 +799,7 @@ def test_operation_cache_synchronizes_before_owner_destruction(monkeypatch):
 
 
 def test_private_compiled_kernel_synchronizes_before_owner_destruction(monkeypatch):
+    gc.collect()
     events = []
 
     class LifetimeOwner:
