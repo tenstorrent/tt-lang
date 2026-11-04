@@ -47,6 +47,7 @@
 #include "ttlang/Dialect/TTL/Transforms/PipeTransferAnalysis.h"
 #include "ttlang/Dialect/TTL/Transforms/TransferProvenance.h"
 #include "ttlang/Dialect/Utils/ConversionUtils.h"
+#include "ttlang/Target/TargetInfo.h"
 #include "llvm/ADT/BitVector.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/STLExtras.h"
@@ -976,6 +977,120 @@ static void emitTileLoop(
 /// Direction of a tensor<->CB tile copy for NOC operations.
 enum class NocCopyDirection { Read, Write };
 
+/// Return whether adjacent tile IDs in an innermost tensor row are guaranteed
+/// to address adjacent TensorAccessor pages in one L1 bank. Height sharding
+/// preserves the full row width, while single-bank placement has no bank
+/// interleaving.
+static bool hasContiguousTensorRows(Value tensor) {
+  auto tensorType = mlir::cast<RankedTensorType>(tensor.getType());
+  auto layout = mlir::cast<LayoutAttr>(tensorType.getEncoding());
+  if (layout.getBufferType() != BufferType::L1 &&
+      layout.getBufferType() != BufferType::L1Small) {
+    return false;
+  }
+  return layout.getMemoryLayout() == TensorMemoryLayout::SingleBank ||
+         layout.getMemoryLayout() == TensorMemoryLayout::HeightSharded;
+}
+
+static void emitTensorCBTransfer(OpBuilder &builder, Location loc,
+                                 NocCopyDirection direction,
+                                 Value tensorTileIndex, Value accessor,
+                                 Value cbAddress, int64_t tileCount,
+                                 Value noc) {
+  IntegerAttr numTiles = builder.getI32IntegerAttr(tileCount);
+  if (direction == NocCopyDirection::Read) {
+    ttk::NocAsyncReadTileOp::create(builder, loc, tensorTileIndex, accessor,
+                                    cbAddress, noc, numTiles);
+  } else {
+    ttk::NocAsyncWriteTileOp::create(builder, loc, tensorTileIndex, accessor,
+                                     cbAddress, noc, numTiles);
+  }
+}
+
+static void emitContiguousTensorRows(
+    OpBuilder &builder, Location loc, ValueRange startIndices,
+    ArrayRef<int64_t> tensorGridShape, ArrayRef<int64_t> transferShape,
+    Value cbBaseAddress, Value accessor, int64_t pageSizeBytes,
+    int64_t maxBurstBytes, Value noc, NocCopyDirection direction) {
+  unsigned tensorRank = tensorGridShape.size();
+  unsigned transferRank = transferShape.size();
+  unsigned rankDiff = tensorRank - transferRank;
+  int64_t rowTileCount = transferShape.back();
+  int64_t tilesPerBurst = maxBurstBytes / pageSizeBytes;
+  int64_t fullBurstCount = rowTileCount / tilesPerBurst;
+  int64_t remainderTiles = rowTileCount % tilesPerBurst;
+
+  SmallVector<int64_t> outerBounds(transferShape.drop_back());
+  Value pageSize = arith::ConstantIndexOp::create(builder, loc, pageSizeBytes);
+  Type i32Type = builder.getI32Type();
+
+  emitTileLoop(
+      builder, loc, outerBounds,
+      [&](OpBuilder &rowBuilder, Location rowLoc, ValueRange outerIVs) {
+        auto emitBurst = [&](OpBuilder &burstBuilder, Location burstLoc,
+                             Value innerOffset, int64_t tileCount) {
+          SmallVector<Value> tensorCoordinates;
+          tensorCoordinates.reserve(tensorRank);
+          for (unsigned dimension = 0; dimension < tensorRank; ++dimension) {
+            if (dimension < rankDiff) {
+              tensorCoordinates.push_back(startIndices[dimension]);
+              continue;
+            }
+            unsigned transferDimension = dimension - rankDiff;
+            Value offset = transferDimension + 1 == transferRank
+                               ? innerOffset
+                               : outerIVs[transferDimension];
+            tensorCoordinates.push_back(arith::AddIOp::create(
+                burstBuilder, burstLoc, startIndices[dimension], offset));
+          }
+
+          auto tensorTileIndex = affine::AffineLinearizeIndexOp::create(
+              burstBuilder, burstLoc, tensorCoordinates, tensorGridShape);
+          tensorTileIndex->setAttr(kExpandLinearizeIndexAttr,
+                                   burstBuilder.getUnitAttr());
+
+          SmallVector<Value> cbCoordinates(outerIVs.begin(), outerIVs.end());
+          cbCoordinates.push_back(innerOffset);
+          auto cbTileIndex = affine::AffineLinearizeIndexOp::create(
+              burstBuilder, burstLoc, cbCoordinates, transferShape);
+          cbTileIndex->setAttr(kExpandLinearizeIndexAttr,
+                               burstBuilder.getUnitAttr());
+          Value byteOffset = arith::MulIOp::create(
+              burstBuilder, burstLoc, cbTileIndex.getResult(), pageSize);
+          Value cbAddressIndex = arith::AddIOp::create(
+              burstBuilder, burstLoc, cbBaseAddress, byteOffset);
+
+          Value tensorTileIndexI32 = arith::IndexCastOp::create(
+              burstBuilder, burstLoc, i32Type, tensorTileIndex.getResult());
+          Value cbAddress = arith::IndexCastOp::create(burstBuilder, burstLoc,
+                                                       i32Type, cbAddressIndex);
+          emitTensorCBTransfer(burstBuilder, burstLoc, direction,
+                               tensorTileIndexI32, accessor, cbAddress,
+                               tileCount, noc);
+        };
+
+        if (fullBurstCount > 0) {
+          SmallVector<int64_t> burstBounds{fullBurstCount};
+          emitTileLoop(
+              rowBuilder, rowLoc, burstBounds,
+              [&](OpBuilder &burstBuilder, Location burstLoc,
+                  ValueRange burstIVs) {
+                Value tilesPerBurstValue = arith::ConstantIndexOp::create(
+                    burstBuilder, burstLoc, tilesPerBurst);
+                Value innerOffset =
+                    arith::MulIOp::create(burstBuilder, burstLoc,
+                                          burstIVs.front(), tilesPerBurstValue);
+                emitBurst(burstBuilder, burstLoc, innerOffset, tilesPerBurst);
+              });
+        }
+        if (remainderTiles > 0) {
+          Value innerOffset = arith::ConstantIndexOp::create(
+              rowBuilder, rowLoc, fullBurstCount * tilesPerBurst);
+          emitBurst(rowBuilder, rowLoc, innerOffset, remainderTiles);
+        }
+      });
+}
+
 /// Add the proven bounded-ring slot offset to a transport storage address.
 static Value materializeTransportStorageAddress(
     CopyOp op, Value baseAddress, Value currentSlot,
@@ -1096,6 +1211,18 @@ static LogicalResult lowerTensorCBCopy(
                                            rewriter.getI8IntegerAttr(nocIndex));
 
   SmallVector<int64_t> cbBounds(transferShape.begin(), transferShape.end());
+
+  int64_t maxBurstBytes = getTargetNocMaxBurstBytes(op);
+  if (!transferShape.empty() && transferShape.back() > 1 &&
+      accessorInfo->pageSizeBytes <= maxBurstBytes &&
+      hasContiguousTensorRows(tensor)) {
+    emitContiguousTensorRows(rewriter, loc, startIndices, tensorGridShape,
+                             transferShape, cbPtrIdx, accessor,
+                             accessorInfo->pageSizeBytes, maxBurstBytes, nocVal,
+                             direction);
+    rewriter.replaceOp(op, makeZeroI32(loc, rewriter));
+    return success();
+  }
 
   emitTileLoop(
       rewriter, loc, cbBounds,
