@@ -70,8 +70,9 @@ def set_max_l1_bytes(limit: int) -> None:
 
     The L1 memory used by a node is the sum of capacity_bytes across all of its
     DataflowBuffers. Kernel execution issues a warning if the total CB capacity
-    on any node exceeds this limit. Defaults to 1432 KiB (Blackhole/Wormhole
-    L1 size minus reserved program space).
+    on any node exceeds this limit. Defaults to 1432 KiB, Wormhole's L1 size
+    minus reserved program space. Blackhole allows 1497 KiB, so the default is
+    the smaller of the two; pass a larger limit to check against Blackhole's.
 
     Args:
         limit: Maximum L1 bytes per node (must be positive)
