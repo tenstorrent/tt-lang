@@ -55,6 +55,19 @@ def test_diagnostics_load_in_the_source_tree(
     assert lazy_import_diagnostics().LAYOUT == "source"
 
 
+def test_candidates_are_the_source_tree_then_the_installed_layout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """smoke-test-wheel.py keys on diagnostics_candidates, so pin its name and order."""
+    root = tmp_path.resolve()
+    _place_simulator_at(monkeypatch, root / "ttl" / "sim")
+
+    assert sim_diagnostics.diagnostics_candidates() == [
+        root / "ttl" / "ttl" / "diagnostics.py",
+        root / "ttl" / "diagnostics.py",
+    ]
+
+
 def test_missing_diagnostics_names_the_places_it_looked(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -10,8 +10,26 @@ including lazy import of the compiler's diagnostic module.
 """
 
 import inspect
+from pathlib import Path
 from types import FrameType
 from typing import Any, Optional, Tuple
+
+
+def diagnostics_candidates() -> list[Path]:
+    """Where lazy_import_diagnostics() looks for ttl/diagnostics.py, in order.
+
+    The source tree has ``python/sim/`` next to ``python/ttl/``; both wheels put
+    the simulator at ``ttl/sim/`` next to ``ttl/diagnostics.py``.
+    .github/scripts/smoke-test-wheel.py only checks the lookup in wheels whose
+    simulator has this function, so keep its name.
+    """
+    # Resolve the real path of this file (follows symlinks), so a build tree's
+    # ttl/sim -> python/sim symlink still finds the source tree.
+    sim_dir = Path(__file__).resolve().parent
+    return [
+        sim_dir.parent / "ttl" / "diagnostics.py",  # source tree: python/sim/
+        sim_dir.parent / "diagnostics.py",  # installed: ttl/sim/
+    ]
 
 
 def lazy_import_diagnostics() -> Any:
@@ -20,9 +38,8 @@ def lazy_import_diagnostics() -> Any:
     Uses file-based import rather than ``from ttl import diagnostics`` because
     tt-lang-sim shadows the ``ttl`` module with a simulator shim.
 
-    Looks in the source tree (``python/sim/`` next to ``python/ttl/``) and in
-    the installed layout, where both wheels put the simulator at ``ttl/sim/``
-    next to ``ttl/diagnostics.py``.
+    Looks in the places diagnostics_candidates() lists: the source tree and the
+    installed layout.
 
     Returns:
         The ttl.diagnostics module
@@ -32,15 +49,8 @@ def lazy_import_diagnostics() -> Any:
     """
     import importlib.util
     import sys
-    from pathlib import Path
 
-    # Resolve the real path of this file (follows symlinks), so a build tree's
-    # ttl/sim -> python/sim symlink still finds the source tree.
-    sim_dir = Path(__file__).resolve().parent
-    candidates = [
-        sim_dir.parent / "ttl" / "diagnostics.py",  # source tree: python/sim/
-        sim_dir.parent / "diagnostics.py",  # installed: ttl/sim/
-    ]
+    candidates = diagnostics_candidates()
     for diagnostics_path in candidates:
         if not diagnostics_path.is_file():
             continue
