@@ -32,10 +32,11 @@ def validate_math_fidelity(math_fidelity: str | None) -> None:
     raise ValueError(f"math_fidelity must be one of {supported}")
 
 
-# Per-core static CB region budget (bytes) when IR has no system descriptor:
-# Wormhole and Blackhole total L1 (1464 KiB) minus reserved kernel space (128 KiB)
-# per tt-metal dev_mem_map. Matches ChipDesc usable L1 for those architectures
-# and ttl-validate-cb-budget fallback; with a device + system_desc, the compiler
-# uses ChipDescAttr::getUsableL1Size() instead.
+# Per-core static CB region budget (bytes) when IR has no system descriptor, and
+# the ttl-validate-cb-budget fallback: Wormhole's L1 (1464 KiB) minus reserved
+# kernel space (32 KiB), MEM_MAX_KERNEL_SIZE in tt-metal's wormhole dev_mem_map.h.
+# Blackhole has more (1536 KiB of L1, 1497 KiB max kernel size), so this is the
+# smaller of the two. With a device + system_desc, the compiler uses
+# ChipDescAttr::getUsableL1Size() instead.
 # keep in sync with sim.context_types.DEFAULT_MAX_L1_BYTES
 DEFAULT_L1_CB_BUDGET_BYTES: int = 1432 * 1024
