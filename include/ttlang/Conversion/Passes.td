@@ -9,6 +9,11 @@ include "mlir/Pass/PassBase.td"
 
 def ConvertTTKernelToEmitC : Pass<"convert-ttkernel-to-emitc", "::mlir::ModuleOp"> {
   let summary = "Convert TTKernel dialect to EmitC dialect.";
+  let description = [{
+    Converts TTKernel operations to C++ device calls. For compiler-managed
+    SRAM, validates the supported 32x32 BF16/FP32 operations and emits
+    address-based DFB calls. Other DFB operations use Metal descriptors.
+  }];
   let dependentDialects = ["mlir::emitc::EmitCDialect", "mlir::func::FuncDialect",
                            "mlir::tt::ttkernel::TTKernelDialect"];
 }

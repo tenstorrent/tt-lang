@@ -20,6 +20,7 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Interfaces/LoopLikeInterface.h"
 #include "ttlang/Analysis/LoopIterationUtils.h"
+#include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/TTL/Passes.h"
@@ -435,22 +436,30 @@ public:
   build(ModuleOp module, const llvm::DenseMap<int64_t, BindCBOp> &bindSites,
         const LaunchNodeDomain &launchDomain) {
     DFBStateDiscardModel model;
-    FailureOr<uint64_t> allocatedMask = getAllocatedDFBMask(module);
-    if (failed(allocatedMask)) {
-      return failure();
+    uint64_t allocatedMask = 0;
+    if (!usesCompilerSRAM(module)) {
+      FailureOr<uint64_t> physicalMask = getAllocatedDFBMask(module);
+      if (failed(physicalMask)) {
+        return failure();
+      }
+      allocatedMask = *physicalMask;
     }
     model.installs = DFBReconfigurationInstalls::build(module, launchDomain);
     for (auto [logicalId, bindSite] : bindSites) {
       std::optional<int64_t> physicalIndex = getCBIndex(bindSite.getResult());
-      assert(physicalIndex && "getAllocatedDFBMask validated every index");
+      assert(physicalIndex && "DFB finalization assigns every storage index");
       model.logicalIdsByPhysicalIndex[*physicalIndex].push_back(logicalId);
     }
     WalkResult result = module.walk([&](Operation *op) {
       if (!isa<ResetDFBsOp, ResetAllDFBsOp>(op)) {
         return WalkResult::advance();
       }
+      if (usesCompilerSRAM(module)) {
+        op->emitOpError("synchronized reset is unsupported with compiler-sram");
+        return WalkResult::interrupt();
+      }
       FailureOr<uint64_t> resetMask =
-          getSynchronizedResetDFBMask(op, *allocatedMask);
+          getSynchronizedResetDFBMask(op, allocatedMask);
       if (failed(resetMask)) {
         return WalkResult::interrupt();
       }

@@ -11,7 +11,7 @@ ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
 
 import ttl  # noqa: E402
 
-from ttlang_test_utils import to_dram  # noqa: E402
+from ttlang_test_utils import to_dram, to_l1  # noqa: E402
 from utils.correctness import assert_allclose  # noqa: E402
 
 TILE = 32
@@ -63,15 +63,16 @@ def _run_accumulation_kernel(
     accumulation_strategy,
     rtol=None,
     atol=None,
+    memory_model=None,
+    allocator=to_dram,
 ):
     """Run one accumulation kernel with an explicit strategy option."""
-    in_devs = [to_dram(tensor, device) for tensor in in_tensors]
-    out_dev = to_dram(out_tensor, device)
-    kernel(
-        *in_devs,
-        out_dev,
-        options=f"--ttl-accumulation-strategy={accumulation_strategy}",
-    )
+    in_devs = [allocator(tensor, device) for tensor in in_tensors]
+    out_dev = allocator(out_tensor, device)
+    options = f"--ttl-accumulation-strategy={accumulation_strategy}"
+    if memory_model is not None:
+        options += f" --ttl-memory-model={memory_model}"
+    kernel(*in_devs, out_dev, options=options)
     ttnn.synchronize_device(device)
 
     result = ttnn.to_torch(out_dev).float()
@@ -118,6 +119,40 @@ def _make_single_tile_tensor_recurrence_kernel(iterations):
                 ttl.copy(out_blk, out[0:1, 0:1]).wait()
 
     return kernel
+
+
+@pytest.mark.requires_device
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "fp32"])
+@pytest.mark.parametrize("allocator", [to_dram, to_l1], ids=["dram", "l1"])
+@pytest.mark.parametrize("memory_model", ["metal-cb", "compiler-sram"])
+@pytest.mark.parametrize("accumulation_strategy", ["auto", "l1-pack"])
+def test_single_tile_tensor_recurrence_sram(
+    device, dtype, allocator, memory_model, accumulation_strategy, monkeypatch
+):
+    """L1 packer accumulation preserves a loop-carried tensor recurrence."""
+    if memory_model == "compiler-sram":
+        import ttl.kernel_runner as runner
+
+        def reject_descriptors(*args, **kwargs):
+            pytest.fail("compiler-sram constructed Metal DFB descriptors")
+
+        monkeypatch.setattr(runner, "build_cb_descriptors", reject_descriptors)
+
+    initial = torch.full((TILE, TILE), 4.0, dtype=dtype)
+    delta = torch.full((TILE, TILE), 0.5, dtype=dtype)
+    out = torch.zeros((TILE, TILE), dtype=dtype)
+    expected = initial.float() + N_ITERS * delta.float()
+    _run_accumulation_kernel(
+        _make_single_tile_tensor_recurrence_kernel(N_ITERS),
+        [initial, delta],
+        out,
+        expected,
+        dtype,
+        device,
+        accumulation_strategy,
+        memory_model=memory_model,
+        allocator=allocator,
+    )
 
 
 def _make_tensor_recurrence_epilogue_kernel():

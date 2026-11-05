@@ -31,7 +31,8 @@ namespace {
 template <typename BuilderT>
 static void emitVerbatim(Location loc, StringRef value, BuilderT &builder,
                          ValueRange operands = {}) {
-  emitc::VerbatimOp::create(builder, loc, value, operands);
+  auto verbatim = emitc::VerbatimOp::create(builder, loc, value, operands);
+  verbatim->setAttr(kDPrintGeneratedAttrName, builder.getUnitAttr());
 }
 
 /// Compile-time CB id as i32 so emitc.verbatim can take it as a format
@@ -591,6 +592,7 @@ static void addDPrintIncludeTrigger(func::FuncOp func, OpBuilder &builder) {
 
   OperationState callState(loc, "emitc.call_opaque");
   callState.addAttribute("callee", builder.getStringAttr("ttmlir::dprint"));
+  callState.addAttribute(kDPrintGeneratedAttrName, builder.getUnitAttr());
   builder.create(callState);
 
   emitVerbatim(loc, "#endif", builder);
@@ -601,6 +603,19 @@ struct TTLLowerDPrintToEmitCPass
   void runOnOperation() override {
     MLIRContext &ctx = getContext();
     ModuleOp mod = getOperation();
+    bool compilerSRAM = usesCompilerSRAM(mod);
+    WalkResult validation = mod.walk([&](DPrintOp printOp) {
+      StringRef mode = printOp.getMode();
+      if (compilerSRAM && mode != "scalar") {
+        printOp.emitOpError("compiler-sram print supports only scalar mode");
+        return WalkResult::interrupt();
+      }
+      return WalkResult::advance();
+    });
+    if (validation.wasInterrupted()) {
+      signalPassFailure();
+      return;
+    }
 
     // Record which functions have dprint ops.
     llvm::DenseSet<func::FuncOp> funcsWithDPrint;
