@@ -64,10 +64,20 @@ def main() -> int:
 
     # The simulator formats kernel errors with the compiler's diagnostics
     # module, which it loads by path; check that path exists in the wheel.
-    from ttl.sim.diagnostics import lazy_import_diagnostics
+    # The publish workflows also run this script from main against wheels built
+    # at older tags, whose simulator only looks in the source-tree layout, so
+    # the check runs only when the installed simulator has the installed-layout
+    # lookup (diagnostics_candidates).
+    import ttl.sim.diagnostics as sim_diagnostics
 
-    lazy_import_diagnostics()
-    print(f"{package} {version}: ttl.diagnostics OK")
+    if hasattr(sim_diagnostics, "diagnostics_candidates"):
+        sim_diagnostics.lazy_import_diagnostics()
+        print(f"{package} {version}: ttl.diagnostics OK")
+    else:
+        print(
+            f"{package} {version}: skipped the ttl.diagnostics check; "
+            "this wheel's simulator predates the installed-layout lookup"
+        )
 
     # sim_stats package + tt-lang-sim-stats entry point (pip console_scripts)
     import sim_stats  # noqa: F401
