@@ -51,5 +51,10 @@ inline constexpr bool ownsConsumer = false;
 #else
 inline constexpr bool ownsConsumer = true;
 #endif
+#if defined(TRISC_MATH)
+inline constexpr bool ownsDFBInterface = false;
+#else
+inline constexpr bool ownsDFBInterface = true;
+#endif
 } // namespace ttlang::l1::target
 #endif
