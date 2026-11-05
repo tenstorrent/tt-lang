@@ -61,8 +61,13 @@ readonly _REQUIREMENT_INPUTS=(
 )
 readonly _IMAGE_INPUTS=(
     .github/containers/Dockerfile.emule
+    .github/containers/configure-emule-metal.sh
+    .github/containers/emule-lock.py
+    .github/containers/emule-metal-deps.lock
+    .github/containers/emule-requirements.lock
     .github/containers/package-emule-runtime.sh
     .github/containers/trim-emule-venv.sh
+    .github/containers/check-cpu-torch.py
     "${_REQUIREMENT_INPUTS[@]}"
 )
 
@@ -166,10 +171,17 @@ if [ "${TTLANG_EMULE_INSTALL:-0}" = "1" ] && \
     echo "tt-lang-sim: installation and shell modes are mutually exclusive." >&2
     exit 2
 fi
+if [ "${TTLANG_EMULE_BUILD_ONLY:-0}" = "1" ] && \
+   { [ "${TTLANG_EMULE_INSTALL:-0}" = "1" ] || \
+     [ "${TTLANG_EMULE_SHELL:-0}" = "1" ]; }; then
+    echo "tt-lang-sim: build-only, installation and shell modes are mutually exclusive." >&2
+    exit 2
+fi
 if [ "${TTLANG_EMULE_INSTALL:-0}" = "1" ] || \
-   [ "${TTLANG_EMULE_SHELL:-0}" = "1" ]; then
+   [ "${TTLANG_EMULE_SHELL:-0}" = "1" ] || \
+   [ "${TTLANG_EMULE_BUILD_ONLY:-0}" = "1" ]; then
     if [ "$#" -ne 0 ]; then
-        echo "tt-lang-sim: installation and shell modes do not accept script arguments." >&2
+        echo "tt-lang-sim: build-only, installation and shell modes do not accept script arguments." >&2
         exit 2
     fi
 else
@@ -250,7 +262,8 @@ case "${_HOST_CWD}/" in
 esac
 
 if [ "${TTLANG_EMULE_INSTALL:-0}" != "1" ] && \
-   [ "${TTLANG_EMULE_SHELL:-0}" != "1" ]; then
+   [ "${TTLANG_EMULE_SHELL:-0}" != "1" ] && \
+   [ "${TTLANG_EMULE_BUILD_ONLY:-0}" != "1" ]; then
     _SCRIPT_ABSOLUTE="$(realpath "$_SCRIPT_ARGUMENT")"
     _SCRIPT_DIR_HOST="$(dirname "$_SCRIPT_ABSOLUTE")"
     _SCRIPT_BASENAME="$(basename "$_SCRIPT_ABSOLUTE")"
@@ -288,8 +301,9 @@ done
 
 _BUILD_IMAGE=0
 if [ "${TTLANG_EMULE_REBUILD:-0}" = "1" ]; then
-    if [ "${TTLANG_EMULE_INSTALL:-0}" != "1" ]; then
-        echo "tt-lang-sim: runtime rebuilding is only available during installation." >&2
+    if [ "${TTLANG_EMULE_INSTALL:-0}" != "1" ] && \
+       [ "${TTLANG_EMULE_BUILD_ONLY:-0}" != "1" ]; then
+        echo "tt-lang-sim: runtime rebuilding requires installation or build-only mode." >&2
         echo "Run scripts/install-tt-lang-emule.sh instead." >&2
         exit 1
     fi
@@ -326,7 +340,8 @@ else
         fi
     fi
     if [ "$_IMAGE_IS_MISSING" -eq 1 ]; then
-        if [ "${TTLANG_EMULE_INSTALL:-0}" = "1" ]; then
+        if [ "${TTLANG_EMULE_INSTALL:-0}" = "1" ] || \
+           [ "${TTLANG_EMULE_BUILD_ONLY:-0}" = "1" ]; then
             _BUILD_IMAGE=1
         else
             echo "tt-lang-sim: the compiler-backed emule environment is not installed." >&2
@@ -432,6 +447,10 @@ if ! _VERIFIED_IMAGE="$(
 fi
 
 cleanup
+if [ "${TTLANG_EMULE_BUILD_ONLY:-0}" = "1" ]; then
+    printf 'Runtime image: %s\n' "$_IMAGE"
+    exit 0
+fi
 if [ "${TTLANG_EMULE_INSTALL:-0}" = "1" ]; then
     printf 'Runtime image: %s\n' "$_IMAGE"
     printf 'Compiler build volume: %s\n' "$_BUILD_VOLUME"

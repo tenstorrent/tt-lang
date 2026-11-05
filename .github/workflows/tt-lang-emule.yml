@@ -6,7 +6,8 @@ name: Test compiler-backed emulation integration
 on:
   pull_request:
     paths:
-      - ".github/containers/Dockerfile.emule"
+      - ".github/containers/*emule*"
+      - ".github/containers/check-cpu-torch.py"
       - ".github/workflows/tt-lang-emule.yml"
       - ".github/scripts/tests/test_ttlang_sim.bats"
       - ".github/scripts/tests/test_ttlang_emule_container.bats"

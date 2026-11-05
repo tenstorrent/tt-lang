@@ -23,6 +23,7 @@ def test_development_dependency_split_preserves_packages():
     test_packages = {
         "lit",
         "packaging",
+        "psutil",
         "pytest-order>=1.0.0",
         "pytest-rerunfailures>=12.0",
         "pytest-timeout>=2.0",

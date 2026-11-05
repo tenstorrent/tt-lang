@@ -1,0 +1,199 @@
+# SPDX-FileCopyrightText: (c) 2026 Tenstorrent AI ULC
+# SPDX-License-Identifier: Apache-2.0
+
+name: tt-emule compiler test inventory
+
+# Only code already merged to main runs next to the private emulator source.
+# Never add pull_request, pull_request_target, workflow_call or merge_group.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+permissions: {}
+
+concurrency:
+  group: tt-lang-emule-inventory-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  inventory:
+    if: github.repository == 'tenstorrent/tt-lang' && github.ref == 'refs/heads/main'
+    # Admin-managed; restricted to main with admin bypass off. Holds the secrets.
+    environment: tt-lang-emule
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: bash
+        working-directory: compiler
+    env:
+      TTLANG_EMULE_IMAGE: ttlang-emule-ci:runner-local
+    steps:
+      - name: Checkout the compiler revision
+        timeout-minutes: 3
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.sha }}
+          path: compiler
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Read the pinned emulator revision
+        id: stack
+        timeout-minutes: 1
+        run: |
+          pin="$(python3 scripts/tt-lang-emule-stack.py \
+            --manifest config/tt-lang-emule-stack.json emit |
+            awk -F '\t' '$1 == "TTLANG_EMULE_COMMIT" {print $2}')"
+          [[ "$pin" =~ ^[0-9a-f]{40}$ ]]
+          printf 'emulator_sha=%s\n' "$pin" >> "$GITHUB_OUTPUT"
+
+      - name: Free runner disk space
+        timeout-minutes: 6
+        run: |
+          bash .github/scripts/cleanup-ci-space.sh
+          df -Pk "$RUNNER_TEMP"
+
+      - name: Validate the emulator source configuration
+        timeout-minutes: 1
+        env:
+          SOURCE_READ_TOKEN: ${{ secrets.TTLANG_EMULE_SOURCE_READ_TOKEN }}
+          SOURCE_REPOSITORY: ${{ secrets.TTLANG_EMULE_SOURCE_REPOSITORY }}
+        run: |
+          if [[ ! "$SOURCE_READ_TOKEN" =~ ^github_pat_[A-Za-z0-9_]+$ ]] ||
+             [[ ! "$SOURCE_REPOSITORY" =~ ^tenstorrent/[A-Za-z0-9_.-]+$ ]]; then
+            echo 'The emulator source configuration is missing or invalid.' >&2
+            exit 2
+          fi
+
+      - name: Snapshot the runner temporary directory
+        timeout-minutes: 1
+        run: |
+          # Created first so that the listing always includes the snapshot itself.
+          : > "$RUNNER_TEMP/runner-temp.before"
+          find "$RUNNER_TEMP" -mindepth 1 -maxdepth 1 | LC_ALL=C sort \
+            > "$RUNNER_TEMP/runner-temp.before"
+
+      - name: Checkout the pinned private source without retaining credentials
+        timeout-minutes: 2
+        env:
+          SOURCE_READ_TOKEN: ${{ secrets.TTLANG_EMULE_SOURCE_READ_TOKEN }}
+          SOURCE_REPOSITORY: ${{ secrets.TTLANG_EMULE_SOURCE_REPOSITORY }}
+          EMULATOR_SHA: ${{ steps.stack.outputs.emulator_sha }}
+        run: |
+          # Git's output includes the pinned commit's subject, which can name
+          # other private projects, so all of it stays in a runner-local log;
+          # only the exit code reaches the job log.
+          trap 'printf "Private checkout: exit=%s\n" "$?"' EXIT
+          (
+            # The runner keeps this step's script; it and the log are the only
+            # files this step may add to the runner temporary directory.
+            printf '%s\n' "$0" "$RUNNER_TEMP/private-checkout.log" |
+              LC_ALL=C sort -o "$RUNNER_TEMP/runner-temp.before" \
+                "$RUNNER_TEMP/runner-temp.before" -
+            # Configuration from the environment would apply after the reset
+            # of credential helpers below.
+            unset GIT_CONFIG_PARAMETERS
+            destination="$GITHUB_WORKSPACE/private-runtime"
+            git init --quiet "$destination"
+            git -C "$destination" remote add origin \
+              "https://github.com/$SOURCE_REPOSITORY.git"
+            # Only this helper, for github.com, sees the token, through the
+            # step environment: never a command argument or a config file.
+            # shellcheck disable=SC2016  # expanded by the helper's shell
+            GIT_TERMINAL_PROMPT=0 GIT_CONFIG_COUNT=2 \
+              GIT_CONFIG_KEY_0=credential.helper GIT_CONFIG_VALUE_0='' \
+              GIT_CONFIG_KEY_1=credential.https://github.com.helper \
+              GIT_CONFIG_VALUE_1='!f() { if test "$1" = get; then printf "username=x-access-token\npassword=%s\n" "$SOURCE_READ_TOKEN"; fi; }; f' \
+              git -C "$destination" fetch --quiet --no-tags --depth=1 origin \
+              "$EMULATOR_SHA"
+            GIT_LFS_SKIP_SMUDGE=1 git -C "$destination" -c advice.detachedHead=false \
+              checkout --quiet --detach FETCH_HEAD
+          ) > "$RUNNER_TEMP/private-checkout.log" 2>&1
+
+      - name: Verify sources and absence of retained checkout credentials
+        timeout-minutes: 2
+        run: |
+          for source in "$GITHUB_WORKSPACE/compiler" "$GITHUB_WORKSPACE/private-runtime"; do
+            if git -C "$source" config --local --get-regexp \
+              '^(http\.(.*\.)?extraheader|credential\..*|core\.sshcommand|include\.path|includeif\..*\.path|url\..*\.(push)?insteadof)$' \
+              > /dev/null; then
+              echo 'A checkout retains authentication configuration.' >&2
+              exit 2
+            else
+              status=$?
+              test "$status" -eq 1
+            fi
+            # Both remotes are HTTPS URLs, which never need a user part.
+            if git -C "$source" config --local --get-regexp \
+              '^remote\..*\.(push)?url$' | grep -q '@'; then
+              echo 'A checkout retains credentials in a remote URL.' >&2
+              exit 2
+            fi
+          done
+          # A credentials file left behind by the checkout. The runner writes
+          # this step's own script ($0) there after the snapshot, and the
+          # checkout recorded its own script and log in the snapshot.
+          leftovers="$(find "$RUNNER_TEMP" -mindepth 1 -maxdepth 1 ! -name "${0##*/}" |
+            LC_ALL=C sort | LC_ALL=C comm -13 "$RUNNER_TEMP/runner-temp.before" -)"
+          if [[ -n "$leftovers" ]]; then
+            echo 'The private checkout left files in the runner temporary directory.' >&2
+            exit 2
+          fi
+          python3 scripts/tt-lang-emule-stack.py \
+            --manifest config/tt-lang-emule-stack.json validate \
+            --compiler-source . --emulator-source "$GITHUB_WORKSPACE/private-runtime" --quiet
+
+      - name: Build the runner-local runtime image
+        timeout-minutes: 117
+        env:
+          TTLANG_EMULE_BUILD_ONLY: "1"
+          TTLANG_EMULE_REBUILD: "1"
+          TTLANG_EMULE_RUNTIME_SOURCE_DIR: ${{ github.workspace }}/private-runtime
+          DOCKER_BUILD_SUMMARY: "false"
+          DOCKER_BUILD_RECORD_UPLOAD: "false"
+        run: |
+          # The build output names private paths; it stays on the runner.
+          # shellcheck disable=SC2034  # read by the EXIT trap below
+          started=$SECONDS
+          trap 'status=$?; printf "Runtime build: exit=%s seconds=%s\n" "$status" "$((SECONDS - started))"; df -Pk "$RUNNER_TEMP"' EXIT
+          available_kib="$(df -Pk "$RUNNER_TEMP" | awk 'NR == 2 {print $4}')"
+          test "$available_kib" -ge 2097152
+          timeout --signal=TERM --kill-after=30s 6900 \
+            bash scripts/tt-lang-emule-container.sh \
+            > "$RUNNER_TEMP/runtime-build.log" 2>&1
+
+      - name: Allow the emulator's sparse memory reservations
+        timeout-minutes: 1
+        run: |
+          # The emulator reserves its device memory up front and touches only
+          # what kernels use. Under the kernel's default heuristic, a single
+          # reservation larger than RAM plus swap fails, and on this runner
+          # one is. Overcommit as Docker Desktop does; the worker's container
+          # memory limit still bounds what is actually used.
+          grep -E '^(MemTotal|SwapTotal):' /proc/meminfo
+          sudo sysctl -w vm.overcommit_memory=1
+
+      - name: Run the compiler test inventory
+        timeout-minutes: 224
+        run: |
+          python3 scripts/emule-ci/worker.py --image "$TTLANG_EMULE_IMAGE" \
+            --worker inventory --output "$RUNNER_TEMP/emule-inventory" \
+            --cpus 4 --memory-gib 12 --disk-floor-gib 2 --timeout-seconds 13200
+
+      - name: Report the public per-suite summary
+        if: always()
+        timeout-minutes: 2
+        # Outside compiler/, which does not exist if its checkout failed.
+        working-directory: ${{ github.workspace }}
+        run: |
+          summary="$RUNNER_TEMP/emule-inventory/summary.json"
+          if [[ -f "$summary" ]]; then
+            python3 compiler/scripts/emule-ci/worker.py --report-summary "$summary" \
+              | tee -a "$GITHUB_STEP_SUMMARY"
+          else
+            echo 'The worker produced no summary.' | tee -a "$GITHUB_STEP_SUMMARY"
+          fi

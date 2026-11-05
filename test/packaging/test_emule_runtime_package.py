@@ -235,7 +235,7 @@ def test_image_supports_default_generator_cmake_packaging_probes():
 def test_clang_packaging_uses_configured_compiler(tmp_path, major, cache_type, missing):
     dockerfile = SCRIPT.with_name("Dockerfile.emule").read_text()
     section = dockerfile.split("# Use the pinned compiler's Clang,")[1]
-    command = section.split("\nRUN ", 1)[1].split("\n\nFROM ", 1)[0]
+    command = section.split("\nRUN --network=none ", 1)[1].split("\n\nFROM ", 1)[0]
     prefix = tmp_path / f"llvm-{major}"
     destination = tmp_path / "packaged"
     notices = tmp_path / "notices"

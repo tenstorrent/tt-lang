@@ -88,19 +88,38 @@ and tt-emule JIT caches live in named Docker volumes.
 
 ### Image contents and disk usage
 
-The image uses a separate build stage to prepare tt-metal and tt-emule. Its
-final stage contains one toolchain Python environment, the LLVM SDK, Clang,
-and the emulator runtime's shared libraries, headers, JIT sources, and firmware.
+The image uses separate build stages to prepare tt-metal, tt-emule, and the
+Python environment. Its final stage contains one toolchain Python environment,
+the LLVM SDK, Clang, and the emulator runtime's shared libraries, headers, JIT
+sources, and firmware.
+The emulator source enters only through the build stage, and no command runs
+with network access once the source is present, in that stage or in the final
+stage. Earlier stages download tt-metal and its submodules at their pinned
+commits, tt-metal's CMake (CPM) dependencies, the SFPI toolchain, and the Python
+environment; the final stage installs its system packages before it copies
+anything from the build stage.
+`.github/containers/emule-metal-deps.lock` records the Git commit or content
+digest of each CPM dependency and of the SFPI toolchain, and the build fails if
+a download differs.
 The LLVM development libraries support compiling the current TT-Lang checkout;
 pytest and lit support the existing compiler test commands. Documentation,
 lint, and hardware-management tools remain available in the development images.
 
 Image builds install the compiler and test dependencies from
-`requirements-test.txt`, including its nested build/runtime requirements.
-The image retains those requirement files under
-`/opt/tt-emule-runtime/requirements`. Installation and program execution verify
-that they match the checkout, so the compiler uses the image's prepared Python
-environment. Requirement changes select a new runtime image identity.
+`.github/containers/emule-requirements.lock`, which pins CPU-only PyTorch and
+every wheel that `requirements-test.txt` and its nested build/runtime
+requirements resolve to by URL and SHA-256 hash. The build installs
+`requirements-test.txt` from those verified downloads only, so it fails if the
+lock no longer satisfies the requirements or holds other packages. The image
+retains the requirement
+files under `/opt/tt-emule-runtime/requirements`. Installation and program
+execution verify that they match the checkout, so the compiler uses the image's
+prepared Python environment. Requirement and lock changes select a new runtime
+image identity. After changing a requirement file or the tt-metal pin, run
+`scripts/update-tt-lang-emule-locks.sh` and commit both regenerated lock files;
+it needs Docker but not the emulator source. To regenerate them for a candidate
+stack, select its manifest with `TTLANG_EMULE_STACK_MANIFEST` as described in
+[Updating the supported stack](simulator.md#updating-the-supported-stack).
 
 The toolchain's `src/python` directory supplies installed MLIR Python resources
 referenced by its CMake package exports. These files support building TT-Lang's
@@ -296,11 +315,15 @@ hardware configuration, not workload compatibility. Complete models and
 multi-device workloads require further validation, and Quasar kernels require
 compiler support beyond this change.
 
-Known compiler-suite failures with the pinned runtime include RISC-V inline
-assembly rejected by the x86 JIT, a missing RMSNorm SFPU header, incorrect results
-in some dynamic-buffer reuse and collective tests, and missing DPRINT output.
-The incorrect-output and DPRINT failures still require isolated reproducers;
-they are not all established tt-emule defects. Device execution tests provide
+`config/tt-lang-emule-xfail.json` lists the compiler tests known to fail,
+crash, or hang with the pinned runtime, each with a reason; the emulator CI
+expects those results. An earlier pinned runtime's failures included RISC-V
+inline assembly rejected by the x86 JIT, a missing RMSNorm SFPU header,
+incorrect results in some dynamic-buffer reuse and collective tests, and missing
+DPRINT output (see the
+[historical compiler-suite report](compiler-emule-test-status.md)). The
+incorrect-output and DPRINT failures still require isolated reproducers; they
+are not all established tt-emule defects. Device execution tests provide
 the evidence for emulated execution; compiler-only tests cover the compiler
 itself.
 
@@ -342,8 +365,10 @@ TTLANG_EMULE_REBUILD=1 ./scripts/install-tt-lang-emule.sh
 ```
 
 The rebuild installs the matching compiler/test dependencies into the image
-and prepares the compiler volume. The configured emulator source location is
-used again for the rebuild.
+from `.github/containers/emule-requirements.lock` and prepares the compiler
+volume. If a requirement file changed, regenerate the lock with
+`scripts/update-tt-lang-emule-locks.sh` first; otherwise the build stops. The
+configured emulator source location is used again for the rebuild.
 
 ### Emulator source access fails
 

@@ -117,6 +117,13 @@ export TTLANG_EMULE_RUNTIME_SOURCE_DIR=/path/to/emulator
 ./bin/tt-lang-sim --backend=emule examples/eltwise_add.py
 ```
 
+Image builds verify their downloads against the lock files in
+`.github/containers`. If the candidate's Metal pin changes those downloads, the
+installation fails until the locks are regenerated for the candidate. With the
+candidate manifest still selected, run `scripts/update-tt-lang-emule-locks.sh`,
+then install again. Commit the regenerated locks to the branch that dispatches
+the candidate workflow, and with the supported-manifest update.
+
 The `Validate compiler-backed emulation candidate` workflow automates the same
 process on the large x86 runner. It installs the candidate environment, runs
 representative programs, and uploads the resolved stack plus image metadata as
