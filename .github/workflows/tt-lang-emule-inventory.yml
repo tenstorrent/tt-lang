@@ -63,7 +63,9 @@ jobs:
           SOURCE_READ_TOKEN: ${{ secrets.TTLANG_EMULE_SOURCE_READ_TOKEN }}
           SOURCE_REPOSITORY: ${{ secrets.TTLANG_EMULE_SOURCE_REPOSITORY }}
         run: |
-          if [[ ! "$SOURCE_READ_TOKEN" =~ ^github_pat_[A-Za-z0-9_]+$ ]] ||
+          # OSPO sets the token: a fine-grained token or a GitHub App token.
+          # A classic token (ghp_) cannot be limited to one repository.
+          if [[ ! "$SOURCE_READ_TOKEN" =~ ^(github_pat|ghs)_[A-Za-z0-9_]+$ ]] ||
              [[ ! "$SOURCE_REPOSITORY" =~ ^tenstorrent/[A-Za-z0-9_.-]+$ ]]; then
             echo 'The emulator source configuration is missing or invalid.' >&2
             exit 2
