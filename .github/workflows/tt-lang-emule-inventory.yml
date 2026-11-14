@@ -19,18 +19,22 @@ concurrency:
 jobs:
   inventory:
     if: github.repository == 'tenstorrent/tt-lang' && github.ref == 'refs/heads/main'
-    # Admin-managed; restricted to main with admin bypass off. Holds the secrets.
+    # Admin-managed; restricted to main with admin bypass off. Holds the secret,
+    # and OSPO's Vault token setup for this job names it.
     environment: tt-lang-emule
     runs-on: ubuntu-24.04
     timeout-minutes: 360
     permissions:
       contents: read
+      # Lets the job prove who it is to OSPO Vault; no write access.
+      id-token: write
     defaults:
       run:
         shell: bash
         working-directory: compiler
     env:
       TTLANG_EMULE_IMAGE: ttlang-emule-ci:runner-local
+      VAULT_URL: https://vault-ospo.eng-svc.aws.tenstorrent.com
     steps:
       - name: Checkout the compiler revision
         timeout-minutes: 3
@@ -57,14 +61,49 @@ jobs:
           bash .github/scripts/cleanup-ci-space.sh
           df -Pk "$RUNNER_TEMP"
 
+      # The next three steps are OSPO's, as its instructions give them. They run
+      # before the snapshot below, which records what they leave behind, and
+      # the token they get is used within 15 minutes, while it is valid.
+      - name: Join tailnet
+        timeout-minutes: 2
+        uses: tailscale/github-action@064b10558093f38325e838ddea35486bdc6b1d5c # v4.4.0
+        with:
+          oauth-client-id: ${{ vars.TS_VAULT_OSPO_CLIENT_ID }}
+          audience: ${{ vars.TS_VAULT_OSPO_AUDIENCE }}
+          tags: tag:tt-gha-vault-ospo
+
+      - name: Wait for Vault
+        timeout-minutes: 1
+        run: |
+          for attempt in 1 2 3 4 5 6; do
+            curl -fsS --max-time 5 "${VAULT_URL}/v1/sys/health?standbyok=true&uninitcode=204&sealedcode=204" >/dev/null && exit 0
+            sleep 2
+          done
+          echo "Vault ${VAULT_URL} did not become reachable over Tailscale" >&2
+          exit 1
+
+      - name: Get ephemeral GitHub token
+        id: vault
+        timeout-minutes: 1
+        uses: hashicorp/vault-action@892a26828f195e65540a40b4768ae4571f51ebfc # v4.0.0
+        with:
+          url: ${{ env.VAULT_URL }}
+          method: jwt
+          path: jwt-github
+          role: tenstorrent--tt-lang
+          jwtGithubAudience: ${{ env.VAULT_URL }}
+          exportEnv: false
+          secrets: |
+            github/token/tenstorrent--tt-lang--emule-read token | GH_TOKEN
+
       - name: Validate the emulator source configuration
         timeout-minutes: 1
         env:
-          SOURCE_READ_TOKEN: ${{ secrets.TTLANG_EMULE_SOURCE_READ_TOKEN }}
+          SOURCE_READ_TOKEN: ${{ steps.vault.outputs.GH_TOKEN }}
           SOURCE_REPOSITORY: ${{ secrets.TTLANG_EMULE_SOURCE_REPOSITORY }}
         run: |
-          # OSPO sets the token: a fine-grained token or a GitHub App token.
-          # A classic token (ghp_) cannot be limited to one repository.
+          # The token comes from OSPO Vault: a GitHub App token or a fine-grained
+          # token. A classic token (ghp_) cannot be limited to one repository.
           if [[ ! "$SOURCE_READ_TOKEN" =~ ^(github_pat|ghs)_[A-Za-z0-9_]+$ ]] ||
              [[ ! "$SOURCE_REPOSITORY" =~ ^tenstorrent/[A-Za-z0-9_.-]+$ ]]; then
             echo 'The emulator source configuration is missing or invalid.' >&2
@@ -82,7 +121,7 @@ jobs:
       - name: Checkout the pinned private source without retaining credentials
         timeout-minutes: 2
         env:
-          SOURCE_READ_TOKEN: ${{ secrets.TTLANG_EMULE_SOURCE_READ_TOKEN }}
+          SOURCE_READ_TOKEN: ${{ steps.vault.outputs.GH_TOKEN }}
           SOURCE_REPOSITORY: ${{ secrets.TTLANG_EMULE_SOURCE_REPOSITORY }}
           EMULATOR_SHA: ${{ steps.stack.outputs.emulator_sha }}
         run: |
@@ -150,7 +189,7 @@ jobs:
             --compiler-source . --emulator-source "$GITHUB_WORKSPACE/private-runtime" --quiet
 
       - name: Build the runner-local runtime image
-        timeout-minutes: 117
+        timeout-minutes: 113
         env:
           TTLANG_EMULE_BUILD_ONLY: "1"
           TTLANG_EMULE_REBUILD: "1"
@@ -164,7 +203,7 @@ jobs:
           trap 'status=$?; printf "Runtime build: exit=%s seconds=%s\n" "$status" "$((SECONDS - started))"; df -Pk "$RUNNER_TEMP"' EXIT
           available_kib="$(df -Pk "$RUNNER_TEMP" | awk 'NR == 2 {print $4}')"
           test "$available_kib" -ge 2097152
-          timeout --signal=TERM --kill-after=30s 6900 \
+          timeout --signal=TERM --kill-after=30s 6660 \
             bash scripts/tt-lang-emule-container.sh \
             > "$RUNNER_TEMP/runtime-build.log" 2>&1
 

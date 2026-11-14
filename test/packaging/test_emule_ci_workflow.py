@@ -52,6 +52,9 @@ STEP_NAMES = [
     "Checkout the compiler revision",
     "Read the pinned emulator revision",
     "Free runner disk space",
+    "Join tailnet",
+    "Wait for Vault",
+    "Get ephemeral GitHub token",
     "Validate the emulator source configuration",
     "Snapshot the runner temporary directory",
     "Checkout the pinned private source without retaining credentials",
@@ -92,10 +95,12 @@ def test_workflow_runs_only_merged_main_code_in_one_job():
         "github.repository == 'tenstorrent/tt-lang' && "
         "github.ref == 'refs/heads/main'"
     )
-    # A literal environment: only it, restricted to main, holds the secrets.
+    # A literal environment: only it, restricted to main, holds the secret, and
+    # OSPO's Vault token setup for this job names it.
     assert job["environment"] == "tt-lang-emule"
     assert job["runs-on"] == "ubuntu-24.04"
-    assert job["permissions"] == {"contents": "read"}
+    # id-token lets the job log in to Vault; it gives no write access.
+    assert job["permissions"] == {"contents": "read", "id-token": "write"}
     assert job["defaults"]["run"] == {"shell": "bash", "working-directory": "compiler"}
     assert not {"needs", "strategy", "continue-on-error", "services"} & set(job)
     steps = job["steps"]
@@ -111,19 +116,29 @@ def test_workflow_runs_only_merged_main_code_in_one_job():
     assert int(job["timeout-minutes"]) == 360
 
 
-def test_secrets_reach_only_validation_and_private_checkout():
+VAULT_TOKEN = "${{ steps.vault.outputs.GH_TOKEN }}"
+TAILNET_VARIABLES = {"vars.TS_VAULT_OSPO_CLIENT_ID", "vars.TS_VAULT_OSPO_AUDIENCE"}
+
+
+def test_token_and_secret_reach_only_validation_and_private_checkout():
     raw = (ROOT / WORKFLOW).read_text()
-    secrets = {
-        "secrets.TTLANG_EMULE_SOURCE_REPOSITORY",
-        "secrets.TTLANG_EMULE_SOURCE_READ_TOKEN",
-    }
     found = re.findall(r"secrets\.[A-Za-z0-9_]+", raw)
-    assert set(found) == secrets and len(found) == 2 * len(secrets)
-    for step in workflow_definition()["jobs"]["inventory"]["steps"]:
-        mentions = "secrets." in yaml.safe_dump(step)
+    assert found == ["secrets.TTLANG_EMULE_SOURCE_REPOSITORY"] * 2
+    # The Vault token reaches the two steps through their own env, never the
+    # job's: two uses in all.
+    assert raw.count("steps.vault.outputs") == 2
+    steps = workflow_definition()["jobs"]["inventory"]["steps"]
+    for step in steps:
+        text = yaml.safe_dump(step)
+        mentions = "secrets." in text or "steps.vault." in text
         assert mentions == (step["name"] in SECRET_STEPS), step["name"]
+    # Only OSPO's organization variables for joining its tailnet: a repository
+    # variable is not masked in logs.
+    assert set(re.findall(r"vars\.[A-Za-z0-9_]+", raw)) == TAILNET_VARIABLES
+    for step in steps:
+        uses_variables = "vars." in yaml.safe_dump(step)
+        assert uses_variables == (step["name"] == "Join tailnet"), step["name"]
     for forbidden in (
-        "vars.",
         "github.token",
         "GITHUB_TOKEN",
         "upload-artifact",
@@ -145,12 +160,34 @@ PRIVATE_CHECKOUT = "Checkout the pinned private source without retaining credent
 
 def test_checkouts_are_pinned_and_keep_no_credentials():
     steps = workflow_definition()["jobs"]["inventory"]["steps"]
-    # Only the public checkout uses an action. Its output names the checked-out
-    # commit's subject, so the private source is fetched by plain Git instead.
+    # Besides OSPO's two Vault steps, only the public checkout uses an action.
+    # Its output names the checked-out commit's subject, so the private source
+    # is fetched by plain Git instead. Every action is pinned to a commit.
     actions = [step for step in steps if "uses" in step]
-    assert [step["name"] for step in actions] == ["Checkout the compiler revision"]
-    (public,) = actions
+    assert [step["name"] for step in actions] == [
+        "Checkout the compiler revision",
+        "Join tailnet",
+        "Get ephemeral GitHub token",
+    ]
+    public, tailnet, vault = actions
     assert re.fullmatch(r"actions/checkout@[0-9a-f]{40}", public["uses"])
+    assert re.fullmatch(r"tailscale/github-action@[0-9a-f]{40}", tailnet["uses"])
+    assert tailnet["with"] == {
+        "oauth-client-id": "${{ vars.TS_VAULT_OSPO_CLIENT_ID }}",
+        "audience": "${{ vars.TS_VAULT_OSPO_AUDIENCE }}",
+        "tags": "tag:tt-gha-vault-ospo",
+    }
+    assert re.fullmatch(r"hashicorp/vault-action@[0-9a-f]{40}", vault["uses"])
+    assert vault["id"] == "vault"
+    settings = vault["with"]
+    # The token stays out of the other steps' environment.
+    assert settings["exportEnv"] == "false"
+    # Vault refuses an OIDC token whose audience is not its own address.
+    assert settings["url"] == settings["jwtGithubAudience"] == "${{ env.VAULT_URL }}"
+    assert (settings["method"], settings["path"]) == ("jwt", "jwt-github")
+    assert re.fullmatch(
+        r"github/token/[a-z0-9-]+ token \| GH_TOKEN", settings["secrets"].strip()
+    )
     assert public["with"] == {
         "ref": "${{ github.sha }}",
         "path": "compiler",
@@ -159,7 +196,7 @@ def test_checkouts_are_pinned_and_keep_no_credentials():
     }
     private = workflow_step(PRIVATE_CHECKOUT)
     assert private["env"] == {
-        "SOURCE_READ_TOKEN": "${{ secrets.TTLANG_EMULE_SOURCE_READ_TOKEN }}",
+        "SOURCE_READ_TOKEN": VAULT_TOKEN,
         "SOURCE_REPOSITORY": "${{ secrets.TTLANG_EMULE_SOURCE_REPOSITORY }}",
         "EMULATOR_SHA": "${{ steps.stack.outputs.emulator_sha }}",
     }
@@ -167,9 +204,22 @@ def test_checkouts_are_pinned_and_keep_no_credentials():
     assert "${{" not in private["run"]
     validate = workflow_step("Validate the emulator source configuration")
     assert validate["env"] == {
-        "SOURCE_READ_TOKEN": "${{ secrets.TTLANG_EMULE_SOURCE_READ_TOKEN }}",
+        "SOURCE_READ_TOKEN": VAULT_TOKEN,
         "SOURCE_REPOSITORY": "${{ secrets.TTLANG_EMULE_SOURCE_REPOSITORY }}",
     }
+
+
+def test_vault_token_comes_before_the_snapshot_and_is_used_while_valid():
+    steps = workflow_definition()["jobs"]["inventory"]["steps"]
+    names = [step["name"] for step in steps]
+    vault = names.index("Get ephemeral GitHub token")
+    # The snapshot must record whatever the Vault steps leave in RUNNER_TEMP.
+    assert vault < names.index("Snapshot the runner temporary directory")
+    # Vault ends the token 15 minutes after the login. The last step that uses
+    # it ends before then, even if every step in between runs to its limit.
+    last_use = names.index(PRIVATE_CHECKOUT)
+    in_between = steps[vault + 1 : last_use + 1]
+    assert sum(int(step["timeout-minutes"]) for step in in_between) < 15
 
 
 @pytest.mark.parametrize(
@@ -243,8 +293,8 @@ def test_worker_accepts_the_hosted_invocation():
         "DOCKER_BUILD_SUMMARY": "false",
         "DOCKER_BUILD_RECORD_UPLOAD": "false",
     }
-    assert "--kill-after=30s 6900" in build["run"]
-    assert 6900 + 30 < 60 * int(build["timeout-minutes"])
+    assert "--kill-after=30s 6660" in build["run"]
+    assert 6660 + 30 < 60 * int(build["timeout-minutes"])
 
 
 def test_memory_overcommit_is_set_just_before_the_worker():
