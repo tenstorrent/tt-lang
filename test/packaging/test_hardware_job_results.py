@@ -27,11 +27,14 @@ def _hardware_job(
     failed_step_name: str | None = None,
     complete_runner_conclusion: str = "success",
     tests_complete_recorded: bool = True,
+    runner_hooks: bool = True,
 ) -> dict[str, object]:
     steps: list[dict[str, str | None]] = [
         {"name": "Set up job", "conclusion": "success"},
-        {"name": "Set up runner", "conclusion": setup_conclusion},
     ]
+    # The runner's job-started and job-completed hooks add these two steps.
+    if runner_hooks:
+        steps.append({"name": "Set up runner", "conclusion": setup_conclusion})
     if setup_conclusion == "success":
         steps.append({"name": "Initialize containers", "conclusion": "success"})
         if failed_step_name is not None:
@@ -45,12 +48,13 @@ def _hardware_job(
                 ),
             }
         )
-        steps.append(
-            {
-                "name": "Complete runner",
-                "conclusion": complete_runner_conclusion,
-            }
-        )
+        if runner_hooks:
+            steps.append(
+                {
+                    "name": "Complete runner",
+                    "conclusion": complete_runner_conclusion,
+                }
+            )
 
     caller_job = "test-exabox" if runner_name == "galaxy-bh" else "test-hardware"
     return {
@@ -163,6 +167,47 @@ def test_incomplete_job_after_successful_setup_fails() -> None:
         [
             _hardware_job("n150", tests_complete=False),
             _hardware_job("galaxy-bh"),
+        ],
+    )
+
+    assert result.returncode == 1
+    assert "did not complete Mark hardware tests complete" in result.stdout
+
+
+def test_job_from_runner_without_hooks_succeeds() -> None:
+    result = _run_check(
+        [
+            _hardware_job("n150"),
+            _hardware_job("BH-Quietbox-2", runner_hooks=False),
+        ],
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert result.stdout.count("completed all hardware tests") == 2
+
+
+def test_failed_step_on_runner_without_hooks_fails() -> None:
+    result = _run_check(
+        [
+            _hardware_job("n150"),
+            _hardware_job(
+                "BH-Quietbox-2",
+                runner_hooks=False,
+                tests_complete=False,
+                failed_step_name="Build tt-lang",
+            ),
+        ],
+    )
+
+    assert result.returncode == 1
+    assert "Build tt-lang concluded failure" in result.stdout
+
+
+def test_incomplete_job_on_runner_without_hooks_fails() -> None:
+    result = _run_check(
+        [
+            _hardware_job("n150"),
+            _hardware_job("BH-Quietbox-2", runner_hooks=False, tests_complete=False),
         ],
     )
 
