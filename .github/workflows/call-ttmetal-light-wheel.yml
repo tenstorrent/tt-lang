@@ -207,6 +207,8 @@ jobs:
         env:
           TTLANG_REF: ${{ inputs.ttlang_ref }}
           TT_METAL_COMMIT: ${{ needs.build-ttmetal.outputs.ttmetal_sha }}
+          TTMETAL_DATE: ${{ needs.build-ttmetal.outputs.ttmetal_date }}
+          MAX_AGE_DAYS: ${{ inputs.max_age_days }}
         run: |
           set -euo pipefail
           if [ -n "$TTLANG_REF" ]; then
@@ -221,8 +223,8 @@ jobs:
           else
             .github/scripts/find-compatible-ttlang.sh \
               --ttmetal-install-dir /tmp/ttmetal-install \
-              --ttmetal-date "${{ needs.build-ttmetal.outputs.ttmetal_date }}" \
-              --max-age-days "${{ inputs.max_age_days }}" \
+              --ttmetal-date "$TTMETAL_DATE" \
+              --max-age-days "$MAX_AGE_DAYS" \
               --build-dir build-search
           fi
 
@@ -248,11 +250,15 @@ jobs:
 
       # Retry this SHA only after tt-lang HEAD advances.
       - name: Record miss
+        env:
+          TT_METAL_SHA: ${{ inputs.tt_metal_sha }}
+          TTLANG_HEAD: ${{ needs.find-compatible.outputs.ttlang_head }}
+          MAX_AGE_DAYS: ${{ inputs.max_age_days }}
         run: |
           .github/scripts/record-ttmetal-miss.sh \
-            --ttmetal-sha "${{ inputs.tt_metal_sha }}" \
-            --ttlang-head "${{ needs.find-compatible.outputs.ttlang_head }}" \
-            --max-age-days "${{ inputs.max_age_days }}"
+            --ttmetal-sha "$TT_METAL_SHA" \
+            --ttlang-head "$TTLANG_HEAD" \
+            --max-age-days "$MAX_AGE_DAYS"
 
   build-wheels:
     name: "Build light wheel (${{ matrix.python_tag }})"

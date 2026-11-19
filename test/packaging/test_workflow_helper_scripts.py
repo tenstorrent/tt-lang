@@ -305,7 +305,8 @@ def test_ttmetal_light_max_age_crosses_reusable_workflow_as_string() -> None:
 
 def test_ttmetal_light_on_demand_detect_skips_s3_for_dry_run() -> None:
     workflow = TTMETAL_LIGHT_ON_DEMAND_WORKFLOW.read_text()
-    # Dry-run and forced-SHA branch runs do not need S3 credentials.
+    # Dry-run and forced-SHA runs do not need S3 credentials. The jobs run only
+    # on main; the step-level main check stays as a second guard.
     assert "if: ${{ inputs.dry_run != true && inputs.tt_metal_sha == '' }}" in workflow
     assert (
         "if: ${{ inputs.dry_run != true && github.ref != 'refs/heads/main' }}"
@@ -930,10 +931,13 @@ def test_s3_workflow_publishes_only_from_main_ref() -> None:
     assert '"${GITHUB_REF:-}" != refs/heads/main' in resolver
     assert "Publishing is restricted to refs/heads/main" in resolver
     assert "Non-main dry runs must provide docker_tag" in resolver
-    assert (
-        "needs.preflight.outputs.dry_run == 'true' || github.ref == 'refs/heads/main'"
-        in workflow
-    )
+    # Dry runs too: preflight, which every other job needs, runs only on main,
+    # so the resolver's main checks are a second guard.
+    preflight_job = workflow.split("\n  preflight:", 1)[1].split(
+        "\n  build-docker:", 1
+    )[0]
+    assert "if: ${{ github.ref == 'refs/heads/main' }}" in preflight_job
+    assert "needs.preflight.outputs.dry_run == 'true' ||" not in workflow
 
 
 def test_check_wheel_ttnn_metadata_matches_requirement_name(tmp_path: Path) -> None:

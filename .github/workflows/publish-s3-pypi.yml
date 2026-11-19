@@ -59,9 +59,12 @@ permissions:
   contents: read
   packages: read
 
+# Every job that can get AWS credentials (id-token: write) runs only on main,
+# dry runs included.
 jobs:
   preflight:
     name: "Resolve S3 publish inputs"
+    if: ${{ github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -194,7 +197,7 @@ jobs:
   publish:
     name: "Publish wheels to S3 PyPI"
     needs: [preflight, build-bundled-wheels, build-manylinux-wheels]
-    if: ${{ always() && needs.preflight.result == 'success' && needs.preflight.outputs.publish_needed == 'true' && (needs.preflight.outputs.bundled_selected != 'true' || needs.build-bundled-wheels.result == 'success') && (needs.preflight.outputs.manylinux_selected != 'true' || needs.build-manylinux-wheels.result == 'success') && (needs.preflight.outputs.dry_run == 'true' || github.ref == 'refs/heads/main') }}
+    if: ${{ always() && needs.preflight.result == 'success' && needs.preflight.outputs.publish_needed == 'true' && (needs.preflight.outputs.bundled_selected != 'true' || needs.build-bundled-wheels.result == 'success') && (needs.preflight.outputs.manylinux_selected != 'true' || needs.build-manylinux-wheels.result == 'success') && github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
@@ -282,7 +285,7 @@ jobs:
   ttmetal-light-detect:
     name: "Detect tt-lang-light per-tt-metal-SHA build"
     needs: preflight
-    if: ${{ github.event_name == 'schedule' && needs.preflight.outputs.publish_needed == 'true' }}
+    if: ${{ github.event_name == 'schedule' && github.ref == 'refs/heads/main' && needs.preflight.outputs.publish_needed == 'true' }}
     continue-on-error: true
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -306,7 +309,7 @@ jobs:
   ttmetal-light-build:
     name: "Build tt-lang-light per-tt-metal-SHA wheel"
     needs: [preflight, build-docker, build-wheel-images, ttmetal-light-detect]
-    if: ${{ github.event_name == 'schedule' && needs.preflight.outputs.publish_needed == 'true' && needs.ttmetal-light-detect.outputs.uplift == 'true' }}
+    if: ${{ github.event_name == 'schedule' && github.ref == 'refs/heads/main' && needs.preflight.outputs.publish_needed == 'true' && needs.ttmetal-light-detect.outputs.uplift == 'true' }}
     permissions:
       contents: read
       id-token: write
