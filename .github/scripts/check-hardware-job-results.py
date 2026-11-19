@@ -72,12 +72,11 @@ def _classify_job(job: dict[str, Any]) -> tuple[HardwareJobResult, str]:
     if any(step.get("conclusion") is None for step in job.get("steps", [])):
         return HardwareJobResult.PENDING, "step results are not recorded yet"
 
+    # The setup step comes from the runner's job-started hook. A runner without
+    # that hook has no setup step; its job is then judged by its other steps.
     setup_step = _find_step(job, RUNNER_SETUP_STEP_NAME)
-    if setup_step is None:
-        return HardwareJobResult.POST_SETUP_FAILURE, "has no runner setup result"
-
-    setup_conclusion = setup_step.get("conclusion")
-    if setup_conclusion != "success":
+    if setup_step is not None and setup_step.get("conclusion") != "success":
+        setup_conclusion = setup_step.get("conclusion")
         return (
             HardwareJobResult.RUNNER_SETUP_FAILURE,
             f"runner setup concluded {setup_conclusion or 'without a result'}",
