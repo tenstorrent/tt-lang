@@ -48,6 +48,8 @@ permissions:
 jobs:
   maintain:
     name: "Plan or apply S3 wheel maintenance"
+    # Can get AWS credentials, so it runs only on main, dry runs included.
+    if: ${{ github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
