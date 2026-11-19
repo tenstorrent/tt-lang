@@ -2558,6 +2558,11 @@ ComputeOpCreationPlanner::build() const {
     plannedStores.insert(entry.first);
   }
   kernel->walk([&](StoreOp store) {
+    // ttl.topk is lowered later as one whole-buffer sequence. Its stores are
+    // not elementwise compute creations and not passthrough copies.
+    if (store.getTensor().getDefiningOp<TopkOp>()) {
+      return;
+    }
     if (!plannedStores.contains(store.getOperation())) {
       kernelPlan.unassignedStores.push_back(store);
     }

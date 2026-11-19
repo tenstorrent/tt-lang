@@ -89,6 +89,10 @@ void createTTLToTTKernelPipeline(OpPassManager &pm,
     pm.addNestedPass<func::FuncOp>(
         createTTLCoalesceDFBAcquires(coalesceOptions));
   }
+  // Scratch buffers created here must exist before index finalization so they
+  // receive dfb_id values and L1 allocation metadata.
+  pm.addNestedPass<func::FuncOp>(createTTLLowerTopk());
+  pm.addNestedPass<func::FuncOp>(createTTLVerifyTopkEpoch());
   {
     TTLFinalizeDFBIndicesOptions finalizeOptions;
     finalizeOptions.reuseUserDFBs = options.reuseUserDFBs;

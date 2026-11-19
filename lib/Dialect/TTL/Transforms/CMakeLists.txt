@@ -40,6 +40,7 @@ add_mlir_dialect_library(TTLangTTLTransforms
 
   LowerMatmulCompute.cpp
   LowerRowNormalizationCompute.cpp
+  LowerTopk.cpp
   LowerSignpostToEmitC.cpp
   TTLAnnotateCBAssociations.cpp
   TTLCoalesceDFBAcquires.cpp
@@ -60,6 +61,7 @@ add_mlir_dialect_library(TTLangTTLTransforms
   DFBProtocolDomainAnalysis.cpp
   TTLVerifyDFBSPSC.cpp
   TTLVerifyDFBLifecycle.cpp
+  TTLVerifyTopkEpoch.cpp
   TTLVerifyPipeNetGuards.cpp
   TTLErasePipeNetScopes.cpp
   TTLAssignDST.cpp
