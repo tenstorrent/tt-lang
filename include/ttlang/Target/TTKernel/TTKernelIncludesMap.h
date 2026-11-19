@@ -205,6 +205,7 @@ inline const llvm::StringMap<HeaderRequirement> &getCalleeToHeadersMap() {
         {"rand_tile_init",                                 {"api/compute/eltwise_unary/rand.h", ""}},
         {"recip_tile",                                     {"api/compute/eltwise_unary/recip.h", ""}},
         {"recip_tile_init",                                {"api/compute/eltwise_unary/recip.h", ""}},
+        {"reconfig_data_format_srca",                      {"api/compute/reconfig_data_format.h", ""}},
         {"reduce_init",                                    {"api/compute/reduce.h", ""}},
         {"reduce_tile",                                    {"api/compute/reduce.h", ""}},
         {"reduce_uninit",                                  {"api/compute/reduce.h", ""}},

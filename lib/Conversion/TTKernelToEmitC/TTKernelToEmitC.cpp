@@ -3330,6 +3330,7 @@ public:
         TTKernelToEmitCOpaqueRewriter<ttkernel::PackTileBlockOp>,
         TTKernelToEmitCPackReconfigL1AccToEmitCRewriter,
         PackReconfigDataFormatOpConversion,
+        TTKernelToEmitCOpaqueRewriter<ttkernel::ReconfigDataFormatSrcaOp>,
 
         // FPU Ops
         TTKernelToEmitCOpaqueRewriter<ttkernel::UnaryOpInitCommonOp>,
