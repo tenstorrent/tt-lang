@@ -3657,6 +3657,7 @@ def _lower_program_to_kernel(
         else:
             pipeline_passes.append("ttkernel-cleanup-and-finalize-runtime-args")
         pipeline_passes += [
+            "ttkernel-verify-hardware-config",
             "ttl-lower-signpost-to-emitc",
             "convert-ttkernel-to-emitc",
             "symbol-dce",
