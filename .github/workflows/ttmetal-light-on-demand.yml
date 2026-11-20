@@ -4,7 +4,8 @@
 
 # Build a tt-lang-light wheel for a forced or version-file-pinned tt-metal SHA.
 # Scheduled publishes use publish-s3-pypi.yml; this manual workflow resolves
-# the builder image tag itself.
+# the builder image tag itself. Its jobs can get AWS credentials, so they run
+# only on main, dry runs included.
 
 name: Build tt-lang-light per-tt-metal-SHA wheel (on demand)
 
@@ -57,6 +58,7 @@ permissions:
 jobs:
   detect:
     name: "Detect tt-lang-light per-tt-metal-SHA build"
+    if: ${{ github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
@@ -123,7 +125,7 @@ jobs:
   build:
     name: "Build tt-lang-light per-tt-metal-SHA wheel"
     needs: detect
-    if: ${{ needs.detect.outputs.uplift == 'true' }}
+    if: ${{ github.ref == 'refs/heads/main' && needs.detect.outputs.uplift == 'true' }}
     permissions:
       contents: read
       packages: read

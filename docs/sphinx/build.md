@@ -746,9 +746,9 @@ and `<DOCKER_TAG>` an existing manylinux wheel-builder tag):
 `publish-s3-pypi.yml` publishes S3-hosted wheels to the Tenstorrent S3 PyPI
 index at `https://pypi.eng.aws.tenstorrent.com/`. It runs weekly at 08:00 UTC
 on Monday (00:00 PST / 01:00 PDT) and can also be dispatched manually.
-Publishing is restricted to
-workflow runs on `refs/heads/main` because the AWS OIDC role is limited to
-main-branch refs; a manual dispatch from another ref can only perform a dry run.
+The workflow runs only on `refs/heads/main`, dry runs included: every job that
+can get AWS credentials is limited to `main`, and the AWS OIDC role is limited
+to main-branch refs. A manual dispatch from another ref skips every job.
 The workflow uses GitHub OIDC for AWS access. Regular publishes upload wheel
 objects directly under `tt-lang/` and write generated slash-key views consumed
 with `pip --find-links`: development wheels use `tt-lang/<YYYY-MM>/`, and final
@@ -757,11 +757,10 @@ The top-level `tt-lang/` listing shows only the README and subdirectories in a
 browser, but it keeps hidden anchors for final-release root wheels so
 `pip --find-links https://pypi.eng.aws.tenstorrent.com/tt-lang` remains
 backward-compatible for `X.Y.Z` S3 releases.
-Non-main dry runs must provide an existing `docker_tag`. If `docker_tag` is
-empty, the workflow builds only the builder images required by the selected
-variants: the IRD image for bundled wheels and the shared manylinux images for
-light or PyPI-style wheels. Image publication is also restricted to
-`refs/heads/main`.
+If `docker_tag` is empty, the workflow builds only the builder images required
+by the selected variants: the IRD image for bundled wheels and the shared
+manylinux images for light or PyPI-style wheels. Image publication is also
+restricted to `refs/heads/main`.
 
 The workflow prevents publishing a bundled S3 `tt-lang` wheel with the
 same package name and version as the public PyPI wheel when public PyPI
@@ -879,9 +878,10 @@ empty to search for the newest compatible tt-lang commit, or set it to pin the
 tt-lang commit or tag to build. A pinned `ttlang_ref` requires `tt_metal_sha`,
 because auto-detection reads the dispatch ref's `third-party/tt-metal-version`
 rather than the pinned ref's. With `dry_run: true` the workflow builds and
-validates without publishing and needs no S3 credentials, so it can run from a
-feature branch; the scheduled per-tt-metal-SHA build in `publish-s3-pypi.yml`
-is best-effort and does not fail the scheduled publish.
+validates without publishing. Its jobs can get AWS credentials, so it runs only
+on `refs/heads/main`, dry runs included. The scheduled per-tt-metal-SHA build
+in `publish-s3-pypi.yml` is best-effort and does not fail the scheduled
+publish.
 
 Successful per-SHA publishes place the wheel files (both tt-lang and
 tt-lang-light) under `https://pypi.eng.aws.tenstorrent.com/tt-lang/ttmetal/<ttmetal7>/`
@@ -941,10 +941,11 @@ and the tutorial suite.
 `s3-pypi-ops.yml` is a manual (`workflow_dispatch`) workflow for maintaining the
 tt-lang prefixes of `tenstorrent-pypi`: `inspect`, `put-index` (refresh a
 slash-key listing), `move`, `copy`, `delete`, and a read-only `readonly-cmd`.
-Writes require `refs/heads/main`; `dry_run` defaults to true. Operations are
-restricted to the `tt-lang/` prefix and cannot touch other teams' packages
-(including the sibling `tt-lang-light/` and `tt-lang-sim/` package indexes) or
-the bucket root. `delete` requires a `confirm` token equal to the prefix.
+It runs only on `refs/heads/main`, dry runs included, and `dry_run` defaults
+to true. Operations are restricted to the `tt-lang/` prefix and cannot touch
+other teams' packages (including the sibling `tt-lang-light/` and
+`tt-lang-sim/` package indexes) or the bucket root. `delete` requires a
+`confirm` token equal to the prefix.
 
 `s3-wheel-maintenance.yml` provides wheel-specific storage maintenance.
 `deduplicate` removes older object versions only when the key, size, and ETag
@@ -955,9 +956,10 @@ inclusive `start_date` and `end_date`; per-tt-metal wheel directories are
 excluded. A live date removal regenerates affected month views and the root
 index.
 
-Both operations require `refs/heads/main` and default to `dry_run: true`. Live
-deduplication requires `confirm: delete-duplicate-versions`; live date removal
-requires `confirm: delete-dev-versions`.
+The workflow runs only on `refs/heads/main`, dry runs included, and both
+operations default to `dry_run: true`. Live deduplication requires
+`confirm: delete-duplicate-versions`; live date removal requires
+`confirm: delete-dev-versions`.
 
 #### Local S3 wheel testing
 

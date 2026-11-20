@@ -137,10 +137,12 @@ jobs:
 
       - name: Build tt-metal at SHA
         id: ttmetal
+        env:
+          TT_METAL_SHA: ${{ inputs.tt_metal_sha }}
         run: |
           set -euo pipefail
           .workflow-src/.github/scripts/build-ttmetal-at-sha.sh \
-            --sha "${{ inputs.tt_metal_sha }}" \
+            --sha "$TT_METAL_SHA" \
             --scratch-dir /tmp/ttmetal-xla-sha
 
       - name: Validate wheel inputs and resolve versions
