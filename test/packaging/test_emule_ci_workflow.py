@@ -59,6 +59,8 @@ STEP_NAMES = [
     "Snapshot the runner temporary directory",
     "Checkout the pinned private source without retaining credentials",
     "Verify sources and absence of retained checkout credentials",
+    "Revoke the GitHub token",
+    "Leave tailnet",
     "Build the runner-local runtime image",
     "Allow the emulator's sparse memory reservations",
     "Run the compiler test inventory",
@@ -68,6 +70,8 @@ SECRET_STEPS = {
     "Validate the emulator source configuration",
     "Checkout the pinned private source without retaining credentials",
 }
+# The steps that use the Vault token: the two above, and the one that ends it.
+TOKEN_STEPS = SECRET_STEPS | {"Revoke the GitHub token"}
 
 
 def test_workflow_runs_only_merged_main_code_in_one_job():
@@ -105,10 +109,17 @@ def test_workflow_runs_only_merged_main_code_in_one_job():
     assert not {"needs", "strategy", "continue-on-error", "services"} & set(job)
     steps = job["steps"]
     assert [step["name"] for step in steps] == STEP_NAMES
-    assert steps[-1]["if"] == "always()"
-    assert steps[-1]["working-directory"] == "${{ github.workspace }}"
+    # Only the clean-up steps run after a failure, outside compiler/, which
+    # does not exist if its checkout failed.
+    conditions = {step["name"]: step["if"] for step in steps if "if" in step}
+    assert conditions == {
+        "Revoke the GitHub token": "always() && steps.vault.outputs.GH_TOKEN != ''",
+        "Leave tailnet": "always()",
+        "Report the public per-suite summary": "always()",
+    }
+    for name in conditions:
+        assert workflow_step(name)["working-directory"] == "${{ github.workspace }}"
     assert all("continue-on-error" not in step for step in steps)
-    assert all("if" not in step for step in steps[:-1])
     # Every step is bounded, and the bounds fit the job limit.
     assert sum(int(step["timeout-minutes"]) for step in steps) <= int(
         job["timeout-minutes"]
@@ -120,18 +131,18 @@ VAULT_TOKEN = "${{ steps.vault.outputs.GH_TOKEN }}"
 TAILNET_VARIABLES = {"vars.TS_VAULT_OSPO_CLIENT_ID", "vars.TS_VAULT_OSPO_AUDIENCE"}
 
 
-def test_token_and_secret_reach_only_validation_and_private_checkout():
+def test_token_and_secret_reach_only_the_steps_that_need_them():
     raw = (ROOT / WORKFLOW).read_text()
     found = re.findall(r"secrets\.[A-Za-z0-9_]+", raw)
     assert found == ["secrets.TTLANG_EMULE_SOURCE_REPOSITORY"] * 2
-    # The Vault token reaches the two steps through their own env, never the
-    # job's: two uses in all.
-    assert raw.count("steps.vault.outputs") == 2
+    # The Vault token reaches its steps through their own env, never the job's:
+    # validation, checkout, and the revoke's condition and env.
+    assert raw.count("steps.vault.outputs") == 4
     steps = workflow_definition()["jobs"]["inventory"]["steps"]
     for step in steps:
         text = yaml.safe_dump(step)
-        mentions = "secrets." in text or "steps.vault." in text
-        assert mentions == (step["name"] in SECRET_STEPS), step["name"]
+        assert ("secrets." in text) == (step["name"] in SECRET_STEPS), step["name"]
+        assert ("steps.vault." in text) == (step["name"] in TOKEN_STEPS), step["name"]
     # Only OSPO's organization variables for joining its tailnet: a repository
     # variable is not masked in logs.
     assert set(re.findall(r"vars\.[A-Za-z0-9_]+", raw)) == TAILNET_VARIABLES
@@ -215,11 +226,61 @@ def test_vault_token_comes_before_the_snapshot_and_is_used_while_valid():
     vault = names.index("Get ephemeral GitHub token")
     # The snapshot must record whatever the Vault steps leave in RUNNER_TEMP.
     assert vault < names.index("Snapshot the runner temporary directory")
-    # Vault ends the token 15 minutes after the login. The last step that uses
-    # it ends before then, even if every step in between runs to its limit.
-    last_use = names.index(PRIVATE_CHECKOUT)
+    # The Vault login lasts 15 minutes and the token at most 1 hour. The revoke,
+    # the token's last use, ends within 15 minutes, even if every step in
+    # between runs to its limit.
+    last_use = names.index("Revoke the GitHub token")
     in_between = steps[vault + 1 : last_use + 1]
     assert sum(int(step["timeout-minutes"]) for step in in_between) < 15
+
+
+def test_token_is_revoked_and_the_tailnet_left_before_the_build():
+    verify = STEP_NAMES.index(
+        "Verify sources and absence of retained checkout credentials"
+    )
+    # Right after the verification: a step between the snapshot and the
+    # verification would leave its script in the runner temporary directory.
+    assert STEP_NAMES[verify + 1 : verify + 4] == [
+        "Revoke the GitHub token",
+        "Leave tailnet",
+        "Build the runner-local runtime image",
+    ]
+    revoke = workflow_step("Revoke the GitHub token")
+    assert revoke["env"] == {"GH_TOKEN": VAULT_TOKEN}
+    assert "${{" not in revoke["run"]
+    assert "sudo tailscale logout" in workflow_step("Leave tailnet")["run"]
+
+
+def test_revoke_sends_the_token_only_through_standard_input(tmp_path):
+    record = tmp_path / "curl-record"
+    curl = tmp_path / "curl"
+    curl.write_text(
+        "#!/bin/sh\n"
+        f"printf '%s\\n' \"$@\" > '{record}.args'\n"
+        f"cat > '{record}.stdin'\n"
+    )
+    curl.chmod(0o755)
+    result = subprocess.run(
+        [
+            "bash",
+            "-euo",
+            "pipefail",
+            "-c",
+            workflow_step("Revoke the GitHub token")["run"],
+        ],
+        env={**os.environ, "GH_TOKEN": "ghs_TOKEN_SENTINEL"},
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    arguments = Path(f"{record}.args").read_text().splitlines()
+    assert "TOKEN_SENTINEL" not in "".join(arguments) + result.stdout + result.stderr
+    assert arguments[-1] == "https://api.github.com/installation/token"
+    pairs = list(zip(arguments, arguments[1:]))
+    assert ("-X", "DELETE") in pairs and ("-H", "@-") in pairs
+    assert Path(f"{record}.stdin").read_text() == (
+        "Authorization: Bearer ghs_TOKEN_SENTINEL\n"
+    )
 
 
 @pytest.mark.parametrize(
@@ -293,8 +354,8 @@ def test_worker_accepts_the_hosted_invocation():
         "DOCKER_BUILD_SUMMARY": "false",
         "DOCKER_BUILD_RECORD_UPLOAD": "false",
     }
-    assert "--kill-after=30s 6660" in build["run"]
-    assert 6660 + 30 < 60 * int(build["timeout-minutes"])
+    assert "--kill-after=30s 6540" in build["run"]
+    assert 6540 + 30 < 60 * int(build["timeout-minutes"])
 
 
 def test_memory_overcommit_is_set_just_before_the_worker():

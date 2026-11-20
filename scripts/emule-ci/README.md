@@ -94,9 +94,11 @@ environment and `main`, with repository permission Contents: Read-only
 (Metadata: Read-only comes with it) on only the private emulator repository,
 and no other permissions. OSPO gives the role and token names that the "Get
 ephemeral GitHub token" step uses; keep the private repository's name out of
-them, because they appear in this public workflow. Vault ends the token 15
-minutes after the login, so only the validation and private checkout steps,
-right after it, use it. The validation step accepts a GitHub App token
+them, because they appear in this public workflow. The Vault login lasts 15
+minutes and the token at most 1 hour. Only the validation and private checkout
+steps use the token. Right after the checkout is verified, the job revokes the
+token and leaves the tailnet, before any code from the private source runs.
+The validation step accepts a GitHub App token
 (`ghs_...`) or a fine-grained token (`github_pat_...`), and rejects a classic
 token (`ghp_...`), which cannot be limited to one repository.
 

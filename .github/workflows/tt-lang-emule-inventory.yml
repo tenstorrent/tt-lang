@@ -62,8 +62,9 @@ jobs:
           df -Pk "$RUNNER_TEMP"
 
       # The next three steps are OSPO's, as its instructions give them. They run
-      # before the snapshot below, which records what they leave behind, and
-      # the token they get is used within 15 minutes, while it is valid.
+      # before the snapshot below, which records what they leave behind. The
+      # GitHub token lasts at most 1 hour; it is revoked after the
+      # verification step, before any code of the private source runs.
       - name: Join tailnet
         timeout-minutes: 2
         uses: tailscale/github-action@064b10558093f38325e838ddea35486bdc6b1d5c # v4.4.0
@@ -75,7 +76,7 @@ jobs:
       - name: Wait for Vault
         timeout-minutes: 1
         run: |
-          for attempt in 1 2 3 4 5 6; do
+          for _ in 1 2 3 4 5 6; do
             curl -fsS --max-time 5 "${VAULT_URL}/v1/sys/health?standbyok=true&uninitcode=204&sealedcode=204" >/dev/null && exit 0
             sleep 2
           done
@@ -188,8 +189,35 @@ jobs:
             --manifest config/tt-lang-emule-stack.json validate \
             --compiler-source . --emulator-source "$GITHUB_WORKSPACE/private-runtime" --quiet
 
+      # Here and not right after the checkout: a step between the snapshot and
+      # the verification would leave its script in the runner temporary
+      # directory. Nothing after this point needs the token.
+      - name: Revoke the GitHub token
+        if: always() && steps.vault.outputs.GH_TOKEN != ''
+        timeout-minutes: 1
+        working-directory: ${{ github.workspace }}
+        env:
+          GH_TOKEN: ${{ steps.vault.outputs.GH_TOKEN }}
+        run: |
+          # The header comes from standard input, never a command argument.
+          printf 'Authorization: Bearer %s\n' "$GH_TOKEN" |
+            curl -fsS --max-time 30 -o /dev/null -X DELETE -H @- \
+              -H 'Accept: application/vnd.github+json' \
+              https://api.github.com/installation/token
+
+      # Cuts the job off from OSPO Vault before the private source is built.
+      - name: Leave tailnet
+        if: always()
+        timeout-minutes: 1
+        working-directory: ${{ github.workspace }}
+        run: |
+          sudo tailscale logout || {
+            echo '::warning::tailscale logout failed; taking the interface down'
+            sudo tailscale down || true
+          }
+
       - name: Build the runner-local runtime image
-        timeout-minutes: 113
+        timeout-minutes: 111
         env:
           TTLANG_EMULE_BUILD_ONLY: "1"
           TTLANG_EMULE_REBUILD: "1"
@@ -203,7 +231,7 @@ jobs:
           trap 'status=$?; printf "Runtime build: exit=%s seconds=%s\n" "$status" "$((SECONDS - started))"; df -Pk "$RUNNER_TEMP"' EXIT
           available_kib="$(df -Pk "$RUNNER_TEMP" | awk 'NR == 2 {print $4}')"
           test "$available_kib" -ge 2097152
-          timeout --signal=TERM --kill-after=30s 6660 \
+          timeout --signal=TERM --kill-after=30s 6540 \
             bash scripts/tt-lang-emule-container.sh \
             > "$RUNNER_TEMP/runtime-build.log" 2>&1
 
