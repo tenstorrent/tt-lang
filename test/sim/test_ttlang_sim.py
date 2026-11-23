@@ -21,6 +21,7 @@ import pytest
 from test_utils import make_zeros_tensor
 
 from sim import ttl, ttnn
+from sim.context_types import DEFAULT_MAX_L1_BYTES
 from sim.operation import get_default_grid, set_default_grid
 from sim.typedefs import Shape
 
@@ -802,13 +803,29 @@ if __name__ == "__main__":
         ), f"Expected validation error in stderr, got: {result.stderr}"
 
     def test_max_l1_no_flag_uses_default_limit(self):
-        """Without --max-l1, the default limit (1336 KiB) applies; small CBs should not warn."""
+        """Without --max-l1, the default limit (1432 KiB) applies; small CBs should not warn."""
         result = self._run()
         assert (
             result.returncode == 0
         ), f"Expected success under default L1 limit, got stderr: {result.stderr}"
         assert "SUCCESS" in result.stdout
         assert "exceeds the L1 memory limit" not in result.stderr
+
+    def test_max_l1_help_states_the_default_limit(self):
+        """--help should name the limit the simulator enforces, not a stale one."""
+        result = subprocess.run(
+            [sys.executable, "-m", "sim.ttlang_sim", "--help"],
+            cwd=Path(__file__).parent.parent.parent,
+            env={**os.environ, "PYTHONPATH": "python"},
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, result.stderr
+        help_text = " ".join(result.stdout.split())
+        default_kib = DEFAULT_MAX_L1_BYTES // 1024
+        assert (
+            f"(default: {default_kib} KiB)" in help_text
+        ), f"--max-l1 help does not state the {default_kib} KiB default:\n{result.stdout}"
 
 
 class TestNoFloat32Promotion:
