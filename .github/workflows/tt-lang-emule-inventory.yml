@@ -105,7 +105,8 @@ jobs:
         run: |
           # The token comes from OSPO Vault: a GitHub App token or a fine-grained
           # token. A classic token (ghp_) cannot be limited to one repository.
-          if [[ ! "$SOURCE_READ_TOKEN" =~ ^(github_pat|ghs)_[A-Za-z0-9_]+$ ]] ||
+          # GitHub App tokens are now stateless: about 520 characters, with dots.
+          if [[ ! "$SOURCE_READ_TOKEN" =~ ^(github_pat_[A-Za-z0-9_]+|ghs_[A-Za-z0-9._-]+)$ ]] ||
              [[ ! "$SOURCE_REPOSITORY" =~ ^tenstorrent/[A-Za-z0-9_.-]+$ ]]; then
             echo 'The emulator source configuration is missing or invalid.' >&2
             exit 2

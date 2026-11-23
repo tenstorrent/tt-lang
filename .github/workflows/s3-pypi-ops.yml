@@ -4,8 +4,9 @@
 
 # Manual S3 maintenance for the tt-lang prefixes of tenstorrent-pypi: create or
 # refresh slash-key directory listings, move/copy/delete tt-lang prefixes, and
-# run read-only inspections. Writes require refs/heads/main; dry_run is the
-# default. Never touches other teams' prefixes or the bucket root.
+# run read-only inspections. Runs only on refs/heads/main, dry runs included,
+# and dry_run is the default. Never touches other teams' prefixes or the
+# bucket root.
 
 name: S3 PyPI ops (tt-lang)
 run-name: "S3 PyPI ops: ${{ inputs.operation }} (dry_run=${{ inputs.dry_run }})"
@@ -59,6 +60,7 @@ permissions:
 jobs:
   run:
     name: "Run S3 PyPI op"
+    if: ${{ github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:

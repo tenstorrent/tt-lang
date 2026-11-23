@@ -283,6 +283,12 @@ def test_revoke_sends_the_token_only_through_standard_input(tmp_path):
     )
 
 
+STATELESS_APP_TOKEN = (
+    "ghs_eyJhbGciOiJSUzI1NiJ9.eyJUT0tFTl9TRU5USU5FTCI6MX0."
+    "TOKEN_SENTINEL-c2lnbmF0dXJl_eA"
+)
+
+
 @pytest.mark.parametrize(
     "overrides,allowed",
     [
@@ -291,6 +297,11 @@ def test_revoke_sends_the_token_only_through_standard_input(tmp_path):
         ({"SOURCE_READ_TOKEN": "github_pat_TOKEN_SENTINEL\n"}, False),
         ({"SOURCE_READ_TOKEN": "ghs_TOKEN_SENTINEL"}, True),
         ({"SOURCE_READ_TOKEN": "ghs_TOKEN_SENTINEL\n"}, False),
+        # GitHub's stateless App token: a ghs_-prefixed JWT, with dots and dashes.
+        ({"SOURCE_READ_TOKEN": STATELESS_APP_TOKEN}, True),
+        ({"SOURCE_READ_TOKEN": STATELESS_APP_TOKEN + "\n"}, False),
+        ({"SOURCE_READ_TOKEN": STATELESS_APP_TOKEN.replace(".", " ", 1)}, False),
+        ({"SOURCE_READ_TOKEN": "github_pat_TOKEN_SENTINEL.part"}, False),
         ({"SOURCE_READ_TOKEN": "ghp_TOKEN_SENTINEL"}, False),
         ({"SOURCE_READ_TOKEN": "gho_TOKEN_SENTINEL"}, False),
         ({"SOURCE_READ_TOKEN": "token github_pat_TOKEN_SENTINEL"}, False),
