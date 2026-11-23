@@ -99,8 +99,9 @@ minutes and the token at most 1 hour. Only the validation and private checkout
 steps use the token. Right after the checkout is verified, the job revokes the
 token and leaves the tailnet, before any code from the private source runs.
 The validation step accepts a GitHub App token
-(`ghs_...`) or a fine-grained token (`github_pat_...`), and rejects a classic
-token (`ghp_...`), which cannot be limited to one repository.
+(`ghs_...`, now about 520 characters with dots) or a fine-grained token
+(`github_pat_...`), and rejects a classic token (`ghp_...`), which cannot be
+limited to one repository.
 
 If the token setup is missing or does not match the run, every run fails at
 "Get ephemeral GitHub token"; ask on the OSPO ticket. To stop this job's access
