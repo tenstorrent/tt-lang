@@ -77,35 +77,34 @@ both are reported, not fatal, and should be pruned. Refresh the list, and the
 image lock files, on every stack-pin bump.
 
 **Admin setup.** Create the environment `tt-lang-emule`, restricted to the
-`main` branch, with "Allow administrators to bypass" off. A developer with read
-access to the private emulator repository creates a fine-grained personal
-access token with resource owner `tenstorrent`, repository access "Only select
-repositories" listing only the private emulator repository, repository
-permission Contents: Read-only (Metadata: Read-only is added automatically),
-no other permissions, and an expiration date. The token returns "not found"
-until an organization admin (OSPO) approves the request. Store the raw
-`github_pat_...` value (no prefix, no trailing newline) as the environment
-secret `TTLANG_EMULE_SOURCE_READ_TOKEN`, and the repository as
-`TTLANG_EMULE_SOURCE_REPOSITORY` in the form `tenstorrent/<name>` (no URL, no
-trailing newline); any other value fails the validation step. Do not create
-repository- or organization-level copies. The `Validate compiler-backed
-emulation candidate` workflow reads the private source through its own
-repository-level variable `TTLANG_EMULE_SOURCE_REPOSITORY` and secret
-`TTLANG_EMULE_SOURCE_TOKEN`; this job never reads them, and this setup neither
-creates nor revokes them. A repository variable is not masked in logs.
+`main` branch, with "Allow administrators to bypass" off, and store the
+repository as its secret `TTLANG_EMULE_SOURCE_REPOSITORY` in the form
+`tenstorrent/<name>` (no URL, no trailing newline); any other value fails the
+validation step. Do not create repository- or organization-level copies. The
+`Validate compiler-backed emulation candidate` workflow reads the private
+source through its own repository-level variable
+`TTLANG_EMULE_SOURCE_REPOSITORY` and secret `TTLANG_EMULE_SOURCE_TOKEN`; this
+job never reads them, and this setup neither creates nor revokes them. A
+repository variable is not masked in logs.
 
-Unlike a deploy key, this interim token belongs to the developer: it reaches
-only what that developer can read, its reads are attributed to them in audit
-logs, and only they (or organization admins, through approval and revocation)
-can change its scope or revoke it. It stops working when it expires, when it is
-revoked, or when its owner loses access to the repository or leaves the
-organization; every run then fails at "Checkout the pinned private source
-without retaining credentials" while validation still passes. Record the expiry
-date and, before it, regenerate the token with the same settings and overwrite
-the environment secret in place; the sim area owner does this. Once the job is
-stable, an OSPO Jira ticket replaces the token with a bot-owned one with the
-same settings, which ends the person-bound phase; the same expiry and rotation
-rules apply to it. Revoke the token to stop this job's access at once.
+No GitHub token is stored. The job joins OSPO's tailnet, logs in to OSPO Vault
+with its OIDC token (hence `id-token: write`), and gets a read token that works
+for that job only. On an OSPO ticket, ask for a token setup for this
+environment and `main`, with repository permission Contents: Read-only
+(Metadata: Read-only comes with it) on only the private emulator repository,
+and no other permissions. OSPO gives the role and token names that the "Get
+ephemeral GitHub token" step uses; keep the private repository's name out of
+them, because they appear in this public workflow. The Vault login lasts 15
+minutes and the token at most 1 hour. Only the validation and private checkout
+steps use the token. Right after the checkout is verified, the job revokes the
+token and leaves the tailnet, before any code from the private source runs.
+The validation step accepts a GitHub App token
+(`ghs_...`) or a fine-grained token (`github_pat_...`), and rejects a classic
+token (`ghp_...`), which cannot be limited to one repository.
+
+If the token setup is missing or does not match the run, every run fails at
+"Get ephemeral GitHub token"; ask on the OSPO ticket. To stop this job's access
+at once, ask OSPO to remove the token setup.
 
 **Recommended `main` ruleset hardening** (not enforced by this workflow):
 enable "Require review from Code Owners" and "Require approval of the most
