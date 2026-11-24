@@ -78,6 +78,11 @@ def TTKernel_InputClampingAttr : EnumAttr<TTKernel_Dialect, TTKernel_InputClampi
   let assemblyFormat = "`<` $value `>`";
 }
 
+def TTKernel_TopkTieOrderAttr
+    : EnumAttr<TTKernel_Dialect, TTKernel_TopkTieOrder, "topk_tie_order"> {
+  let assemblyFormat = "`<` $value `>`";
+}
+
 def TTKernel_L1Addr : TTKernel_Type<"L1Addr", "l1_addr"> {
     let summary = "TTKernel l1 address";
     let description = "L1 address type in TTKernel dialect";

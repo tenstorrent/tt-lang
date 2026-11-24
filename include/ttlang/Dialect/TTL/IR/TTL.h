@@ -227,6 +227,15 @@ constexpr llvm::StringLiteral
 constexpr llvm::StringLiteral
     kCompilerAllocatedAttrName("ttl.compiler_allocated");
 
+/// Discardable `ttl.topk_payload` on `ttl.bind_cb`. Names the representation
+/// stored in that dataflow buffer. Absent means plain value or index tiles.
+constexpr llvm::StringLiteral kTopkPayloadAttrName("ttl.topk_payload");
+
+/// Discardable `ttl.topk_order` on `ttl.bind_cb`. Required beside a fused-key
+/// or rank-stamped `ttl.topk_payload`: the packed representation encodes the
+/// sort polarity, so every stage and helper touching the buffer must match it.
+constexpr llvm::StringLiteral kTopkOrderAttrName("ttl.topk_order");
+
 /// Function attribute recording the first tensor-accessor argument index.
 /// CTA layout is [DFBs, compiler-defined arguments, tensor accessors].
 constexpr llvm::StringLiteral kBaseCTAIndexAttrName("ttl.base_cta_index");
@@ -282,6 +291,15 @@ template <typename ConcreteType>
 class TTLStrategyDependentBinaryOpTrait
     : public mlir::OpTrait::TraitBase<ConcreteType,
                                       TTLStrategyDependentBinaryOpTrait> {};
+
+/// Marks destination-register helpers that execute correctly only with
+/// 32-bit destination elements, independent of any operand type. The kernel
+/// configuration analysis consumes this for operations that do not implement
+/// TileExecutionOpInterface.
+template <typename ConcreteType>
+class TTLRequiresFp32DestinationAccumulationTrait
+    : public mlir::OpTrait::TraitBase<
+          ConcreteType, TTLRequiresFp32DestinationAccumulationTrait> {};
 
 /// Trait for tile operations whose result overwrites the DST input in-place.
 template <typename ConcreteType>

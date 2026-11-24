@@ -620,3 +620,19 @@ func.func @unspecified_target_row_broadcast(
         -> !ttcore.tile<32x32, bf16>
   return
 }
+
+// -----
+
+// A TopK helper requires 32-bit destination elements even when no stage op
+// shares its section; the defuse section of the lowered sequence is such a
+// section.
+// DEFAULT-LABEL: func.func @topk_helper_only_section
+// DEFAULT-SAME: fp32_dest_acc_en = true
+func.func @topk_helper_only_section() {
+  %dst = arith.constant 0 : index
+  %one = arith.constant 1 : i32
+  ttl.tile_topk_defuse dst[%dst] num_tiles = %one
+      {order = #ttl.topk_order<descending>} : (index, i32) -> ()
+  ttl.tile_topk_uint16_move_dest_tile_to_pack_half dst[%dst] : index
+  return
+}
