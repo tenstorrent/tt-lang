@@ -1540,10 +1540,18 @@ def TTKernelInsertInits
     once per sync region, hoisted above any enclosing loops.
 
     Per-op inits (`exp_tile_init`, `add_tiles_init`, etc.) configure the
-    MATH pipeline for a specific operation type. An init is emitted
-    whenever the op type changes from the previous compute op in
-    linear block order. Init tracking resets at sync boundaries
-    (`tile_regs_acquire`/`commit`/`wait`/`release`).
+    MATH pipeline for a specific operation type. An init is emitted when
+    the MATH configuration reaching a compute operation differs from the
+    descriptor that operation reads. When an `scf.for`, `scf.if`, or
+    `scf.while` contains only consumers of one descriptor and does not
+    contain a DST sync, that init is placed immediately before the region.
+    Otherwise it is placed immediately before the consumer, including
+    inside the region. DST synchronization preserves the configuration.
+    `reduce_uninit` is emitted when any incoming path may hold a reduce
+    configuration, before the next sync or non-reduce consumer, and that
+    transition clears the pending reduce state. Init placement and reduce
+    cleanup repeat until neither inserts an operation, because cleanup can
+    require a new init and a new reduce init can require later cleanup.
 
     Example (consecutive same-type ops share one init):
     ```mlir
@@ -1590,6 +1598,32 @@ def TTKernelInsertInits
   let dependentDialects = [
     "::mlir::tt::ttkernel::TTKernelDialect"
   ];
+}
+
+def TTKernelVerifyHardwareConfig
+    : Pass<"ttkernel-verify-hardware-config", "::mlir::ModuleOp"> {
+  let summary = "Verify the MATH configuration required by compute operations";
+  let description = [{
+    Proves that every operation reading the MATH configuration
+    (`MathInitResource`) is reached on every control-flow path by a per-op
+    init with an equal descriptor: the same init operation, key operands, and
+    attributes. Operations declare these accesses through
+    `MemoryEffectOpInterface`; see `TTKernelConfigEffects.h`.
+
+    Each function starts with an unknown configuration. The analysis follows
+    `scf.for`, `scf.if`, and `scf.while`, including loop backedges. A static
+    trip count of 0 is not checked. A trip count of 1 does not join the
+    backedge. Full inits, calls, and operations with other regions reset the
+    configuration to unknown.
+
+    Example (rejected, the `else` path reaches `exp_tile` without its init):
+    ```mlir
+    scf.if %cond {
+      ttkernel.exp_tile_init() : () -> ()
+    }
+    ttkernel.exp_tile(%c0) : (index) -> ()
+    ```
+  }];
 }
 
 def TTKernelCleanup : Pass<"ttkernel-cleanup", "::mlir::ModuleOp"> {
