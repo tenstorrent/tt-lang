@@ -267,4 +267,36 @@ def TTL_TileExecutionStrategy : I32EnumAttr<
   let genSpecializedAttr = 0;
 }
 
+//===----------------------------------------------------------------------===//
+// DFB network enums
+//===----------------------------------------------------------------------===//
+
+def TTL_DFBNetworkForkStorage_Replicated : I32EnumAttrCase<"Replicated", 0, "replicated">;
+def TTL_DFBNetworkForkStorage_Shared : I32EnumAttrCase<"Shared", 1, "shared">;
+def TTL_DFBNetworkForkStorage_Auto : I32EnumAttrCase<"Auto", 2, "auto">;
+
+def TTL_DFBNetworkForkStorage : I32EnumAttr<"DFBNetworkForkStorage", "DFB network fork storage",
+    [TTL_DFBNetworkForkStorage_Replicated, TTL_DFBNetworkForkStorage_Shared, TTL_DFBNetworkForkStorage_Auto]> {
+  let cppNamespace = "::mlir::tt::ttl";
+  let genSpecializedAttr = 0;
+}
+
+def TTL_DFBNetworkSplitPolicy_RoundRobin : I32EnumAttrCase<"RoundRobin", 0, "round_robin">;
+def TTL_DFBNetworkSplitPolicy_Contiguous : I32EnumAttrCase<"Contiguous", 1, "contiguous">;
+
+def TTL_DFBNetworkSplitPolicy : I32EnumAttr<"DFBNetworkSplitPolicy", "DFB network split policy",
+    [TTL_DFBNetworkSplitPolicy_RoundRobin, TTL_DFBNetworkSplitPolicy_Contiguous]> {
+  let cppNamespace = "::mlir::tt::ttl";
+  let genSpecializedAttr = 0;
+}
+
+def TTL_DFBNetworkMergePolicy_RoundRobin : I32EnumAttrCase<"RoundRobin", 0, "round_robin">;
+def TTL_DFBNetworkMergePolicy_FirstReady : I32EnumAttrCase<"FirstReady", 1, "first_ready">;
+
+def TTL_DFBNetworkMergePolicy : I32EnumAttr<"DFBNetworkMergePolicy", "DFB network merge policy",
+    [TTL_DFBNetworkMergePolicy_RoundRobin, TTL_DFBNetworkMergePolicy_FirstReady]> {
+  let cppNamespace = "::mlir::tt::ttl";
+  let genSpecializedAttr = 0;
+}
+
 #endif // TTLANG_DIALECT_TTL_IR_TTLOPSENUMS_TD

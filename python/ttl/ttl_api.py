@@ -3556,6 +3556,7 @@ def _lower_program_to_kernel(
             "ttl-materialize-loop-state"
         )
         pipeline_passes = [
+            "ttl-reject-dfb-networks",
             f"func.func({tensor_recurrence_pipeline})",
             "func.func(ttl-insert-copy-wait)",
             f"func.func({insert_dfb_sync_pass},{coalesce_dfb_acquires_pass})",

@@ -4,10 +4,13 @@
 // RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttl-to-ttkernel-pipeline{matmul-full-fp32=false})' --dump-pass-pipeline 2>&1 | FileCheck %s --check-prefix=MATMUL-DISABLED
 // RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttl-to-ttkernel-pipeline{matmul-full-fp32=true})' --dump-pass-pipeline 2>&1 | FileCheck %s --check-prefix=MATMUL-ENABLED
 
-// Verify tensor recurrence lowering runs before DFB materialization and
-// synchronization, and PipeNet verification runs before DFB index reuse.
+// Verify DFB network rejection runs first, tensor recurrence lowering runs
+// before DFB materialization and synchronization, and PipeNet verification
+// runs before DFB index reuse.
 
 // CHECK-LABEL: Pass Manager with
+// CHECK-NEXT: builtin.module(
+// CHECK-NEXT:   ttl-reject-dfb-networks,
 // CHECK:      ttl-form-accumulation-scopes
 // CHECK:      ttl-lower-accumulation-scopes
 // CHECK:      ttl-materialize-loop-state

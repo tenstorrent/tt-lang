@@ -18,6 +18,7 @@ include "mlir/Interfaces/IndexingMapOpInterface.td"
 include "mlir/Interfaces/TilingInterface.td"
 include "mlir/Interfaces/ViewLikeInterface.td"
 include "mlir/IR/OpBase.td"
+include "mlir/IR/SymbolInterfaces.td"
 
 //===----------------------------------------------------------------------===//
 // TTL operation definitions
@@ -2603,6 +2604,152 @@ def TTL_TileStoreOp : TTL_ComputePrimitiveOp<"tile_store", "Passthrough",
     OptionalAttr<UnitAttr>:$row_prefix
   );
   let assemblyFormat = "$tile `,` $view `[` $indices `]` `from` `dst` `[` $dst_index `]` attr-dict `:` type($tile) `,` type($view)";
+  let hasVerifier = 1;
+}
+
+//===----------------------------------------------------------------------===//
+// DFB network operations
+//===----------------------------------------------------------------------===//
+
+def TTL_DFBNetworkOp : TTL_Op<"dfb.network", [
+    IsolatedFromAbove,
+    NoRegionArguments,
+    NoTerminator,
+    SingleBlock,
+    SymbolTable,
+    SymbolName,
+    SymbolVisibility,
+    Symbol,
+    HasParent<"::mlir::ModuleOp">
+]> {
+  let summary = "Declare a network of connected DFBs";
+  let description = [{
+    Declares how a set of DFBs is connected by fork, split, and merge records.
+    The body contains only records. Records name DFBs by the `dfb_id` of their
+    `ttl.bind_cb` bindings, and name merged read handles by the symbol of the
+    producing `ttl.dfb.merge`. The network is a symbol table, so these
+    references resolve only within one network.
+
+    Records produce no values and execute nothing; they describe the
+    connections that later lowering realizes.
+  }];
+  let arguments = (ins
+    SymbolNameAttr:$sym_name,
+    OptionalAttr<StrAttr>:$sym_visibility
+  );
+  let regions = (region SizedRegion<1>:$bodyRegion);
+  let assemblyFormat = [{
+    ($sym_visibility^)? $sym_name attr-dict-with-keyword $bodyRegion
+  }];
+  let builders = [OpBuilder<(ins "::llvm::StringRef":$symName)>];
+  let skipDefaultBuilders = 1;
+  let hasRegionVerifier = 1;
+}
+
+def TTL_DFBNetworkHandleAttr
+    : AnyAttrOf<[ConfinedAttr<IndexAttr, [IntNonNegative]>, FlatSymbolRefAttr],
+                "non-negative DFB id or merged read handle">;
+
+// Upstream DenseArrayNonNegative names the array type unqualified, which does
+// not compile outside namespace mlir.
+def TTL_DFBNetworkOutputsAttr : ConfinedAttr<DenseI64ArrayAttr, [
+  AttrConstraint<
+    CPred<"::llvm::all_of(::llvm::cast<::mlir::DenseI64ArrayAttr>($_self)"
+          ".asArrayRef(), [](int64_t v) { return v >= 0; })">,
+    "whose value is non-negative">
+]>;
+
+def TTL_DFBForkOp : TTL_Op<"dfb.fork", [
+  SymbolName,
+  SymbolVisibility,
+  Symbol,
+  HasParent<"DFBNetworkOp">
+]> {
+  let summary = "Deliver every item of a DFB source to each output DFB";
+  let description = [{
+    Declares that each item read from `source` is delivered to every DFB in
+    `outputs`.
+
+    - `source` is a DFB id or a symbol reference to a `ttl.dfb.merge` in the
+      same network.
+    - `outputs` lists the output DFB ids in output order. Each output's
+      capacity comes from its `ttl.bind_cb`.
+    - `storage` selects how the delivered payload is stored; see
+      `#ttl.dfb_network_fork_storage`.
+  }];
+  let arguments = (ins
+    SymbolNameAttr:$sym_name,
+    OptionalAttr<StrAttr>:$sym_visibility,
+    TTL_DFBNetworkHandleAttr:$source,
+    TTL_DFBNetworkOutputsAttr:$outputs,
+    TTL_DFBNetworkForkStorageAttr:$storage
+  );
+  let assemblyFormat = [{
+    ($sym_visibility^)? $sym_name $source `->` $outputs
+    `storage` `=` $storage attr-dict
+  }];
+  let hasVerifier = 1;
+}
+
+def TTL_DFBSplitOp : TTL_Op<"dfb.split", [
+  SymbolName,
+  SymbolVisibility,
+  Symbol,
+  HasParent<"DFBNetworkOp">
+]> {
+  let summary = "Distribute the items of a DFB source across output DFBs";
+  let description = [{
+    Declares that each item read from `source` is delivered to exactly one DFB
+    in `outputs`.
+
+    - `source` is a DFB id or a symbol reference to a `ttl.dfb.merge` in the
+      same network.
+    - `outputs` lists the output DFB ids in output order. Each output's
+      capacity comes from its `ttl.bind_cb`.
+    - `policy` selects which output receives each item; see
+      `#ttl.dfb_network_split_policy`.
+  }];
+  let arguments = (ins
+    SymbolNameAttr:$sym_name,
+    OptionalAttr<StrAttr>:$sym_visibility,
+    TTL_DFBNetworkHandleAttr:$source,
+    TTL_DFBNetworkOutputsAttr:$outputs,
+    TTL_DFBNetworkSplitPolicyAttr:$policy
+  );
+  let assemblyFormat = [{
+    ($sym_visibility^)? $sym_name $source `->` $outputs
+    `policy` `=` $policy attr-dict
+  }];
+  let hasVerifier = 1;
+}
+
+def TTL_DFBMergeOp : TTL_Op<"dfb.merge", [
+  SymbolName,
+  SymbolVisibility,
+  Symbol,
+  HasParent<"DFBNetworkOp">
+]> {
+  let summary = "Read several DFB inputs through one read handle";
+  let description = [{
+    Declares a merged read handle whose reader takes items from every input in
+    `inputs`. A merge creates no DFB: the merged handle is named by this op's
+    symbol, and other records refer to it by that symbol.
+
+    - `inputs` lists the inputs in scan order. Each input is a DFB id or a
+      symbol reference to another `ttl.dfb.merge` in the same network.
+    - `policy` selects the order in which inputs are read; see
+      `#ttl.dfb_network_merge_policy`.
+  }];
+  let arguments = (ins
+    SymbolNameAttr:$sym_name,
+    OptionalAttr<StrAttr>:$sym_visibility,
+    TypedArrayAttrBase<TTL_DFBNetworkHandleAttr,
+                       "non-negative DFB ids or merged read handles">:$inputs,
+    TTL_DFBNetworkMergePolicyAttr:$policy
+  );
+  let assemblyFormat = [{
+    ($sym_visibility^)? $sym_name $inputs `policy` `=` $policy attr-dict
+  }];
   let hasVerifier = 1;
 }
 
