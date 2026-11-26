@@ -2373,7 +2373,7 @@ def build_pipe_sram_scratch_tensors(
     *,
     zero_initialize: bool = False,
 ) -> List[Any]:
-    """Allocate per-core SRAM scratch tensors used by PipeNet metadata."""
+    """Allocate per-core PipeNet scratch, optionally initialized to zero."""
     if scratch_bytes <= 0:
         return []
 
@@ -2795,9 +2795,11 @@ def _get_cached_runtime_resources_impl(
         num_pipe_global_semaphores=num_pipe_global_semaphores,
         pipe_computed_address_dfb_indices=list(pipe_computed_address_dfb_indices),
         device=resource_device,
-        initialize_sram_scratch=num_dfb_resets > 0,
         kernel_specs=kernel_specs,
         dfb_reconfiguration_plan=dfb_reconfiguration_plan,
+        # Fabric forwarders always allocate global completion semaphores, so
+        # their presence requests zeroed cumulative-counter scratch.
+        initialize_sram_scratch=(num_dfb_resets > 0 or num_pipe_global_semaphores > 0),
     )
     reconfiguration_resources = build_dfb_reconfiguration_runtime_resources(
         tensors=tensors,

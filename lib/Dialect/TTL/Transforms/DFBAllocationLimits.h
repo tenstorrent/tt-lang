@@ -26,6 +26,7 @@ namespace mlir::tt::ttl {
 class DFBLogicalIdentityAnalysis;
 
 constexpr int64_t kDFBResetStateWordCount = 4;
+constexpr int64_t kDFBResetStateAlignmentBytes = alignof(uint32_t);
 constexpr int64_t kDFBResetStateBytes =
     kDFBResetStateWordCount * static_cast<int64_t>(sizeof(uint32_t));
 

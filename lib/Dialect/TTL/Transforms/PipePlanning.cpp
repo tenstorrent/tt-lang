@@ -463,7 +463,7 @@ FailureOr<PipeModulePlan> buildPipeModulePlan(
     PipeResourcePlan preliminaryResourcePlan;
     if (failed(buildPipeResourcePlan(
             module, transferIndex, pipeGraph, preliminaryResourcePlan,
-            options.enableComputedAddresses, options.counterAllocationPolicy,
+            options.computedAddressTransfers, options.counterAllocationPolicy,
             fabricRoutePlan ? &synchronizationSelection : nullptr))) {
       return failure();
     }
@@ -481,7 +481,7 @@ FailureOr<PipeModulePlan> buildPipeModulePlan(
     }
     if (failed(buildPipeResourcePlan(
             module, transferIndex, pipeGraph, plan.resourcePlan,
-            options.enableComputedAddresses, options.counterAllocationPolicy,
+            options.computedAddressTransfers, options.counterAllocationPolicy,
             &synchronizationSelection))) {
       return failure();
     }
@@ -499,7 +499,7 @@ FailureOr<PipeModulePlan> buildPipeModulePlan(
         options.counterAllocationPolicy, plan.capacityPlan);
   } else if (failed(buildPipeResourcePlan(
                  module, transferIndex, pipeGraph, plan.resourcePlan,
-                 options.enableComputedAddresses,
+                 options.computedAddressTransfers,
                  options.counterAllocationPolicy,
                  fabricRoutePlan ? &synchronizationSelection : nullptr))) {
     return failure();
