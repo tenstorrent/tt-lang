@@ -364,6 +364,33 @@ func.func @reduce_init_consolidates_same_dim() {
   func.return
 }
 
+// Test 14: A sync region can enclose a peeled single-trip loop containing
+// several operation types. Each transition must be initialized inside the loop.
+// FPU-LABEL: func.func @nested_mixed_operation_inits
+// FPU: ttkernel.tile_regs_acquire
+// FPU-NEXT: scf.for
+// FPU-NEXT: ttkernel.fill_tile_init
+// FPU-NEXT: ttkernel.fill_tile
+// FPU-NEXT: ttkernel.tanh_tile_init
+// FPU-NEXT: ttkernel.tanh_tile
+// FPU-NEXT: ttkernel.sigmoid_tile_init
+// FPU-NEXT: ttkernel.sigmoid_tile
+// FPU-NEXT: }
+// FPU-NEXT: ttkernel.tile_regs_release
+func.func @nested_mixed_operation_inits() {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %value = arith.constant 1.0 : f32
+  ttkernel.tile_regs_acquire() : () -> ()
+  scf.for %index = %c0 to %c1 step %c1 {
+    ttkernel.fill_tile(%index, %value) : (index, f32) -> ()
+    ttkernel.tanh_tile(%index) : (index) -> ()
+    ttkernel.sigmoid_tile(%index) : (index) -> ()
+  }
+  ttkernel.tile_regs_release() : () -> ()
+  func.return
+}
+
 // Test 15: Multiple output CBs with same data format -> accepted, one common init.
 // When two pack ops target DFBs with the same element type but different
 // capacities, PACK data format routing is identical and one common init
