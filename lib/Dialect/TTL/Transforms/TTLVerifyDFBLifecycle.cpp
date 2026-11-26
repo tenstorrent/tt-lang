@@ -34,11 +34,14 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/CheckedArithmetic.h"
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
+#include <iterator>
 #include <map>
 #include <optional>
 #include <set>
+#include <utility>
 
 namespace mlir::tt::ttl {
 
@@ -436,8 +439,9 @@ public:
   build(ModuleOp module, const llvm::DenseMap<int64_t, BindCBOp> &bindSites,
         const LaunchNodeDomain &launchDomain) {
     DFBStateDiscardModel model;
+    model.compilerSRAM = usesCompilerSRAM(module);
     uint64_t allocatedMask = 0;
-    if (!usesCompilerSRAM(module)) {
+    if (!model.compilerSRAM) {
       FailureOr<uint64_t> physicalMask = getAllocatedDFBMask(module);
       if (failed(physicalMask)) {
         return failure();
@@ -454,9 +458,35 @@ public:
       if (!isa<ResetDFBsOp, ResetAllDFBsOp>(op)) {
         return WalkResult::advance();
       }
-      if (usesCompilerSRAM(module)) {
-        op->emitOpError("synchronized reset is unsupported with compiler-sram");
-        return WalkResult::interrupt();
+      if (model.compilerSRAM) {
+        ValueRange operands = isa<ResetDFBsOp>(op)
+                                  ? cast<ResetDFBsOp>(op).getDfbs()
+                                  : cast<ResetAllDFBsOp>(op).getPreservedDfbs();
+        SmallVector<int64_t> selected;
+        for (Value dfb : operands) {
+          std::optional<int64_t> index = getCBIndex(dfb);
+          if (!index || !model.logicalIdsByPhysicalIndex.contains(*index)) {
+            op->emitOpError("references an unknown compiler-sram DFB index");
+            return WalkResult::interrupt();
+          }
+          selected.push_back(*index);
+        }
+        llvm::sort(selected);
+        selected.erase(llvm::unique(selected), selected.end());
+        if (isa<ResetAllDFBsOp>(op)) {
+          SmallVector<int64_t> allIndices;
+          for (const auto &[index, members] : model.logicalIdsByPhysicalIndex) {
+            allIndices.push_back(index);
+          }
+          llvm::sort(allIndices);
+          SmallVector<int64_t> resetIndices;
+          std::set_difference(allIndices.begin(), allIndices.end(),
+                              selected.begin(), selected.end(),
+                              std::back_inserter(resetIndices));
+          selected = std::move(resetIndices);
+        }
+        model.compilerResetIndices.try_emplace(op, std::move(selected));
+        return WalkResult::advance();
       }
       FailureOr<uint64_t> resetMask =
           getSynchronizedResetDFBMask(op, allocatedMask);
@@ -468,6 +498,46 @@ public:
     });
     if (result.wasInterrupted()) {
       return failure();
+    }
+    if (model.compilerSRAM) {
+      auto entries = module->getAttrOfType<ArrayAttr>(
+          kCompilerSRAMReconfigurationResetsAttrName);
+      if (entries) {
+        for (Attribute entryAttribute : entries) {
+          auto entry = dyn_cast<DictionaryAttr>(entryAttribute);
+          auto ordinal = entry ? entry.getAs<IntegerAttr>("ordinal") : nullptr;
+          auto indices =
+              entry ? entry.getAs<DenseI32ArrayAttr>("dfb_indices") : nullptr;
+          if (!ordinal || !indices ||
+              !(ordinal.getType().isIndex() ||
+                ordinal.getType().isSignlessInteger()) ||
+              !ordinal.getValue().isSignedIntN(64) || ordinal.getInt() < 0) {
+            module.emitOpError("contains malformed compiler-sram "
+                               "reconfiguration reset metadata");
+            return failure();
+          }
+          SmallVector<int64_t> selected;
+          for (int32_t index : indices.asArrayRef()) {
+            if (!model.logicalIdsByPhysicalIndex.contains(index)) {
+              module.emitOpError("compiler-sram reconfiguration references "
+                                 "an unknown DFB index");
+              return failure();
+            }
+            selected.push_back(index);
+          }
+          auto [entryIt, inserted] =
+              model.compilerReconfigurationIndices.try_emplace(
+                  ordinal.getInt(), std::move(selected));
+          if (!inserted || !llvm::is_sorted(entryIt->second) ||
+              std::adjacent_find(entryIt->second.begin(),
+                                 entryIt->second.end()) !=
+                  entryIt->second.end()) {
+            module.emitOpError("contains duplicate or noncanonical "
+                               "compiler-sram reconfiguration reset metadata");
+            return failure();
+          }
+        }
+      }
     }
     return model;
   }
@@ -494,15 +564,28 @@ public:
                         std::optional<LaunchNodeCoord> coord) const {
     std::optional<ExecutedBarrier> barrier = getBarrier(op);
     assert(barrier && "expected a synchronized reset or reconfiguration");
-    uint64_t restoredMask =
-        barrier->reconfiguration
-            ? installs.getInstalledDFBMask(barrier->ordinal, coord)
-            : resetMasks.lookup(op);
     SmallVector<int64_t> logicalIds;
-    for (const auto &[physicalIndex, members] : logicalIdsByPhysicalIndex) {
-      if ((restoredMask &
-           (uint64_t{1} << static_cast<unsigned>(physicalIndex))) != 0) {
-        llvm::append_range(logicalIds, members);
+    if (compilerSRAM) {
+      SmallVector<int64_t> restoredIndices =
+          barrier->reconfiguration
+              ? compilerReconfigurationIndices.lookup(barrier->ordinal)
+              : compilerResetIndices.lookup(op);
+      for (int64_t index : restoredIndices) {
+        auto members = logicalIdsByPhysicalIndex.find(index);
+        assert(members != logicalIdsByPhysicalIndex.end() &&
+               "validated compiler-sram reset index must exist");
+        llvm::append_range(logicalIds, members->second);
+      }
+    } else {
+      uint64_t restoredMask =
+          barrier->reconfiguration
+              ? installs.getInstalledDFBMask(barrier->ordinal, coord)
+              : resetMasks.lookup(op);
+      for (const auto &[physicalIndex, members] : logicalIdsByPhysicalIndex) {
+        if ((restoredMask &
+             (uint64_t{1} << static_cast<unsigned>(physicalIndex))) != 0) {
+          llvm::append_range(logicalIds, members);
+        }
       }
     }
     llvm::sort(logicalIds);
@@ -510,8 +593,11 @@ public:
   }
 
 private:
+  bool compilerSRAM = false;
   DFBReconfigurationInstalls installs;
   llvm::DenseMap<Operation *, uint64_t> resetMasks;
+  llvm::DenseMap<Operation *, SmallVector<int64_t>> compilerResetIndices;
+  llvm::DenseMap<int64_t, SmallVector<int64_t>> compilerReconfigurationIndices;
   llvm::DenseMap<int64_t, SmallVector<int64_t>> logicalIdsByPhysicalIndex;
 };
 

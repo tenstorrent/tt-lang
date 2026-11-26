@@ -23,16 +23,17 @@ func.func @typed_literals_to_emitc() attributes {ttkernel.thread = #ttkernel.thr
 // EMITC-SAME: ttlang.opaque_header = "describe.hpp"
 // EMITC-SAME: ttlang.requires_dfb_descriptor
 
-// The emitted definition precedes the user header that names it.
-// CPP-LABEL: #include <cstdint>
-// CPP: #include "api/dataflow/dataflow_api.h"
-// CPP: #include "api/dataflow/circular_buffer.h"
-// CPP: namespace ttlang {
+// Compute kernels preprocess out the data-movement-only handle method.
+// CPP-LABEL: namespace ttlang {
 // CPP: struct DFBDescriptor {
+// CPP: #if defined(COMPILE_FOR_BRISC)
+// CPP: static CircularBuffer bind() { return CircularBuffer(Index); }
 // CPP: } // namespace ttlang
+// CPP: #include "api/compute/common.h"
+// CPP-NOT: #include "api/dataflow/circular_buffer.h"
 // CPP: #include "describe.hpp"
 // CPP: describe<11, ttlang::DFBDescriptor<3, 2, 4, 4096>>();
-func.func @dfb_descriptor_template_to_emitc() attributes {ttkernel.thread = #ttkernel.thread<noc>} {
+func.func @dfb_descriptor_template_to_emitc() attributes {ttkernel.thread = #ttkernel.thread<compute>} {
   ttkernel.opaque_call "describe" template_args [11 : si32, #ttkernel.dfb_descriptor<3, 2, 4, 4096>] () {dfb_resource_indices = array<i32: 3>, header = "describe.hpp"} : () -> ()
   return
 }
@@ -47,6 +48,8 @@ func.func @dfb_descriptor_template_to_emitc() attributes {ttkernel.thread = #ttk
 // EMITC: emitc.call_opaque "describe"
 // EMITC-SAME: template_args = [#emitc.opaque<"ttlang::l1::DFBDescriptor<2048, 1, 2, 8, 12344>">]
 // CPP: #ifndef TTLANG_COMPILER_L1_TARGET_H
+// CPP: inline void resetState(uint32_t state) {
+// CPP-NEXT: if constexpr (!target::ownsDFBInterface) {
 // CPP: class DFBDescriptor
 // CPP: #include "describe.hpp"
 // CPP: describe<ttlang::l1::DFBDescriptor<2048, 1, 2, 0, 64>>();
