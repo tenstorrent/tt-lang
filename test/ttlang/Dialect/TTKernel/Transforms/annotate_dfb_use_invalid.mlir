@@ -1,5 +1,19 @@
 // RUN: ttlang-opt %s -ttkernel-annotate-dfb-use --verify-diagnostics --split-input-file
 
+// Compiler-managed SRAM requires finalized allocation metadata.
+// expected-error @below {{compiler-sram requires finalized allocation metadata}}
+module attributes {ttl.memory_model = "compiler-sram"} {
+}
+
+// -----
+
+// Allocation metadata must use the finalized array representation.
+// expected-error @below {{compiler-sram requires finalized allocation metadata}}
+module attributes {ttl.memory_model = "compiler-sram", ttl.dfb_allocations = 0 : i64} {
+}
+
+// -----
+
 // Verify that DFB resource metadata cannot reference descriptors outside the
 // finalized module allocation range.
 module attributes {ttl.dfb_allocations = [{}, {}]} {

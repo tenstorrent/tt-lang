@@ -71,12 +71,12 @@ FailureOr<uint64_t> getL1AllocationSizeBytes(ModuleOp module,
   if (failed(allocationQuantum) || *allocationQuantum == 0) {
     return failure();
   }
-  std::optional<uint64_t> roundedNumerator =
-      llvm::checkedAddUnsigned(payloadBytes, *allocationQuantum - 1);
-  if (!roundedNumerator) {
+  std::optional<uint64_t> allocationBytes = llvm::checkedMulUnsigned(
+      llvm::divideCeil(payloadBytes, *allocationQuantum), *allocationQuantum);
+  if (!allocationBytes) {
     return failure();
   }
-  return (*roundedNumerator / *allocationQuantum) * *allocationQuantum;
+  return *allocationBytes;
 }
 
 LogicalResult collectSynchronizedDFBResets(
@@ -531,7 +531,8 @@ getFinalizedDFBStorageFootprint(ModuleOp module) {
                              << indexedEntry.index() << " must be a dictionary";
         return failure();
       }
-      IntegerAttr physicalIndexAttr = entry.getAs<IntegerAttr>("dfb_index");
+      IntegerAttr physicalIndexAttr =
+          entry.getAs<IntegerAttr>(kDFBAllocationIndexField);
       if (!physicalIndexAttr || physicalIndexAttr.getInt() < 0) {
         module.emitOpError()
             << kDFBAllocationsAttrName << " entry " << indexedEntry.index()
@@ -539,7 +540,7 @@ getFinalizedDFBStorageFootprint(ModuleOp module) {
         return failure();
       }
       int64_t physicalIndex = physicalIndexAttr.getInt();
-      Attribute storageIndexValue = entry.get("storage_index");
+      Attribute storageIndexValue = entry.get(kDFBAllocationStorageIndexField);
       IntegerAttr storageIndexAttr =
           dyn_cast_or_null<IntegerAttr>(storageIndexValue);
       if (storageIndexValue && !storageIndexAttr) {
@@ -663,7 +664,8 @@ getFinalizedDFBStorageFootprint(ModuleOp module) {
     for (auto indexedEntry : llvm::enumerate(dfbEntries)) {
       auto entry = dyn_cast<DictionaryAttr>(indexedEntry.value());
       auto physicalIndex =
-          entry ? entry.getAs<IntegerAttr>("dfb_index") : IntegerAttr();
+          entry ? entry.getAs<IntegerAttr>(kDFBAllocationIndexField)
+                : IntegerAttr();
       auto configurations =
           entry ? entry.getAs<ArrayAttr>("configurations") : ArrayAttr();
       if (!entry || !physicalIndex || physicalIndex.getInt() < 0 ||

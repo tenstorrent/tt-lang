@@ -17,7 +17,8 @@ import torch
 ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
 
 import ttl
-from ttlang_test_utils import assert_allclose, to_l1
+from ttlang_test_utils import to_l1
+from utils.correctness import assert_allclose
 
 
 @ttl.operation(grid=(1, 1))
@@ -45,6 +46,21 @@ def add_kernel(lhs, rhs, out):
         with out_dfb.wait() as blk:
             tx = ttl.copy(blk, out[0, 0])
             tx.wait()
+
+
+@ttl.operation(grid=(1, 1))
+def no_dfb_kernel(output):
+    @ttl.compute()
+    def compute():
+        pass
+
+    @ttl.datamovement()
+    def reader():
+        pass
+
+    @ttl.datamovement()
+    def writer():
+        pass
 
 
 def test_emit_runner(device):
@@ -91,3 +107,25 @@ def test_emit_runner(device):
         os.environ.pop("TTLANG_EMIT_RUNNER", None)
         if os.path.exists(runner_path):
             os.unlink(runner_path)
+
+
+def test_emit_runner_preserves_compiler_sram_without_dfbs(
+    device, tmp_path, monkeypatch
+):
+    runner_path = tmp_path / "no_dfb_runner.py"
+    monkeypatch.setenv("TTLANG_EMIT_RUNNER", str(runner_path))
+
+    expected = torch.full((32, 32), 3.0, dtype=torch.bfloat16)
+    output = to_l1(expected, device)
+    no_dfb_kernel(output, options="--ttl-memory-model=compiler-sram")
+    assert_allclose(ttnn.to_torch(output).float(), expected.float(), rtol=0, atol=0)
+
+    spec = importlib.util.spec_from_file_location("no_dfb_runner", runner_path)
+    runner_module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(runner_module)
+    assert runner_module.MEMORY_MODEL == "compiler-sram"
+    assert runner_module.CB_CONFIGS == []
+
+    output = to_l1(expected, device)
+    runner_module.run([output])
+    assert_allclose(ttnn.to_torch(output).float(), expected.float(), rtol=0, atol=0)
