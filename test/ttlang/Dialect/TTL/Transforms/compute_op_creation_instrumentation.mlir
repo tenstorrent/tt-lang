@@ -255,6 +255,60 @@ func.func @intervening_exp_scale_instrumentation()
 
 // -----
 
+// Folding a broadcast into its binary consumer removes the broadcast result
+// entirely, so instrumentation observing DST between the two keeps the pair
+// as separate tile operations.
+
+// CHECK-LABEL: ComputeOp creation plan @intervening_binary_broadcast_instrumentation
+// CHECK:       warning=instrumentation changes code generation: binary-broadcast folding is disabled because the combined hardware operation never materializes the broadcast result being observed; the instrumented program uses separate tile operations
+// IR-LABEL:    func.func @intervening_binary_broadcast_instrumentation
+// IR:          ttl.compute
+// IR:            ttl.tile_bcast
+// IR-NEXT:       ttl.dprint "after broadcast"
+// IR-NEXT:       ttl.tile_add
+// IR-NOT:      ttl.tile_binary_bcast
+// WARN: warning: instrumentation changes code generation: binary-broadcast folding is disabled because the combined hardware operation never materializes the broadcast result being observed; the instrumented program uses separate tile operations
+func.func @intervening_binary_broadcast_instrumentation()
+    attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+  %broadcast_dfb = ttl.bind_cb {cb_index = 0, block_count = 2}
+      : !ttl.cb<[1, 2], !ttcore.tile<32x32, bf16>, 2>
+  %data_dfb = ttl.bind_cb {cb_index = 1, block_count = 2}
+      : !ttl.cb<[2, 2], !ttcore.tile<32x32, bf16>, 2>
+  %output_dfb = ttl.bind_cb {cb_index = 2, block_count = 2}
+      : !ttl.cb<[2, 2], !ttcore.tile<32x32, bf16>, 2>
+  %broadcast_wait = ttl.cb_wait %broadcast_dfb
+      : <[1, 2], !ttcore.tile<32x32, bf16>, 2>
+        -> tensor<1x2x!ttcore.tile<32x32, bf16>>
+  %broadcast_source = ttl.attach_cb %broadcast_wait, %broadcast_dfb
+      : (tensor<1x2x!ttcore.tile<32x32, bf16>>,
+         !ttl.cb<[1, 2], !ttcore.tile<32x32, bf16>, 2>)
+        -> tensor<1x2x!ttcore.tile<32x32, bf16>>
+  %data_wait = ttl.cb_wait %data_dfb
+      : <[2, 2], !ttcore.tile<32x32, bf16>, 2>
+        -> tensor<2x2x!ttcore.tile<32x32, bf16>>
+  %data = ttl.attach_cb %data_wait, %data_dfb
+      : (tensor<2x2x!ttcore.tile<32x32, bf16>>,
+         !ttl.cb<[2, 2], !ttcore.tile<32x32, bf16>, 2>)
+        -> tensor<2x2x!ttcore.tile<32x32, bf16>>
+  %output = ttl.cb_reserve %output_dfb
+      : <[2, 2], !ttcore.tile<32x32, bf16>, 2>
+        -> tensor<2x2x!ttcore.tile<32x32, bf16>>
+  %broadcast = ttl.block.broadcast %broadcast_source dims = [-2], shape = [2, 2]
+      : tensor<1x2x!ttcore.tile<32x32, bf16>>
+        -> tensor<2x2x!ttcore.tile<32x32, bf16>>
+  "ttl.dprint"() {fmt = "after broadcast", mode = "dst"} : () -> ()
+  %sum = ttl.add %broadcast, %data
+      : tensor<2x2x!ttcore.tile<32x32, bf16>>,
+        tensor<2x2x!ttcore.tile<32x32, bf16>>
+        -> tensor<2x2x!ttcore.tile<32x32, bf16>>
+  ttl.store %sum, %output
+      : tensor<2x2x!ttcore.tile<32x32, bf16>>,
+        tensor<2x2x!ttcore.tile<32x32, bf16>>
+  return
+}
+
+// -----
+
 // A direct producer owns the signposts that surround its source operation.
 // A fused consumer may recompute that source, but must not move or duplicate
 // the producer's observable events.

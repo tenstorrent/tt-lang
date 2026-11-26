@@ -9,15 +9,16 @@
 // RUN:     ttkernel-insert-l1-accumulation, canonicalize, cse)' \
 // RUN:   | FileCheck %s
 
-// Single-tile transpose: transpose_wh_init -> transpose_wh_tile.
+// Single-tile transpose: transpose_init -> transpose_wh_tile.
 // CHECK-LABEL: func.func @transpose_1x1
 // CHECK-DAG: %[[C1I:.*]] = arith.constant 1 : i32
 // CHECK-DAG: %[[C0:.*]] = arith.constant 0 : index
-// CHECK: %[[CB0:.*]] = ttkernel.get_compile_time_arg_val(0)
-// CHECK: %[[CB1:.*]] = ttkernel.get_compile_time_arg_val(1)
-// CHECK: ttkernel.init_sfpu(%[[CB0]], %[[CB1]])
+// CHECK-DAG: %[[CB0:.*]] = ttkernel.get_compile_time_arg_val(0)
+// CHECK-DAG: %[[CB1:.*]] = ttkernel.get_compile_time_arg_val(1)
+// CHECK: ttkernel.reconfig_data_format(%[[CB0]], %[[CB0]])
+// CHECK: ttkernel.pack_reconfig_data_format(%[[CB1]])
 // CHECK: ttkernel.tile_regs_acquire
-// CHECK: ttkernel.transpose_wh_init(%[[CB0]], %[[CB1]])
+// CHECK: ttkernel.transpose_init(%[[CB0]])
 // CHECK-NEXT: ttkernel.transpose_wh_tile(%[[CB0]], %[[C0]], %[[C0]])
 // CHECK: ttkernel.tile_regs_commit
 // CHECK: ttkernel.tile_regs_wait

@@ -90,8 +90,8 @@ func.func @bcast_scalar(%arg0: tensor<1x1x!ttcore.tile<32x32, f32>>) -> tensor<2
 // -----
 
 // Broadcast feeding an elementwise op should be handled by fused lowering.
-// The broadcast has no direct store user, so standalone broadcast lowering
-// defers and buildFusedCompute emits tile_bcast before tile_add.
+// Both operands are CB-backed, so the broadcast and the add collapse into a
+// single tile_binary_bcast instead of tile_bcast followed by tile_add.
 // CHECK-LABEL: func.func @bcast_row_fused_add
 func.func @bcast_row_fused_add(%arg0: tensor<1x2x!ttcore.tile<32x32, f32>>, %arg1: tensor<2x2x!ttcore.tile<32x32, f32>>) -> tensor<2x2x!ttcore.tile<32x32, f32>> {
   %cb0 = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 2], !ttcore.tile<32x32, f32>, 2>
@@ -109,8 +109,7 @@ func.func @bcast_row_fused_add(%arg0: tensor<1x2x!ttcore.tile<32x32, f32>>, %arg
   // CHECK-NEXT: ^bb0(%[[BCAST_TILE:.*]]: !ttcore.tile<32x32, f32>, %[[RHS_TILE:.*]]: !ttcore.tile<32x32, f32>, %[[OUT_TILE:.*]]: !ttcore.tile<32x32, f32>):
   // CHECK-NEXT: %[[ROW:.*]] = ttl.iter_index 0
   // CHECK-NEXT: %[[COL:.*]] = ttl.iter_index 1
-  // CHECK-NEXT: %[[BCASTED:.*]] = ttl.tile_bcast %[[BCAST_TILE]], %[[OUT_TILE]] 2 : i32
-  // CHECK-NEXT: %[[ADDED:.*]] = ttl.tile_add %[[BCASTED]], %[[RHS_TILE]]
+  // CHECK-NEXT: %[[ADDED:.*]] = ttl.tile_binary_bcast %[[RHS_TILE]], %[[BCAST_TILE]], %[[OUT_TILE]] 0 : i32 2 : i32 into dst
   // CHECK-NEXT: ttl.tile_store %[[ADDED]], %[[OUT]][%[[ROW]], %[[COL]]] from dst
   // CHECK-NEXT: ttl.yield
   // CHECK: return %[[COMPUTE]]

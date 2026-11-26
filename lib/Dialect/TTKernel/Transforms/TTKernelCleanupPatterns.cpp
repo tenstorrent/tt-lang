@@ -141,8 +141,8 @@ static bool preservesCopyTileConfiguration(Operation *operation,
   }
   return isa<CBWaitFrontOp, CBPopFrontOp, CBReserveBackOp, CBPushBackOp,
              TileRegsAcquireOp, TileRegsCommitOp, TileRegsWaitOp,
-             TileRegsReleaseOp, PackTileOp, PackTileBlockOp, scf::YieldOp>(
-             operation) ||
+             TileRegsReleaseOp, PackTileOp, PackTileBlockOp,
+             PackReconfigL1AccOp, scf::YieldOp>(operation) ||
          isHoistableTTKernelValueComputation(operation);
 }
 
@@ -159,12 +159,25 @@ struct HoistInvariantCopyTileInit : OpRewritePattern<scf::ForOp> {
                                          "loop execution is not guaranteed");
     }
     SmallVector<CopyTileInitOp> initializations;
+    SmallVector<ReconfigDataFormatOp> reconfigurations;
     Value sourceDFB;
     bool foundCopy = false;
     for (Operation &operation : loop.getBody()->getOperations()) {
       if (operation.getNumRegions() != 0) {
         return rewriter.notifyMatchFailure(
             loop, "copy loop contains nested control flow");
+      }
+      if (auto reconfig = dyn_cast<ReconfigDataFormatOp>(operation)) {
+        auto init = dyn_cast_or_null<CopyTileInitOp>(operation.getNextNode());
+        if (!init || reconfig.getIn0Cb() != init.getCb0() ||
+            reconfig.getIn1Cb() != init.getCb0() ||
+            (!initializations.empty() && reconfigurations.empty())) {
+          return rewriter.notifyMatchFailure(
+              loop,
+              "source reconfiguration is not part of copy initialization");
+        }
+        reconfigurations.push_back(reconfig);
+        continue;
       }
       if (auto init = dyn_cast<CopyTileInitOp>(operation)) {
         if (!loop.isDefinedOutsideOfLoop(init.getCb0()) ||
@@ -188,6 +201,13 @@ struct HoistInvariantCopyTileInit : OpRewritePattern<scf::ForOp> {
 
     // All iterations execute the same initialization before their first copy;
     // the complete body has been checked before moving or erasing any init.
+    if (!reconfigurations.empty()) {
+      rewriter.moveOpBefore(reconfigurations.front(), loop);
+      for (ReconfigDataFormatOp redundant :
+           llvm::drop_begin(reconfigurations)) {
+        rewriter.eraseOp(redundant);
+      }
+    }
     rewriter.moveOpBefore(initializations.front(), loop);
     for (CopyTileInitOp redundant : llvm::drop_begin(initializations)) {
       rewriter.eraseOp(redundant);

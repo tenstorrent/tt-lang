@@ -78,7 +78,9 @@ def softmax_kernel(inp, out):
 # CHECK-CPP: .wait_front
 
 # bcast(max) + sub + exp -> pack to intermediate DFB, push, wait for reduce_sum.
-# CHECK-CPP: unary_bcast
+# The subtraction consumes the broadcast directly, so both fold into one FPU
+# binary-broadcast instead of materializing the broadcast into DST.
+# CHECK-CPP: any_tiles_bcast<EltwiseBinaryType::ELWSUB, BroadcastType::SCALAR>
 # CHECK-CPP: exp_tile
 # CHECK-CPP: pack_tile
 # CHECK-CPP: .push_back
@@ -90,7 +92,8 @@ def softmax_kernel(inp, out):
 # CHECK-CPP: .push_back
 # CHECK-CPP: .wait_front
 
-# bcast(sum) + recip + mul -> pack to output.
+# bcast(sum) + recip + mul -> pack to output. This broadcast feeds recip, a
+# unary op, so there is no binary to fold it into and it stays materialized.
 # CHECK-CPP: unary_bcast
 # CHECK-CPP: recip_tile
 # CHECK-CPP: mul_binary_tile

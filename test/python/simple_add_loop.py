@@ -111,7 +111,12 @@ def add_loop_kernel(lhs, rhs, out):
 # CHECK-CPP: [[LHS]].wait_front(
 # CHECK-CPP: [[RHS]].wait_front(
 # CHECK-CPP: [[OUT]].reserve_back(
-# CHECK-CPP: init_sfpu(get_compile_time_arg_val(0), get_compile_time_arg_val(2));
+# CHECK-CPP: reconfig_data_format<SrcOrder::Regular, true>(get_compile_time_arg_val(0), get_compile_time_arg_val(0));
+# CHECK-CPP-NEXT: pack_reconfig_data_format<true>(get_compile_time_arg_val(2));
+# CHECK-CPP-NEXT: copy_tile_init(get_compile_time_arg_val(0));
+# CHECK-CPP-NEXT: #ifndef ARCH_QUASAR
+# CHECK-CPP-NEXT: MATH((ckernel::math::_configure_unary_preserve_zero_flag_state_()));
+# CHECK-CPP-NEXT: #endif
 # CHECK-CPP: tile_regs_acquire();
 # CHECK-CPP: copy_tile_init(get_compile_time_arg_val(0));
 # CHECK-CPP: copy_tile(get_compile_time_arg_val(0),
@@ -119,7 +124,12 @@ def add_loop_kernel(lhs, rhs, out):
 # CHECK-CPP: tile_regs_wait();
 # CHECK-CPP: pack_tile<true>({{.*}}, get_compile_time_arg_val(2),
 # CHECK-CPP: tile_regs_release();
-# CHECK-CPP: init_sfpu(get_compile_time_arg_val(1), get_compile_time_arg_val(2));
+# CHECK-CPP: reconfig_data_format<SrcOrder::Regular, true>(get_compile_time_arg_val(1), get_compile_time_arg_val(1));
+# CHECK-CPP-NEXT: pack_reconfig_data_format<true>(get_compile_time_arg_val(2));
+# CHECK-CPP-NEXT: copy_tile_init(get_compile_time_arg_val(1));
+# CHECK-CPP-NEXT: #ifndef ARCH_QUASAR
+# CHECK-CPP-NEXT: MATH((ckernel::math::_configure_unary_preserve_zero_flag_state_()));
+# CHECK-CPP-NEXT: #endif
 # CHECK-CPP: llk_pack_reconfig_l1_acc([[ONE]])
 # One initialization serves all iterations of this nonempty copy/pack loop.
 # CHECK-CPP: copy_tile_init(get_compile_time_arg_val(1));
@@ -149,7 +159,12 @@ def add_loop_kernel(lhs, rhs, out):
 # CHECK-CPP-FPU: [[LHS]].wait_front(
 # CHECK-CPP-FPU: [[RHS]].wait_front(
 # CHECK-CPP-FPU: [[OUT]].reserve_back(
-# CHECK-CPP-FPU: init_sfpu(get_compile_time_arg_val(0), get_compile_time_arg_val(2));
+# CHECK-CPP-FPU: reconfig_data_format<SrcOrder::Regular, true>(get_compile_time_arg_val(0), get_compile_time_arg_val(0));
+# CHECK-CPP-FPU-NEXT: pack_reconfig_data_format<true>(get_compile_time_arg_val(2));
+# CHECK-CPP-FPU-NEXT: copy_tile_init(get_compile_time_arg_val(0));
+# CHECK-CPP-FPU-NEXT: #ifndef ARCH_QUASAR
+# CHECK-CPP-FPU-NEXT: MATH((ckernel::math::_configure_unary_preserve_zero_flag_state_()));
+# CHECK-CPP-FPU-NEXT: #endif
 # CHECK-CPP-FPU: tile_regs_acquire();
 # CHECK-CPP-FPU: copy_tile_init(get_compile_time_arg_val(0));
 # CHECK-CPP-FPU: copy_tile(get_compile_time_arg_val(0),
@@ -157,7 +172,12 @@ def add_loop_kernel(lhs, rhs, out):
 # CHECK-CPP-FPU: tile_regs_wait();
 # CHECK-CPP-FPU: pack_tile<true>({{.*}}, get_compile_time_arg_val(2),
 # CHECK-CPP-FPU: tile_regs_release();
-# CHECK-CPP-FPU: init_sfpu(get_compile_time_arg_val(1), get_compile_time_arg_val(2));
+# CHECK-CPP-FPU: reconfig_data_format<SrcOrder::Regular, true>(get_compile_time_arg_val(1), get_compile_time_arg_val(1));
+# CHECK-CPP-FPU-NEXT: pack_reconfig_data_format<true>(get_compile_time_arg_val(2));
+# CHECK-CPP-FPU-NEXT: copy_tile_init(get_compile_time_arg_val(1));
+# CHECK-CPP-FPU-NEXT: #ifndef ARCH_QUASAR
+# CHECK-CPP-FPU-NEXT: MATH((ckernel::math::_configure_unary_preserve_zero_flag_state_()));
+# CHECK-CPP-FPU-NEXT: #endif
 # CHECK-CPP-FPU: llk_pack_reconfig_l1_acc([[ONE]])
 # CHECK-CPP-FPU: copy_tile_init(get_compile_time_arg_val(1));
 # CHECK-CPP-FPU: for (size_t {{.*}} < {{.*}};

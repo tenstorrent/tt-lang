@@ -18,14 +18,15 @@
 // FPU-DAG:   %[[C2:.*]] = arith.constant 2 : index
 // FPU-DAG:   %[[C1:.*]] = arith.constant 1 : index
 // FPU-DAG:   %[[C0:.*]] = arith.constant 0 : index
-// FPU:       %[[OUTPUT:.*]] = tensor.empty() : tensor<2x2x!ttcore.tile<32x32, bf16>>
-// FPU:       %[[CB0:.*]] = ttkernel.get_compile_time_arg_val(0)
-// FPU:       %[[CB1:.*]] = ttkernel.get_compile_time_arg_val(1)
-// FPU:       %[[CB2:.*]] = ttkernel.get_compile_time_arg_val(2)
+// FPU-DAG:       %[[OUTPUT:.*]] = tensor.empty() : tensor<2x2x!ttcore.tile<32x32, bf16>>
+// FPU-DAG:       %[[CB0:.*]] = ttkernel.get_compile_time_arg_val(0)
+// FPU-DAG:       %[[CB1:.*]] = ttkernel.get_compile_time_arg_val(1)
+// FPU-DAG:       %[[CB2:.*]] = ttkernel.get_compile_time_arg_val(2)
 // FPU:       ttkernel.cb_wait_front(%[[CB0]], %[[C4]])
 // FPU:       ttkernel.cb_wait_front(%[[CB1]], %[[C4]])
 // FPU:       ttkernel.cb_reserve_back(%[[CB2]], %[[C4]])
-// FPU:       ttkernel.binary_op_init_common(%[[CB0]], %[[CB1]], %[[CB2]])
+// FPU:       ttkernel.reconfig_data_format(%[[CB0]], %[[CB1]])
+// FPU:       ttkernel.pack_reconfig_data_format(%[[CB2]])
 // FPU:       scf.for %[[I:.*]] = %[[C0]] to %[[C2]] step %[[C1]] {
 // FPU:         scf.for %[[J:.*]] = %[[C0]] to %[[C2]] step %[[C1]] {
 // FPU:           ttkernel.tile_regs_acquire
@@ -60,14 +61,15 @@
 // SFPU-DAG:   %[[C2:.*]] = arith.constant 2 : index
 // SFPU-DAG:   %[[C1:.*]] = arith.constant 1 : index
 // SFPU-DAG:   %[[C0:.*]] = arith.constant 0 : index
-// SFPU:       %[[OUTPUT:.*]] = tensor.empty() : tensor<2x2x!ttcore.tile<32x32, bf16>>
-// SFPU:       %[[CB0:.*]] = ttkernel.get_compile_time_arg_val(0)
-// SFPU:       %[[CB1:.*]] = ttkernel.get_compile_time_arg_val(1)
-// SFPU:       %[[CB2:.*]] = ttkernel.get_compile_time_arg_val(2)
+// SFPU-DAG:       %[[OUTPUT:.*]] = tensor.empty() : tensor<2x2x!ttcore.tile<32x32, bf16>>
+// SFPU-DAG:       %[[CB0:.*]] = ttkernel.get_compile_time_arg_val(0)
+// SFPU-DAG:       %[[CB1:.*]] = ttkernel.get_compile_time_arg_val(1)
+// SFPU-DAG:       %[[CB2:.*]] = ttkernel.get_compile_time_arg_val(2)
 // SFPU:       ttkernel.cb_wait_front(%[[CB0]], %[[C4]])
 // SFPU:       ttkernel.cb_wait_front(%[[CB1]], %[[C4]])
 // SFPU:       ttkernel.cb_reserve_back(%[[CB2]], %[[C4]])
-// SFPU:       ttkernel.init_sfpu(%[[CB0]], %[[CB2]])
+// SFPU:       ttkernel.reconfig_data_format(%[[CB0]], %[[CB0]])
+// SFPU:       ttkernel.pack_reconfig_data_format(%[[CB2]])
 // SFPU:       scf.for %[[I:.*]] = %[[C0]] to %[[C2]] step %[[C1]] {
 // SFPU:         scf.for %[[J:.*]] = %[[C0]] to %[[C2]] step %[[C1]] {
 // SFPU:           ttkernel.tile_regs_acquire
