@@ -43,7 +43,7 @@ def tt_lang_multinode_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor) -
             current_tile_id = node_id * tiles_per_node + tile_offset
             if current_tile_id < num_output_tiles_total:
                 with out_dfb.reserve() as out_blk:
-                    acc = ttl.block.fill(0, shape=out_blk.shape)
+                    acc = ttl.block.fill(0, shape=out_blk.shape, dtype=out_blk.dtype)
                     for _ in range(Kt):
                         with a_dfb.wait() as a_blk, b_dfb.wait() as b_blk:
                             acc += a_blk @ b_blk

@@ -150,7 +150,11 @@ def tutorial_operation(
                     n_block = node_n * n_blocks_per_node + local_n_block
                     if n_block < n_blocks:
                         with acc_dfb.reserve() as acc_blk:
-                            acc_blk.store(ttl.block.fill(0, shape=acc_blk.shape))
+                            acc_blk.store(
+                                ttl.block.fill(
+                                    0, shape=acc_blk.shape, dtype=acc_blk.dtype
+                                )
+                            )
 
                         for _ in range(k_blocks):
                             with (

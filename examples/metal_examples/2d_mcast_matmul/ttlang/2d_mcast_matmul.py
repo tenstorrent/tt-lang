@@ -79,7 +79,7 @@ def tt_lang_2d_mcast_matmul(a: ttnn.Tensor, b: ttnn.Tensor, out: ttnn.Tensor):
         out_col = per_node_N * node_x
         if (out_row < Mt) and (out_col < Nt):
             with out_dfb.reserve() as out_blk:
-                acc = ttl.block.fill(0, shape=out_blk.shape)
+                acc = ttl.block.fill(0, shape=out_blk.shape, dtype=out_blk.dtype)
                 for _ in range(num_blocks_k):
                     with (
                         a_dfb.wait() as a_blk,

@@ -134,7 +134,9 @@ def __tutorial_operation(
                 # it into acc_blk and pushes it so the k loop can consume it.
 
                 with acc_dfb.reserve() as acc_blk:
-                    acc_blk.store(ttl.block.fill(0, shape=acc_blk.shape))
+                    acc_blk.store(
+                        ttl.block.fill(0, shape=acc_blk.shape, dtype=acc_blk.dtype)
+                    )
 
                 for _ in range(k_tiles):
 
